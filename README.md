@@ -121,4 +121,3 @@ the Java sources they were compiled from, alongside generated classes that exerc
 ## License
 
 MIT OR Apache-2.0.
-

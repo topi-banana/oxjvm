@@ -1,5 +1,7 @@
 name: CI
 
+# Triggered on every push and pull request; `workflow_dispatch` exists so a run can be
+# started by hand (useful right after the repository or a runner is created).
 on:
   push:
   pull_request:
