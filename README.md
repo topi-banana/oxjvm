@@ -94,6 +94,19 @@ virtual/interface dispatch, string builders, int-carried booleans — and compar
 the Java sources they were compiled from, alongside generated classes that exercise
 `System.out.println`, native exceptions, and exception-table dispatch.
 
+## CI
+
+`.github/workflows/ci.yml` runs:
+
+* `rustfmt`, `taplo fmt --check`, `typos`, and `cargo machete` on every push and pull request.
+* `cargo clippy --all-targets -- -D warnings` and `cargo nextest run --workspace --all-features`
+  on **Linux, macOS, and Windows × x86_64 and arm64**.
+* The **no_std** proof: clippy with `-D warnings` for the portable core on
+  `wasm32-unknown-unknown`, where any `std` dependency fails the build.
+* The **wasm** test run: the same class-file, zip, and interpreter tests executed as
+  `wasm32-wasip1` inside wasmtime, driven by nextest's target-runner support.
+
+
 ## Design notes
 
 * `Vm` is a value, not a global: construct one over a `Host`, run a main class, and drop it. The
