@@ -1,0 +1,17 @@
+[package]
+name = "oxjvm-classfile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "A complete, byte-exact, no_std model of the JVM .class file format (JVMS ch. 4)"
+
+[dependencies]
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Reserved: enable `std` error trait implementations on host builds.
+std = []

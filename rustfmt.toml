@@ -1,0 +1,3 @@
+# Intentionally default (empty). The file exists so rustfmt's configuration
+# discovery stops at the repository root instead of falling back to a
+# machine-dependent user-level `~/.rustfmt.toml`.

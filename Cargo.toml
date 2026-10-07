@@ -1,0 +1,44 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/classfile",
+  "crates/platform",
+  "crates/vm",
+  "crates/java",
+  "crates/wasm",
+  "crates/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.85"
+description = "A pure-Rust, no_std JVM class-file runtime"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+cast_lossless = "allow"
+too_many_lines = "allow"
+too_many_arguments = "allow"
+struct_excessive_bools = "allow"
+similar_names = "allow"
+many_single_char_names = "allow"
+wildcard_imports = "allow"
+unreadable_literal = "allow"
+doc_markdown = "allow"
+inline_always = "allow"

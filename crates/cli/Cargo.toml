@@ -1,0 +1,20 @@
+[package]
+name = "oxjvm-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The oxjvm command-line interface"
+
+[dependencies]
+oxjvm-classfile = { path = "../classfile" }
+oxjvm-platform = { path = "../platform", features = ["threads"] }
+oxjvm-vm = { path = "../vm", features = ["std"] }
+oxjvm-java = { path = "../java", features = ["std"] }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "oxjvm"
+path = "src/main.rs"

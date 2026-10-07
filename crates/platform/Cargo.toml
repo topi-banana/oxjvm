@@ -1,0 +1,18 @@
+[package]
+name = "oxjvm-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Host abstractions for oxjvm: class sources, output, clocks, and optional threading"
+
+[dependencies]
+oxjvm-classfile = { path = "../classfile" }
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Reserved: hosts that can spawn OS threads may enable this.
+threads = []

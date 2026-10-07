@@ -1,0 +1,22 @@
+[package]
+name = "oxjvm-vm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The oxjvm class-file runtime: linking, verification, interpretation, and GC"
+
+[dependencies]
+oxjvm-classfile = { path = "../classfile" }
+oxjvm-platform = { path = "../platform", default-features = false }
+
+[lints]
+workspace = true
+
+[features]
+default = []
+std = []
+
+[dev-dependencies]
+oxjvm-java = { path = "../java" }
+oxjvm-platform = { path = "../platform" }
