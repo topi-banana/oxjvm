@@ -397,6 +397,7 @@ impl<'a> Stack<'a> {
 }
 
 #[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)]
 fn transfer(
     _class: &ClassFile,
     pool: &ConstantPool,
@@ -554,7 +555,7 @@ fn transfer(
             stack.pop_expect(Cat::Ref).map_err(emap)?;
             stack.push(Cat::Ref);
         }
-        0x33 | 0x34 | 0x35 => {
+        0x33..=0x35 => {
             stack.pop_expect(Cat::Int).map_err(emap)?;
             stack.pop_expect(Cat::Ref).map_err(emap)?;
             stack.push(Cat::Int);
@@ -649,7 +650,7 @@ fn transfer(
             stack.pop_expect(Cat::Int).map_err(emap)?;
             stack.pop_expect(Cat::Ref).map_err(emap)?;
         }
-        0x54 | 0x55 | 0x56 => {
+        0x54..=0x56 => {
             stack.pop_expect(Cat::Int).map_err(emap)?;
             stack.pop_expect(Cat::Int).map_err(emap)?;
             stack.pop_expect(Cat::Ref).map_err(emap)?;
@@ -876,7 +877,7 @@ fn transfer(
             stack.pop_expect(Cat::Double).map_err(emap)?;
             stack.push(Cat::Float);
         }
-        0x91 | 0x92 | 0x93 => {
+        0x91..=0x93 => {
             stack.pop_expect(Cat::Int).map_err(emap)?;
             stack.push(Cat::Int);
         }
@@ -1043,7 +1044,7 @@ fn transfer(
                 }
             }
         }
-        0xb6 | 0xb7 | 0xb8 | 0xb9 => {
+        0xb6..=0xb9 => {
             let index = u16::from_be_bytes([code.code[pc + 1], code.code[pc + 2]]);
             let (descriptor, is_interface_ref) = method_descriptor(pool, index).map_err(emap)?;
             let parsed = MethodDescriptor::parse(&descriptor)
@@ -1159,7 +1160,7 @@ fn transfer(
         0xc4 => {
             let inner = code.code[pc + 1];
             match inner {
-                0x15 | 0x16 | 0x17 | 0x18 | 0x19 => {
+                0x15..=0x19 => {
                     let index = u16::from_be_bytes([code.code[pc + 2], code.code[pc + 3]]);
                     let cat = stack.local(usize::from(index))?;
                     let expected = match inner {
@@ -1174,7 +1175,7 @@ fn transfer(
                     }
                     stack.push(if cat == Cat::Top { expected } else { cat });
                 }
-                0x36 | 0x37 | 0x38 | 0x39 | 0x3a => {
+                0x36..=0x3a => {
                     let index =
                         usize::from(u16::from_be_bytes([code.code[pc + 2], code.code[pc + 3]]));
                     let expected = match inner {

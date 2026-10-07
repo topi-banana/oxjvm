@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use oxjvm_classfile::attribute::{Attribute, AttributeData, CodeAttribute, ExceptionHandler};
 use oxjvm_classfile::{ClassFile, ConstantPool, CpInfo, FieldInfo, MethodInfo};
 use oxjvm_platform::{Host, MemoryClasses, Stream};
-use oxjvm_vm::{ArrayComponent, ClassId, ObjectRef, Value, Vm, VmError};
+use oxjvm_vm::{ArrayComponent, Value, Vm, VmError};
 
 /// A host holding every fixture class plus captured standard output.
 #[derive(Default)]

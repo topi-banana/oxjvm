@@ -920,7 +920,7 @@ fn read_type_annotation(body: &mut Reader<'_>) -> Result<TypeAnnotation, ParseEr
             parameter_index: body.u1("type_parameter_index")?,
             bound_index: body.u1("bound_index")?,
         },
-        0x13 | 0x14 | 0x15 => TargetInfo::Empty,
+        0x13..=0x15 => TargetInfo::Empty,
         0x16 => TargetInfo::FormalParameter {
             index: body.u1("formal_parameter_index")?,
         },
@@ -942,7 +942,7 @@ fn read_type_annotation(body: &mut Reader<'_>) -> Result<TypeAnnotation, ParseEr
         0x42 => TargetInfo::Catch {
             index: body.u2("exception_table_index")?,
         },
-        0x43 | 0x44 | 0x45 | 0x46 => TargetInfo::Offset {
+        0x43..=0x46 => TargetInfo::Offset {
             offset: body.u2("offset")?,
         },
         0x47..=0x4B => TargetInfo::TypeArgument {

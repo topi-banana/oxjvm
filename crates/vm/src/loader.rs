@@ -1033,20 +1033,20 @@ impl<'a> Vm<'a> {
         value: ObjectRef,
     ) {
         let slot = self.classes.get(class).fields[field as usize].slot as usize;
-        if let Some(data) = self.heap.get_mut(object).map(|object| &mut object.data) {
-            if let ObjectData::Instance(fields) = data {
-                fields[slot] = Value::Ref(value);
-            }
+        if let Some(ObjectData::Instance(fields)) =
+            self.heap.get_mut(object).map(|object| &mut object.data)
+        {
+            fields[slot] = Value::Ref(value);
         }
     }
 
     /// Write an instance `int` field.
     pub fn set_instance_int(&mut self, object: ObjectRef, class: ClassId, field: u32, value: i32) {
         let slot = self.classes.get(class).fields[field as usize].slot as usize;
-        if let Some(data) = self.heap.get_mut(object).map(|object| &mut object.data) {
-            if let ObjectData::Instance(fields) = data {
-                fields[slot] = Value::Int(value);
-            }
+        if let Some(ObjectData::Instance(fields)) =
+            self.heap.get_mut(object).map(|object| &mut object.data)
+        {
+            fields[slot] = Value::Int(value);
         }
     }
 

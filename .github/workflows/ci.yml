@@ -1,0 +1,176 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+  # The portable core, defined once so that the clippy, no_std/wasm, and wasm-test cells all judge
+  # exactly the same package set. The CLI is the one host-only crate and is excluded everywhere
+  # below; it is covered by the six native cells instead.
+  #
+  # Building these for wasm32-unknown-unknown *is* the no_std proof: none of them links `std`, so
+  # any accidental `std` dependency breaks the wasm build rather than passing on the host.
+  WASM_PACKAGES: >-
+    --package oxjvm-classfile --package oxjvm-platform --package oxjvm-vm
+    --package oxjvm-java --package oxjvm-wasm
+
+  # The packages whose tests run as wasm32-wasip1 under wasmtime. They exercise the portable core
+  # directly: class-file round-trips, the zip/inflate reader, and the full interpreter fixture
+  # suite — the same tests as the native cells, executing inside a real wasm engine.
+  WASM_TEST_PACKAGES: >-
+    --package oxjvm-classfile --package oxjvm-platform --package oxjvm-vm
+    --package oxjvm-java --package oxjvm-wasm
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  taplo:
+    name: taplo fmt
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install taplo
+        run: curl -fsSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-linux-x86_64.gz | gzip -d - | install -m 755 /dev/stdin /usr/local/bin/taplo
+      - run: taplo fmt --check --diff
+
+  typos:
+    name: typos
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2.87.23
+        with:
+          tool: typos
+      - run: typos
+
+  machete:
+    name: cargo machete
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2.87.23
+        with:
+          tool: cargo-machete
+      - run: cargo machete
+
+  # Everything the user asked to be covered on win/mac/linux × arm/x86_64, plus the wasm/no_std
+  # cell, lints and tests in two matching matrices.
+  #
+  # Runner labels: GitHub's arm64 runners are `ubuntu-24.04-arm` (public repositories) and
+  # `windows-11-arm` (public preview), and the final x86_64 macOS runner is `macos-15-intel`
+  # (macos-13 is retired). If a cell is unavailable for the repository's plan, drop that one
+  # matrix entry; the rest of the matrix is independent (`fail-fast: false`).
+  clippy:
+    name: clippy (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+          - name: macos-x86_64
+            os: macos-15-intel
+          - name: macos-arm64
+            os: macos-15
+          - name: windows-x86_64
+            os: windows-2025
+          - name: windows-arm64
+            os: windows-11-arm
+          # no_std + wasm: the portable core with `-D warnings` on the wasm target.
+          - name: wasm32-unknown-unknown
+            os: ubuntu-24.04
+            target: wasm32-unknown-unknown
+            args: $WASM_PACKAGES
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: clippy-${{ matrix.name }}
+      - name: Lint the host workspace
+        if: matrix.target == ''
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Lint the no_std core for wasm
+        if: matrix.target != ''
+        run: cargo clippy --target wasm32-unknown-unknown ${{ matrix.args }} --locked -- -D warnings
+
+  nextest:
+    name: nextest (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+          - name: macos-x86_64
+            os: macos-15-intel
+          - name: macos-arm64
+            os: macos-15
+          - name: windows-x86_64
+            os: windows-2025
+          - name: windows-arm64
+            os: windows-11-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nextest-${{ matrix.name }}
+      - uses: taiki-e/install-action@v2.87.23
+        with:
+          tool: nextest
+      - name: Run the test suite
+        run: cargo nextest run --workspace --all-features --locked --no-fail-fast
+      # nextest does not run doctests, so keep them covered with a separate `cargo test --doc`.
+      - name: Run doctests
+        run: cargo test --workspace --all-features --doc --locked
+
+  # no_std + wasm tests: the portable core's tests execute as wasm32-wasip1 inside wasmtime, with
+  # the host filesystem preopened so the class-file fixture suite can be read. nextest honours
+  # `CARGO_TARGET_<TRIPLE>_RUNNER`, which is how the wasm module reaches the engine.
+  nextest-wasm:
+    name: nextest (wasm32-wasip1)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nextest-wasm
+      - uses: taiki-e/install-action@v2.87.23
+        with:
+          tool: nextest,wasmtime
+      - name: Run the portable core's tests inside wasmtime
+        env:
+          CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime --dir /::/
+        run: cargo nextest run --target wasm32-wasip1 ${{ env.WASM_TEST_PACKAGES }} --locked --no-fail-fast

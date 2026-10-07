@@ -397,14 +397,9 @@ impl Heap {
             }
             ObjectData::MethodHandle(handle) => {
                 let mut current = handle;
-                loop {
-                    match current {
-                        MethodHandleValue::Bound { receiver, target } => {
-                            visit(*receiver);
-                            current = target;
-                        }
-                        _ => break,
-                    }
+                while let MethodHandleValue::Bound { receiver, target } = current {
+                    visit(*receiver);
+                    current = target;
                 }
             }
             ObjectData::String(_)

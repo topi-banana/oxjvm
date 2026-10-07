@@ -361,8 +361,6 @@ fn class_get_name(
     let name = vm.class_name(class).to_string();
     let text = if vm.classes.get(class).kind == oxjvm_vm::ClassKind::Primitive {
         name
-    } else if name.starts_with('[') {
-        name.replace('/', ".")
     } else {
         name.replace('/', ".")
     };
@@ -376,15 +374,12 @@ fn class_get_simple_name(
 ) -> Result<Value, VmError> {
     let class = class_argument(vm, receiver(args))?;
     let name = vm.class_name(class);
-    let simple = if name.starts_with('[') {
-        if name.starts_with("[[") {
-            alloc::format!("{}[]", &name[1..])
+    let simple = if let Some(element) = name.strip_prefix('[') {
+        if let Some(object) = element.strip_prefix('L') {
+            let object = object.strip_suffix(';').unwrap_or(object);
+            alloc::format!("{object}[]")
         } else {
-            match name.as_bytes().get(1) {
-                Some(b'L') => alloc::format!("{}[]", &name[2..name.len() - 1]),
-                Some(_) => alloc::format!("{}[]", &name[1..]),
-                None => name.into(),
-            }
+            alloc::format!("{element}[]")
         }
     } else {
         let base = name.rsplit('/').next().unwrap_or(name);
@@ -2391,7 +2386,7 @@ fn builder_set_length(
     if units.len() < length {
         units.resize(length, 0);
     }
-    builder_store(vm, receiver(args), &units, length.max(0).min(units.len()))
+    builder_store(vm, receiver(args), &units, length.min(units.len()))
         .or_else(|_| builder_store(vm, receiver(args), &units, length))
         .map_err(|_: VmError| VmError::internal("setLength"))?;
     let _ = count;
@@ -2717,7 +2712,6 @@ fn system_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     let print_stream = vm.resolve_class("java/io/PrintStream")?;
     let ctor = vm
         .find_method(print_stream, "<init>", "(I)V")
-        .map(|(class, method)| (class, method))
         .ok_or_else(|| VmError::internal("PrintStream(int) constructor missing"))?;
     for (kind, is_out) in [(1i32, true), (2i32, false)] {
         let stream = vm.new_instance(print_stream)?;

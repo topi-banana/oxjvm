@@ -16,7 +16,7 @@ use crate::{
 // Floating-point kernels
 // -------------------------------------------------------------------------------------------
 
-const LN2_HI: f64 = 6.931_471_805_599_453e-1;
+const LN2_HI: f64 = core::f64::consts::LN_2;
 const LN2_LO: f64 = 1.908_214_929_269_071e-11;
 const INV_LN2: f64 = core::f64::consts::LOG2_E;
 
@@ -187,13 +187,7 @@ pub(crate) fn exp(x: f64) -> f64 {
         return 0.0;
     }
     let k = round_away(x * INV_LN2);
-    let mut r = x - k * LN2_HI - k * LN2_LO;
-    if r < -0.5 {
-        r = -0.5;
-    }
-    if r > 0.5 {
-        r = 0.5;
-    }
+    let r = (x - k * LN2_HI - k * LN2_LO).clamp(-0.5, 0.5);
     let mut term = 1.0;
     let mut sum = 1.0;
     for index in 1..=14 {
@@ -400,14 +394,11 @@ pub(crate) fn rint(x: f64) -> f64 {
     }
     let lower = floor(x);
     let fraction = x - lower;
-    if fraction > 0.5 {
+    let even = (lower / 2.0) - floor(lower / 2.0) == 0.0;
+    if fraction > 0.5 || (fraction == 0.5 && !even) {
         lower + 1.0
-    } else if fraction < 0.5 {
-        lower
-    } else if (lower / 2.0) - floor(lower / 2.0) == 0.0 {
-        lower
     } else {
-        lower + 1.0
+        lower
     }
 }
 

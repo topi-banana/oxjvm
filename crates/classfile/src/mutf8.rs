@@ -146,9 +146,9 @@ pub fn decode_lossy(bytes: &[u8]) -> String {
                     }
                     i += 2;
                 } else if b & 0xF0 == 0xE0 && i + 2 < bytes.len() {
-                    let c = ((u32::from(b & 0x0F) << 12)
+                    let c = (u32::from(b & 0x0F) << 12)
                         | (u32::from(bytes[i + 1] & 0x3F) << 6)
-                        | u32::from(bytes[i + 2] & 0x3F)) as u32;
+                        | u32::from(bytes[i + 2] & 0x3F);
                     if let Some(ch) = char::from_u32(c) {
                         out.push(ch);
                     } else {

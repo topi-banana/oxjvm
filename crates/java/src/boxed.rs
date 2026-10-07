@@ -255,8 +255,8 @@ fn parse_int_10(
 ) -> Result<Value, VmError> {
     let text = string_arg(vm, args[0])?;
     match format::parse_int(&text) {
-        Ok(value) => int(value),
-        Err(()) => Err(vm.throw_new(
+        Some(value) => int(value),
+        None => Err(vm.throw_new(
             "java/lang/NumberFormatException",
             Some(&alloc::format!("For input string: \"{text}\"")),
         )),
@@ -271,8 +271,8 @@ fn parse_int_radix(
     let text = string_arg(vm, args[0])?;
     let radix = int_arg(args, 1);
     match format::parse_int_radix(&text, radix as u32) {
-        Ok(value) => int(value),
-        Err(()) => Err(vm.throw_new(
+        Some(value) => int(value),
+        None => Err(vm.throw_new(
             "java/lang/NumberFormatException",
             Some(&alloc::format!("For input string: \"{text}\"")),
         )),
@@ -430,8 +430,8 @@ const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
         |vm, _, args| {
             let text = string_arg(vm, args[0])?;
             match format::parse_long(&text) {
-                Ok(value) => long(value),
-                Err(()) => Err(vm.throw_new(
+                Some(value) => long(value),
+                None => Err(vm.throw_new(
                     "java/lang/NumberFormatException",
                     Some(&alloc::format!("For input string: \"{text}\"")),
                 )),
@@ -600,7 +600,7 @@ const SHORT_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         |vm, _, args| {
             let text = string_arg(vm, args[0])?;
             match format::parse_int(&text) {
-                Ok(value) if (-32768..=32767).contains(&value) => int(value),
+                Some(value) if (-32768..=32767).contains(&value) => int(value),
                 _ => Err(vm.throw_new(
                     "java/lang/NumberFormatException",
                     Some(&alloc::format!("For input string: \"{text}\"")),
@@ -1046,8 +1046,8 @@ const FLOAT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         |vm, _, args| {
             let text = string_arg(vm, args[0])?;
             match format::parse_float(&text) {
-                Ok(value) => float(value),
-                Err(()) => Err(vm.throw_new(
+                Some(value) => float(value),
+                None => Err(vm.throw_new(
                     "java/lang/NumberFormatException",
                     Some(&alloc::format!("For input string: \"{text}\"")),
                 )),
@@ -1188,8 +1188,8 @@ const DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         |vm, _, args| {
             let text = string_arg(vm, args[0])?;
             match format::parse_double(&text) {
-                Ok(value) => double(value),
-                Err(()) => Err(vm.throw_new(
+                Some(value) => double(value),
+                None => Err(vm.throw_new(
                     "java/lang/NumberFormatException",
                     Some(&alloc::format!("For input string: \"{text}\"")),
                 )),

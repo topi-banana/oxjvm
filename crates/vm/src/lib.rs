@@ -679,10 +679,7 @@ impl<'a> Vm<'a> {
     pub fn throw_new(&mut self, class_name: &str, message: Option<&str>) -> VmError {
         let result = (|| -> Result<Ref, VmError> {
             let class = self.resolve_class(class_name)?;
-            let message_value = match message {
-                Some(text) => Some(self.intern(text)),
-                None => None,
-            };
+            let message_value = message.map(|text| self.intern(text));
             let (constructor_class, constructor) = if message.is_some() {
                 self.find_method(class, "<init>", "(Ljava/lang/String;)V")
             } else {

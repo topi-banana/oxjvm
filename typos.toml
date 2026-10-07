@@ -1,0 +1,11 @@
+# Configuration for `typos` (https://github.com/crate-ci/typos).
+
+[default.extend-words]
+# `ifle` is the JVM bytecode opcode "if less than or equal" (JVMS §6): it appears in the opcode
+# table, in the disassembler, and in the vendored `javac` fixture sources; not a misspelling of
+# "file".
+ifle = "ifle"
+Ifle = "Ifle"
+# `mis` is the prefix in pinned prose ("mis-handles", "mis-read"); not a misspelling of
+# "miss"/"mist".
+mis = "mis"

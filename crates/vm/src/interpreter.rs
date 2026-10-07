@@ -1036,7 +1036,7 @@ impl<'a> Vm<'a> {
                 let value = self.load_constant(class, index)?;
                 self.push(value);
             }
-            0x15 | 0x16 | 0x17 | 0x18 | 0x19 => {
+            0x15..=0x19 => {
                 let index = usize::from(bytes[pc + 1]);
                 let value = self.local(index);
                 self.push(value);
@@ -1633,7 +1633,7 @@ impl<'a> Vm<'a> {
                     fields[slot] = value;
                 }
             }
-            0xb6 | 0xb7 | 0xb8 | 0xb9 => {
+            0xb6..=0xb9 => {
                 let index = u16::from_be_bytes([bytes[pc + 1], bytes[pc + 2]]);
                 if op == 0xb6 {
                     if let Some(outcome) = self.try_polymorphic_handle_invoke(class, index)? {
@@ -1826,8 +1826,7 @@ impl<'a> Vm<'a> {
                 let owner = self
                     .heap
                     .get(reference)
-                    .map(|object| object.monitor.owner)
-                    .flatten();
+                    .and_then(|object| object.monitor.owner);
                 if owner != Some(self.current) {
                     return Err(self.throw_new(
                         "java/lang/IllegalMonitorStateException",
@@ -1839,7 +1838,7 @@ impl<'a> Vm<'a> {
             0xc4 => {
                 let inner = bytes[pc + 1];
                 match inner {
-                    0x15 | 0x16 | 0x17 | 0x18 | 0x19 => {
+                    0x15..=0x19 => {
                         let index = usize::from(u16::from_be_bytes([bytes[pc + 2], bytes[pc + 3]]));
                         let value = self.local(index);
                         self.push(value);

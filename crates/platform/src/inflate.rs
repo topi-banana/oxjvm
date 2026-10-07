@@ -89,9 +89,9 @@ impl Huffman {
         }
         counts[0] = 0;
         let mut left = 1i32;
-        for len in 1..16 {
+        for count in counts.iter().skip(1) {
             left <<= 1;
-            left -= i32::from(counts[len]);
+            left -= i32::from(*count);
             if left < 0 {
                 return Err(InflateError::BadHuffmanCode);
             }

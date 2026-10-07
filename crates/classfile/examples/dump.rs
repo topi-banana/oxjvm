@@ -1,3 +1,4 @@
+//! Dump a class file's methods as hex bytecode (development aid).
 use oxjvm_classfile::{AttributeData, ClassFile};
 fn main() {
     let path = std::env::args().nth(1).unwrap();
