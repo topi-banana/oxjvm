@@ -841,6 +841,7 @@ const ARRAY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
 ];
 
 fn array_list_elements(vm: &Vm<'_>, this: ObjectRef) -> Vec<ObjectRef> {
+    let size = crate::lang::read_int_field(vm, this, "size").max(0) as usize;
     match vm.read_ref_field(
         this,
         vm.class_of(this),
@@ -848,7 +849,11 @@ fn array_list_elements(vm: &Vm<'_>, this: ObjectRef) -> Vec<ObjectRef> {
         "[Ljava/lang/Object;",
     ) {
         Some(array) => match vm.heap.get(array).map(|object| &object.data) {
-            Some(ObjectData::Array(ArrayData::Reference(elements))) => elements.clone(),
+            Some(ObjectData::Array(ArrayData::Reference(elements))) => {
+                let mut elements = elements.clone();
+                elements.truncate(size.min(elements.len()));
+                elements
+            }
             _ => Vec::new(),
         },
         None => Vec::new(),
