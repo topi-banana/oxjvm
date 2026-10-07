@@ -862,14 +862,11 @@ fn array_list_store(
 ) -> Result<(), VmError> {
     let class = vm.class_of(this);
     let (declaring, field) = vm.find_field(class, "elementData", "[Ljava/lang/Object;")?;
-    let array = vm.allocate_object_array(class, elements.len().max(1))?;
     let object_class = vm.resolve_class("java/lang/Object")?;
-    let _ = object_class;
+    let array = vm.allocate_object_array(object_class, elements.len().max(1))?;
     for (index, element) in elements.iter().enumerate() {
         vm.array_set_ref(array, index, *element)?;
     }
-    // The array's component is already Object; reuse it directly.
-    let _ = array;
     vm.set_instance_ref(this, declaring, field, array);
     crate::lang::write_int_field(vm, this, "size", elements.len() as i32);
     Ok(())
