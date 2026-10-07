@@ -5,6 +5,8 @@
 //! roughly one unit in the last place over the ranges tests exercise, which matches the contract
 //! of `Math` (as opposed to `StrictMath`, whose bit-for-bit reproducibility oxjvm does not claim).
 
+use core::cmp::Ordering;
+
 use oxjvm_classfile::flags::*;
 use oxjvm_vm::{Value, Vm, VmError};
 
@@ -75,23 +77,90 @@ pub(crate) fn sqrt(x: f64) -> f64 {
         return x;
     }
     if x < f64::MIN_POSITIVE {
-        // Scale subnormals into the normal range: sqrt(x * 2^1074) * 2^-537.
-        let scaled = x * exp2(1022) * exp2(52);
-        return sqrt(scaled) * exp2(-537);
+        // Scale subnormals into the normal range: sqrt(x * 2^104) * 2^-52.
+        return sqrt(x * exp2(104)) * exp2(-52);
     }
     let bits = x.to_bits();
-    let exponent = ((bits >> 52) & 0x7FF) as i32 - 1023;
-    let mantissa = (bits & ((1u64 << 52) - 1)) | (1u64 << 52);
-    let (mantissa, exponent) = if exponent & 1 == 0 {
-        (mantissa, exponent)
-    } else {
-        (mantissa << 1, exponent - 1)
-    };
-    // isqrt(mantissa << 96) has ~74 significant bits; round half-even to f64.
-    let shift = 96;
-    let root = isqrt_u128((mantissa as u128) << shift);
-    let exponent = exponent - 52 - shift;
-    round_u128_to_f64(root) * exp2(exponent / 2)
+    let mut exponent = ((bits >> 52) & 0x7FF) as i32 - 1023;
+    let mut mantissa = (bits & ((1u64 << 52) - 1)) | (1u64 << 52);
+    if exponent & 1 != 0 {
+        mantissa <<= 1;
+        exponent -= 1;
+    }
+    // `floor(sqrt(mantissa * 2^74))` carries 63 significant bits, so the estimate below is
+    // within 2^-11 ulp of the true root. Comparing `x` against the exact midpoints of the
+    // adjacent doubles then resolves the rounding (round-half-even) without ever needing
+    // more precision than a u128.
+    let root = isqrt_u128((mantissa as u128) << 74);
+    let estimate = round_u128_to_f64(root) * exp2((exponent - 126) / 2);
+    let value = (mantissa as u128, exponent - 52);
+    let mut result = estimate;
+    let (lower, lower_exponent) = midpoint_down(estimate);
+    match compare_scaled(value.0, value.1, lower * lower, lower_exponent * 2) {
+        Ordering::Less => result = next_down(estimate),
+        Ordering::Equal if estimate.to_bits() & 1 == 1 => result = next_down(estimate),
+        Ordering::Equal | Ordering::Greater => {
+            let (upper, upper_exponent) = midpoint_up(estimate);
+            match compare_scaled(value.0, value.1, upper * upper, upper_exponent * 2) {
+                Ordering::Greater => result = next_up(estimate),
+                Ordering::Equal if estimate.to_bits() & 1 == 1 => result = next_up(estimate),
+                _ => {}
+            }
+        }
+    }
+    result
+}
+
+/// The exact value of a positive normal double as `(significand, exponent)`, i.e.
+/// `significand * 2^exponent`.
+fn decompose(x: f64) -> (u128, i32) {
+    let bits = x.to_bits();
+    let exponent = (((bits >> 52) & 0x7FF) as i32) - 1075;
+    let significand = (bits & ((1u64 << 52) - 1)) | (1u64 << 52);
+    (significand as u128, exponent)
+}
+
+/// The exact midpoint between `a` and `b` as `(significand, exponent)`.
+///
+/// `b` must be an immediate neighbour of `a`, so the aligned sum fits comfortably in a `u128`.
+fn midpoint(a: f64, b: f64) -> (u128, i32) {
+    let (a_significand, a_exponent) = decompose(a);
+    let (b_significand, b_exponent) = decompose(b);
+    let common = a_exponent.min(b_exponent);
+    let sum = (a_significand << (a_exponent - common) as u32)
+        + (b_significand << (b_exponent - common) as u32);
+    (sum, common - 1)
+}
+
+/// The exact midpoint between `x` and the next double above it.
+fn midpoint_up(x: f64) -> (u128, i32) {
+    midpoint(x, next_up(x))
+}
+
+/// The exact midpoint between the next double below `x` and `x`.
+fn midpoint_down(x: f64) -> (u128, i32) {
+    midpoint(next_down(x), x)
+}
+
+/// The next positive double above `x`.
+fn next_up(x: f64) -> f64 {
+    f64::from_bits(x.to_bits() + 1)
+}
+
+/// The next positive double below `x`.
+fn next_down(x: f64) -> f64 {
+    f64::from_bits(x.to_bits() - 1)
+}
+
+/// Order two positive values given as `significand * 2^exponent`.
+fn compare_scaled(a: u128, a_exponent: i32, b: u128, b_exponent: i32) -> Ordering {
+    let a_top = 128 - a.leading_zeros() as i32 + a_exponent;
+    let b_top = 128 - b.leading_zeros() as i32 + b_exponent;
+    if a_top != b_top {
+        return a_top.cmp(&b_top);
+    }
+    let common = a_exponent.min(b_exponent);
+    (a << (a_exponent - common) as u32).cmp(&(b << (b_exponent - common) as u32))
 }
 
 fn round_away(x: f64) -> f64 {
@@ -882,3 +951,76 @@ pub(crate) const STRICT_MATH: oxjvm_vm::NativeClass = class(
     &STRICT_MATH_METHODS,
     None,
 );
+
+#[cfg(test)]
+mod tests {
+    use super::sqrt;
+
+    #[test]
+    fn sqrt_matches_ieee_reference() {
+        // (input bits, correctly rounded result bits); results cross-checked against
+        // `Math.sqrt` on OpenJDK 25 (Temurin 25.0.4.1).
+        let cases: [(u64, u64); 29] = [
+            (0x0000_0000_0000_0000, 0x0000_0000_0000_0000), // +0.0
+            (0x8000_0000_0000_0000, 0x8000_0000_0000_0000), // -0.0
+            (0x3ff0_0000_0000_0000, 0x3ff0_0000_0000_0000), // 1.0
+            (0x4000_0000_0000_0000, 0x3ff6_a09e_667f_3bcd), // 2.0
+            (0x4008_0000_0000_0000, 0x3ffb_b67a_e858_4caa), // 3.0
+            (0x4010_0000_0000_0000, 0x4000_0000_0000_0000), // 4.0
+            (0x4014_0000_0000_0000, 0x4001_e377_9b97_f4a8), // 5.0
+            (0x3fd0_0000_0000_0000, 0x3fe0_0000_0000_0000), // 0.25
+            (0x4202_a05f_2000_0000, 0x40f8_6a00_0000_0000), // 1.0e10
+            (0x3ddb_7cdf_d9d7_bdbb, 0x3ee4_f8b5_88e3_68f1), // 1.0e-10
+            (0x0000_0000_0000_0001, 0x1e60_0000_0000_0000), // MIN_VALUE (subnormal)
+            (0x0000_0000_0000_0002, 0x1e66_a09e_667f_3bcd), // 2 * MIN_VALUE
+            (0x0010_0000_0000_0000, 0x2000_0000_0000_0000), // MIN_POSITIVE
+            (0x7fef_ffff_ffff_ffff, 0x5fef_ffff_ffff_ffff), // MAX_VALUE
+            (0x4000_0000_0000_0001, 0x3ff6_a09e_667f_3bcd), // just above 2
+            (0x3ff0_0000_0000_0001, 0x3ff0_0000_0000_0000), // just above 1
+            (0x3fef_ffff_ffff_ffff, 0x3fef_ffff_ffff_ffff), // just below 1
+            (0x4330_0000_0000_0000, 0x4190_0000_0000_0000), // 2^52
+            (0x4330_0000_0000_0001, 0x4190_0000_0000_0000),
+            (0x4330_0000_8000_0000, 0x4190_0000_3fff_ff80),
+            (0x40bf_f000_0000_0000, 0x4056_9af5_89b3_5963),
+            (0x40f8_69f0_0000_0000, 0x4073_c39e_7407_cea8),
+            (0x4080_0000_0000_0001, 0x4036_a09e_667f_3bcd),
+            (0x3ff6_a09e_667f_3bcd, 0x3ff3_06fe_0a31_b715),
+            (0x3fe6_a09e_667f_3bcd, 0x3fea_e89f_995a_d3ae),
+            (0x0123_4567_89ab_cdef, 0x2088_d53c_68b0_12b2),
+            (0x0fed_cba9_8765_4321, 0x27ee_e0cb_ec79_2028),
+            (0x7ff0_0000_0000_0000, 0x7ff0_0000_0000_0000), // +infinity
+            (0xbff0_0000_0000_0000, 0x7ff8_0000_0000_0000), // -1.0 -> NaN
+        ];
+        for (input, expected) in cases {
+            let actual = sqrt(f64::from_bits(input));
+            assert_eq!(
+                actual.to_bits(),
+                expected,
+                "sqrt({input:#018x}) = {:#018x}, expected {expected:#018x}",
+                actual.to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn sqrt_matches_hardware_sqrt_on_random_inputs() {
+        // The test host's `f64::sqrt` is the IEEE-754 hardware instruction, so it provides
+        // an independent oracle for a wide sweep of normal and subnormal inputs.
+        let mut state = 0x1234_5678_9abc_def0_u64;
+        for _ in 0..100_000 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let x = f64::from_bits(state);
+            if x.is_nan() || x < 0.0 || x.is_infinite() {
+                continue;
+            }
+            assert_eq!(
+                sqrt(x).to_bits(),
+                x.sqrt().to_bits(),
+                "sqrt({:#018x}) disagrees",
+                x.to_bits()
+            );
+        }
+    }
+}
