@@ -345,6 +345,9 @@ impl Heap {
     pub fn collect(&mut self, roots: impl Iterator<Item = ObjectRef>) {
         let mut work: Vec<ObjectRef> = roots.filter(|reference| !reference.is_null()).collect();
         while let Some(reference) = work.pop() {
+            if reference.is_null() {
+                continue;
+            }
             let Some(slot) = self.objects.get_mut(reference.slot()) else {
                 continue;
             };

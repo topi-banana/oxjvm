@@ -3622,6 +3622,3 @@ pub(crate) const STACK_TRACE_ELEMENT: oxjvm_vm::NativeClass = class(
     &STACK_TRACE_ELEMENT_METHODS,
     None,
 );
-
-/// The class-field helper used by native classes that need a declared field list.
-pub(crate) const NO_INTERFACES: &[&str] = &[];

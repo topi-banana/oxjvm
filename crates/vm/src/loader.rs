@@ -1218,7 +1218,7 @@ impl<'a> Vm<'a> {
     /// # Errors
     ///
     /// Throws `BootstrapMethodError` for unsupported bootstrap methods.
-    pub fn resolve_call_site(
+    pub(crate) fn resolve_call_site(
         &mut self,
         class: ClassId,
         cp_index: u16,

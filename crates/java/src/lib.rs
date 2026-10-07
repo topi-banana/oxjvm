@@ -20,8 +20,7 @@ pub(crate) mod math;
 pub(crate) mod throwable;
 pub(crate) mod util;
 
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
+use alloc::string::String;
 
 use oxjvm_vm::{
     NativeClass, NativeClinit, NativeConstant, NativeFieldDef, NativeFn, NativeMethodDef,
@@ -305,26 +304,7 @@ pub(crate) fn unsupported(vm: &mut Vm<'_>, what: &str) -> VmError {
     )
 }
 
-/// Whether two references are identical (the `if_acmpeq` rule).
-pub(crate) fn same_reference(a: ObjectRef, b: ObjectRef) -> bool {
-    a == b
-}
-
 /// The dotted binary name of a class.
 pub(crate) fn binary_name(vm: &Vm<'_>, class: oxjvm_vm::ClassId) -> String {
     vm.class_name(class).replace('/', ".")
-}
-
-/// Push a value into an `Object[]` allocation helper.
-pub(crate) fn make_object_array(
-    vm: &mut Vm<'_>,
-    component: &str,
-    values: Vec<Value>,
-) -> Result<ObjectRef, VmError> {
-    let class = vm.resolve_class(component)?;
-    let array = vm.allocate_object_array(class, values.len())?;
-    for (index, value) in values.into_iter().enumerate() {
-        vm.array_set(array, index as i32, value, true)?;
-    }
-    Ok(array)
 }

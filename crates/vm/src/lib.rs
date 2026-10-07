@@ -58,6 +58,7 @@ use crate::value::ObjectRef as Ref;
 
 /// A resolved `invokedynamic` call site.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) enum CallSite {
     /// A string-concatenation site.
     Concat {
@@ -84,6 +85,7 @@ pub(crate) enum CallSite {
 
 /// A string-concat constant.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) enum ConcatConstant {
     /// A string constant.
     Str(String),
@@ -101,6 +103,7 @@ pub(crate) enum ConcatConstant {
 
 /// The definition of a dynamically created lambda class.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) struct LambdaDef {
     /// The target of the lambda body.
     pub target: MethodHandleValue,
@@ -208,10 +211,6 @@ pub struct Vm<'a> {
     pub(crate) primitive_classes: BTreeMap<oxjvm_classfile::BaseType, ClassId>,
     /// Whether the boot sequence has completed.
     pub(crate) booted: bool,
-    /// Optional instruction budget for `run` (0 = unlimited).
-    pub(crate) step_limit: u64,
-    /// Instructions executed since the VM started.
-    pub(crate) steps: u64,
 }
 
 impl<'a> Vm<'a> {
@@ -250,8 +249,6 @@ impl<'a> Vm<'a> {
             trace: false,
             primitive_classes: BTreeMap::new(),
             booted: false,
-            step_limit: 0,
-            steps: 0,
         };
         vm.boot();
         vm
@@ -930,9 +927,4 @@ impl Value {
     pub const fn slot_count(value: &Value) -> u16 {
         value.slots()
     }
-}
-
-/// The number of operand-stack slots a descriptor's values occupy.
-pub(crate) fn descriptor_slots(descriptor: &str) -> u16 {
-    oxjvm_classfile::descriptor::parameter_slot_count(descriptor)
 }

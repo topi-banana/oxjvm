@@ -68,12 +68,6 @@ struct State {
     locals: Vec<Cat>,
 }
 
-impl State {
-    fn stack_slots(&self) -> usize {
-        self.stack.iter().map(|cat| usize::from(cat.slots())).sum()
-    }
-}
-
 /// Verify one class file.
 ///
 /// # Errors

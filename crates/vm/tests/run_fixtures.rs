@@ -675,3 +675,52 @@ fn catches_native_number_format_exceptions() {
         -1
     );
 }
+
+#[test]
+fn collects_unreachable_objects_and_keeps_roots() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/Locals").expect("Locals");
+    let rooted = vm.new_instance(class).expect("rooted");
+    for _ in 0..64 {
+        let _ = vm.new_instance(class).expect("temporary");
+    }
+    let before = vm.heap.live;
+    vm.gc();
+    assert!(vm.heap.live < before, "gc should reclaim temporaries");
+    assert!(
+        vm.heap.get(rooted).is_none(),
+        "references held only by Rust code are not roots; precise collection may reap them"
+    );
+    // Explicitly protect a root and verify it survives.
+    let protected = vm.new_instance(class).expect("protected");
+    vm.protect(protected);
+    vm.gc();
+    assert!(vm.heap.get(protected).is_some());
+    vm.unprotect(protected);
+}
+
+#[test]
+fn rejects_corrupted_bytecode() {
+    let mut bytes = build_div_class();
+    // `div` code begins with `iload_1 iload_2 idiv ireturn`; replace `ireturn` with an
+    // undefined opcode and the verifier must refuse the class.
+    let position = bytes
+        .windows(4)
+        .rposition(|window| window == [0x1b, 0x1c, 0x6c, 0xac])
+        .expect("div code");
+    bytes[position + 3] = 0xcb;
+    let mut host = FixtureHost::new();
+    host.classes.insert("Div", bytes);
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let error = vm.resolve_class("Div").expect_err("must be rejected");
+    match error {
+        VmError::InvalidCode { message, .. } => {
+            assert!(
+                message.contains("invalid"),
+                "unexpected verifier message: {message}"
+            );
+        }
+        other => panic!("expected InvalidCode, got {other:?}"),
+    }
+}

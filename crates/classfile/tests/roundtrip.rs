@@ -116,3 +116,28 @@ fn decodes_every_instruction_of_every_fixture() {
         }
     }
 }
+
+#[test]
+fn modified_utf8_round_trips_every_shape() {
+    use oxjvm_classfile::mutf8::{decode, encode};
+    let cases = [
+        "",
+        "ascii",
+        "null\u{0000}inside",
+        "日本語",
+        "emoji 😀 works",
+        "\u{FFFF}",
+        "\u{10000}",
+        "mixed: a\u{0000}日😀",
+    ];
+    for text in cases {
+        let bytes = encode(text);
+        let decoded = decode(&bytes, 0).expect("decode");
+        assert_eq!(decoded, text, "{text:?}");
+        assert_eq!(encode(&decoded), bytes, "{text:?} re-encode");
+    }
+    // A lone NUL byte is not valid modified UTF-8.
+    assert!(decode(&[0x00], 0).is_err());
+    // A lone surrogate is not representable.
+    assert!(decode(&[0xED, 0xA0, 0x80], 0).is_err());
+}

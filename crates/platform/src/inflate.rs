@@ -88,10 +88,8 @@ impl Huffman {
             counts[usize::from(len)] += 1;
         }
         counts[0] = 0;
-        let mut total = 0i32;
         let mut left = 1i32;
         for len in 1..16 {
-            total += i32::from(counts[len]);
             left <<= 1;
             left -= i32::from(counts[len]);
             if left < 0 {
