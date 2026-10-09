@@ -60,6 +60,11 @@ javac -parameters -g -d out jals-classpath/tests/fixtures/src/InterfaceCalls.jav
 cp out/demo/InterfaceCalls.class out/demo/UnitCounter.class out/demo/DoubleScaler.class \
    out/demo/LongSummer.class jals-classpath/tests/fixtures/
 
+# ClassLiterals (ldc of a class literal: <clinit>, a method body, a JDK class, and an array
+# class) — likewise add --release 25 on a JDK newer than 25:
+javac -parameters -g -d out jals-classpath/tests/fixtures/src/ClassLiterals.java
+cp out/demo/ClassLiterals.class jals-classpath/tests/fixtures/
+
 # Hierarchy evolution: compile the client and all v1 supertypes, then recompile only the two evolved
 # v2 supertypes against v1. HierarchyEvolution.class always remains the old v1 client.
 mkdir -p jals-classpath/tests/fixtures/hierarchy-evolution/v1
@@ -111,6 +116,7 @@ package, no debug info) and its source is not committed.
 | `SystemProperties.class` | `src/SystemProperties.java` | Property semantics: the two-argument `System.getProperty` overload and its null paths (a defined property, a String default, a `null` default, the one-argument overload's `null` result, and a `null` key → `NullPointerException`), plus `Boolean.getBoolean`/`Boolean.parseBoolean` (`"true"` case-insensitively, missing or other values false, `null` text false, a `null` key throws) |
 | `LongBoxing.class` | `src/LongBoxing.java` | `Long.valueOf(String)` and `Long.parseLong`: decimal parsing with signs and the `long` extremes, the boxed object's class and value (checked via auto-unboxing), invalid input (`NumberFormatException`), and a `null` string (`NumberFormatException`, "Cannot parse null string") |
 | `InterfaceCalls.class` (+ `UnitCounter`, `DoubleScaler`, `LongSummer`) | `src/InterfaceCalls.java` | The `invokeinterface` count operand across receiver-only (`()I` → 1), category-2 (`(D)D` → 3), and two category-2 arguments (`(JJ)J` → 5), with dispatch through all three interfaces |
+| `ClassLiterals.class` | `src/ClassLiterals.java` | `ldc` of a class literal (the constant holds a Utf8 name index): a literal in `<clinit>`, one in a method body, a JDK class (`String`), and an array class (`int[].class` → `[I`) |
 | `hierarchy-evolution/v1/evolution/*.class` | `src/hierarchy-evolution/v1/HierarchyEvolution.java` | An old client with two legal interface-super calls, a shared-default diamond, and its complete original hierarchy |
 | `hierarchy-evolution/v2/evolution/HierarchyBase.class` | `src/hierarchy-evolution/v2/HierarchyBase.java` | Evolved direct superclass that now implements the qualified interface, making the old client's qualifier redundant under JLS 15.12.1 |
 | `hierarchy-evolution/v2/evolution/HierarchyRight.class` | `src/hierarchy-evolution/v2/HierarchyRight.java` | Evolved direct superinterface that contributes a distinct override of the selected ancestor default, triggering JLS 15.12.3 |

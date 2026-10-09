@@ -725,12 +725,12 @@ impl<'a> Vm<'a> {
                     })?;
                 Value::Ref(self.intern(&text))
             }
-            CpInfo::Class(class_index) => {
+            CpInfo::Class(name_index) => {
                 let name = self
                     .classes
                     .get(class)
                     .constant_pool
-                    .class_name(class_index)
+                    .utf8(name_index)
                     .map(str::to_string)
                     .map_err(|error| {
                         VmError::invalid_code(
