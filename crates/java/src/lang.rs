@@ -2674,7 +2674,7 @@ fn system_class(vm: &mut Vm<'_>) -> Result<ClassId, VmError> {
 }
 
 /// Looks up a system property: the VM's well-known defaults first, then the host.
-fn system_property(vm: &mut Vm<'_>, key: &str) -> Option<String> {
+pub(crate) fn system_property(vm: &mut Vm<'_>, key: &str) -> Option<String> {
     match key {
         "java.version" | "java.specification.version" => Some("17".to_string()),
         "java.vm.name" => Some("oxjvm".to_string()),

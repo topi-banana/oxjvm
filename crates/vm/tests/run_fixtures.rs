@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use oxjvm_classfile::attribute::{Attribute, AttributeData, CodeAttribute, ExceptionHandler};
 use oxjvm_classfile::{ClassFile, ConstantPool, CpInfo, FieldInfo, MethodInfo};
 use oxjvm_platform::{Host, MemoryClasses, Stream};
-use oxjvm_vm::{ArrayComponent, Value, Vm, VmError};
+use oxjvm_vm::{ArrayComponent, ObjectRef, Value, Vm, VmError};
 
 /// A host holding every fixture class plus captured standard output.
 #[derive(Default)]
@@ -18,6 +18,7 @@ struct FixtureHost {
     classes: MemoryClasses,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
+    properties: std::collections::BTreeMap<String, String>,
 }
 
 impl FixtureHost {
@@ -53,6 +54,10 @@ impl Host for FixtureHost {
 
     fn nano_time(&mut self) -> i64 {
         1_700_000_000_000_000_000
+    }
+
+    fn property(&mut self, key: &str) -> Option<String> {
+        self.properties.get(key).cloned()
     }
 }
 
@@ -732,6 +737,78 @@ fn defaults_system_properties() {
         .find_method(class, "nullKey", "()Ljava/lang/String;")
         .expect("nullKey");
     let result = vm.invoke_method(declaring, index, Vec::new());
+    let Err(error) = result else {
+        panic!("expected a Java exception")
+    };
+    let VmError::Thrown(exception) = error else {
+        panic!("expected a Java exception");
+    };
+    let thrown = vm.class_of(exception);
+    assert_eq!(vm.class_name(thrown), "java/lang/NullPointerException");
+}
+
+#[test]
+fn parses_boolean_system_properties() {
+    let mut host = fixture_host();
+    for (key, value) in [
+        ("flag.true", "true"),
+        ("flag.mixed", "TrUe"),
+        ("flag.false", "false"),
+        ("flag.other", "yes"),
+        ("flag.empty", ""),
+    ] {
+        host.properties.insert(key.to_string(), value.to_string());
+    }
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm
+        .resolve_class("demo/SystemProperties")
+        .expect("SystemProperties");
+
+    let (declaring, get_boolean) = vm
+        .find_method(class, "getBoolean", "(Ljava/lang/String;)Z")
+        .expect("getBoolean");
+    for (key, expected) in [
+        ("flag.true", 1),
+        ("flag.mixed", 1),
+        ("flag.false", 0),
+        ("flag.other", 0),
+        ("flag.empty", 0),
+        ("flag.missing", 0),
+        // A property the VM defines, but whose value is not `"true"`.
+        ("java.vm.name", 0),
+    ] {
+        let argument = vm.make_string(key).expect("argument");
+        let value = vm
+            .invoke_method(declaring, get_boolean, vec![Value::Ref(argument)])
+            .expect("getBoolean");
+        assert_eq!(value.as_int(), expected, "{key}");
+    }
+
+    let (declaring, parse_boolean) = vm
+        .find_method(class, "parseBoolean", "(Ljava/lang/String;)Z")
+        .expect("parseBoolean");
+    for (text, expected) in [
+        (Some("true"), 1),
+        (Some("TRUE"), 1),
+        (Some("false"), 0),
+        (Some(""), 0),
+        (None, 0),
+    ] {
+        let argument = match text {
+            Some(text) => Value::Ref(vm.make_string(text).expect("argument")),
+            None => Value::Ref(ObjectRef::NULL),
+        };
+        let value = vm
+            .invoke_method(declaring, parse_boolean, vec![argument])
+            .expect("parseBoolean");
+        assert_eq!(value.as_int(), expected, "{text:?}");
+    }
+
+    // A null key throws NullPointerException.
+    let (declaring, null_key) = vm
+        .find_method(class, "getBooleanNullKey", "()Z")
+        .expect("getBooleanNullKey");
+    let result = vm.invoke_method(declaring, null_key, Vec::new());
     let Err(error) = result else {
         panic!("expected a Java exception")
     };

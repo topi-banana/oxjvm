@@ -720,7 +720,7 @@ pub(crate) const BYTE: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const BOOLEAN_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const BOOLEAN_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method("<init>", "(Z)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), i32::from(bool_arg(args, 1)));
         void()
@@ -757,10 +757,13 @@ const BOOLEAN_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         "parseBoolean",
         "(Ljava/lang/String;)Z",
         ACC_PUBLIC | ACC_STATIC,
-        |_, _, args| {
-            let _value = args[0].as_ref();
-            boolean(false)
-        },
+        |vm, _, args| boolean(parse_boolean(vm.string_value(ref_arg(args, 0)).as_deref())),
+    ),
+    method(
+        "getBoolean",
+        "(Ljava/lang/String;)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        boolean_get_boolean,
     ),
     method(
         "valueOf",
@@ -815,6 +818,23 @@ pub(crate) const BOOLEAN: oxjvm_vm::NativeClass = class(
     &BOOLEAN_METHODS,
     None,
 );
+
+/// `Boolean.parseBoolean`: true only for `"true"` in any case; a null string is false.
+fn parse_boolean(text: Option<&str>) -> bool {
+    text.is_some_and(|value| value.eq_ignore_ascii_case("true"))
+}
+
+/// `Boolean.getBoolean`: parses `System.getProperty(name)`, so a null key throws.
+fn boolean_get_boolean(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let key = string_arg(vm, args[0])?;
+    boolean(parse_boolean(
+        crate::lang::system_property(vm, &key).as_deref(),
+    ))
+}
 
 const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method("<init>", "(C)V", ACC_PUBLIC, |vm, _, args| {

@@ -1,10 +1,9 @@
 package demo;
 
-// Provenance for SystemProperties.class — exercises the two-argument `System.getProperty`
-// overload: a property the VM defines, a missing property with a String default, a missing
-// property with a null default, the one-argument overload's null result, and a null key (the NPE
-// path). Compiled with `-parameters -g --release 25` (class-file major 69) so the fixture parses
-// on VMs that cap at Java 26:
+// Provenance for SystemProperties.class — exercises system-property semantics: the two-argument
+// `System.getProperty` overload with its null paths, and `Boolean.getBoolean`/`Boolean.parseBoolean`,
+// which interpret a property value as a boolean. Compiled with `-parameters -g --release 25`
+// (class-file major 69) so the fixture parses on VMs that cap at Java 26:
 //     javac -parameters -g --release 25 -d out jals-classpath/tests/fixtures/src/SystemProperties.java
 //     cp out/demo/SystemProperties.class jals-classpath/tests/fixtures/
 public class SystemProperties {
@@ -31,5 +30,20 @@ public class SystemProperties {
     // A null key throws NullPointerException in both overloads.
     public static String nullKey() {
         return System.getProperty(null, "fallback");
+    }
+
+    // `Boolean.getBoolean` parses the system property with this name.
+    public static boolean getBoolean(String key) {
+        return Boolean.getBoolean(key);
+    }
+
+    // A null key throws NullPointerException, just like System.getProperty.
+    public static boolean getBooleanNullKey() {
+        return Boolean.getBoolean(null);
+    }
+
+    // `Boolean.parseBoolean` is case-insensitive and accepts null (false).
+    public static boolean parseBoolean(String value) {
+        return Boolean.parseBoolean(value);
     }
 }
