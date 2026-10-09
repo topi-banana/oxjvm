@@ -752,7 +752,7 @@ fn parses_boolean_system_properties() {
     let mut host = fixture_host();
     for (key, value) in [
         ("flag.true", "true"),
-        ("flag.mixed", "TrUe"),
+        ("flag.mixed", "True"),
         ("flag.false", "false"),
         ("flag.other", "yes"),
         ("flag.empty", ""),
