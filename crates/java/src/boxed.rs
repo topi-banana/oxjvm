@@ -370,7 +370,7 @@ pub(crate) const INTEGER: oxjvm_vm::NativeClass = class(
 // Long
 // -------------------------------------------------------------------------------------------
 
-const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method("<init>", "(J)V", ACC_PUBLIC, |vm, _, args| {
         write_value_long(vm, receiver(args), long_arg(args, 1));
         void()
@@ -427,26 +427,21 @@ const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
         "parseLong",
         "(Ljava/lang/String;)J",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| {
-            let text = string_arg(vm, args[0])?;
-            match format::parse_long(&text) {
-                Some(value) => long(value),
-                None => Err(vm.throw_new(
-                    "java/lang/NumberFormatException",
-                    Some(&alloc::format!("For input string: \"{text}\"")),
-                )),
-            }
-        },
+        |vm, _, args| long(parse_long_arg(vm, args[0])?),
     ),
     method(
         "valueOf",
         "(J)Ljava/lang/Long;",
         ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| boxed_long(vm, long_arg(args, 0)),
+    ),
+    method(
+        "valueOf",
+        "(Ljava/lang/String;)Ljava/lang/Long;",
+        ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            let class = vm.resolve_class("java/lang/Long")?;
-            let instance = vm.new_instance(class)?;
-            write_value_long(vm, instance, long_arg(args, 0));
-            object(instance)
+            let value = parse_long_arg(vm, args[0])?;
+            boxed_long(vm, value)
         },
     ),
     method("compare", "(JJ)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
@@ -512,6 +507,32 @@ pub(crate) fn write_value_long(vm: &mut Vm<'_>, object: ObjectRef, value: i64) {
             }
         }
     }
+}
+
+/// Parses a `String` long argument like the JDK: a null string is a
+/// `NumberFormatException` ("Cannot parse null string"), not an NPE.
+fn parse_long_arg(vm: &mut Vm<'_>, value: Value) -> Result<i64, VmError> {
+    let Some(text) = vm.string_value(value.as_ref()) else {
+        return Err(vm.throw_new(
+            "java/lang/NumberFormatException",
+            Some("Cannot parse null string"),
+        ));
+    };
+    match format::parse_long(&text) {
+        Some(parsed) => Ok(parsed),
+        None => Err(vm.throw_new(
+            "java/lang/NumberFormatException",
+            Some(&alloc::format!("For input string: \"{text}\"")),
+        )),
+    }
+}
+
+/// Boxes a `long` into a fresh `java/lang/Long`.
+fn boxed_long(vm: &mut Vm<'_>, value: i64) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/lang/Long")?;
+    let instance = vm.new_instance(class)?;
+    write_value_long(vm, instance, value);
+    object(instance)
 }
 
 fn long_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {

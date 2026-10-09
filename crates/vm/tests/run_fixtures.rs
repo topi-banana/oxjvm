@@ -820,6 +820,68 @@ fn parses_boolean_system_properties() {
 }
 
 #[test]
+fn boxes_longs_from_strings() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/LongBoxing").expect("LongBoxing");
+
+    let (declaring, parse) = vm
+        .find_method(class, "parse", "(Ljava/lang/String;)J")
+        .expect("parse");
+    for (text, expected) in [
+        ("0", 0i64),
+        ("42", 42),
+        ("+7", 7),
+        ("-1", -1),
+        ("9223372036854775807", i64::MAX),
+        ("-9223372036854775808", i64::MIN),
+    ] {
+        let argument = vm.make_string(text).expect("argument");
+        let value = vm
+            .invoke_method(declaring, parse, vec![Value::Ref(argument)])
+            .expect("parse");
+        assert_eq!(value.as_long(), expected, "{text}");
+    }
+
+    // The boxed result is a java/lang/Long carrying the parsed value.
+    let (declaring, boxed) = vm
+        .find_method(class, "boxed", "(Ljava/lang/String;)Ljava/lang/Long;")
+        .expect("boxed");
+    let argument = vm.make_string("7").expect("argument");
+    let value = vm
+        .invoke_method(declaring, boxed, vec![Value::Ref(argument)])
+        .expect("boxed");
+    let object = value.as_ref();
+    let object_class = vm.class_of(object);
+    assert_eq!(vm.class_name(object_class), "java/lang/Long");
+    let (declaring, long_value) = vm
+        .find_method(object_class, "longValue", "()J")
+        .expect("longValue");
+    let unboxed = vm
+        .invoke_method(declaring, long_value, vec![Value::Ref(object)])
+        .expect("longValue");
+    assert_eq!(unboxed.as_long(), 7);
+
+    // Invalid input and a null string throw NumberFormatException, as in the JDK.
+    for method in ["invalid", "nullText", "parseNull"] {
+        let (declaring, index) = vm.find_method(class, method, "()J").expect(method);
+        let result = vm.invoke_method(declaring, index, Vec::new());
+        let Err(error) = result else {
+            panic!("expected a Java exception")
+        };
+        let VmError::Thrown(exception) = error else {
+            panic!("expected a Java exception");
+        };
+        let thrown = vm.class_of(exception);
+        assert_eq!(
+            vm.class_name(thrown),
+            "java/lang/NumberFormatException",
+            "{method}"
+        );
+    }
+}
+
+#[test]
 fn rejects_corrupted_bytecode() {
     let mut bytes = build_div_class();
     // `div` code begins with `iload_1 iload_2 idiv ireturn`; replace `ireturn` with an
