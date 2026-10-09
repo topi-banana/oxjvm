@@ -40,7 +40,7 @@ fn usage() {
     println!(
         "oxjvm {}\n\
          Usage:\n\
-         \x20 oxjvm run [-cp <path>] <MainClass> [args...]\n\
+         \x20 oxjvm run [-cp <path>] [-D name=value]... <MainClass> [args...]\n\
          \x20 oxjvm disasm <file.class>\n\
          \x20 oxjvm inspect <file.class>\n\
          \x20 oxjvm version",
@@ -55,7 +55,7 @@ struct StdHost {
 }
 
 impl StdHost {
-    fn new(classpath: Vec<PathBuf>) -> Self {
+    fn new(classpath: Vec<PathBuf>, overrides: &[(String, String)]) -> Self {
         let mut properties = BTreeMap::new();
         properties.insert("java.version".into(), "17".into());
         properties.insert("java.vm.name".into(), "oxjvm".into());
@@ -73,7 +73,15 @@ impl StdHost {
                 .map(|path| path.display().to_string())
                 .unwrap_or_default(),
         );
-        properties.insert("java.class.path".into(), String::new());
+        properties.insert(
+            "java.class.path".into(),
+            std::env::join_paths(&classpath)
+                .map(|paths| paths.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        );
+        for (key, value) in overrides {
+            properties.insert(key.clone(), value.clone());
+        }
         Self {
             classpath,
             properties,
@@ -170,6 +178,7 @@ impl Host for StdHost {
 
 fn run(args: &[String]) -> ExitCode {
     let mut classpath: Vec<PathBuf> = Vec::new();
+    let mut overrides: Vec<(String, String)> = Vec::new();
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -180,6 +189,12 @@ fn run(args: &[String]) -> ExitCode {
                     return ExitCode::FAILURE;
                 };
                 classpath.extend(std::env::split_paths(path));
+                index += 1;
+            }
+            other if other.starts_with("-D") => {
+                let body = other.strip_prefix("-D").unwrap_or_default();
+                let (key, value) = body.split_once('=').unwrap_or((body, ""));
+                overrides.push((key.to_string(), value.to_string()));
                 index += 1;
             }
             other if !other.starts_with('-') => break,
@@ -197,7 +212,7 @@ fn run(args: &[String]) -> ExitCode {
         classpath.push(PathBuf::from("."));
     }
     let program_args: Vec<String> = args[index + 1..].to_vec();
-    let mut host = StdHost::new(classpath);
+    let mut host = StdHost::new(classpath, &overrides);
     let mut vm = Vm::new(&mut host, oxjvm_java::natives());
     let argument_refs: Vec<&str> = program_args.iter().map(String::as_str).collect();
     match vm.run_main(main_class, &argument_refs) {
