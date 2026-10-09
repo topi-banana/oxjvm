@@ -2556,7 +2556,7 @@ pub(crate) const STRING_BUFFER: oxjvm_vm::NativeClass = class(
 // System / Runtime
 // -------------------------------------------------------------------------------------------
 
-const SYSTEM_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+const SYSTEM_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method(
         "currentTimeMillis",
         "()J",
@@ -2594,6 +2594,12 @@ const SYSTEM_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
         "(Ljava/lang/String;)Ljava/lang/String;",
         ACC_PUBLIC | ACC_STATIC,
         system_get_property,
+    ),
+    method(
+        "getProperty",
+        "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        system_get_property_or_default,
     ),
     method(
         "setProperty",
@@ -2667,13 +2673,9 @@ fn system_class(vm: &mut Vm<'_>) -> Result<ClassId, VmError> {
     vm.resolve_class("java/lang/System")
 }
 
-fn system_get_property(
-    vm: &mut Vm<'_>,
-    _c: oxjvm_vm::NativeContext,
-    args: &[Value],
-) -> Result<Value, VmError> {
-    let key = string_arg(vm, args[0])?;
-    let value = match key.as_str() {
+/// Looks up a system property: the VM's well-known defaults first, then the host.
+fn system_property(vm: &mut Vm<'_>, key: &str) -> Option<String> {
+    match key {
         "java.version" | "java.specification.version" => Some("17".to_string()),
         "java.vm.name" => Some("oxjvm".to_string()),
         "java.vm.version" => Some("0.1.0".to_string()),
@@ -2685,11 +2687,32 @@ fn system_get_property(
         "user.dir" => Some("/".to_string()),
         "java.class.path" => Some(String::new()),
         "java.io.tmpdir" => Some("/tmp".to_string()),
-        _ => vm.host_property(&key),
-    };
-    match value {
+        _ => vm.host_property(key),
+    }
+}
+
+fn system_get_property(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let key = string_arg(vm, args[0])?;
+    match system_property(vm, &key) {
         Some(text) => object(vm.make_string(&text)?),
         None => object(ObjectRef::NULL),
+    }
+}
+
+/// `System.getProperty(String, String)`: returns the supplied default when unset.
+fn system_get_property_or_default(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let key = string_arg(vm, args[0])?;
+    match system_property(vm, &key) {
+        Some(text) => object(vm.make_string(&text)?),
+        None => object(ref_arg(args, 1)),
     }
 }
 

@@ -701,6 +701,48 @@ fn collects_unreachable_objects_and_keeps_roots() {
 }
 
 #[test]
+fn defaults_system_properties() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm
+        .resolve_class("demo/SystemProperties")
+        .expect("SystemProperties");
+
+    for (method, expected) in [
+        ("vmName", Some("oxjvm")),
+        ("missingWithDefault", Some("fallback")),
+        ("missingWithNullDefault", None),
+        ("missing", None),
+    ] {
+        let (declaring, index) = vm
+            .find_method(class, method, "()Ljava/lang/String;")
+            .expect(method);
+        let value = vm
+            .invoke_method(declaring, index, Vec::new())
+            .expect(method);
+        assert_eq!(
+            vm.string_value(value.as_ref()).as_deref(),
+            expected,
+            "{method}"
+        );
+    }
+
+    // A null key throws NullPointerException.
+    let (declaring, index) = vm
+        .find_method(class, "nullKey", "()Ljava/lang/String;")
+        .expect("nullKey");
+    let result = vm.invoke_method(declaring, index, Vec::new());
+    let Err(error) = result else {
+        panic!("expected a Java exception")
+    };
+    let VmError::Thrown(exception) = error else {
+        panic!("expected a Java exception");
+    };
+    let thrown = vm.class_of(exception);
+    assert_eq!(vm.class_name(thrown), "java/lang/NullPointerException");
+}
+
+#[test]
 fn rejects_corrupted_bytecode() {
     let mut bytes = build_div_class();
     // `div` code begins with `iload_1 iload_2 idiv ireturn`; replace `ireturn` with an
