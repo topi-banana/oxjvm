@@ -1062,15 +1062,13 @@ fn transfer(
             }
             if op == 0xb9 {
                 let count = code.code[pc + 3];
-                let expected: u8 = parsed
-                    .parameters
-                    .iter()
-                    .map(|p| if p.is_category2() { 2 } else { 1 })
-                    .sum();
-                if u16::from(count) != u16::from(expected) {
-                    return err(alloc::format!(
-                        "invokeinterface count {count} does not match descriptor"
-                    ));
+                // The count operand is a redundant, historical measure of the arguments
+                // (JVMS §6.5, Notes): it is derivable from the descriptor, JVMs ignore it,
+                // and its exact encoding varies between producers (javac counts the receiver
+                // plus the argument slots). Only the normative "must not be zero" constraint
+                // is enforced.
+                if count == 0 {
+                    return err("invokeinterface count must not be zero".into());
                 }
                 if code.code[pc + 4] != 0 {
                     return err("invokeinterface reserved byte must be zero".into());

@@ -882,6 +882,87 @@ fn boxes_longs_from_strings() {
 }
 
 #[test]
+fn invokes_interface_methods_with_category2_arguments() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm
+        .resolve_class("demo/InterfaceCalls")
+        .expect("InterfaceCalls");
+    let instance = vm.new_instance(class).expect("instance");
+    let (constructor_class, constructor) =
+        vm.find_method(class, "<init>", "()V").expect("constructor");
+    vm.invoke_method(constructor_class, constructor, vec![Value::Ref(instance)])
+        .expect("constructor");
+
+    let (declaring, method) = vm
+        .find_method(class, "twice", "(Ldemo/DoubleScaler;D)D")
+        .expect("twice");
+    let result = vm
+        .invoke_method(
+            declaring,
+            method,
+            vec![Value::Ref(instance), Value::Double(1.5)],
+        )
+        .expect("twice");
+    assert_eq!(result.as_double(), 3.0);
+
+    let (declaring, method) = vm
+        .find_method(class, "sum", "(Ldemo/LongSummer;JJ)J")
+        .expect("sum");
+    let result = vm
+        .invoke_method(
+            declaring,
+            method,
+            vec![Value::Ref(instance), Value::Long(20), Value::Long(3)],
+        )
+        .expect("sum");
+    assert_eq!(result.as_long(), 23);
+
+    let (declaring, method) = vm
+        .find_method(class, "id", "(Ldemo/UnitCounter;)I")
+        .expect("id");
+    let result = vm
+        .invoke_method(declaring, method, vec![Value::Ref(instance)])
+        .expect("id");
+    assert_eq!(result.as_int(), 7);
+}
+
+#[test]
+fn rejects_a_zero_invokeinterface_count() {
+    let bytes = fs::read(fixtures_root().join("InterfaceCalls.class")).expect("fixture");
+    let mut class = ClassFile::read(&bytes).expect("parse fixture");
+    let mut patched = false;
+    'methods: for method in &mut class.methods {
+        for attribute in &mut method.attributes {
+            if let AttributeData::Code(code) = &mut attribute.data {
+                if let Some(pc) = code
+                    .code
+                    .windows(5)
+                    .position(|window| window[0] == 0xb9 && window[3] != 0 && window[4] == 0)
+                {
+                    code.code[pc + 3] = 0;
+                    patched = true;
+                    break 'methods;
+                }
+            }
+        }
+    }
+    assert!(patched, "no invokeinterface found");
+    let mut host = fixture_host();
+    host.classes.insert("demo/InterfaceCalls", class.write());
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let error = vm
+        .resolve_class("demo/InterfaceCalls")
+        .expect_err("must be rejected");
+    match error {
+        VmError::InvalidCode { message, .. } => {
+            assert!(message.contains("count"), "unexpected message: {message}");
+        }
+        other => panic!("expected InvalidCode, got {other:?}"),
+    }
+}
+
+#[test]
 fn rejects_corrupted_bytecode() {
     let mut bytes = build_div_class();
     // `div` code begins with `iload_1 iload_2 idiv ireturn`; replace `ireturn` with an
