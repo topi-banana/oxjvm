@@ -81,7 +81,9 @@ pub fn verify_class(class: &ClassFile) -> Result<(), String> {
             class.minor_version
         ));
     }
-    if class.major_version > 70 {
+    // JDK 27 compiles to major version 71 (the harness uses the compile JDK's
+    // defaults), so accept that version as well.
+    if class.major_version > 71 {
         return Err(alloc::format!(
             "unsupported future class file version {}.{}",
             class.major_version,
