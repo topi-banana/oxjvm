@@ -338,7 +338,9 @@ impl<'a> Vm<'a> {
     /// `System.exit`.
     pub fn run_main(&mut self, main_class: &str, args: &[&str]) -> Result<i32, VmError> {
         self.booted = true;
-        let class = match self.resolve_class(main_class) {
+        // `java a.b.C` names the class in binary form; the internal name uses slashes.
+        let internal_name = main_class.replace('.', "/");
+        let class = match self.resolve_class(&internal_name) {
             Ok(class) => class,
             Err(error) => {
                 let message = alloc::format!(
