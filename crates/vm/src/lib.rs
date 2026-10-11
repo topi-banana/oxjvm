@@ -349,7 +349,12 @@ impl<'a> Vm<'a> {
                 );
                 let _ = self.host.write(Stream::Stderr, message.as_bytes());
                 let _ = self.host.write(Stream::Stderr, b"\n");
-                let _ = error;
+                let cause = alloc::format!("Caused by: {error}");
+                let _ = self.host.write(Stream::Stderr, cause.as_bytes());
+                let _ = self.host.write(Stream::Stderr, b"\n");
+                if let VmError::Thrown(exception) = error {
+                    self.print_uncaught("main", exception);
+                }
                 return Ok(1);
             }
         };
