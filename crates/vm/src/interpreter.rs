@@ -394,6 +394,9 @@ impl<'a> Vm<'a> {
         let thread = self.current;
         let floor = self.threads[thread].depth();
         let saved_floor = self.threads[thread].floor;
+        // A re-entrant call (from a native or <clinit>) must resume the caller at its
+        // current pc.  Only the launcher (floor == 0) has no caller to resume.
+        let caller_pc = if floor > 0 { self.frame().pc } else { 0 };
         self.threads[thread].floor = floor;
         let result = if let Some(_native) = definition.native {
             self.invoke_native_blocking(class, method, args)
@@ -404,7 +407,7 @@ impl<'a> Vm<'a> {
                 None => true,
             };
             if acquired {
-                self.push_method_frame(class, method, args, 0, monitor)?;
+                self.push_method_frame(class, method, args, caller_pc, monitor)?;
             } else {
                 let object = monitor.expect("contended monitor");
                 self.park_current(ThreadState::BlockedMonitor(object));
@@ -412,7 +415,7 @@ impl<'a> Vm<'a> {
                     class,
                     method,
                     args,
-                    return_pc: 0,
+                    return_pc: caller_pc,
                 };
             }
             self.return_slot = None;
