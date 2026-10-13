@@ -784,15 +784,15 @@ const STRING_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
                 method,
                 vec![
                     Value::Ref(text),
-                    Value::Int(crate::int_arg(args, 2)),
-                    Value::Int(crate::int_arg(args, 3)),
+                    Value::Int(int_arg(args, 2)),
+                    Value::Int(int_arg(args, 3)),
                 ],
             )?;
             string_writer_append(vm, receiver(args), slice.as_ref())
         },
     ),
     method("write", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        let ch = crate::int_arg(args, 1) as u16;
+        let ch = int_arg(args, 1) as u16;
         let text = vm.make_string_utf16(vec![ch])?;
         string_writer_append(vm, receiver(args), text)
     }),
