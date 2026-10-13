@@ -1101,6 +1101,21 @@ fn p1_count_down_latch() {
 }
 
 #[test]
+fn p1_path_of() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/P1Path").expect("P1Path");
+    let (declaring, index) = vm
+        .find_method(class, "of", "()Ljava/lang/String;")
+        .expect("of");
+    let value = vm.invoke_method(declaring, index, Vec::new()).expect("of");
+    assert_eq!(
+        vm.string_value(value.as_ref()).as_deref(),
+        Some("a/b/c:3:y:a/b")
+    );
+}
+
+#[test]
 fn rejects_corrupted_bytecode() {
     let mut bytes = build_div_class();
     // `div` code begins with `iload_1 iload_2 idiv ireturn`; replace `ireturn` with an

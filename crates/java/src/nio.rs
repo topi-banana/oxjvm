@@ -270,7 +270,13 @@ pub(crate) const OXJVM_PATH: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PATH_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+const PATH_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+    method(
+        "of",
+        "(Ljava/lang/String;[Ljava/lang/String;)Ljava/nio/file/Path;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| path_of(vm, args),
+    ),
     method(
         "toString",
         "()Ljava/lang/String;",
@@ -383,24 +389,27 @@ const PATHS_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
     "get",
     "(Ljava/lang/String;[Ljava/lang/String;)Ljava/nio/file/Path;",
     ACC_PUBLIC | ACC_STATIC,
-    |vm, _, args| {
-        let first = string_arg(vm, args[0])?;
-        let mut path = first;
-        if let Some(oxjvm_vm::ObjectData::Array(oxjvm_vm::ArrayData::Reference(elements))) = vm
-            .heap
-            .get(ref_arg(args, 1))
-            .map(|object| object.data.clone())
-        {
-            for element in elements {
-                if !element.is_null() {
-                    let part = vm.string_or_empty(element);
-                    path = join_path(&path, &part);
-                }
+    |vm, _, args| path_of(vm, args),
+)];
+
+/// `Paths.get(first, more...)` / `Path.of(first, more...)`.
+fn path_of(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let first = string_arg(vm, args[0])?;
+    let mut path = first;
+    if let Some(oxjvm_vm::ObjectData::Array(oxjvm_vm::ArrayData::Reference(elements))) = vm
+        .heap
+        .get(ref_arg(args, 1))
+        .map(|object| object.data.clone())
+    {
+        for element in elements {
+            if !element.is_null() {
+                let part = vm.string_or_empty(element);
+                path = join_path(&path, &part);
             }
         }
-        new_path(vm, &path)
-    },
-)];
+    }
+    new_path(vm, &path)
+}
 
 pub(crate) const PATHS: oxjvm_vm::NativeClass = class(
     "java/nio/file/Paths",
