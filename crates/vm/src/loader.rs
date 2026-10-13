@@ -687,6 +687,35 @@ impl<'a> Vm<'a> {
     // Member lookup and resolution (JVMS 5.4.3)
     // -----------------------------------------------------------------------------------------
 
+    /// Find a field by name and descriptor in a class, its supertypes and its
+    /// interfaces, without allocating an exception when the field is absent.
+    ///
+    /// Prefer this over [`Self::find_field`] when probing (e.g. for the field
+    /// of a boxed primitive): a failed [`Self::find_field`] creates a
+    /// `NoSuchFieldError` on the heap, which is never reclaimed on this VM.
+    #[must_use]
+    pub fn find_field_opt(
+        &self,
+        class: ClassId,
+        name: &str,
+        descriptor: &str,
+    ) -> Option<(ClassId, u32)> {
+        let mut current = Some(class);
+        while let Some(id) = current {
+            if let Some(index) = self.classes.find_declared_field(id, name, descriptor) {
+                return Some((id, index));
+            }
+            current = self.classes.get(id).super_class;
+        }
+        // Interfaces may declare constants.
+        for interface in &self.classes.get(class).interfaces {
+            if let Some(found) = self.find_field_opt(*interface, name, descriptor) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
     /// Find a field by name and descriptor in a class and its supertypes.
     ///
     /// # Errors
@@ -698,18 +727,8 @@ impl<'a> Vm<'a> {
         name: &str,
         descriptor: &str,
     ) -> Result<(ClassId, u32), VmError> {
-        let mut current = Some(class);
-        while let Some(id) = current {
-            if let Some(index) = self.classes.find_declared_field(id, name, descriptor) {
-                return Ok((id, index));
-            }
-            current = self.classes.get(id).super_class;
-        }
-        // Interfaces may declare constants.
-        for interface in self.classes.get(class).interfaces.clone() {
-            if let Ok(found) = self.find_field(interface, name, descriptor) {
-                return Ok(found);
-            }
+        if let Some(found) = self.find_field_opt(class, name, descriptor) {
+            return Ok(found);
         }
         Err(self.throw_new(
             "java/lang/NoSuchFieldError",

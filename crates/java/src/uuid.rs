@@ -136,7 +136,7 @@ fn uuid_bits(vm: &Vm<'_>, this: ObjectRef) -> (i64, i64) {
 fn write_bits(vm: &mut Vm<'_>, this: ObjectRef, most: i64, least: i64) {
     let class = vm.class_of(this);
     for (name, value) in [("mostSigBits", most), ("leastSigBits", least)] {
-        if let Ok((declaring, field)) = vm.find_field(class, name, "J") {
+        if let Some((declaring, field)) = vm.find_field_opt(class, name, "J") {
             let slot = vm.classes.get(declaring).fields[field as usize].slot as usize;
             if let Some(ObjectData::Instance(fields)) =
                 vm.heap.get_mut(this).map(|object| &mut object.data)

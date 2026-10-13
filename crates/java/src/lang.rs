@@ -2220,7 +2220,7 @@ pub(crate) fn read_int_field(vm: &Vm<'_>, object: ObjectRef, name: &str) -> i32 
 
 pub(crate) fn write_int_field(vm: &mut Vm<'_>, object: ObjectRef, name: &str, value: i32) {
     let class = vm.class_of(object);
-    if let Ok((declaring, field)) = vm.find_field(class, name, "I") {
+    if let Some((declaring, field)) = vm.find_field_opt(class, name, "I") {
         vm.set_instance_int(object, declaring, field, value);
     }
 }

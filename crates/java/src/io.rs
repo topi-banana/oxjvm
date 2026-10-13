@@ -162,7 +162,9 @@ const FILTER_OUTPUT_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         |vm, _, args| {
             let this = receiver(args);
             let class = vm.class_of(this);
-            if let Ok((declaring, field)) = vm.find_field(class, "out", "Ljava/io/OutputStream;") {
+            if let Some((declaring, field)) =
+                vm.find_field_opt(class, "out", "Ljava/io/OutputStream;")
+            {
                 vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
             }
             void()
@@ -343,7 +345,7 @@ fn print_stream_init(
 ) -> Result<Value, VmError> {
     let this = receiver(args);
     let class = vm.class_of(this);
-    if let Ok((declaring, field)) = vm.find_field(class, "out", "Ljava/io/OutputStream;") {
+    if let Some((declaring, field)) = vm.find_field_opt(class, "out", "Ljava/io/OutputStream;") {
         vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
     }
     let (declaring, field) = vm.find_field(class, "kind", "I")?;

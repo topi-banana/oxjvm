@@ -577,7 +577,7 @@ fn read_int_field(vm: &Vm<'_>, this: ObjectRef, name: &str) -> i32 {
 
 fn write_int_field_named(vm: &mut Vm<'_>, this: ObjectRef, name: &str, value: i32) {
     let class = vm.class_of(this);
-    if let Ok((declaring, field)) = vm.find_field(class, name, "I") {
+    if let Some((declaring, field)) = vm.find_field_opt(class, name, "I") {
         vm.set_instance_int(this, declaring, field, value);
     }
 }
@@ -601,7 +601,7 @@ fn read_long_field(vm: &Vm<'_>, this: ObjectRef, name: &str) -> i64 {
 
 fn write_long_field(vm: &mut Vm<'_>, this: ObjectRef, name: &str, value: i64) {
     let class = vm.class_of(this);
-    if let Ok((declaring, field)) = vm.find_field(class, name, "J") {
+    if let Some((declaring, field)) = vm.find_field_opt(class, name, "J") {
         let slot = vm.classes.get(declaring).fields[field as usize].slot as usize;
         if let Some(oxjvm_vm::ObjectData::Instance(fields)) =
             vm.heap.get_mut(this).map(|o| &mut o.data)
@@ -618,7 +618,7 @@ fn read_string_field(vm: &Vm<'_>, this: ObjectRef, name: &str) -> Option<String>
 
 fn write_string_field(vm: &mut Vm<'_>, this: ObjectRef, name: &str, value: &str) {
     let class = vm.class_of(this);
-    if let Ok((declaring, field)) = vm.find_field(class, name, "Ljava/lang/String;") {
+    if let Some((declaring, field)) = vm.find_field_opt(class, name, "Ljava/lang/String;") {
         if let Ok(text) = vm.make_string(value) {
             vm.set_instance_ref(this, declaring, field, text);
         }
@@ -638,7 +638,7 @@ fn write_ref_field(
     value: ObjectRef,
 ) {
     let class = vm.class_of(this);
-    if let Ok((declaring, field)) = vm.find_field(class, name, descriptor) {
+    if let Some((declaring, field)) = vm.find_field_opt(class, name, descriptor) {
         vm.set_instance_ref(this, declaring, field, value);
     }
 }

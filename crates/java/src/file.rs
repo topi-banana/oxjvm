@@ -596,7 +596,7 @@ fn file_input_state(vm: &Vm<'_>, this: ObjectRef) -> Result<(usize, usize), VmEr
 
 fn write_file_position(vm: &mut Vm<'_>, this: ObjectRef, position: usize) {
     let class = vm.class_of(this);
-    if let Ok((declaring, field)) = vm.find_field(class, "position", "I") {
+    if let Some((declaring, field)) = vm.find_field_opt(class, "position", "I") {
         vm.set_instance_int(this, declaring, field, position as i32);
     }
 }
@@ -748,7 +748,7 @@ fn file_output_init(
 
 fn write_z_field(vm: &mut Vm<'_>, this: ObjectRef, name: &str, value: bool) {
     let class = vm.class_of(this);
-    if let Ok((declaring, field)) = vm.find_field(class, name, "Z") {
+    if let Some((declaring, field)) = vm.find_field_opt(class, name, "Z") {
         vm.set_instance_int(this, declaring, field, i32::from(value));
     }
 }

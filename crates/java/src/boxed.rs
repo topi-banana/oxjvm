@@ -278,7 +278,7 @@ pub(crate) fn read_value_int(vm: &Vm<'_>, object: ObjectRef) -> i32 {
 pub(crate) fn write_value_int(vm: &mut Vm<'_>, object: ObjectRef, value: i32) {
     let class = vm.class_of(object);
     for descriptor in ["I", "Z", "C", "S", "B", "F"] {
-        if let Ok((declaring, field)) = vm.find_field(class, "value", descriptor) {
+        if let Some((declaring, field)) = vm.find_field_opt(class, "value", descriptor) {
             vm.set_instance_int(object, declaring, field, value);
             return;
         }
@@ -596,7 +596,7 @@ pub(crate) fn read_value_long(vm: &Vm<'_>, object: ObjectRef) -> i64 {
 pub(crate) fn write_value_long(vm: &mut Vm<'_>, object: ObjectRef, value: i64) {
     let class = vm.class_of(object);
     for descriptor in ["J", "D"] {
-        if let Ok((declaring, field)) = vm.find_field(class, "value", descriptor) {
+        if let Some((declaring, field)) = vm.find_field_opt(class, "value", descriptor) {
             let slot = vm.classes.get(declaring).fields[field as usize].slot as usize;
             if let Some(oxjvm_vm::ObjectData::Instance(fields)) =
                 vm.heap.get_mut(object).map(|object| &mut object.data)

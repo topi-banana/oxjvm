@@ -980,7 +980,7 @@ fn read_random_seed(vm: &Vm<'_>, this: ObjectRef) -> i64 {
 
 fn write_random_seed(vm: &mut Vm<'_>, this: ObjectRef, seed: i64) {
     let class = vm.class_of(this);
-    if let Ok((declaring, field)) = vm.find_field(class, "seed", "J") {
+    if let Some((declaring, field)) = vm.find_field_opt(class, "seed", "J") {
         let slot = vm.classes.get(declaring).fields[field as usize].slot as usize;
         if let Some(ObjectData::Instance(fields)) =
             vm.heap.get_mut(this).map(|object| &mut object.data)

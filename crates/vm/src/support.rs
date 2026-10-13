@@ -124,7 +124,9 @@ impl<'a> Vm<'a> {
         if let Some(&index) = self.thread_objects.get(&object) {
             self.threads[index].priority = priority;
         }
-        if let Ok((declaring, field)) = self.find_field(self.class_of(object), "priority", "I") {
+        if let Some((declaring, field)) =
+            self.find_field_opt(self.class_of(object), "priority", "I")
+        {
             self.set_instance_int(object, declaring, field, priority);
         }
     }
