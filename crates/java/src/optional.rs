@@ -209,12 +209,24 @@ fn optional_value(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
         .unwrap_or(ObjectRef::NULL)
 }
 
-fn optional_new(vm: &mut Vm<'_>, value: ObjectRef) -> Result<Value, VmError> {
+pub(crate) fn optional_new(vm: &mut Vm<'_>, value: ObjectRef) -> Result<Value, VmError> {
     let class = vm.resolve_class("java/util/Optional")?;
     let instance = vm.new_instance(class)?;
     let (declaring, field) = vm.find_field(class, "value", "Ljava/lang/Object;")?;
     vm.set_instance_ref(instance, declaring, field, value);
     object(instance)
+}
+
+/// The shared empty `Optional` (without the native-call context of `Optional.empty`).
+pub(crate) fn optional_empty_value(vm: &mut Vm<'_>) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/util/Optional")?;
+    if let Some(empty) = vm.read_static_ref_if_set(class, "EMPTY", "Ljava/util/Optional;") {
+        return object(empty);
+    }
+    let instance = optional_new(vm, ObjectRef::NULL)?;
+    let empty = instance.as_ref();
+    vm.set_static_value(class, "EMPTY", "Ljava/util/Optional;", Value::Ref(empty));
+    Ok(instance)
 }
 
 fn optional_empty(

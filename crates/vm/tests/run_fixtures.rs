@@ -1156,6 +1156,23 @@ fn p1_charset() {
 }
 
 #[test]
+fn p1_stream_batch() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/P1Stream").expect("P1Stream");
+    let (declaring, index) = vm
+        .find_method(class, "pipeline", "()Ljava/lang/String;")
+        .expect("pipeline");
+    let value = vm
+        .invoke_method(declaring, index, Vec::new())
+        .expect("pipeline");
+    assert_eq!(
+        vm.string_value(value.as_ref()).as_deref(),
+        Some("2:3:CCC:true:[1, 2, 3]:[bb]")
+    );
+}
+
+#[test]
 fn rejects_corrupted_bytecode() {
     let mut bytes = build_div_class();
     // `div` code begins with `iload_1 iload_2 idiv ireturn`; replace `ireturn` with an

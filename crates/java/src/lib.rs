@@ -28,6 +28,7 @@ pub(crate) mod math;
 pub(crate) mod nio;
 pub(crate) mod optional;
 pub(crate) mod regex;
+pub(crate) mod stream;
 pub(crate) mod throwable;
 pub(crate) mod util;
 pub(crate) mod uuid;
@@ -101,7 +102,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 157] = [
+static REGISTRY: [NativeClass; 162] = [
     lang::OBJECT,
     lang::CLASS,
     lang::STRING,
@@ -211,6 +212,10 @@ static REGISTRY: [NativeClass; 157] = [
     util::HASH_MAP,
     util::IDENTITY_HASH_MAP,
     util::SORTED_MAP,
+    stream::BASE_STREAM,
+    stream::STREAM,
+    stream::OXJVM_STREAM,
+    stream::STREAM_ITERATOR,
     util::COLLECTIONS,
     invoke::METHOD_TYPE,
     invoke::METHOD_HANDLE,
@@ -230,6 +235,7 @@ static REGISTRY: [NativeClass; 157] = [
     invoke::UNARY_OPERATOR,
     invoke::BINARY_OPERATOR,
     invoke::CALLABLE,
+    invoke::INT_FUNCTION,
     invoke::APPENDABLE,
     regex::PATTERN,
     regex::MATCHER,

@@ -77,7 +77,7 @@ pub(crate) const NUMBER: oxjvm_vm::NativeClass = class(
 // Integer
 // -------------------------------------------------------------------------------------------
 
-const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
+const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
     method("<init>", "(I)V", ACC_PUBLIC, boxed_int_init),
     method("intValue", "()I", ACC_PUBLIC, |vm, _, args| {
         int(read_value_int(vm, receiver(args)))
@@ -123,6 +123,16 @@ const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
             let a = read_value_int(vm, receiver(args));
             let b = read_value_int(vm, ref_arg(args, 1));
             int(a - b)
+        },
+    ),
+    method(
+        "compareTo",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC | ACC_BRIDGE | ACC_SYNTHETIC,
+        |vm, _, args| {
+            let a = read_value_int(vm, receiver(args));
+            let b = read_value_int(vm, ref_arg(args, 1));
+            int(compare_ints(a, b))
         },
     ),
     method(
@@ -261,6 +271,64 @@ fn boxed_int_init(
 ) -> Result<Value, VmError> {
     write_value_int(vm, receiver(args), int_arg(args, 1));
     void()
+}
+
+fn compare_ints(a: i32, b: i32) -> i32 {
+    if a < b {
+        -1
+    } else if a > b {
+        1
+    } else {
+        0
+    }
+}
+
+fn compare_longs(a: i64, b: i64) -> i32 {
+    if a < b {
+        -1
+    } else if a > b {
+        1
+    } else {
+        0
+    }
+}
+
+fn compare_floats(a: f32, b: f32) -> i32 {
+    match (a.is_nan(), b.is_nan()) {
+        (true, true) => 0,
+        (true, false) => 1,
+        (false, true) => -1,
+        (false, false) => compare_ints(
+            a.partial_cmp(&b).map_or(0, |order| {
+                use core::cmp::Ordering::{Greater, Less};
+                match order {
+                    Greater => 1,
+                    Less => -1,
+                    _ => 0,
+                }
+            }),
+            0,
+        ),
+    }
+}
+
+fn compare_doubles(a: f64, b: f64) -> i32 {
+    match (a.is_nan(), b.is_nan()) {
+        (true, true) => 0,
+        (true, false) => 1,
+        (false, true) => -1,
+        (false, false) => compare_ints(
+            a.partial_cmp(&b).map_or(0, |order| {
+                use core::cmp::Ordering::{Greater, Less};
+                match order {
+                    Greater => 1,
+                    Less => -1,
+                    _ => 0,
+                }
+            }),
+            0,
+        ),
+    }
 }
 
 /// The `value` field of a boxed primitive, whose descriptor varies by class
@@ -423,7 +491,7 @@ pub(crate) const INTEGER: oxjvm_vm::NativeClass = class(
 // Long
 // -------------------------------------------------------------------------------------------
 
-const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
+const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
     method("<init>", "(J)V", ACC_PUBLIC, |vm, _, args| {
         write_value_long(vm, receiver(args), long_arg(args, 1));
         void()
@@ -561,6 +629,27 @@ const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| long_get_long(vm, args, Value::Ref(ref_arg(args, 1))),
     ),
+    method(
+        "compareTo",
+        "(Ljava/lang/Long;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            int(compare_longs(
+                read_value_long(vm, receiver(args)),
+                read_value_long(vm, ref_arg(args, 1)),
+            ))
+        },
+    ),
+    method(
+        "compareTo",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC | ACC_BRIDGE | ACC_SYNTHETIC,
+        |vm, _, args| {
+            let a = read_value_long(vm, receiver(args));
+            let b = read_value_long(vm, ref_arg(args, 1));
+            int(compare_longs(a, b))
+        },
+    ),
 ];
 
 /// `Long.getLong`: the system property parsed as a long, or the default when unset/unparseable.
@@ -684,7 +773,7 @@ pub(crate) const LONG: oxjvm_vm::NativeClass = class(
 // Short / Byte / Boolean / Character / Float / Double / Void
 // -------------------------------------------------------------------------------------------
 
-const SHORT_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const SHORT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method("<init>", "(S)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), int_arg(args, 1));
         void()
@@ -739,6 +828,27 @@ const SHORT_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
             object(instance)
         },
     ),
+    method(
+        "compareTo",
+        "(Ljava/lang/Short;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            int(compare_ints(
+                read_value_int(vm, receiver(args)),
+                read_value_int(vm, ref_arg(args, 1)),
+            ))
+        },
+    ),
+    method(
+        "compareTo",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC | ACC_BRIDGE | ACC_SYNTHETIC,
+        |vm, _, args| {
+            let a = read_value_int(vm, receiver(args));
+            let b = read_value_int(vm, ref_arg(args, 1));
+            int(compare_ints(a, b))
+        },
+    ),
 ];
 
 pub(crate) const SHORT: oxjvm_vm::NativeClass = class(
@@ -771,7 +881,7 @@ pub(crate) const SHORT: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const BYTE_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const BYTE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method("<init>", "(B)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), int_arg(args, 1));
         void()
@@ -808,6 +918,27 @@ const BYTE_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
             object(instance)
         },
     ),
+    method(
+        "compareTo",
+        "(Ljava/lang/Byte;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            int(compare_ints(
+                read_value_int(vm, receiver(args)),
+                read_value_int(vm, ref_arg(args, 1)),
+            ))
+        },
+    ),
+    method(
+        "compareTo",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC | ACC_BRIDGE | ACC_SYNTHETIC,
+        |vm, _, args| {
+            let a = read_value_int(vm, receiver(args));
+            let b = read_value_int(vm, ref_arg(args, 1));
+            int(compare_ints(a, b))
+        },
+    ),
 ];
 
 pub(crate) const BYTE: oxjvm_vm::NativeClass = class(
@@ -840,7 +971,7 @@ pub(crate) const BYTE: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const BOOLEAN_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const BOOLEAN_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method("<init>", "(Z)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), i32::from(bool_arg(args, 1)));
         void()
@@ -924,6 +1055,27 @@ const BOOLEAN_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
             object(instance)
         },
     ),
+    method(
+        "compareTo",
+        "(Ljava/lang/Boolean;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            int(compare_ints(
+                read_value_int(vm, receiver(args)),
+                read_value_int(vm, ref_arg(args, 1)),
+            ))
+        },
+    ),
+    method(
+        "compareTo",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC | ACC_BRIDGE | ACC_SYNTHETIC,
+        |vm, _, args| {
+            let a = read_value_int(vm, receiver(args));
+            let b = read_value_int(vm, ref_arg(args, 1));
+            int(compare_ints(a, b))
+        },
+    ),
 ];
 
 pub(crate) const BOOLEAN: oxjvm_vm::NativeClass = class(
@@ -973,7 +1125,7 @@ fn boolean_get_boolean(
     ))
 }
 
-const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
     method("<init>", "(C)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), int_arg(args, 1));
         void()
@@ -1108,6 +1260,27 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
             object(vm.make_string(&text)?)
         },
     ),
+    method(
+        "compareTo",
+        "(Ljava/lang/Character;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            int(compare_ints(
+                read_value_int(vm, receiver(args)),
+                read_value_int(vm, ref_arg(args, 1)),
+            ))
+        },
+    ),
+    method(
+        "compareTo",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC | ACC_BRIDGE | ACC_SYNTHETIC,
+        |vm, _, args| {
+            let a = read_value_int(vm, receiver(args));
+            let b = read_value_int(vm, ref_arg(args, 1));
+            int(compare_ints(a, b))
+        },
+    ),
 ];
 
 pub(crate) const CHARACTER: oxjvm_vm::NativeClass = class(
@@ -1140,7 +1313,7 @@ pub(crate) const CHARACTER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const FLOAT_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
+const FLOAT_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method("<init>", "(F)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(
             vm,
@@ -1244,6 +1417,26 @@ const FLOAT_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
             object(instance)
         },
     ),
+    method(
+        "compareTo",
+        "(Ljava/lang/Float;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let a = f32::from_bits(read_value_int(vm, receiver(args)) as u32);
+            let b = f32::from_bits(read_value_int(vm, ref_arg(args, 1)) as u32);
+            int(compare_floats(a, b))
+        },
+    ),
+    method(
+        "compareTo",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC | ACC_BRIDGE | ACC_SYNTHETIC,
+        |vm, _, args| {
+            let a = f32::from_bits(read_value_int(vm, receiver(args)) as u32);
+            let b = f32::from_bits(read_value_int(vm, ref_arg(args, 1)) as u32);
+            int(compare_floats(a, b))
+        },
+    ),
 ];
 
 pub(crate) const FLOAT: oxjvm_vm::NativeClass = class(
@@ -1294,7 +1487,7 @@ pub(crate) const FLOAT: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method("<init>", "(D)V", ACC_PUBLIC, |vm, _, args| {
         write_value_long(
             vm,
@@ -1388,6 +1581,26 @@ const DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "(J)D",
         ACC_PUBLIC | ACC_STATIC,
         |_, _, args| double(f64::from_bits(long_arg(args, 0) as u64)),
+    ),
+    method(
+        "compareTo",
+        "(Ljava/lang/Double;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let a = f64::from_bits(read_value_long(vm, receiver(args)) as u64);
+            let b = f64::from_bits(read_value_long(vm, ref_arg(args, 1)) as u64);
+            int(compare_doubles(a, b))
+        },
+    ),
+    method(
+        "compareTo",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC | ACC_BRIDGE | ACC_SYNTHETIC,
+        |vm, _, args| {
+            let a = f64::from_bits(read_value_long(vm, receiver(args)) as u64);
+            let b = f64::from_bits(read_value_long(vm, ref_arg(args, 1)) as u64);
+            int(compare_doubles(a, b))
+        },
     ),
 ];
 

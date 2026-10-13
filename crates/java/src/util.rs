@@ -503,7 +503,7 @@ pub(crate) const OBJECTS: oxjvm_vm::NativeClass = class(
 // Arrays
 // -------------------------------------------------------------------------------------------
 
-const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
+const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
     method(
         "toString",
         "([I)Ljava/lang/String;",
@@ -667,6 +667,12 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
             false,
         )
     }),
+    method(
+        "stream",
+        "([Ljava/lang/Object;)Ljava/util/stream/Stream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| crate::stream::stream_of_array(vm, ref_arg(args, 0)),
+    ),
 ];
 
 /// Fill every slot of an array with the same value.
@@ -1819,7 +1825,10 @@ fn hash_map_values_of(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Vec<ObjectRef>
         .collect())
 }
 
-fn array_list_from(vm: &mut Vm<'_>, elements: &[ObjectRef]) -> Result<ObjectRef, VmError> {
+pub(crate) fn array_list_from(
+    vm: &mut Vm<'_>,
+    elements: &[ObjectRef],
+) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class("java/util/ArrayList")?;
     let list = vm.new_instance(class)?;
     array_list_store(vm, list, elements)?;

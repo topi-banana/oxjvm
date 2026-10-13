@@ -607,7 +607,7 @@ pub(crate) const CLASS: oxjvm_vm::NativeClass = class(
 // String
 // -------------------------------------------------------------------------------------------
 
-const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 48] = [
+const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "<init>",
@@ -646,6 +646,12 @@ const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 48] = [
         "compareTo",
         "(Ljava/lang/String;)I",
         ACC_PUBLIC,
+        string_compare_to,
+    ),
+    method(
+        "compareTo",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC | ACC_BRIDGE | ACC_SYNTHETIC,
         string_compare_to,
     ),
     method(
