@@ -1487,7 +1487,7 @@ pub(crate) const FLOAT: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+const DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method("<init>", "(D)V", ACC_PUBLIC, |vm, _, args| {
         write_value_long(
             vm,
@@ -1600,6 +1600,17 @@ const DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
             let a = f64::from_bits(read_value_long(vm, receiver(args)) as u64);
             let b = f64::from_bits(read_value_long(vm, ref_arg(args, 1)) as u64);
             int(compare_doubles(a, b))
+        },
+    ),
+    method(
+        "valueOf",
+        "(D)Ljava/lang/Double;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let class = vm.resolve_class("java/lang/Double")?;
+            let instance = vm.new_instance(class)?;
+            write_value_long(vm, instance, crate::double_arg(args, 0).to_bits() as i64);
+            object(instance)
         },
     ),
 ];

@@ -224,7 +224,7 @@ pub(crate) const OBJECT: oxjvm_vm::NativeClass = class(
 // Class
 // -------------------------------------------------------------------------------------------
 
-const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
+const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -357,6 +357,15 @@ const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         class_get_package_name,
+    ),
+    method(
+        "getModule",
+        "()Ljava/lang/Module;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/lang/Module")?;
+            object(vm.new_instance(class)?)
+        },
     ),
 ];
 
@@ -2187,7 +2196,7 @@ const fn flatten_string_methods()
 // StringBuilder / StringBuffer
 // -------------------------------------------------------------------------------------------
 
-const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
+const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
     method("<init>", "()V", ACC_PUBLIC, builder_init),
     method("<init>", "(I)V", ACC_PUBLIC, builder_init_capacity),
     method(
@@ -2338,9 +2347,19 @@ const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
         ACC_PUBLIC,
         builder_substring,
     ),
+    method(
+        "append",
+        "(C)Ljava/lang/StringBuilder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = char::from_u32(int_arg(args, 1) as u32 & 0xFFFF)
+                .map_or(String::new(), String::from);
+            builder_append_text(vm, receiver(args), &text)
+        },
+    ),
 ];
 
-const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     method("<init>", "()V", ACC_PUBLIC, builder_init),
     method("<init>", "(I)V", ACC_PUBLIC, builder_init),
     method(
@@ -2360,6 +2379,16 @@ const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         "(Ljava/lang/String;)Ljava/lang/StringBuffer;",
         ACC_PUBLIC,
         builder_append_object,
+    ),
+    method(
+        "append",
+        "(C)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = char::from_u32(int_arg(args, 1) as u32 & 0xFFFF)
+                .map_or(String::new(), String::from);
+            builder_append_text(vm, receiver(args), &text)
+        },
     ),
 ];
 
@@ -2831,7 +2860,7 @@ pub(crate) const STRING_BUFFER: oxjvm_vm::NativeClass = class(
 // System / Runtime
 // -------------------------------------------------------------------------------------------
 
-const SYSTEM_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
+const SYSTEM_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
     method(
         "currentTimeMillis",
         "()J",
@@ -2964,6 +2993,50 @@ const SYSTEM_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
         "()V",
         ACC_PUBLIC | ACC_STATIC,
         |_, _, _| void(),
+    ),
+    method(
+        "getenv",
+        "()Ljava/util/Map;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let map_class = vm.resolve_class("java/util/HashMap")?;
+            let map = vm.new_instance(map_class)?;
+            let (declaring, ctor) = vm
+                .find_method(map_class, "<init>", "()V")
+                .ok_or_else(|| VmError::internal("HashMap() missing"))?;
+            vm.invoke_method(declaring, ctor, vec![Value::Ref(map)])?;
+            let (put_class, put) = vm
+                .find_method(
+                    map_class,
+                    "put",
+                    "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                )
+                .ok_or_else(|| VmError::internal("HashMap.put missing"))?;
+            for (key, value) in vm.host.environment() {
+                let key_ref = vm.make_string(&key)?;
+                let value_ref = vm.make_string(&value)?;
+                vm.invoke_method(
+                    put_class,
+                    put,
+                    vec![Value::Ref(map), Value::Ref(key_ref), Value::Ref(value_ref)],
+                )?;
+            }
+            object(map)
+        },
+    ),
+    method(
+        "getenv",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = string_arg(vm, args[0])?;
+            for (key, value) in vm.host.environment() {
+                if key == name {
+                    return object(vm.make_string(&value)?);
+                }
+            }
+            object(ObjectRef::NULL)
+        },
     ),
 ];
 
@@ -3376,6 +3449,36 @@ fn runtime_get_runtime(
         }
     }
 }
+
+const MODULE_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method("isNamed", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method("getName", "()Ljava/lang/String;", ACC_PUBLIC, |_, _, _| {
+        object(ObjectRef::NULL)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| object(vm.make_string("unnamed module")?),
+    ),
+    method(
+        "getClassLoader",
+        "()Ljava/lang/ClassLoader;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+];
+
+/// The unnamed module: every native/host class lives on the class path.
+pub(crate) const MODULE: oxjvm_vm::NativeClass = class(
+    "java/lang/Module",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[],
+    &MODULE_METHODS,
+    None,
+);
 
 pub(crate) const RUNTIME: oxjvm_vm::NativeClass = class(
     "java/lang/Runtime",
@@ -3864,7 +3967,7 @@ fn thread_local_with_initial(
 // ClassLoader
 // -------------------------------------------------------------------------------------------
 
-const CLASS_LOADER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+const CLASS_LOADER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     method(
         "getSystemClassLoader",
         "()Ljava/lang/ClassLoader;",
@@ -3894,6 +3997,12 @@ const CLASS_LOADER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         "(Ljava/lang/String;)Ljava/io/InputStream;",
         ACC_PUBLIC,
         class_loader_resource_as_stream,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/ClassLoader;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
     ),
 ];
 

@@ -1190,6 +1190,23 @@ fn p1_printf() {
 }
 
 #[test]
+fn p1_misc_batch() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/P1Misc").expect("P1Misc");
+    let (declaring, index) = vm
+        .find_method(class, "misc", "()Ljava/lang/String;")
+        .expect("misc");
+    let value = vm
+        .invoke_method(declaring, index, Vec::new())
+        .expect("misc");
+    assert_eq!(
+        vm.string_value(value.as_ref()).as_deref(),
+        Some("3:3:fr_FR:4:x:y:()Ljava/lang/String;:false:1.5")
+    );
+}
+
+#[test]
 fn rejects_corrupted_bytecode() {
     let mut bytes = build_div_class();
     // `div` code begins with `iload_1 iload_2 idiv ireturn`; replace `ireturn` with an

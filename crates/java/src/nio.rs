@@ -457,7 +457,7 @@ fn new_path(vm: &mut Vm<'_>, path: &str) -> Result<Value, VmError> {
 // Files
 // -------------------------------------------------------------------------------------------
 
-const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method(
         "createDirectories",
         "(Ljava/nio/file/Path;[Ljava/nio/file/attribute/FileAttribute;)Ljava/nio/file/Path;",
@@ -654,6 +654,45 @@ const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
                 vec![Value::Ref(instance), Value::Ref(text)],
             )?;
             object(instance)
+        },
+    ),
+    method(
+        "createTempDirectory",
+        "(Ljava/lang/String;[Ljava/nio/file/attribute/FileAttribute;)Ljava/nio/file/Path;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let prefix = string_arg(vm, args[0])?;
+            let dir =
+                crate::lang::system_property(vm, "java.io.tmpdir").unwrap_or_else(|| "/tmp".into());
+            let seed = vm.host.random_seed();
+            let path = alloc::format!("{dir}/{prefix}{seed:016x}");
+            let created = vm
+                .host
+                .filesystem()
+                .map(|fs| fs.create_dir(&path))
+                .unwrap_or(false);
+            if !created {
+                return Err(vm.throw_new("java/io/IOException", Some(&path)));
+            }
+            new_path(vm, &path)
+        },
+    ),
+    method(
+        "list",
+        "(Ljava/nio/file/Path;)Ljava/util/stream/Stream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            let names = vm
+                .host
+                .filesystem()
+                .and_then(|fs| fs.list(&path))
+                .unwrap_or_default();
+            let mut paths = Vec::new();
+            for name in names {
+                paths.push(new_path(vm, &join_path(&path, &name))?.as_ref());
+            }
+            object(crate::stream::stream_from(vm, paths)?)
         },
     ),
 ];

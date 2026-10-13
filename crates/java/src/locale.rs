@@ -8,7 +8,7 @@ use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
 use crate::{boolean, class, field, int, method, object, receiver, ref_arg, string_arg, void};
 
-const LOCALE_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+const LOCALE_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -33,6 +33,11 @@ const LOCALE_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _| {
             let class = vm.resolve_class("java/util/Locale")?;
+            if let Some(current) =
+                vm.read_static_ref_if_set(class, "defaultLocale", "Ljava/util/Locale;")
+            {
+                return object(current);
+            }
             let us = vm
                 .read_static_ref_if_set(class, "US", "Ljava/util/Locale;")
                 .unwrap_or(ObjectRef::NULL);
@@ -137,7 +142,65 @@ const LOCALE_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
         }
         int(hash)
     }),
+    method(
+        "setDefault",
+        "(Ljava/util/Locale;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let class = vm.resolve_class("java/util/Locale")?;
+            vm.set_static_value(
+                class,
+                "defaultLocale",
+                "Ljava/util/Locale;",
+                Value::Ref(ref_arg(args, 0)),
+            );
+            void()
+        },
+    ),
+    method(
+        "of",
+        "(Ljava/lang/String;)Ljava/util/Locale;",
+        ACC_PUBLIC | ACC_STATIC,
+        locale_of,
+    ),
+    method(
+        "of",
+        "(Ljava/lang/String;Ljava/lang/String;)Ljava/util/Locale;",
+        ACC_PUBLIC | ACC_STATIC,
+        locale_of,
+    ),
+    method(
+        "of",
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/util/Locale;",
+        ACC_PUBLIC | ACC_STATIC,
+        locale_of,
+    ),
 ];
+
+/// `Locale.of(...)`: construct through the matching constructor (the `of`
+/// descriptor with its return type replaced by `V`).
+fn locale_of(
+    vm: &mut Vm<'_>,
+    ctx: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let of_descriptor = vm.classes.get(ctx.class).methods[ctx.method as usize]
+        .descriptor
+        .clone();
+    let params = of_descriptor
+        .rsplit_once(')')
+        .map_or("()".to_string(), |(params, _)| params.to_string());
+    let ctor_descriptor = alloc::format!("{params})V");
+    let class = vm.resolve_class("java/util/Locale")?;
+    let (declaring, constructor) = vm
+        .find_method(class, "<init>", &ctor_descriptor)
+        .ok_or_else(|| VmError::internal("Locale constructor missing"))?;
+    let instance = vm.new_instance(class)?;
+    let mut call_args = vec![Value::Ref(instance)];
+    call_args.extend_from_slice(args);
+    vm.invoke_method(declaring, constructor, call_args)?;
+    object(instance)
+}
 
 pub(crate) const LOCALE: oxjvm_vm::NativeClass = class(
     "java/util/Locale",
@@ -148,6 +211,12 @@ pub(crate) const LOCALE: oxjvm_vm::NativeClass = class(
         field("language", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("country", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("variant", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field(
+            "defaultLocale",
+            "Ljava/util/Locale;",
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
         field(
             "ROOT",
             "Ljava/util/Locale;",

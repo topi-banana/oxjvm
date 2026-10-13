@@ -16,7 +16,7 @@ use crate::{
 // java.io.File
 // -------------------------------------------------------------------------------------------
 
-const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
+const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -304,6 +304,33 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
         let path = file_path(vm, receiver(args));
         boolean(path.starts_with('/'))
     }),
+    method(
+        "createTempFile",
+        "(Ljava/lang/String;Ljava/lang/String;)Ljava/io/File;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| file_create_temp_file(vm, args),
+    ),
+    method(
+        "createTempFile",
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/io/File;)Ljava/io/File;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| file_create_temp_file(vm, args),
+    ),
+    method("deleteOnExit", "()V", ACC_PUBLIC, |vm, _, args| {
+        // Best-effort: the host cleans up /tmp periodically; the VM does not
+        // run a shutdown hook.
+        let _ = file_path(vm, receiver(args));
+        void()
+    }),
+    method("toURI", "()Ljava/net/URI;", ACC_PUBLIC, |vm, _, args| {
+        let path = file_path(vm, receiver(args));
+        let text = if path.starts_with('/') {
+            alloc::format!("file:{path}")
+        } else {
+            alloc::format!("file:/{path}")
+        };
+        crate::uri::new_uri(vm, &text)
+    }),
 ];
 
 pub(crate) const FILE: oxjvm_vm::NativeClass = class(
@@ -381,7 +408,7 @@ fn file_init_path(vm: &mut Vm<'_>, this: ObjectRef, path: String) -> Result<Valu
     void()
 }
 
-fn new_file(vm: &mut Vm<'_>, path: &str) -> Result<Value, VmError> {
+pub(crate) fn new_file(vm: &mut Vm<'_>, path: &str) -> Result<Value, VmError> {
     let class = vm.resolve_class("java/io/File")?;
     let instance = vm.new_instance(class)?;
     let (declaring, ctor) = vm
@@ -599,6 +626,29 @@ fn write_file_position(vm: &mut Vm<'_>, this: ObjectRef, position: usize) {
     if let Some((declaring, field)) = vm.find_field_opt(class, "position", "I") {
         vm.set_instance_int(this, declaring, field, position as i32);
     }
+}
+
+fn file_create_temp_file(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let prefix = string_arg(vm, args[0])?;
+    let suffix = match args.get(1).copied() {
+        Some(Value::Ref(reference)) if !reference.is_null() => vm.string_or_empty(reference),
+        _ => String::new(),
+    };
+    let dir = match args.get(2).copied() {
+        Some(Value::Ref(reference)) if !reference.is_null() => file_path(vm, reference),
+        _ => crate::lang::system_property(vm, "java.io.tmpdir").unwrap_or_else(|| "/tmp".into()),
+    };
+    let seed = vm.host.random_seed();
+    let path = alloc::format!("{dir}/{prefix}{seed:016x}{suffix}");
+    let created = vm
+        .host
+        .filesystem()
+        .map(|fs| fs.write(&path, &[], false))
+        .unwrap_or(false);
+    if !created {
+        return Err(vm.throw_new("java/io/IOException", Some(&path)));
+    }
+    new_file(vm, &path)
 }
 
 fn file_input_read(

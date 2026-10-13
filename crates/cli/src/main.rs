@@ -303,6 +303,10 @@ impl Host for StdHost {
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect()
     }
+
+    fn environment(&mut self) -> Vec<(String, String)> {
+        std::env::vars().collect()
+    }
 }
 
 fn run(args: &[String]) -> ExitCode {

@@ -30,6 +30,7 @@ pub(crate) mod optional;
 pub(crate) mod regex;
 pub(crate) mod stream;
 pub(crate) mod throwable;
+pub(crate) mod uri;
 pub(crate) mod util;
 pub(crate) mod uuid;
 pub(crate) mod zip;
@@ -102,7 +103,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 162] = [
+static REGISTRY: [NativeClass; 164] = [
     lang::OBJECT,
     lang::CLASS,
     lang::STRING,
@@ -110,6 +111,7 @@ static REGISTRY: [NativeClass; 162] = [
     lang::STRING_BUFFER,
     lang::SYSTEM,
     lang::RUNTIME,
+    lang::MODULE,
     lang::RUNTIME_VERSION,
     lang::THREAD,
     lang::THREAD_LOCAL,
@@ -257,6 +259,7 @@ static REGISTRY: [NativeClass; 162] = [
     nio::LINK_OPTION,
     nio::STANDARD_COPY_OPTION,
     nio::STANDARD_OPEN_OPTION,
+    uri::URI,
     charset::CHARSET,
     charset::STANDARD_CHARSETS,
     nio::FILE_ATTRIBUTE,

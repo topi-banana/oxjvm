@@ -6,6 +6,8 @@
 //! directly.
 
 use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 
 use oxjvm_classfile::flags::*;
 use oxjvm_vm::{MethodHandleValue, ObjectRef, Value, Vm, VmError};
@@ -16,7 +18,7 @@ use crate::{class, field, method, object, receiver, ref_arg, string_arg};
 // MethodType
 // -------------------------------------------------------------------------------------------
 
-const METHOD_TYPE_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+const METHOD_TYPE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method(
         "descriptorString",
         "()Ljava/lang/String;",
@@ -44,7 +46,95 @@ const METHOD_TYPE_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
             object(vm.make_string(&descriptor)?)
         },
     ),
+    method(
+        "methodType",
+        "(Ljava/lang/Class;)Ljava/lang/invoke/MethodType;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let return_type = class_argument(vm, ref_arg(args, 0))?;
+            method_type_from(vm, return_type, &[])
+        },
+    ),
+    method(
+        "methodType",
+        "(Ljava/lang/Class;Ljava/lang/Class;)Ljava/lang/invoke/MethodType;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let return_type = class_argument(vm, ref_arg(args, 0))?;
+            let parameter = class_argument(vm, ref_arg(args, 1))?;
+            method_type_from(vm, return_type, &[parameter])
+        },
+    ),
+    method(
+        "methodType",
+        "(Ljava/lang/Class;[Ljava/lang/Class;)Ljava/lang/invoke/MethodType;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let return_type = class_argument(vm, ref_arg(args, 0))?;
+            let array = ref_arg(args, 1);
+            let mut parameters = Vec::new();
+            let length = vm.array_length(array)?;
+            for index in 0..length {
+                let value = vm.array_get(array, index as i32)?;
+                parameters.push(class_argument(vm, value.as_ref())?);
+            }
+            method_type_from(vm, return_type, &parameters)
+        },
+    ),
+    method(
+        "methodType",
+        "(Ljava/lang/Class;Ljava/util/List;)Ljava/lang/invoke/MethodType;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let return_type = class_argument(vm, ref_arg(args, 0))?;
+            let list = ref_arg(args, 1);
+            let mut parameters = Vec::new();
+            for element in crate::util::collection_elements(vm, list)? {
+                parameters.push(class_argument(vm, element)?);
+            }
+            method_type_from(vm, return_type, &parameters)
+        },
+    ),
+    method(
+        "methodType",
+        "(Ljava/lang/Class;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/MethodType;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let return_type = class_argument(vm, ref_arg(args, 0))?;
+            let parameter_type = ref_arg(args, 1);
+            let descriptor = vm.method_type_of(parameter_type).unwrap_or_default();
+            let parameters = descriptor_params(&descriptor);
+            let mut result = String::from("(");
+            result.push_str(&parameters);
+            result.push(')');
+            result.push_str(&class_field_descriptor(vm, return_type));
+            object(vm.make_method_type(&result)?)
+        },
+    ),
 ];
+
+/// The parameter part (including parentheses) of a method descriptor.
+fn descriptor_params(descriptor: &str) -> String {
+    match descriptor.find(')') {
+        Some(index) => descriptor[..=index].to_string(),
+        None => "()".to_string(),
+    }
+}
+
+/// Build a `MethodType` from a return class and parameter classes.
+fn method_type_from(
+    vm: &mut Vm<'_>,
+    return_type: oxjvm_vm::ClassId,
+    parameters: &[oxjvm_vm::ClassId],
+) -> Result<Value, VmError> {
+    let mut descriptor = String::from("(");
+    for parameter in parameters {
+        descriptor.push_str(&class_field_descriptor(vm, *parameter));
+    }
+    descriptor.push(')');
+    descriptor.push_str(&class_field_descriptor(vm, return_type));
+    object(vm.make_method_type(&descriptor)?)
+}
 
 pub(crate) const METHOD_TYPE: oxjvm_vm::NativeClass = class(
     "java/lang/invoke/MethodType",

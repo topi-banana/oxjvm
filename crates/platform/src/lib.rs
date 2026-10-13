@@ -130,6 +130,11 @@ pub trait Host {
         Vec::new()
     }
 
+    /// The host environment, for `System.getenv`.
+    fn environment(&mut self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
     /// The host filesystem, when it has one.
     fn filesystem(&mut self) -> Option<&mut dyn FileSystem> {
         None

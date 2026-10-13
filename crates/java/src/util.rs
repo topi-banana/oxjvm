@@ -144,7 +144,7 @@ pub(crate) const COLLECTION: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
     method(
         "size",
         "()I",
@@ -234,6 +234,177 @@ const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
         "(Ljava/util/function/Consumer;)V",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
+    ),
+    method(
+        "of",
+        "()Ljava/util/List;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(list_of_values(vm, &[])?),
+    ),
+    method(
+        "of",
+        "(Ljava/lang/Object;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| object(list_of_values(vm, &[ref_arg(args, 0)])?),
+    ),
+    method(
+        "of",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| object(list_of_values(vm, &[ref_arg(args, 0), ref_arg(args, 1)])?),
+    ),
+    method(
+        "of",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            object(list_of_values(
+                vm,
+                &[ref_arg(args, 0), ref_arg(args, 1), ref_arg(args, 2)],
+            )?)
+        },
+    ),
+    method(
+        "of",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            object(list_of_values(
+                vm,
+                &[
+                    ref_arg(args, 0),
+                    ref_arg(args, 1),
+                    ref_arg(args, 2),
+                    ref_arg(args, 3),
+                ],
+            )?)
+        },
+    ),
+    method(
+        "of",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            object(list_of_values(
+                vm,
+                &[
+                    ref_arg(args, 0),
+                    ref_arg(args, 1),
+                    ref_arg(args, 2),
+                    ref_arg(args, 3),
+                    ref_arg(args, 4),
+                ],
+            )?)
+        },
+    ),
+    method(
+        "of",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            object(list_of_values(
+                vm,
+                &[
+                    ref_arg(args, 0),
+                    ref_arg(args, 1),
+                    ref_arg(args, 2),
+                    ref_arg(args, 3),
+                    ref_arg(args, 4),
+                    ref_arg(args, 5),
+                ],
+            )?)
+        },
+    ),
+    method(
+        "of",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            object(list_of_values(
+                vm,
+                &[
+                    ref_arg(args, 0),
+                    ref_arg(args, 1),
+                    ref_arg(args, 2),
+                    ref_arg(args, 3),
+                    ref_arg(args, 4),
+                    ref_arg(args, 5),
+                    ref_arg(args, 6),
+                ],
+            )?)
+        },
+    ),
+    method(
+        "of",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            object(list_of_values(
+                vm,
+                &[
+                    ref_arg(args, 0),
+                    ref_arg(args, 1),
+                    ref_arg(args, 2),
+                    ref_arg(args, 3),
+                    ref_arg(args, 4),
+                    ref_arg(args, 5),
+                    ref_arg(args, 6),
+                    ref_arg(args, 7),
+                ],
+            )?)
+        },
+    ),
+    method(
+        "of",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            object(list_of_values(
+                vm,
+                &[
+                    ref_arg(args, 0),
+                    ref_arg(args, 1),
+                    ref_arg(args, 2),
+                    ref_arg(args, 3),
+                    ref_arg(args, 4),
+                    ref_arg(args, 5),
+                    ref_arg(args, 6),
+                    ref_arg(args, 7),
+                    ref_arg(args, 8),
+                ],
+            )?)
+        },
+    ),
+    method(
+        "of",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            object(list_of_values(
+                vm,
+                &[
+                    ref_arg(args, 0),
+                    ref_arg(args, 1),
+                    ref_arg(args, 2),
+                    ref_arg(args, 3),
+                    ref_arg(args, 4),
+                    ref_arg(args, 5),
+                    ref_arg(args, 6),
+                    ref_arg(args, 7),
+                    ref_arg(args, 8),
+                    ref_arg(args, 9),
+                ],
+            )?)
+        },
+    ),
+    method(
+        "of",
+        "([Ljava/lang/Object;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_STATIC | ACC_VARARGS,
+        |vm, _, args| {
+            let elements = object_array_values(vm, ref_arg(args, 0));
+            object(list_of_values(vm, &elements)?)
+        },
     ),
 ];
 
@@ -919,7 +1090,7 @@ pub(crate) const ARRAYS: oxjvm_vm::NativeClass = class(
 // Random (exactly the java.util.Random LCG)
 // -------------------------------------------------------------------------------------------
 
-const RANDOM_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const RANDOM_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method("<init>", "()V", ACC_PUBLIC, random_init),
     method("<init>", "(J)V", ACC_PUBLIC, random_init_seed),
     method("setSeed", "(J)V", ACC_PUBLIC, |vm, _, args| {
@@ -968,6 +1139,16 @@ const RANDOM_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         let low = next_random_int(vm, receiver(args), 27, &[])?;
         let value = ((high.as_int() as i64) << 27).wrapping_add(i64::from(low.as_int()));
         Ok(Value::Double(value as f64 / (1i64 << 53) as f64))
+    }),
+    method("nextBytes", "([B)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let array = ref_arg(args, 1);
+        let length = vm.array_length(array)?;
+        for index in 0..length {
+            let value = next_random_int(vm, this, 8, &[])?.as_int() as i8;
+            vm.array_set(array, index as i32, Value::Int(i32::from(value)), false)?;
+        }
+        void()
     }),
 ];
 
@@ -1040,7 +1221,7 @@ pub(crate) const RANDOM: oxjvm_vm::NativeClass = class(
 // ArrayList + iterator
 // -------------------------------------------------------------------------------------------
 
-const ARRAY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
+const ARRAY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
     method("<init>", "()V", ACC_PUBLIC, array_list_init),
     method("<init>", "(I)V", ACC_PUBLIC, array_list_init),
     method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, array_list_add),
@@ -1129,6 +1310,16 @@ const ARRAY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
         "(Ljava/util/function/Consumer;)V",
         ACC_PUBLIC,
         collection_for_each,
+    ),
+    method(
+        "<init>",
+        "(Ljava/util/Collection;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = collection_elements(vm, ref_arg(args, 1))?;
+            array_list_store(vm, receiver(args), &elements)?;
+            void()
+        },
     ),
 ];
 
@@ -1825,6 +2016,22 @@ fn hash_map_values_of(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Vec<ObjectRef>
         .collect())
 }
 
+/// `List.of(...)`: an `ArrayList` with the given elements.
+fn list_of_values(vm: &mut Vm<'_>, elements: &[ObjectRef]) -> Result<ObjectRef, VmError> {
+    array_list_from(vm, elements)
+}
+
+/// The elements of an object array (empty for anything else).
+fn object_array_values(vm: &Vm<'_>, array: ObjectRef) -> Vec<ObjectRef> {
+    if array.is_null() {
+        return Vec::new();
+    }
+    match vm.heap.get(array).map(|object| &object.data) {
+        Some(ObjectData::Array(ArrayData::Reference(elements))) => elements.clone(),
+        _ => Vec::new(),
+    }
+}
+
 pub(crate) fn array_list_from(
     vm: &mut Vm<'_>,
     elements: &[ObjectRef],
@@ -2292,7 +2499,7 @@ fn properties_set_property(
 // Collections
 // -------------------------------------------------------------------------------------------
 
-const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
     method(
         "sort",
         "(Ljava/util/List;)V",
@@ -2325,6 +2532,14 @@ const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
         "(Ljava/util/Collection;[Ljava/lang/Object;)Z",
         ACC_PUBLIC | ACC_STATIC,
         collections_add_all,
+    ),
+    method(
+        "synchronizedList",
+        "(Ljava/util/List;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_STATIC,
+        // oxjvm executes one instruction at a time and has no exposed locking API,
+        // so the wrapper is the list itself.
+        |_, _, args| object(ref_arg(args, 0)),
     ),
 ];
 
