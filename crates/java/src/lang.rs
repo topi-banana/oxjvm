@@ -778,7 +778,7 @@ const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
 
 // The remaining `String.valueOf` overloads and `format` are declared in a second array so the
 // first stays readable; both are concatenated below.
-const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 11] = [
+const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 13] = [
     method(
         "valueOf",
         "(Z)Ljava/lang/String;",
@@ -844,6 +844,18 @@ const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 11] = [
         "(Ljava/lang/String;)Z",
         ACC_PUBLIC,
         string_matches,
+    ),
+    method(
+        "replaceAll",
+        "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        string_replace_all,
+    ),
+    method(
+        "replaceFirst",
+        "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        string_replace_first,
     ),
 ];
 
@@ -1827,18 +1839,7 @@ fn string_split(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let text = vm.string_or_empty(receiver(args));
-    let separator = string_arg(vm, args[1])?;
-    let parts: Vec<String> = if separator.is_empty() {
-        text.chars().map(|ch| ch.to_string()).collect()
-    } else {
-        text.split(&separator as &str).map(str::to_string).collect()
-    };
-    let mut trimmed = parts;
-    while trimmed.last().is_some_and(String::is_empty) {
-        trimmed.pop();
-    }
-    string_array(vm, &trimmed)
+    string_split_impl(vm, args, 0)
 }
 
 fn string_split_limit(
@@ -1846,17 +1847,20 @@ fn string_split_limit(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
+    string_split_impl(vm, args, int_arg(args, 2))
+}
+
+fn string_split_impl(vm: &mut Vm<'_>, args: &[Value], limit: i32) -> Result<Value, VmError> {
     let text = vm.string_or_empty(receiver(args));
     let separator = string_arg(vm, args[1])?;
-    let limit = int_arg(args, 2);
-    if limit <= 0 {
-        return string_split(vm, _c, args);
-    }
     let parts: Vec<String> = if separator.is_empty() {
         text.chars().map(|ch| ch.to_string()).collect()
     } else {
-        text.splitn(limit as usize, &separator as &str)
-            .map(str::to_string)
+        let units: Vec<u16> = text.encode_utf16().collect();
+        let regex = crate::regex::compile_from_str(vm, &separator)?;
+        crate::regex::split_spans(&regex, &units, limit)
+            .iter()
+            .map(|(start, end)| String::from_utf16_lossy(&units[*start..*end]))
             .collect()
     };
     string_array(vm, &parts)
@@ -1869,26 +1873,43 @@ fn string_matches(
 ) -> Result<Value, VmError> {
     let text = vm.string_or_empty(receiver(args));
     let pattern = string_arg(vm, args[1])?;
-    boolean(simple_regex_match(&pattern, &text))
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let regex = crate::regex::compile_from_str(vm, &pattern)?;
+    boolean(crate::regex::match_at(&regex, &units, true).is_some())
+}
+
+fn string_replace_all(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    string_replace_impl(vm, args, true)
+}
+
+fn string_replace_first(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    string_replace_impl(vm, args, false)
+}
+
+fn string_replace_impl(vm: &mut Vm<'_>, args: &[Value], all: bool) -> Result<Value, VmError> {
+    let text = vm.string_or_empty(receiver(args));
+    let pattern = string_arg(vm, args[1])?;
+    let replacement = string_arg(vm, args[2])?;
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let replacement: Vec<u16> = replacement.encode_utf16().collect();
+    let regex = crate::regex::compile_from_str(vm, &pattern)?;
+    let result = if all {
+        crate::regex::replace_all(&regex, &units, &replacement)
+    } else {
+        crate::regex::replace_first(&regex, &units, &replacement)
+    };
+    object(vm.make_string_utf16(result)?)
 }
 
 /// A deliberately small regex engine for `String.matches`: literals and `.*`/`.`/`^`/`$`.
-pub(crate) fn simple_regex_match(pattern: &str, text: &str) -> bool {
-    if pattern == ".*" {
-        return true;
-    }
-    if let Some(literal) = pattern.strip_prefix("^").and_then(|p| p.strip_suffix('$')) {
-        return literal == text;
-    }
-    if let Some(prefix) = pattern.strip_suffix(".*") {
-        return text.starts_with(prefix);
-    }
-    if let Some(suffix) = pattern.strip_prefix(".*") {
-        return text.ends_with(suffix);
-    }
-    pattern == text
-}
-
 /// Build a `String[]` from Rust strings.
 pub(crate) fn string_array(vm: &mut Vm<'_>, values: &[String]) -> Result<Value, VmError> {
     let string_class = vm.resolve_class("java/lang/String")?;
@@ -1918,17 +1939,17 @@ pub(crate) const STRING: oxjvm_vm::NativeClass = {
 };
 
 /// Both `String` method arrays flattened; built by a const fn to stay `'static`.
-const STRING_ALL_METHODS: [oxjvm_vm::NativeMethodDef; 57] = flatten_string_methods();
+const STRING_ALL_METHODS: [oxjvm_vm::NativeMethodDef; 59] = flatten_string_methods();
 
-const fn flatten_string_methods() -> [oxjvm_vm::NativeMethodDef; 57] {
-    let mut out = [method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()); 57];
+const fn flatten_string_methods() -> [oxjvm_vm::NativeMethodDef; 59] {
+    let mut out = [method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()); 59];
     let mut index = 0;
     while index < 46 {
         out[index] = STRING_METHODS[index];
         index += 1;
     }
     let mut extra = 0;
-    while extra < 11 {
+    while extra < 13 {
         out[46 + extra] = STRING_METHODS_EXTRA[extra];
         extra += 1;
     }

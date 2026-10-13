@@ -12,6 +12,9 @@
 
 extern crate alloc;
 
+#[cfg(test)]
+extern crate std;
+
 pub(crate) mod atomic;
 pub(crate) mod boxed;
 pub(crate) mod invoke;
@@ -20,8 +23,10 @@ pub(crate) mod lang;
 pub(crate) mod locale;
 pub(crate) mod math;
 pub(crate) mod optional;
+pub(crate) mod regex;
 pub(crate) mod throwable;
 pub(crate) mod util;
+pub(crate) mod uuid;
 
 use alloc::string::String;
 
@@ -91,7 +96,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 127] = [
+static REGISTRY: [NativeClass; 132] = [
     lang::OBJECT,
     lang::CLASS,
     lang::STRING,
@@ -195,6 +200,7 @@ static REGISTRY: [NativeClass; 127] = [
     util::ARRAY_LIST_ITERATOR,
     util::LINKED_LIST,
     util::PROPERTIES,
+    uuid::UUID,
     util::HASH_MAP,
     util::COLLECTIONS,
     invoke::METHOD_TYPE,
@@ -216,6 +222,10 @@ static REGISTRY: [NativeClass; 127] = [
     invoke::BINARY_OPERATOR,
     invoke::CALLABLE,
     invoke::APPENDABLE,
+    regex::PATTERN,
+    regex::MATCHER,
+    regex::MATCH_RESULT,
+    regex::PATTERN_SYNTAX_EXCEPTION,
     atomic::ATOMIC_INTEGER,
     atomic::ATOMIC_LONG,
     atomic::ATOMIC_BOOLEAN,
