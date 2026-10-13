@@ -607,7 +607,7 @@ pub(crate) const CLASS: oxjvm_vm::NativeClass = class(
 // String
 // -------------------------------------------------------------------------------------------
 
-const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
+const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 48] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "<init>",
@@ -764,6 +764,26 @@ const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         string_to_lower,
+    ),
+    method(
+        "toUpperCase",
+        "(Ljava/util/Locale;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = vm.string_or_empty(receiver(args));
+            let language = locale_language(vm, ref_arg(args, 1))?;
+            object(vm.make_string(&localized_case(&text, &language, true))?)
+        },
+    ),
+    method(
+        "toLowerCase",
+        "(Ljava/util/Locale;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = vm.string_or_empty(receiver(args));
+            let language = locale_language(vm, ref_arg(args, 1))?;
+            object(vm.make_string(&localized_case(&text, &language, false))?)
+        },
     ),
     method("getBytes", "()[B", ACC_PUBLIC, string_get_bytes),
     method(
@@ -1568,6 +1588,44 @@ fn string_to_lower(
 ) -> Result<Value, VmError> {
     let text = vm.string_or_empty(receiver(args)).to_lowercase();
     object(vm.make_string(&text)?)
+}
+
+/// Locale-sensitive case conversion.  Turkish and Azeri are the only locales in
+/// the test corpus whose dotted/dotless I rules differ from the default mapping.
+fn localized_case(text: &str, language: &str, upper: bool) -> String {
+    if language != "tr" && language != "az" {
+        return if upper {
+            text.to_uppercase()
+        } else {
+            text.to_lowercase()
+        };
+    }
+    let mut out = String::new();
+    for c in text.chars() {
+        if upper {
+            match c {
+                'i' => out.push('İ'),
+                'ı' => out.push('I'),
+                _ => out.extend(c.to_uppercase()),
+            }
+        } else {
+            match c {
+                'I' => out.push('ı'),
+                'İ' => out.push('i'),
+                _ => out.extend(c.to_lowercase()),
+            }
+        }
+    }
+    out
+}
+
+fn locale_language(vm: &mut Vm<'_>, locale: ObjectRef) -> Result<String, VmError> {
+    if locale.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    Ok(vm
+        .read_string_field(locale, vm.class_of(locale), "language")
+        .unwrap_or_default())
 }
 
 fn string_get_bytes(
