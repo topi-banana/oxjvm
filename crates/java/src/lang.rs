@@ -3019,11 +3019,178 @@ const RUNTIME_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     ),
     method(
         "version",
-        "()Ljava/lang/String;",
+        "()Ljava/lang/Runtime$Version;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| object(vm.make_string("17")?),
+        |vm, _, _| runtime_version(vm),
     ),
 ];
+
+/// `Runtime.version()`: the JDK 27 GA version, as a `Runtime$Version`.
+fn runtime_version(vm: &mut Vm<'_>) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/lang/Runtime$Version")?;
+    let instance = vm.new_instance(class)?;
+    for (name, value) in [("feature", 27), ("interim", 0), ("update", 0), ("patch", 0)] {
+        if let Some((declaring, field)) = vm.find_field_opt(class, name, "I") {
+            vm.set_instance_int(instance, declaring, field, value);
+        }
+    }
+    object(instance)
+}
+
+const RUNTIME_VERSION_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+    method("feature", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_int_field(vm, receiver(args), "feature"))
+    }),
+    method("interim", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_int_field(vm, receiver(args), "interim"))
+    }),
+    method("update", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_int_field(vm, receiver(args), "update"))
+    }),
+    method("patch", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_int_field(vm, receiver(args), "patch"))
+    }),
+    // A GA release has no pre-release or build identifiers.
+    method("pre", "()Ljava/util/Optional;", ACC_PUBLIC, |vm, _, _| {
+        empty_optional(vm)
+    }),
+    method("build", "()Ljava/util/Optional;", ACC_PUBLIC, |vm, _, _| {
+        empty_optional(vm)
+    }),
+    method(
+        "optional",
+        "()Ljava/util/Optional;",
+        ACC_PUBLIC,
+        |vm, _, _| empty_optional(vm),
+    ),
+    method(
+        "version",
+        "()Ljava/util/List;",
+        ACC_PUBLIC,
+        runtime_version_components,
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        runtime_version_to_string,
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = ref_arg(args, 1);
+            if other.is_null() {
+                return boolean(false);
+            }
+            if vm.class_of(receiver(args)) != vm.class_of(other) {
+                return boolean(false);
+            }
+            boolean(runtime_version_compare(vm, receiver(args), other) == 0)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let mut hash = 1i32;
+        for name in ["feature", "interim", "update", "patch"] {
+            hash = hash
+                .wrapping_mul(31)
+                .wrapping_add(read_int_field(vm, this, name));
+        }
+        int(hash)
+    }),
+    method(
+        "compareTo",
+        "(Ljava/lang/Runtime$Version;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = ref_arg(args, 1);
+            if other.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            int(runtime_version_compare(vm, receiver(args), other))
+        },
+    ),
+];
+
+/// An empty `java.util.Optional` (the value field defaults to null).
+fn empty_optional(vm: &mut Vm<'_>) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/util/Optional")?;
+    let instance = vm.new_instance(class)?;
+    object(instance)
+}
+
+fn runtime_version_compare(vm: &Vm<'_>, this: ObjectRef, other: ObjectRef) -> i32 {
+    for name in ["feature", "interim", "update", "patch"] {
+        let left = read_int_field(vm, this, name);
+        let right = read_int_field(vm, other, name);
+        if left != right {
+            return if left < right { -1 } else { 1 };
+        }
+    }
+    0
+}
+
+fn runtime_version_components(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let list_class = vm.resolve_class("java/util/ArrayList")?;
+    let list = vm.new_instance(list_class)?;
+    let (declaring, method) = vm
+        .find_method(list_class, "<init>", "()V")
+        .ok_or_else(|| VmError::internal("ArrayList() missing"))?;
+    vm.invoke_method(declaring, method, vec![Value::Ref(list)])?;
+    let (declaring, add) = vm
+        .find_method(list_class, "add", "(Ljava/lang/Object;)Z")
+        .ok_or_else(|| VmError::internal("ArrayList.add missing"))?;
+    let this = receiver(args);
+    for name in ["feature", "interim", "update", "patch"] {
+        let value = read_int_field(vm, this, name);
+        let boxed = crate::boxed::boxed_int(vm, value)?;
+        vm.invoke_method(declaring, add, vec![Value::Ref(list), boxed])?;
+    }
+    object(list)
+}
+
+fn runtime_version_to_string(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let feature = read_int_field(vm, this, "feature");
+    let mut text = alloc::format!("{feature}");
+    let mut parts = Vec::new();
+    parts.push(read_int_field(vm, this, "interim"));
+    parts.push(read_int_field(vm, this, "update"));
+    parts.push(read_int_field(vm, this, "patch"));
+    while parts.last() == Some(&0) {
+        parts.pop();
+    }
+    for part in parts {
+        text.push('.');
+        text.push_str(&alloc::format!("{part}"));
+    }
+    object(vm.make_string(&text)?)
+}
+
+pub(crate) const RUNTIME_VERSION: oxjvm_vm::NativeClass = class(
+    "java/lang/Runtime$Version",
+    Some("java/lang/Object"),
+    &["java/lang/Comparable"],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("feature", "I", ACC_PRIVATE | ACC_FINAL, None),
+        field("interim", "I", ACC_PRIVATE | ACC_FINAL, None),
+        field("update", "I", ACC_PRIVATE | ACC_FINAL, None),
+        field("patch", "I", ACC_PRIVATE | ACC_FINAL, None),
+    ],
+    &RUNTIME_VERSION_METHODS,
+    None,
+);
 
 fn runtime_get_runtime(
     vm: &mut Vm<'_>,

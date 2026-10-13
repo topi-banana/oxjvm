@@ -247,7 +247,7 @@ fn integer_get_integer(vm: &mut Vm<'_>, args: &[Value], default: Value) -> Resul
     Ok(default)
 }
 
-fn boxed_int(vm: &mut Vm<'_>, value: i32) -> Result<Value, VmError> {
+pub(crate) fn boxed_int(vm: &mut Vm<'_>, value: i32) -> Result<Value, VmError> {
     let class = vm.resolve_class("java/lang/Integer")?;
     let instance = vm.new_instance(class)?;
     write_value_int(vm, instance, value);
