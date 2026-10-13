@@ -10,8 +10,11 @@
 
 extern crate alloc;
 
+pub mod fs;
 pub mod inflate;
 pub mod zip;
+
+pub use fs::{FileKind, FileMetadata, FileSystem};
 
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
@@ -125,6 +128,17 @@ pub trait Host {
     /// All system properties the host knows about, for `System.getProperties`.
     fn properties(&mut self) -> Vec<(String, String)> {
         Vec::new()
+    }
+
+    /// The host filesystem, when it has one.
+    fn filesystem(&mut self) -> Option<&mut dyn FileSystem> {
+        None
+    }
+
+    /// Load a class-path resource by its path (`a/b/Thing.class` or `data.txt`).
+    fn load_resource(&mut self, path: &str) -> Option<Vec<u8>> {
+        let _ = path;
+        None
     }
 }
 

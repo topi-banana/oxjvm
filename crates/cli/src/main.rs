@@ -49,9 +49,108 @@ fn usage() {
 }
 
 /// A host that loads classes from `-cp` directories and jars and writes to the real streams.
+struct PassthroughFileSystem;
+
+impl PassthroughFileSystem {
+    fn path(path: &str) -> PathBuf {
+        PathBuf::from(path)
+    }
+}
+
+impl oxjvm_platform::FileSystem for PassthroughFileSystem {
+    fn metadata(&mut self, path: &str) -> Option<oxjvm_platform::FileMetadata> {
+        let metadata = fs::metadata(Self::path(path)).ok()?;
+        let kind = if metadata.is_dir() {
+            oxjvm_platform::FileKind::Directory
+        } else if metadata.is_file() {
+            oxjvm_platform::FileKind::File
+        } else {
+            oxjvm_platform::FileKind::Other
+        };
+        let modified_millis = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis() as i64)
+            .unwrap_or(0);
+        Some(oxjvm_platform::FileMetadata {
+            kind,
+            len: metadata.len(),
+            modified_millis,
+            readonly: metadata.permissions().readonly(),
+        })
+    }
+
+    fn read(&mut self, path: &str) -> Option<Vec<u8>> {
+        fs::read(Self::path(path)).ok()
+    }
+
+    fn write(&mut self, path: &str, bytes: &[u8], append: bool) -> bool {
+        if append {
+            use std::io::Write;
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(Self::path(path))
+                .and_then(|mut file| file.write_all(bytes))
+                .is_ok()
+        } else {
+            fs::write(Self::path(path), bytes).is_ok()
+        }
+    }
+
+    fn list(&mut self, path: &str) -> Option<Vec<String>> {
+        let entries = fs::read_dir(Self::path(path)).ok()?;
+        let mut names = Vec::new();
+        for entry in entries.flatten() {
+            names.push(entry.file_name().to_string_lossy().into_owned());
+        }
+        names.sort();
+        Some(names)
+    }
+
+    fn create_dir(&mut self, path: &str) -> bool {
+        fs::create_dir(Self::path(path)).is_ok()
+    }
+
+    fn create_dir_all(&mut self, path: &str) -> bool {
+        fs::create_dir_all(Self::path(path)).is_ok()
+    }
+
+    fn remove_file(&mut self, path: &str) -> bool {
+        fs::remove_file(Self::path(path)).is_ok()
+    }
+
+    fn remove_dir(&mut self, path: &str) -> bool {
+        fs::remove_dir(Self::path(path)).is_ok()
+    }
+
+    fn rename(&mut self, from: &str, to: &str) -> bool {
+        fs::rename(Self::path(from), Self::path(to)).is_ok()
+    }
+
+    fn canonicalize(&mut self, path: &str) -> Option<String> {
+        fs::canonicalize(Self::path(path))
+            .ok()
+            .map(|path| path.display().to_string())
+    }
+
+    fn set_modified(&mut self, path: &str, millis: i64) -> bool {
+        let time = if millis >= 0 {
+            std::time::UNIX_EPOCH + std::time::Duration::from_millis(millis as u64)
+        } else {
+            std::time::UNIX_EPOCH - std::time::Duration::from_millis((-millis) as u64)
+        };
+        fs::File::open(Self::path(path))
+            .and_then(|file| file.set_modified(time))
+            .is_ok()
+    }
+}
+
 struct StdHost {
     classpath: Vec<PathBuf>,
     properties: BTreeMap<String, String>,
+    fs: PassthroughFileSystem,
 }
 
 impl StdHost {
@@ -85,6 +184,7 @@ impl StdHost {
         Self {
             classpath,
             properties,
+            fs: PassthroughFileSystem,
         }
     }
 
@@ -108,6 +208,28 @@ impl Host for StdHost {
         for path in &self.classpath {
             if let Some(bytes) = self.load_from_path(internal_name, path) {
                 return Some(bytes);
+            }
+        }
+        None
+    }
+
+    fn filesystem(&mut self) -> Option<&mut dyn oxjvm_platform::FileSystem> {
+        Some(&mut self.fs)
+    }
+
+    fn load_resource(&mut self, resource: &str) -> Option<Vec<u8>> {
+        for path in &self.classpath {
+            if path.is_dir() {
+                let candidate = path.join(resource);
+                if let Ok(bytes) = fs::read(candidate) {
+                    return Some(bytes);
+                }
+            } else if path.extension().is_some_and(|extension| extension == "jar") {
+                let bytes = fs::read(path).ok()?;
+                let archive = oxjvm_platform::zip::ZipArchive::new(&bytes).ok()?;
+                if let Ok(Some(entry)) = archive.read(resource) {
+                    return Some(entry);
+                }
             }
         }
         None

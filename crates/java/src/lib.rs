@@ -17,16 +17,19 @@ extern crate std;
 
 pub(crate) mod atomic;
 pub(crate) mod boxed;
+pub(crate) mod file;
 pub(crate) mod invoke;
 pub(crate) mod io;
 pub(crate) mod lang;
 pub(crate) mod locale;
 pub(crate) mod math;
+pub(crate) mod nio;
 pub(crate) mod optional;
 pub(crate) mod regex;
 pub(crate) mod throwable;
 pub(crate) mod util;
 pub(crate) mod uuid;
+pub(crate) mod zip;
 
 use alloc::string::String;
 
@@ -96,7 +99,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 132] = [
+static REGISTRY: [NativeClass; 149] = [
     lang::OBJECT,
     lang::CLASS,
     lang::STRING,
@@ -226,6 +229,23 @@ static REGISTRY: [NativeClass; 132] = [
     regex::MATCHER,
     regex::MATCH_RESULT,
     regex::PATTERN_SYNTAX_EXCEPTION,
+    file::FILE,
+    file::FILE_INPUT_STREAM,
+    file::FILE_OUTPUT_STREAM,
+    zip::ZIP_ENTRY,
+    zip::ZIP_OUTPUT_STREAM,
+    zip::CRC32,
+    zip::CHECKSUM,
+    nio::PATH,
+    nio::OXJVM_PATH,
+    nio::PATHS,
+    nio::FILES,
+    nio::COPY_OPTION,
+    nio::OPEN_OPTION,
+    nio::LINK_OPTION,
+    nio::STANDARD_COPY_OPTION,
+    nio::STANDARD_OPEN_OPTION,
+    nio::FILE_ATTRIBUTE,
     atomic::ATOMIC_INTEGER,
     atomic::ATOMIC_LONG,
     atomic::ATOMIC_BOOLEAN,

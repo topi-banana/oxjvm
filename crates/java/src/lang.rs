@@ -224,7 +224,7 @@ pub(crate) const OBJECT: oxjvm_vm::NativeClass = class(
 // Class
 // -------------------------------------------------------------------------------------------
 
-const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
+const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -324,7 +324,17 @@ const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         "getClassLoader",
         "()Ljava/lang/ClassLoader;",
         ACC_PUBLIC,
-        |_, _, _| object(ObjectRef::NULL),
+        |vm, _, _| object(system_class_loader(vm)?),
+    ),
+    method(
+        "getResourceAsStream",
+        "(Ljava/lang/String;)Ljava/io/InputStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let resource = string_arg(vm, args[1])?;
+            let resource = resource.strip_prefix('/').unwrap_or(&resource);
+            resource_as_stream(vm, resource)
+        },
     ),
     method(
         "toString",
@@ -778,7 +788,7 @@ const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
 
 // The remaining `String.valueOf` overloads and `format` are declared in a second array so the
 // first stays readable; both are concatenated below.
-const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 13] = [
+const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 15] = [
     method(
         "valueOf",
         "(Z)Ljava/lang/String;",
@@ -857,6 +867,13 @@ const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 13] = [
         ACC_PUBLIC,
         string_replace_first,
     ),
+    method("<init>", "([BII)V", ACC_PUBLIC, string_init_bytes_range),
+    method(
+        "getBytes",
+        "(Ljava/lang/String;)[B",
+        ACC_PUBLIC,
+        string_get_bytes_charset,
+    ),
 ];
 
 fn string_init_string(
@@ -884,13 +901,20 @@ pub(crate) fn write_string_payload(
     string: ObjectRef,
     units: Vec<u16>,
 ) -> Result<(), VmError> {
-    if let Some(oxjvm_vm::ObjectData::String(payload)) =
-        vm.heap.get_mut(string).map(|object| &mut object.data)
-    {
-        *payload = units;
-        Ok(())
-    } else {
-        Err(VmError::internal("write_string_payload on a non-string"))
+    let Some(data) = vm.heap.get_mut(string).map(|object| &mut object.data) else {
+        return Err(VmError::internal("write_string_payload on a non-string"));
+    };
+    match data {
+        oxjvm_vm::ObjectData::String(payload) => {
+            *payload = units;
+            Ok(())
+        }
+        // `new String(...)` allocates a plain instance; the constructor converts it.
+        data @ oxjvm_vm::ObjectData::Instance(_) => {
+            *data = oxjvm_vm::ObjectData::String(units);
+            Ok(())
+        }
+        _ => Err(VmError::internal("write_string_payload on a non-string")),
     }
 }
 
@@ -916,6 +940,32 @@ fn string_init_chars_range(
     let slice = units[offset as usize..(offset + count) as usize].to_vec();
     write_string_payload(vm, receiver(args), slice)?;
     void()
+}
+
+/// `String(byte[], int, int)`: decode the slice as UTF-8.
+fn string_init_bytes_range(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let bytes = array_bytes(vm, ref_arg(args, 1))?;
+    let offset = int_arg(args, 2);
+    let count = int_arg(args, 3);
+    string_range_check(vm, offset, count, bytes.len())?;
+    let slice = &bytes[offset as usize..(offset + count) as usize];
+    let text = String::from_utf8_lossy(slice).into_owned();
+    write_string_payload(vm, receiver(args), text.encode_utf16().collect())?;
+    void()
+}
+
+/// `String.getBytes(String)`: encode as UTF-8 (the charset name is ignored).
+fn string_get_bytes_charset(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let _charset = string_arg(vm, args[1])?;
+    string_get_bytes(vm, _c, args)
 }
 
 fn string_range_check(
@@ -1910,6 +1960,19 @@ fn string_replace_impl(vm: &mut Vm<'_>, args: &[Value], all: bool) -> Result<Val
 }
 
 /// A deliberately small regex engine for `String.matches`: literals and `.*`/`.`/`^`/`$`.
+/// The bytes of a `byte[]`.
+pub(crate) fn array_bytes(vm: &mut Vm<'_>, array: ObjectRef) -> Result<Vec<u8>, VmError> {
+    if array.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let length = vm.array_length(array)?;
+    let mut bytes = Vec::with_capacity(length);
+    for index in 0..length {
+        bytes.push(vm.array_get(array, index as i32)?.as_int() as u8);
+    }
+    Ok(bytes)
+}
+
 /// Build a `String[]` from Rust strings.
 pub(crate) fn string_array(vm: &mut Vm<'_>, values: &[String]) -> Result<Value, VmError> {
     let string_class = vm.resolve_class("java/lang/String")?;
@@ -1939,17 +2002,17 @@ pub(crate) const STRING: oxjvm_vm::NativeClass = {
 };
 
 /// Both `String` method arrays flattened; built by a const fn to stay `'static`.
-const STRING_ALL_METHODS: [oxjvm_vm::NativeMethodDef; 59] = flatten_string_methods();
+const STRING_ALL_METHODS: [oxjvm_vm::NativeMethodDef; 61] = flatten_string_methods();
 
-const fn flatten_string_methods() -> [oxjvm_vm::NativeMethodDef; 59] {
-    let mut out = [method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()); 59];
+const fn flatten_string_methods() -> [oxjvm_vm::NativeMethodDef; 61] {
+    let mut out = [method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()); 61];
     let mut index = 0;
     while index < 46 {
         out[index] = STRING_METHODS[index];
         index += 1;
     }
     let mut extra = 0;
-    while extra < 13 {
+    while extra < 15 {
         out[46 + extra] = STRING_METHODS_EXTRA[extra];
         extra += 1;
     }
@@ -3470,12 +3533,12 @@ fn thread_local_with_initial(
 // ClassLoader
 // -------------------------------------------------------------------------------------------
 
-const CLASS_LOADER_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+const CLASS_LOADER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     method(
         "getSystemClassLoader",
         "()Ljava/lang/ClassLoader;",
         ACC_PUBLIC | ACC_STATIC,
-        |_, _, _| object(ObjectRef::NULL),
+        |vm, _, _| object(system_class_loader(vm)?),
     ),
     method(
         "getParent",
@@ -3494,6 +3557,12 @@ const CLASS_LOADER_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         "(Ljava/lang/String;)Ljava/net/URL;",
         ACC_PUBLIC,
         |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "getResourceAsStream",
+        "(Ljava/lang/String;)Ljava/io/InputStream;",
+        ACC_PUBLIC,
+        class_loader_resource_as_stream,
     ),
 ];
 
@@ -3515,11 +3584,70 @@ pub(crate) const CLASS_LOADER: oxjvm_vm::NativeClass = class(
     "java/lang/ClassLoader",
     Some("java/lang/Object"),
     &[],
-    ACC_PUBLIC | ACC_ABSTRACT,
-    &[],
+    ACC_PUBLIC,
+    &[field(
+        "systemLoader",
+        "Ljava/lang/ClassLoader;",
+        ACC_PRIVATE | ACC_STATIC,
+        None,
+    )],
     &CLASS_LOADER_METHODS,
     None,
 );
+
+/// The application class loader singleton (`Class.getClassLoader`).
+pub(crate) fn system_class_loader(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/lang/ClassLoader")?;
+    if let Some(existing) =
+        vm.read_static_ref_if_set(class, "systemLoader", "Ljava/lang/ClassLoader;")
+    {
+        return Ok(existing);
+    }
+    let instance = vm.new_instance(class)?;
+    vm.set_static_value(
+        class,
+        "systemLoader",
+        "Ljava/lang/ClassLoader;",
+        Value::Ref(instance),
+    );
+    Ok(instance)
+}
+
+fn class_loader_resource_as_stream(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let resource = string_arg(vm, args[1])?;
+    resource_as_stream(vm, &resource)
+}
+
+/// Open a class-path resource as a `ByteArrayInputStream`, or return null.
+pub(crate) fn resource_as_stream(vm: &mut Vm<'_>, resource: &str) -> Result<Value, VmError> {
+    let Some(bytes) = vm.host.load_resource(resource) else {
+        return object(ObjectRef::NULL);
+    };
+    let class = vm.resolve_class("java/io/ByteArrayInputStream")?;
+    let instance = vm.new_instance(class)?;
+    let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, bytes.len())?;
+    for (index, byte) in bytes.iter().enumerate() {
+        vm.array_set(
+            array,
+            index as i32,
+            Value::Int(i32::from(*byte as i8)),
+            false,
+        )?;
+    }
+    let (declaring, ctor) = vm
+        .find_method(class, "<init>", "([B)V")
+        .ok_or_else(|| VmError::internal("ByteArrayInputStream lacks its constructor"))?;
+    vm.invoke_method(
+        declaring,
+        ctor,
+        vec![Value::Ref(instance), Value::Ref(array)],
+    )?;
+    object(instance)
+}
 
 // -------------------------------------------------------------------------------------------
 // Enum / Record

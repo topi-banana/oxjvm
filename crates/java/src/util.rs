@@ -1118,7 +1118,7 @@ fn collection_for_each(
     void()
 }
 
-fn array_list_elements(vm: &Vm<'_>, this: ObjectRef) -> Vec<ObjectRef> {
+pub(crate) fn array_list_elements(vm: &Vm<'_>, this: ObjectRef) -> Vec<ObjectRef> {
     let size = crate::lang::read_int_field(vm, this, "size").max(0) as usize;
     match vm.read_ref_field(
         this,
