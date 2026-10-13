@@ -749,3 +749,142 @@ pub(crate) const PRINT_WRITER: oxjvm_vm::NativeClass = class(
     &PRINT_WRITER_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// StringWriter
+// -------------------------------------------------------------------------------------------
+
+const STRING_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+    method("<init>", "()V", ACC_PUBLIC, string_writer_init),
+    method(
+        "write",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = ref_arg(args, 1);
+            if text.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            string_writer_append(vm, receiver(args), text)
+        },
+    ),
+    method(
+        "write",
+        "(Ljava/lang/String;II)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = ref_arg(args, 1);
+            if text.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(text, "substring", "(II)Ljava/lang/String;")?;
+            let slice = vm.invoke_method(
+                class,
+                method,
+                vec![
+                    Value::Ref(text),
+                    Value::Int(crate::int_arg(args, 2)),
+                    Value::Int(crate::int_arg(args, 3)),
+                ],
+            )?;
+            string_writer_append(vm, receiver(args), slice.as_ref())
+        },
+    ),
+    method("write", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let ch = crate::int_arg(args, 1) as u16;
+        let text = vm.make_string_utf16(vec![ch])?;
+        string_writer_append(vm, receiver(args), text)
+    }),
+    method(
+        "append",
+        "(Ljava/lang/CharSequence;)Ljava/io/Writer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let sequence = ref_arg(args, 1);
+            if sequence.is_null() {
+                let text = vm.make_string("null")?;
+                string_writer_append(vm, receiver(args), text)?;
+                return object(receiver(args));
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(sequence, "toString", "()Ljava/lang/String;")?;
+            let text = vm.invoke_method(class, method, vec![Value::Ref(sequence)])?;
+            string_writer_append(vm, receiver(args), text.as_ref())?;
+            object(receiver(args))
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let buffer = string_writer_buffer(vm, receiver(args));
+            if buffer.is_null() {
+                return object(ObjectRef::NULL);
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(buffer, "toString", "()Ljava/lang/String;")?;
+            vm.invoke_method(class, method, vec![Value::Ref(buffer)])
+        },
+    ),
+    method("flush", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "getBuffer",
+        "()Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| object(string_writer_buffer(vm, receiver(args))),
+    ),
+];
+
+pub(crate) const STRING_WRITER: oxjvm_vm::NativeClass = class(
+    "java/io/StringWriter",
+    Some("java/io/Writer"),
+    &[],
+    ACC_PUBLIC,
+    &[field("buf", "Ljava/lang/StringBuffer;", ACC_PRIVATE, None)],
+    &STRING_WRITER_METHODS,
+    None,
+);
+
+fn string_writer_init(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let buffer_class = vm.resolve_class("java/lang/StringBuffer")?;
+    let buffer = vm.new_instance(buffer_class)?;
+    if let Some((declaring, ctor)) = vm.find_method(buffer_class, "<init>", "()V") {
+        vm.invoke_method(declaring, ctor, vec![Value::Ref(buffer)])?;
+    }
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, "buf", "Ljava/lang/StringBuffer;")?;
+    vm.set_instance_ref(this, declaring, field, buffer);
+    void()
+}
+
+fn string_writer_buffer(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    let class = vm.class_of(this);
+    vm.read_ref_field(this, class, "buf", "Ljava/lang/StringBuffer;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn string_writer_append(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    text: ObjectRef,
+) -> Result<Value, VmError> {
+    let buffer = string_writer_buffer(vm, this);
+    if buffer.is_null() {
+        return Err(VmError::internal("StringWriter without a buffer"));
+    }
+    let (class, method) = vm.resolve_virtual_method(
+        buffer,
+        "append",
+        "(Ljava/lang/String;)Ljava/lang/StringBuffer;",
+    )?;
+    vm.invoke_method(class, method, vec![Value::Ref(buffer), Value::Ref(text)])?;
+    void()
+}

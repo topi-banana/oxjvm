@@ -17,7 +17,9 @@ pub(crate) mod boxed;
 pub(crate) mod invoke;
 pub(crate) mod io;
 pub(crate) mod lang;
+pub(crate) mod locale;
 pub(crate) mod math;
+pub(crate) mod optional;
 pub(crate) mod throwable;
 pub(crate) mod util;
 
@@ -89,7 +91,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 124] = [
+static REGISTRY: [NativeClass; 127] = [
     lang::OBJECT,
     lang::CLASS,
     lang::STRING,
@@ -177,6 +179,7 @@ static REGISTRY: [NativeClass; 124] = [
     io::READER,
     io::WRITER,
     io::PRINT_WRITER,
+    io::STRING_WRITER,
     util::NO_SUCH_ELEMENT_EXCEPTION,
     util::ITERATOR,
     util::COLLECTION,
@@ -184,6 +187,8 @@ static REGISTRY: [NativeClass; 124] = [
     util::SET,
     util::MAP,
     util::OBJECTS,
+    locale::LOCALE,
+    optional::OPTIONAL,
     util::ARRAYS,
     util::RANDOM,
     util::ARRAY_LIST,
