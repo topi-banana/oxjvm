@@ -221,7 +221,7 @@ pub(crate) const FILTER_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PRINT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
+const PRINT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
     method(
         "<init>",
         "(Ljava/io/OutputStream;)V",
@@ -336,6 +336,18 @@ const PRINT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
         vm.flush_host(stream_of(vm, receiver(args)));
         void()
     }),
+    method(
+        "printf",
+        "(Ljava/lang/String;[Ljava/lang/Object;)Ljava/io/PrintStream;",
+        ACC_PUBLIC,
+        print_formatted,
+    ),
+    method(
+        "format",
+        "(Ljava/lang/String;[Ljava/lang/Object;)Ljava/io/PrintStream;",
+        ACC_PUBLIC,
+        print_formatted,
+    ),
 ];
 
 fn print_stream_init(
@@ -386,6 +398,32 @@ pub(crate) fn print_text(
     let stream = stream_of(vm, print_stream);
     vm.write_host(stream, text.as_bytes());
     void()
+}
+
+/// `PrintStream.printf`/`format`: the formatted string, without a newline.
+fn print_formatted(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let stream = receiver(args);
+    let format = crate::string_arg(vm, args[1])?;
+    let arguments = object_array_elements(vm, ref_arg(args, 2));
+    let text = crate::lang::format_string(vm, &format, &arguments)?;
+    print_text(vm, stream, &text)?;
+    object(stream)
+}
+
+fn object_array_elements(vm: &Vm<'_>, array: ObjectRef) -> Vec<ObjectRef> {
+    if array.is_null() {
+        return Vec::new();
+    }
+    match vm.heap.get(array).map(|object| &object.data) {
+        Some(oxjvm_vm::ObjectData::Array(oxjvm_vm::ArrayData::Reference(elements))) => {
+            elements.clone()
+        }
+        _ => Vec::new(),
+    }
 }
 
 fn print_line(vm: &mut Vm<'_>, print_stream: ObjectRef, text: &str) -> Result<Value, VmError> {
@@ -683,7 +721,7 @@ pub(crate) const WRITER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PRINT_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const PRINT_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method(
         "<init>",
         "(Ljava/io/Writer;)V",
@@ -719,7 +757,33 @@ const PRINT_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     }),
     method("flush", "()V", ACC_PUBLIC, |_, _, _| void()),
     method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "printf",
+        "(Ljava/lang/String;[Ljava/lang/Object;)Ljava/io/PrintWriter;",
+        ACC_PUBLIC,
+        print_writer_formatted,
+    ),
+    method(
+        "format",
+        "(Ljava/lang/String;[Ljava/lang/Object;)Ljava/io/PrintWriter;",
+        ACC_PUBLIC,
+        print_writer_formatted,
+    ),
 ];
+
+/// `PrintWriter.printf`/`format`.
+fn print_writer_formatted(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let writer = receiver(args);
+    let format = crate::string_arg(vm, args[1])?;
+    let arguments = object_array_elements(vm, ref_arg(args, 2));
+    let text = crate::lang::format_string(vm, &format, &arguments)?;
+    print_writer_text(vm, writer, &text)?;
+    object(writer)
+}
 
 fn print_writer_text(vm: &mut Vm<'_>, this: ObjectRef, text: &str) -> Result<Value, VmError> {
     let out = vm

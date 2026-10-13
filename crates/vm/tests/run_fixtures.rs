@@ -1173,6 +1173,23 @@ fn p1_stream_batch() {
 }
 
 #[test]
+fn p1_printf() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/P1Printf").expect("P1Printf");
+    let (declaring, index) = vm
+        .find_method(class, "formats", "()Ljava/lang/String;")
+        .expect("formats");
+    let value = vm
+        .invoke_method(declaring, index, Vec::new())
+        .expect("formats");
+    assert_eq!(
+        vm.string_value(value.as_ref()).as_deref(),
+        Some("x=42/ff/true/!")
+    );
+}
+
+#[test]
 fn rejects_corrupted_bytecode() {
     let mut bytes = build_div_class();
     // `div` code begins with `iload_1 iload_2 idiv ireturn`; replace `ireturn` with an
