@@ -1077,6 +1077,30 @@ fn p1_identity_hash_map() {
 }
 
 #[test]
+fn p1_count_down_latch() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/P1Latch").expect("P1Latch");
+    for (method, expected) in [
+        ("counts", "2:0"),
+        ("threads", "done:0"),
+        ("timeUnit", "3000:2000000:SECONDS:2"),
+    ] {
+        let (declaring, index) = vm
+            .find_method(class, method, "()Ljava/lang/String;")
+            .expect(method);
+        let value = vm
+            .invoke_method(declaring, index, Vec::new())
+            .expect(method);
+        assert_eq!(
+            vm.string_value(value.as_ref()).as_deref(),
+            Some(expected),
+            "{method}"
+        );
+    }
+}
+
+#[test]
 fn rejects_corrupted_bytecode() {
     let mut bytes = build_div_class();
     // `div` code begins with `iload_1 iload_2 idiv ireturn`; replace `ireturn` with an

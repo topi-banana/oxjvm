@@ -17,6 +17,7 @@ extern crate std;
 
 pub(crate) mod atomic;
 pub(crate) mod boxed;
+pub(crate) mod concurrent;
 pub(crate) mod file;
 pub(crate) mod invoke;
 pub(crate) mod io;
@@ -99,7 +100,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 151] = [
+static REGISTRY: [NativeClass; 153] = [
     lang::OBJECT,
     lang::CLASS,
     lang::STRING,
@@ -251,6 +252,8 @@ static REGISTRY: [NativeClass; 151] = [
     atomic::ATOMIC_INTEGER,
     atomic::ATOMIC_LONG,
     atomic::ATOMIC_BOOLEAN,
+    concurrent::TIME_UNIT,
+    concurrent::COUNT_DOWN_LATCH,
 ];
 
 /// A read-only view of a string argument.

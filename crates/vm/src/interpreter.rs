@@ -676,6 +676,26 @@ impl<'a> Vm<'a> {
         true
     }
 
+    /// Park the current thread until it is notified on `object`, without requiring
+    /// (or re-acquiring) the object's monitor.
+    ///
+    /// Natives cannot express a wait loop: parking returns to Rust immediately, so
+    /// the caller must return and let the interpreter suspend the thread.  Used by
+    /// `CountDownLatch.await`, which wakes up (once) when the count reaches zero.
+    pub fn park_until_notified(&mut self, object: ObjectRef, timeout: Option<i64>) {
+        if let Some(heap_object) = self.heap.get_mut(object) {
+            heap_object.monitor.waiters.push_back(self.current);
+        }
+        let deadline = timeout.map(|millis| {
+            let now = self.virtual_time;
+            now.saturating_add(millis.max(0))
+        });
+        self.park_current(ThreadState::Waiting {
+            monitor: object,
+            deadline,
+        });
+    }
+
     /// Wake one or all threads waiting on a monitor.
     pub fn monitor_notify(&mut self, object: ObjectRef, all: bool) {
         let mut wake: Vec<usize> = Vec::new();

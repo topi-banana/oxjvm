@@ -255,7 +255,45 @@ impl<'a> Vm<'a> {
         self.threads[index].started = true;
         // Push a frame for `run()V`, dispatched virtually so subclasses override.
         let (class, method) = self.resolve_virtual_method(object, "run", "()V")?;
-        let frame = self.build_frame(class, method, alloc::vec![Value::Ref(object)], 0, None)?;
+        let is_native = self.classes.get(class).methods[method as usize]
+            .code
+            .is_none();
+        let (frame_class, frame_method, receiver) = if is_native {
+            // A plain `Thread` has a native `run` that delegates to its `Runnable`
+            // target; bootstrap the target's `run` directly instead of trying to
+            // build a frame for a method without code.
+            let thread_class = self.class_of(object);
+            let target =
+                self.read_ref_field(object, thread_class, "target", "Ljava/lang/Runnable;");
+            match target {
+                Some(target) if !target.is_null() => {
+                    let (target_class, target_method) =
+                        self.resolve_virtual_method(target, "run", "()V")?;
+                    let has_code = self.classes.get(target_class).methods[target_method as usize]
+                        .code
+                        .is_some();
+                    if !has_code {
+                        self.threads[index].state = ThreadState::Terminated;
+                        return Ok(());
+                    }
+                    (target_class, target_method, target)
+                }
+                // No target and no override: the thread body is empty.
+                _ => {
+                    self.threads[index].state = ThreadState::Terminated;
+                    return Ok(());
+                }
+            }
+        } else {
+            (class, method, object)
+        };
+        let frame = self.build_frame(
+            frame_class,
+            frame_method,
+            alloc::vec![Value::Ref(receiver)],
+            0,
+            None,
+        )?;
         self.threads[index].frames.push(frame);
         Ok(())
     }
