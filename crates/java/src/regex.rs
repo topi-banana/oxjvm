@@ -421,7 +421,7 @@ fn single_class(item: ClassItem) -> ClassSet {
     }
 }
 
-fn compile_node(node: &Node, prog: &mut Vec<Inst>, case_insensitive: bool) {
+fn compile_node(node: &Node, prog: &mut Vec<Inst>) {
     match node {
         Node::Empty => {}
         Node::Char(ch) => prog.push(Inst::Char(*ch)),
@@ -432,25 +432,25 @@ fn compile_node(node: &Node, prog: &mut Vec<Inst>, case_insensitive: bool) {
         Node::WordBoundary(positive) => prog.push(Inst::WordBoundary(*positive)),
         Node::Group(index, inner) => {
             prog.push(Inst::SaveStart(*index));
-            compile_node(inner, prog, case_insensitive);
+            compile_node(inner, prog);
             prog.push(Inst::SaveEnd(*index));
         }
         Node::Concat(nodes) => {
             for child in nodes {
-                compile_node(child, prog, case_insensitive);
+                compile_node(child, prog);
             }
         }
         Node::Alternate(branches) => {
             let mut jumps = Vec::new();
             for (index, branch) in branches.iter().enumerate() {
                 if index + 1 == branches.len() {
-                    compile_node(branch, prog, case_insensitive);
+                    compile_node(branch, prog);
                     break;
                 }
                 let split = prog.len();
                 prog.push(Inst::Split(0, 0));
                 let body = prog.len();
-                compile_node(branch, prog, case_insensitive);
+                compile_node(branch, prog);
                 let jump = prog.len();
                 prog.push(Inst::Jmp(usize::MAX));
                 jumps.push(jump);
@@ -469,14 +469,14 @@ fn compile_node(node: &Node, prog: &mut Vec<Inst>, case_insensitive: bool) {
             lazy,
         } => {
             for _ in 0..*min {
-                compile_node(node, prog, case_insensitive);
+                compile_node(node, prog);
             }
             match max {
                 None => {
                     let split = prog.len();
                     prog.push(Inst::Split(0, 0));
                     let body = prog.len();
-                    compile_node(node, prog, case_insensitive);
+                    compile_node(node, prog);
                     prog.push(Inst::Jmp(split));
                     let end = prog.len();
                     prog[split] = if *lazy {
@@ -492,7 +492,7 @@ fn compile_node(node: &Node, prog: &mut Vec<Inst>, case_insensitive: bool) {
                         let split = prog.len();
                         prog.push(Inst::Split(0, 0));
                         splits.push(split);
-                        compile_node(node, prog, case_insensitive);
+                        compile_node(node, prog);
                     }
                     let end = prog.len();
                     for split in splits {
@@ -530,7 +530,7 @@ pub(crate) fn compile(pattern: &[u16], flags: i32) -> Result<Regex, (String, usi
         parser.parse()?
     };
     let mut prog = Vec::new();
-    compile_node(&node, &mut prog, case_insensitive);
+    compile_node(&node, &mut prog);
     prog.push(Inst::Match);
     Ok(Regex {
         prog,

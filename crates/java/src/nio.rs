@@ -386,17 +386,15 @@ const PATHS_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
     |vm, _, args| {
         let first = string_arg(vm, args[0])?;
         let mut path = first;
-        if let Some(array) = vm
+        if let Some(oxjvm_vm::ObjectData::Array(oxjvm_vm::ArrayData::Reference(elements))) = vm
             .heap
             .get(ref_arg(args, 1))
             .map(|object| object.data.clone())
         {
-            if let oxjvm_vm::ObjectData::Array(oxjvm_vm::ArrayData::Reference(elements)) = array {
-                for element in elements {
-                    if !element.is_null() {
-                        let part = vm.string_or_empty(element);
-                        path = join_path(&path, &part);
-                    }
+            for element in elements {
+                if !element.is_null() {
+                    let part = vm.string_or_empty(element);
+                    path = join_path(&path, &part);
                 }
             }
         }
