@@ -1633,6 +1633,9 @@ const HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
 ];
 
 fn hash_map_pairs(vm: &Vm<'_>, this: ObjectRef) -> Vec<(ObjectRef, ObjectRef)> {
+    // The backing arrays can be longer than `size` (e.g. after a removal), so
+    // only the first `size` entries are live.
+    let size = crate::lang::read_int_field(vm, this, "size").max(0) as usize;
     let keys = match vm.read_ref_field(this, vm.class_of(this), "keys", "[Ljava/lang/Object;") {
         Some(array) => match vm.heap.get(array).map(|object| &object.data) {
             Some(ObjectData::Array(ArrayData::Reference(elements))) => elements.clone(),
@@ -1647,7 +1650,9 @@ fn hash_map_pairs(vm: &Vm<'_>, this: ObjectRef) -> Vec<(ObjectRef, ObjectRef)> {
         },
         None => Vec::new(),
     };
-    keys.into_iter().zip(values).collect()
+    let mut pairs: Vec<(ObjectRef, ObjectRef)> = keys.into_iter().zip(values).collect();
+    pairs.truncate(size);
+    pairs
 }
 
 fn hash_map_store(
@@ -1681,9 +1686,24 @@ fn hash_map_init(
 }
 
 fn hash_map_index_of(vm: &mut Vm<'_>, this: ObjectRef, key: ObjectRef) -> Result<i32, VmError> {
+    map_index_of(vm, this, key, false)
+}
+
+/// Index of `key` in the pair arrays; `by_identity` selects `==` over `equals`.
+fn map_index_of(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    key: ObjectRef,
+    by_identity: bool,
+) -> Result<i32, VmError> {
     let pairs = hash_map_pairs(vm, this);
     for (index, (candidate, _)) in pairs.iter().enumerate() {
-        if keys_equal(vm, *candidate, key)? {
+        let equal = if by_identity {
+            *candidate == key
+        } else {
+            keys_equal(vm, *candidate, key)?
+        };
+        if equal {
             return Ok(index as i32);
         }
     }
@@ -1844,6 +1864,157 @@ pub(crate) const HASH_MAP: oxjvm_vm::NativeClass = class(
         field("size", "I", ACC_PRIVATE, None),
     ],
     &HASH_MAP_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// IdentityHashMap (key identity, same pair-array layout as HashMap)
+// -------------------------------------------------------------------------------------------
+
+const IDENTITY_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+    method("<init>", "()V", ACC_PUBLIC, hash_map_init),
+    method("<init>", "(I)V", ACC_PUBLIC, hash_map_init),
+    method(
+        "put",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        identity_map_put,
+    ),
+    method(
+        "get",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        identity_map_get,
+    ),
+    method(
+        "getOrDefault",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let key = ref_arg(args, 1);
+            let index = map_index_of(vm, receiver(args), key, true)?;
+            if index >= 0 {
+                hash_map_value_at(vm, receiver(args), index as usize)
+            } else {
+                object(ref_arg(args, 2))
+            }
+        },
+    ),
+    method(
+        "containsKey",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| boolean(map_index_of(vm, receiver(args), ref_arg(args, 1), true)? >= 0),
+    ),
+    method(
+        "remove",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        identity_map_remove,
+    ),
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "size"))
+    }),
+    method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "size") == 0)
+    }),
+    method("clear", "()V", ACC_PUBLIC, hash_map_init),
+    method("keySet", "()Ljava/util/Set;", ACC_PUBLIC, hash_map_key_set),
+    method(
+        "values",
+        "()Ljava/util/Collection;",
+        ACC_PUBLIC,
+        hash_map_values,
+    ),
+    method(
+        "containsValue",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let values = hash_map_values_of(vm, receiver(args))?;
+            boolean(values.iter().any(|value| *value == ref_arg(args, 1)))
+        },
+    ),
+    method("putAll", "(Ljava/util/Map;)V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        hash_map_to_string,
+    ),
+    method(
+        "entrySet",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
+fn identity_map_put(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let key = ref_arg(args, 1);
+    let value = ref_arg(args, 2);
+    let mut pairs = hash_map_pairs(vm, this);
+    if let Some(index) = pairs.iter().position(|(candidate, _)| *candidate == key) {
+        let previous = pairs[index].1;
+        pairs[index].1 = value;
+        hash_map_store(vm, this, &pairs)?;
+        object(previous)
+    } else {
+        pairs.push((key, value));
+        hash_map_store(vm, this, &pairs)?;
+        object(ObjectRef::NULL)
+    }
+}
+
+fn identity_map_get(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let index = map_index_of(vm, receiver(args), ref_arg(args, 1), true)?;
+    if index < 0 {
+        object(ObjectRef::NULL)
+    } else {
+        hash_map_value_at(vm, receiver(args), index as usize)
+    }
+}
+
+fn identity_map_remove(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let index = map_index_of(vm, this, ref_arg(args, 1), true)?;
+    if index < 0 {
+        return object(ObjectRef::NULL);
+    }
+    let mut pairs = hash_map_pairs(vm, this);
+    let (_, removed) = pairs.remove(index as usize);
+    hash_map_store(vm, this, &pairs)?;
+    object(removed)
+}
+
+pub(crate) const IDENTITY_HASH_MAP: oxjvm_vm::NativeClass = class(
+    "java/util/IdentityHashMap",
+    Some("java/lang/Object"),
+    &[
+        "java/util/Map",
+        "java/lang/Cloneable",
+        "java/io/Serializable",
+    ],
+    ACC_PUBLIC,
+    &[
+        field("keys", "[Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("values", "[Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("size", "I", ACC_PRIVATE, None),
+    ],
+    &IDENTITY_HASH_MAP_METHODS,
     None,
 );
 
