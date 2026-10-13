@@ -17,4 +17,14 @@ public class P1List {
         return changed + ":" + empty + ":" + list.size() + ":" + list.get(1) + list.get(3)
                 + ":" + linked.get(0);
     }
+
+    public static String search() {
+        java.util.ArrayList<String> list = new java.util.ArrayList<>();
+        list.add("a");
+        list.add("b");
+        list.add("a");
+        boolean removed = list.remove("a");
+        return list.contains("b") + ":" + list.indexOf("b") + ":" + removed + ":" + list.size()
+                + ":" + list.contains("a");
+    }
 }

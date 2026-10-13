@@ -1021,16 +1021,22 @@ fn p1_list_batch() {
     let mut host = fixture_host();
     let mut vm = Vm::new(&mut host, oxjvm_java::natives());
     let class = vm.resolve_class("demo/P1List").expect("P1List");
-    let (declaring, index) = vm
-        .find_method(class, "addAll", "()Ljava/lang/String;")
-        .expect("addAll");
-    let value = vm
-        .invoke_method(declaring, index, Vec::new())
-        .expect("addAll");
-    assert_eq!(
-        vm.string_value(value.as_ref()).as_deref(),
-        Some("true:false:4:xc:q")
-    );
+    for (method, expected) in [
+        ("addAll", "true:false:4:xc:q"),
+        ("search", "true:0:true:2:true"),
+    ] {
+        let (declaring, index) = vm
+            .find_method(class, method, "()Ljava/lang/String;")
+            .expect(method);
+        let value = vm
+            .invoke_method(declaring, index, Vec::new())
+            .expect(method);
+        assert_eq!(
+            vm.string_value(value.as_ref()).as_deref(),
+            Some(expected),
+            "{method}"
+        );
+    }
 }
 
 #[test]

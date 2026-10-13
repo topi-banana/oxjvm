@@ -1079,13 +1079,13 @@ const ARRAY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
         "contains",
         "(Ljava/lang/Object;)Z",
         ACC_PUBLIC,
-        |vm, _, args| boolean(array_list_index_of(vm, ref_arg(args, 1))? >= 0),
+        |vm, _, args| boolean(array_list_index_of(vm, receiver(args), ref_arg(args, 1))? >= 0),
     ),
     method(
         "indexOf",
         "(Ljava/lang/Object;)I",
         ACC_PUBLIC,
-        |vm, _, args| int(array_list_index_of(vm, ref_arg(args, 1))?),
+        |vm, _, args| int(array_list_index_of(vm, receiver(args), ref_arg(args, 1))?),
     ),
     method("clear", "()V", ACC_PUBLIC, array_list_clear),
     method(
@@ -1349,7 +1349,7 @@ fn array_list_remove_object(
 ) -> Result<Value, VmError> {
     let this = receiver(args);
     let target = ref_arg(args, 1);
-    let index = array_list_index_of(vm, target)?;
+    let index = array_list_index_of(vm, this, target)?;
     if index < 0 {
         return boolean(false);
     }
@@ -1359,8 +1359,17 @@ fn array_list_remove_object(
     boolean(true)
 }
 
-fn array_list_index_of(_vm: &mut Vm<'_>, target: ObjectRef) -> Result<i32, VmError> {
-    let _ = target;
+fn array_list_index_of(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    target: ObjectRef,
+) -> Result<i32, VmError> {
+    let elements = array_list_elements(vm, this);
+    for (index, element) in elements.iter().enumerate() {
+        if keys_equal(vm, *element, target)? {
+            return Ok(index as i32);
+        }
+    }
     Ok(-1)
 }
 
