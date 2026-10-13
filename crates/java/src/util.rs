@@ -77,10 +77,16 @@ pub(crate) const ITERATOR: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method(
         "size",
         "()I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "addAll",
+        "(Ljava/util/Collection;)Z",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
@@ -138,10 +144,22 @@ pub(crate) const COLLECTION: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
+const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method(
         "size",
         "()I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "addAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "addAll",
+        "(ILjava/util/Collection;)Z",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
@@ -1016,10 +1034,22 @@ pub(crate) const RANDOM: oxjvm_vm::NativeClass = class(
 // ArrayList + iterator
 // -------------------------------------------------------------------------------------------
 
-const ARRAY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+const ARRAY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
     method("<init>", "()V", ACC_PUBLIC, array_list_init),
     method("<init>", "(I)V", ACC_PUBLIC, array_list_init),
     method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, array_list_add),
+    method(
+        "addAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        array_list_add_all,
+    ),
+    method(
+        "addAll",
+        "(ILjava/util/Collection;)Z",
+        ACC_PUBLIC,
+        array_list_add_all_at,
+    ),
     method("get", "(I)Ljava/lang/Object;", ACC_PUBLIC, array_list_get),
     method(
         "set",
@@ -1174,6 +1204,74 @@ fn array_list_add(
     elements.push(ref_arg(args, 1));
     array_list_store(vm, this, &elements)?;
     boolean(true)
+}
+
+/// Snapshot a guest `Collection` through its `Iterator`, so any implementation works.
+pub(crate) fn collection_elements(
+    vm: &mut Vm<'_>,
+    collection: ObjectRef,
+) -> Result<Vec<ObjectRef>, VmError> {
+    if collection.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let (class, method) =
+        vm.resolve_virtual_method(collection, "iterator", "()Ljava/util/Iterator;")?;
+    let iterator = vm
+        .invoke_method(class, method, vec![Value::Ref(collection)])?
+        .as_ref();
+    let (has_next_class, has_next) = vm.resolve_virtual_method(iterator, "hasNext", "()Z")?;
+    let (next_class, next) = vm.resolve_virtual_method(iterator, "next", "()Ljava/lang/Object;")?;
+    let mut elements = Vec::new();
+    loop {
+        let value = vm.invoke_method(has_next_class, has_next, vec![Value::Ref(iterator)])?;
+        if value.as_int() == 0 {
+            return Ok(elements);
+        }
+        let value = vm.invoke_method(next_class, next, vec![Value::Ref(iterator)])?;
+        elements.push(value.as_ref());
+    }
+}
+
+/// `List.addAll(Collection)`: append every element of `collection`.
+fn array_list_add_all(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let incoming = collection_elements(vm, ref_arg(args, 1))?;
+    let changed = !incoming.is_empty();
+    let mut elements = array_list_elements(vm, this);
+    elements.extend(incoming);
+    array_list_store(vm, this, &elements)?;
+    boolean(changed)
+}
+
+/// `List.addAll(int, Collection)`: insert every element of `collection` at `index`.
+fn array_list_add_all_at(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let index = crate::int_arg(args, 1);
+    let incoming = collection_elements(vm, ref_arg(args, 2))?;
+    let mut elements = array_list_elements(vm, this);
+    if index < 0 || index as usize > elements.len() {
+        return Err(vm.throw_new(
+            "java/lang/IndexOutOfBoundsException",
+            Some(&alloc::format!(
+                "Index {index} out of bounds for length {}",
+                elements.len()
+            )),
+        ));
+    }
+    let changed = !incoming.is_empty();
+    for (offset, element) in incoming.into_iter().enumerate() {
+        elements.insert(index as usize + offset, element);
+    }
+    array_list_store(vm, this, &elements)?;
+    boolean(changed)
 }
 
 fn array_list_get(
