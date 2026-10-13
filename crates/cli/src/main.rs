@@ -174,6 +174,13 @@ impl Host for StdHost {
     fn property(&mut self, key: &str) -> Option<String> {
         self.properties.get(key).cloned()
     }
+
+    fn properties(&mut self) -> Vec<(String, String)> {
+        self.properties
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()
+    }
 }
 
 fn run(args: &[String]) -> ExitCode {

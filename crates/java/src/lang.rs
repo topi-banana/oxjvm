@@ -2583,7 +2583,7 @@ pub(crate) const STRING_BUFFER: oxjvm_vm::NativeClass = class(
 // System / Runtime
 // -------------------------------------------------------------------------------------------
 
-const SYSTEM_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const SYSTEM_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
     method(
         "currentTimeMillis",
         "()J",
@@ -2632,13 +2632,36 @@ const SYSTEM_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         "setProperty",
         "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
         ACC_PUBLIC | ACC_STATIC,
-        |_, _, _| object(ObjectRef::NULL),
+        |vm, _, args| system_set_property(vm, args),
     ),
     method(
         "clearProperty",
         "(Ljava/lang/String;)Ljava/lang/String;",
         ACC_PUBLIC | ACC_STATIC,
-        |_, _, _| object(ObjectRef::NULL),
+        |vm, _, args| {
+            let key = string_arg(vm, args[0])?;
+            match vm.clear_property(&key) {
+                Some(text) => object(vm.make_string(&text)?),
+                None => object(ObjectRef::NULL),
+            }
+        },
+    ),
+    method(
+        "getProperties",
+        "()Ljava/util/Properties;",
+        ACC_PUBLIC | ACC_STATIC,
+        system_get_properties,
+    ),
+    method(
+        "setProperties",
+        "(Ljava/util/Properties;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            void()
+        },
     ),
     method(
         "getenv",
@@ -2700,18 +2723,34 @@ fn system_class(vm: &mut Vm<'_>) -> Result<ClassId, VmError> {
     vm.resolve_class("java/lang/System")
 }
 
-/// Looks up a system property: the VM's well-known defaults first, then the host.
+/// The VM's well-known default system properties.
+pub(crate) const SYSTEM_PROPERTY_DEFAULTS: [(&str, &str); 11] = [
+    ("java.version", "17"),
+    ("java.specification.version", "17"),
+    ("java.vm.name", "oxjvm"),
+    ("java.vm.version", "0.1.0"),
+    ("os.name", "oxjvm"),
+    ("os.arch", "unknown"),
+    ("os.version", "unknown"),
+    ("file.separator", "/"),
+    ("path.separator", ":"),
+    ("line.separator", "\n"),
+    ("user.dir", "/"),
+];
+
+/// Looks up a system property: guest overrides first, then the VM defaults, then the host.
 pub(crate) fn system_property(vm: &mut Vm<'_>, key: &str) -> Option<String> {
+    if let Some(value) = vm.get_property(key) {
+        return Some(value);
+    }
+    if let Some((_, value)) = SYSTEM_PROPERTY_DEFAULTS
+        .iter()
+        .find(|(name, _)| *name == key)
+    {
+        return Some((*value).to_string());
+    }
     match key {
-        "java.version" | "java.specification.version" => Some("17".to_string()),
-        "java.vm.name" => Some("oxjvm".to_string()),
-        "java.vm.version" => Some("0.1.0".to_string()),
-        "os.name" => Some("oxjvm".to_string()),
-        "os.arch" | "os.version" => Some("unknown".to_string()),
-        "file.separator" => Some("/".to_string()),
-        "path.separator" => Some(":".to_string()),
-        "line.separator" => Some("\n".to_string()),
-        "user.dir" => Some("/".to_string()),
+        // Virtual defaults that depend on runtime state rather than a constant.
         "java.class.path" => Some(String::new()),
         "java.io.tmpdir" => Some("/tmp".to_string()),
         _ => vm.host_property(key),
@@ -2741,6 +2780,56 @@ fn system_get_property_or_default(
         Some(text) => object(vm.make_string(&text)?),
         None => object(ref_arg(args, 1)),
     }
+}
+
+/// `System.setProperty(String, String)`: stores the value and returns the previous one.
+fn system_set_property(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let key = string_arg(vm, args[0])?;
+    let value = string_arg(vm, args[1])?;
+    let previous = vm.get_property(&key);
+    vm.set_property(&key, value);
+    match previous {
+        Some(text) => object(vm.make_string(&text)?),
+        None => object(ObjectRef::NULL),
+    }
+}
+
+/// `System.getProperties()`: a `Properties` snapshot of the defaults, host properties and guest
+/// overrides, in that order.
+fn system_get_properties(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    _args: &[Value],
+) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/util/Properties")?;
+    let instance = vm.new_instance(class)?;
+    if let Some((declaring, ctor)) = vm.find_method(class, "<init>", "()V") {
+        vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
+    }
+    let (put_class, put) = vm.resolve_virtual_method(
+        instance,
+        "put",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+    )?;
+    let mut entries: Vec<(String, String)> = SYSTEM_PROPERTY_DEFAULTS
+        .iter()
+        .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+        .collect();
+    entries.push(("java.class.path".to_string(), String::new()));
+    entries.push(("java.io.tmpdir".to_string(), "/tmp".to_string()));
+    let host_entries = vm.host.properties();
+    entries.extend(host_entries);
+    entries.extend(vm.property_overrides());
+    for (key, value) in entries {
+        let key = vm.make_string(&key)?;
+        let value = vm.make_string(&value)?;
+        vm.invoke_method(
+            put_class,
+            put,
+            vec![Value::Ref(instance), Value::Ref(key), Value::Ref(value)],
+        )?;
+    }
+    object(instance)
 }
 
 fn system_arraycopy(
@@ -3187,10 +3276,174 @@ pub(crate) const THREAD: oxjvm_vm::NativeClass = class(
             ACC_PRIVATE,
             None,
         ),
+        field("threadLocals", "Ljava/util/HashMap;", ACC_PRIVATE, None),
     ],
     &THREAD_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// ThreadLocal
+// -------------------------------------------------------------------------------------------
+
+const THREAD_LOCAL_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("get", "()Ljava/lang/Object;", ACC_PUBLIC, thread_local_get),
+    method("set", "(Ljava/lang/Object;)V", ACC_PUBLIC, thread_local_set),
+    method("remove", "()V", ACC_PUBLIC, thread_local_remove),
+    method(
+        "initialValue",
+        "()Ljava/lang/Object;",
+        ACC_PROTECTED,
+        thread_local_initial_value,
+    ),
+    method(
+        "withInitial",
+        "(Ljava/util/function/Supplier;)Ljava/lang/ThreadLocal;",
+        ACC_PUBLIC | ACC_STATIC,
+        thread_local_with_initial,
+    ),
+];
+
+pub(crate) const THREAD_LOCAL: oxjvm_vm::NativeClass = class(
+    "java/lang/ThreadLocal",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[field(
+        "supplier",
+        "Ljava/util/function/Supplier;",
+        ACC_PRIVATE,
+        None,
+    )],
+    &THREAD_LOCAL_METHODS,
+    None,
+);
+
+/// The current thread's `ThreadLocal` map, created on demand.
+fn thread_locals_map(vm: &mut Vm<'_>, create: bool) -> Result<ObjectRef, VmError> {
+    let thread = vm.current_thread_object();
+    let class = vm.class_of(thread);
+    if let Some(map) = vm.read_ref_field(thread, class, "threadLocals", "Ljava/util/HashMap;") {
+        if !map.is_null() {
+            return Ok(map);
+        }
+    }
+    if !create {
+        return Ok(ObjectRef::NULL);
+    }
+    let map_class = vm.resolve_class("java/util/HashMap")?;
+    let map = vm.new_instance(map_class)?;
+    let (declaring, ctor) = vm
+        .find_method(map_class, "<init>", "()V")
+        .ok_or_else(|| VmError::internal("HashMap lacks its constructor"))?;
+    vm.invoke_method(declaring, ctor, vec![Value::Ref(map)])?;
+    let class = vm.class_of(thread);
+    let (declaring, field) = vm.find_field(class, "threadLocals", "Ljava/util/HashMap;")?;
+    vm.set_instance_ref(thread, declaring, field, map);
+    Ok(map)
+}
+
+fn thread_local_get(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let map = thread_locals_map(vm, true)?;
+    let (get_class, get) =
+        vm.resolve_virtual_method(map, "get", "(Ljava/lang/Object;)Ljava/lang/Object;")?;
+    let value = vm.invoke_method(get_class, get, vec![Value::Ref(map), Value::Ref(this)])?;
+    if !value.as_ref().is_null() {
+        return Ok(value);
+    }
+    let (init_class, init) =
+        vm.resolve_virtual_method(this, "initialValue", "()Ljava/lang/Object;")?;
+    let created = vm.invoke_method(init_class, init, vec![Value::Ref(this)])?;
+    if !created.as_ref().is_null() {
+        let (put_class, put) = vm.resolve_virtual_method(
+            map,
+            "put",
+            "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        )?;
+        vm.invoke_method(
+            put_class,
+            put,
+            vec![Value::Ref(map), Value::Ref(this), created],
+        )?;
+    }
+    Ok(created)
+}
+
+fn thread_local_set(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let map = thread_locals_map(vm, true)?;
+    let value = ref_arg(args, 1);
+    let (put_class, put) = vm.resolve_virtual_method(
+        map,
+        "put",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+    )?;
+    vm.invoke_method(
+        put_class,
+        put,
+        vec![Value::Ref(map), Value::Ref(this), Value::Ref(value)],
+    )?;
+    void()
+}
+
+fn thread_local_remove(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let map = thread_locals_map(vm, false)?;
+    if !map.is_null() {
+        let (remove_class, remove) =
+            vm.resolve_virtual_method(map, "remove", "(Ljava/lang/Object;)Ljava/lang/Object;")?;
+        vm.invoke_method(
+            remove_class,
+            remove,
+            vec![Value::Ref(map), Value::Ref(this)],
+        )?;
+    }
+    void()
+}
+
+fn thread_local_initial_value(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let class = vm.class_of(this);
+    let supplier = vm
+        .read_ref_field(this, class, "supplier", "Ljava/util/function/Supplier;")
+        .unwrap_or(ObjectRef::NULL);
+    if supplier.is_null() {
+        return object(ObjectRef::NULL);
+    }
+    let (class, method) = vm.resolve_virtual_method(supplier, "get", "()Ljava/lang/Object;")?;
+    vm.invoke_method(class, method, vec![Value::Ref(supplier)])
+}
+
+fn thread_local_with_initial(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let supplier = ref_arg(args, 0);
+    let class = vm.resolve_class("java/lang/ThreadLocal")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "supplier", "Ljava/util/function/Supplier;")?;
+    vm.set_instance_ref(instance, declaring, field, supplier);
+    object(instance)
+}
 
 // -------------------------------------------------------------------------------------------
 // ClassLoader
@@ -3554,12 +3807,20 @@ pub(crate) const ITERABLE: oxjvm_vm::NativeClass = class(
     &[],
     ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
     &[],
-    &[method(
-        "iterator",
-        "()Ljava/util/Iterator;",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        abstract_method,
-    )],
+    &[
+        method(
+            "iterator",
+            "()Ljava/util/Iterator;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            abstract_method,
+        ),
+        method(
+            "forEach",
+            "(Ljava/util/function/Consumer;)V",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            abstract_method,
+        ),
+    ],
     None,
 );
 

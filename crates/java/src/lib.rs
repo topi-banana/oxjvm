@@ -12,6 +12,7 @@
 
 extern crate alloc;
 
+pub(crate) mod atomic;
 pub(crate) mod boxed;
 pub(crate) mod invoke;
 pub(crate) mod io;
@@ -88,7 +89,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 118] = [
+static REGISTRY: [NativeClass; 124] = [
     lang::OBJECT,
     lang::CLASS,
     lang::STRING,
@@ -97,6 +98,7 @@ static REGISTRY: [NativeClass; 118] = [
     lang::SYSTEM,
     lang::RUNTIME,
     lang::THREAD,
+    lang::THREAD_LOCAL,
     lang::CLASS_LOADER,
     lang::ENUM,
     lang::RECORD,
@@ -186,6 +188,8 @@ static REGISTRY: [NativeClass; 118] = [
     util::RANDOM,
     util::ARRAY_LIST,
     util::ARRAY_LIST_ITERATOR,
+    util::LINKED_LIST,
+    util::PROPERTIES,
     util::HASH_MAP,
     util::COLLECTIONS,
     invoke::METHOD_TYPE,
@@ -207,6 +211,9 @@ static REGISTRY: [NativeClass; 118] = [
     invoke::BINARY_OPERATOR,
     invoke::CALLABLE,
     invoke::APPENDABLE,
+    atomic::ATOMIC_INTEGER,
+    atomic::ATOMIC_LONG,
+    atomic::ATOMIC_BOOLEAN,
 ];
 
 /// A read-only view of a string argument.

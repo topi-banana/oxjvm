@@ -77,7 +77,7 @@ pub(crate) const ITERATOR: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+const COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method(
         "size",
         "()I",
@@ -120,6 +120,12 @@ const COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
+    method(
+        "forEach",
+        "(Ljava/util/function/Consumer;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
 ];
 
 pub(crate) const COLLECTION: oxjvm_vm::NativeClass = class(
@@ -132,7 +138,7 @@ pub(crate) const COLLECTION: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     method(
         "size",
         "()I",
@@ -202,6 +208,12 @@ const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method(
         "toArray",
         "([Ljava/lang/Object;)[Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "forEach",
+        "(Ljava/util/function/Consumer;)V",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
@@ -1004,7 +1016,7 @@ pub(crate) const RANDOM: oxjvm_vm::NativeClass = class(
 // ArrayList + iterator
 // -------------------------------------------------------------------------------------------
 
-const ARRAY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const ARRAY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method("<init>", "()V", ACC_PUBLIC, array_list_init),
     method("<init>", "(I)V", ACC_PUBLIC, array_list_init),
     method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, array_list_add),
@@ -1076,7 +1088,35 @@ const ARRAY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         ACC_PUBLIC,
         array_list_to_array_into,
     ),
+    method(
+        "forEach",
+        "(Ljava/util/function/Consumer;)V",
+        ACC_PUBLIC,
+        collection_for_each,
+    ),
 ];
+
+/// `Iterable.forEach`: invoke `Consumer.accept` for every element.
+fn collection_for_each(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let consumer = ref_arg(args, 1);
+    if consumer.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let (class, method) = vm.resolve_virtual_method(consumer, "accept", "(Ljava/lang/Object;)V")?;
+    let elements = array_list_elements(vm, receiver(args));
+    for element in elements {
+        vm.invoke_method(
+            class,
+            method,
+            vec![Value::Ref(consumer), Value::Ref(element)],
+        )?;
+    }
+    void()
+}
 
 fn array_list_elements(vm: &Vm<'_>, this: ObjectRef) -> Vec<ObjectRef> {
     let size = crate::lang::read_int_field(vm, this, "size").max(0) as usize;
@@ -1242,7 +1282,7 @@ fn array_list_iterator(
 ) -> Result<Value, VmError> {
     let class = vm.resolve_class("java/util/ArrayList$Itr")?;
     let iterator = vm.new_instance(class)?;
-    let (declaring, field) = vm.find_field(class, "list", "Ljava/util/ArrayList;")?;
+    let (declaring, field) = vm.find_field(class, "list", "Ljava/util/List;")?;
     vm.set_instance_ref(iterator, declaring, field, receiver(args));
     crate::lang::write_int_field(vm, iterator, "cursor", 0);
     object(iterator)
@@ -1332,11 +1372,32 @@ pub(crate) const ARRAY_LIST: oxjvm_vm::NativeClass = class(
     None,
 );
 
+/// `LinkedList`, backed by the same element array as `ArrayList`.
+///
+/// The observable difference (iterator/removal corner cases) is not exercised by the current
+/// corpus; sharing the implementation keeps list semantics in one place.
+pub(crate) const LINKED_LIST: oxjvm_vm::NativeClass = class(
+    "java/util/LinkedList",
+    Some("java/lang/Object"),
+    &[
+        "java/util/List",
+        "java/lang/Cloneable",
+        "java/io/Serializable",
+    ],
+    ACC_PUBLIC,
+    &[
+        field("elementData", "[Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("size", "I", ACC_PRIVATE, None),
+    ],
+    &ARRAY_LIST_METHODS,
+    None,
+);
+
 const ITR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
     method("hasNext", "()Z", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let list = vm
-            .read_ref_field(this, vm.class_of(this), "list", "Ljava/util/ArrayList;")
+            .read_ref_field(this, vm.class_of(this), "list", "Ljava/util/List;")
             .unwrap_or(ObjectRef::NULL);
         let cursor = crate::lang::read_int_field(vm, this, "cursor");
         boolean(cursor < crate::lang::read_int_field(vm, list, "size"))
@@ -1344,7 +1405,7 @@ const ITR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
     method("next", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let list = vm
-            .read_ref_field(this, vm.class_of(this), "list", "Ljava/util/ArrayList;")
+            .read_ref_field(this, vm.class_of(this), "list", "Ljava/util/List;")
             .unwrap_or(ObjectRef::NULL);
         let cursor = crate::lang::read_int_field(vm, this, "cursor");
         let elements = array_list_elements(vm, list);
@@ -1368,7 +1429,7 @@ pub(crate) const ARRAY_LIST_ITERATOR: oxjvm_vm::NativeClass = class(
     &["java/util/Iterator"],
     ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
     &[
-        field("list", "Ljava/util/ArrayList;", ACC_PRIVATE, None),
+        field("list", "Ljava/util/List;", ACC_PRIVATE, None),
         field("cursor", "I", ACC_PRIVATE, None),
     ],
     &ITR_METHODS,
@@ -1687,6 +1748,209 @@ pub(crate) const HASH_MAP: oxjvm_vm::NativeClass = class(
     &HASH_MAP_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// Properties
+// -------------------------------------------------------------------------------------------
+
+const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+    method("<init>", "()V", ACC_PUBLIC, properties_init),
+    method(
+        "getProperty",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        properties_get_property,
+    ),
+    method(
+        "getProperty",
+        "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        properties_get_property_or_default,
+    ),
+    method(
+        "setProperty",
+        "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        properties_set_property,
+    ),
+    method(
+        "get",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            properties_map_call(
+                vm,
+                receiver(args),
+                "get",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                vec![Value::Ref(ref_arg(args, 1))],
+            )
+        },
+    ),
+    method(
+        "put",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            properties_map_call(
+                vm,
+                receiver(args),
+                "put",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                vec![Value::Ref(ref_arg(args, 1)), Value::Ref(ref_arg(args, 2))],
+            )
+        },
+    ),
+    method(
+        "remove",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            properties_map_call(
+                vm,
+                receiver(args),
+                "remove",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                vec![Value::Ref(ref_arg(args, 1))],
+            )
+        },
+    ),
+    method(
+        "containsKey",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            properties_map_call(
+                vm,
+                receiver(args),
+                "containsKey",
+                "(Ljava/lang/Object;)Z",
+                vec![Value::Ref(ref_arg(args, 1))],
+            )
+        },
+    ),
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        properties_map_call(vm, receiver(args), "size", "()I", Vec::new())
+    }),
+    method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
+        properties_map_call(vm, receiver(args), "isEmpty", "()Z", Vec::new())
+    }),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
+        properties_map_call(vm, receiver(args), "clear", "()V", Vec::new())
+    }),
+];
+
+pub(crate) const PROPERTIES: oxjvm_vm::NativeClass = class(
+    "java/util/Properties",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[field("map", "Ljava/util/HashMap;", ACC_PRIVATE, None)],
+    &PROPERTIES_METHODS,
+    None,
+);
+
+fn properties_map(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    let class = vm.class_of(this);
+    vm.read_ref_field(this, class, "map", "Ljava/util/HashMap;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn properties_init(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let map_class = vm.resolve_class("java/util/HashMap")?;
+    let map = vm.new_instance(map_class)?;
+    let (declaring, ctor) = vm
+        .find_method(map_class, "<init>", "()V")
+        .ok_or_else(|| VmError::internal("HashMap lacks its constructor"))?;
+    vm.invoke_method(declaring, ctor, vec![Value::Ref(map)])?;
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, "map", "Ljava/util/HashMap;")?;
+    vm.set_instance_ref(this, declaring, field, map);
+    void()
+}
+
+/// Invoke one of the backing `HashMap`'s methods.
+fn properties_map_call(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    args: Vec<Value>,
+) -> Result<Value, VmError> {
+    let map = properties_map(vm, this);
+    if map.is_null() {
+        return Err(VmError::internal("Properties without a backing map"));
+    }
+    let (class, method) = vm.resolve_virtual_method(map, name, descriptor)?;
+    let mut full = vec![Value::Ref(map)];
+    full.extend(args);
+    vm.invoke_method(class, method, full)
+}
+
+fn properties_get_property(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let value = properties_map_call(
+        vm,
+        receiver(args),
+        "get",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        vec![Value::Ref(ref_arg(args, 1))],
+    )?;
+    let reference = value.as_ref();
+    if !reference.is_null() && vm.string_value(reference).is_some() {
+        object(reference)
+    } else {
+        object(ObjectRef::NULL)
+    }
+}
+
+fn properties_get_property_or_default(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let value = properties_map_call(
+        vm,
+        receiver(args),
+        "get",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        vec![Value::Ref(ref_arg(args, 1))],
+    )?;
+    let reference = value.as_ref();
+    if !reference.is_null() && vm.string_value(reference).is_some() {
+        object(reference)
+    } else {
+        object(ref_arg(args, 2))
+    }
+}
+
+fn properties_set_property(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let previous = properties_map_call(
+        vm,
+        receiver(args),
+        "put",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        vec![Value::Ref(ref_arg(args, 1)), Value::Ref(ref_arg(args, 2))],
+    )?;
+    let reference = previous.as_ref();
+    if !reference.is_null() && vm.string_value(reference).is_some() {
+        object(reference)
+    } else {
+        object(ObjectRef::NULL)
+    }
+}
 
 // -------------------------------------------------------------------------------------------
 // Collections

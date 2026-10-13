@@ -200,6 +200,29 @@ impl<'a> Vm<'a> {
         self.host.property(key)
     }
 
+    /// A guest-set system property (`System.setProperty`).
+    pub fn get_property(&self, key: &str) -> Option<String> {
+        self.properties.get(key).cloned()
+    }
+
+    /// Set a guest system property, returning its previous guest value.
+    pub fn set_property(&mut self, key: &str, value: String) -> Option<String> {
+        self.properties.insert(key.into(), value)
+    }
+
+    /// Remove a guest system property, returning its previous guest value.
+    pub fn clear_property(&mut self, key: &str) -> Option<String> {
+        self.properties.remove(key)
+    }
+
+    /// A snapshot of the guest-set system properties.
+    pub fn property_overrides(&self) -> Vec<(String, String)> {
+        self.properties
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()
+    }
+
     /// The next pseudo-random `u64` (xorshift64*).
     pub fn random_u64(&mut self) -> u64 {
         let mut state = self.random_state;

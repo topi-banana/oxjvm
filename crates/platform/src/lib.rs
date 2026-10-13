@@ -121,6 +121,11 @@ pub trait Host {
         let _ = key;
         None
     }
+
+    /// All system properties the host knows about, for `System.getProperties`.
+    fn properties(&mut self) -> Vec<(String, String)> {
+        Vec::new()
+    }
 }
 
 /// An in-memory class path, keyed by internal class name.

@@ -209,6 +209,8 @@ pub struct Vm<'a> {
     pub(crate) trace: bool,
     /// Primitive classes by base type.
     pub(crate) primitive_classes: BTreeMap<oxjvm_classfile::BaseType, ClassId>,
+    /// Guest-set system properties (`System.setProperty`), checked before the defaults/host.
+    pub(crate) properties: BTreeMap<String, String>,
     /// Whether the boot sequence has completed.
     pub(crate) booted: bool,
 }
@@ -248,6 +250,7 @@ impl<'a> Vm<'a> {
             gc_requested: false,
             trace: false,
             primitive_classes: BTreeMap::new(),
+            properties: BTreeMap::new(),
             booted: false,
         };
         vm.boot();
