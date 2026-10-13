@@ -990,6 +990,33 @@ fn reads_class_literals() {
 }
 
 #[test]
+fn api_batch() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/ApiBatch").expect("ApiBatch");
+    for (method, expected) in [
+        ("copyOfRange", "5:bdtrue"),
+        ("asListToArray", "3xz"),
+        ("fillAndAddAll", "7:true2"),
+        ("boxedFactories", "5:3:1.5:true"),
+        ("forNameAndEnum", "java.lang.String:GREEN"),
+        ("misc", "ok:1:9"),
+    ] {
+        let (declaring, index) = vm
+            .find_method(class, method, "()Ljava/lang/String;")
+            .expect(method);
+        let value = vm
+            .invoke_method(declaring, index, Vec::new())
+            .expect(method);
+        assert_eq!(
+            vm.string_value(value.as_ref()).as_deref(),
+            Some(expected),
+            "{method}"
+        );
+    }
+}
+
+#[test]
 fn rejects_corrupted_bytecode() {
     let mut bytes = build_div_class();
     // `div` code begins with `iload_1 iload_2 idiv ireturn`; replace `ireturn` with an

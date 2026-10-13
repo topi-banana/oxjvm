@@ -224,7 +224,7 @@ pub(crate) const OBJECT: oxjvm_vm::NativeClass = class(
 // Class
 // -------------------------------------------------------------------------------------------
 
-const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
+const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -307,6 +307,12 @@ const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
         "(Ljava/lang/String;)Ljava/lang/Class;",
         ACC_PUBLIC | ACC_STATIC,
         class_for_name,
+    ),
+    method(
+        "forName",
+        "(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;",
+        ACC_PUBLIC | ACC_STATIC,
+        class_for_name_with_loader,
     ),
     method(
         "newInstance",
@@ -495,11 +501,31 @@ fn class_for_name(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
+    class_for_name_with(vm, args, true)
+}
+
+/// `Class.forName(String, boolean, ClassLoader)`. The loader argument is accepted but ignored:
+/// the VM has a single loader.
+fn class_for_name_with_loader(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    class_for_name_with(vm, args, bool_arg(args, 1))
+}
+
+fn class_for_name_with(
+    vm: &mut Vm<'_>,
+    args: &[Value],
+    initialize: bool,
+) -> Result<Value, VmError> {
     let name = string_arg(vm, args[0])?;
     let internal = name.replace('.', "/");
     match vm.resolve_class(&internal) {
         Ok(class) => {
-            vm.ensure_initialized(class)?;
+            if initialize {
+                vm.ensure_initialized(class)?;
+            }
             let class_object = vm.class_object(class)?;
             object(class_object)
         }
@@ -2066,8 +2092,9 @@ const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
     ),
 ];
 
-const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     method("<init>", "()V", ACC_PUBLIC, builder_init),
+    method("<init>", "(I)V", ACC_PUBLIC, builder_init),
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -2831,7 +2858,7 @@ fn runtime_get_runtime(
     _args: &[Value],
 ) -> Result<Value, VmError> {
     let system = vm.resolve_class("java/lang/Runtime")?;
-    match vm.read_static_ref(system, "currentRuntime", "Ljava/lang/Runtime;") {
+    match vm.read_static_ref_if_set(system, "currentRuntime", "Ljava/lang/Runtime;") {
         Some(existing) => object(existing),
         None => {
             let instance = vm.new_instance(system)?;
@@ -2865,7 +2892,7 @@ pub(crate) const RUNTIME: oxjvm_vm::NativeClass = class(
 // Thread
 // -------------------------------------------------------------------------------------------
 
-const THREAD_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
+const THREAD_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
     method("<init>", "()V", ACC_PUBLIC, thread_init),
     method("<init>", "(Ljava/lang/Runnable;)V", ACC_PUBLIC, thread_init),
     method("<init>", "(Ljava/lang/String;)V", ACC_PUBLIC, thread_init),
@@ -3051,6 +3078,32 @@ const THREAD_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
     method("dumpStack", "()V", ACC_PUBLIC | ACC_STATIC, |_, _, _| {
         void()
     }),
+    method(
+        "setContextClassLoader",
+        "(Ljava/lang/ClassLoader;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let (declaring, field) =
+                vm.find_field(class, "contextClassLoader", "Ljava/lang/ClassLoader;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method(
+        "getContextClassLoader",
+        "()Ljava/lang/ClassLoader;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            object(
+                vm.read_ref_field(this, class, "contextClassLoader", "Ljava/lang/ClassLoader;")
+                    .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
 ];
 
 fn thread_init(
@@ -3128,6 +3181,12 @@ pub(crate) const THREAD: oxjvm_vm::NativeClass = class(
         field("daemon", "Z", ACC_PRIVATE, None),
         field("target", "Ljava/lang/Runnable;", ACC_PRIVATE, None),
         field("started", "Z", ACC_PRIVATE, None),
+        field(
+            "contextClassLoader",
+            "Ljava/lang/ClassLoader;",
+            ACC_PRIVATE,
+            None,
+        ),
     ],
     &THREAD_METHODS,
     None,
@@ -3192,7 +3251,7 @@ pub(crate) const CLASS_LOADER: oxjvm_vm::NativeClass = class(
 // Enum / Record
 // -------------------------------------------------------------------------------------------
 
-const ENUM_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const ENUM_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method("<init>", "(Ljava/lang/String;I)V", ACC_PROTECTED, enum_init),
     method(
         "name",
@@ -3255,7 +3314,49 @@ const ENUM_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
             object(class_object)
         },
     ),
+    method(
+        "valueOf",
+        "(Ljava/lang/Class;Ljava/lang/String;)Ljava/lang/Enum;",
+        ACC_PUBLIC | ACC_STATIC,
+        enum_value_of,
+    ),
 ];
+
+/// `Enum.valueOf(Class, String)`: the static enum constant with that name.
+fn enum_value_of(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let class_object = ref_arg(args, 0);
+    if class_object.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let name = string_arg(vm, args[1])?;
+    let enum_class = class_argument(vm, class_object)?;
+    if !vm.classes.get(enum_class).is_enum {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some(&alloc::format!(
+                "{} is not an enum type",
+                vm.class_name(enum_class)
+            )),
+        ));
+    }
+    vm.ensure_initialized(enum_class)?;
+    let class_name = vm.class_name(enum_class).to_string();
+    let descriptor = alloc::format!("L{class_name};");
+    if let Some(value) = vm.read_static_ref_if_set(enum_class, &name, &descriptor) {
+        return object(value);
+    }
+    Err(vm.throw_new(
+        "java/lang/IllegalArgumentException",
+        Some(&alloc::format!(
+            "No enum constant {}",
+            class_name.replace('/', ".")
+        )),
+    ))
+}
 
 fn enum_init(
     vm: &mut Vm<'_>,

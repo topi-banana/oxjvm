@@ -132,7 +132,7 @@ pub(crate) const COLLECTION: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method(
         "size",
         "()I",
@@ -190,6 +190,18 @@ const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method(
         "iterator",
         "()Ljava/util/Iterator;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "toArray",
+        "()[Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "toArray",
+        "([Ljava/lang/Object;)[Ljava/lang/Object;",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
@@ -280,7 +292,7 @@ pub(crate) const MAP: oxjvm_vm::NativeClass = class(
 // Objects
 // -------------------------------------------------------------------------------------------
 
-const OBJECTS_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const OBJECTS_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method(
         "equals",
         "(Ljava/lang/Object;Ljava/lang/Object;)Z",
@@ -397,6 +409,42 @@ const OBJECTS_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         ACC_PUBLIC | ACC_STATIC,
         |_, _, args| boolean(!ref_arg(args, 0).is_null()),
     ),
+    method(
+        "checkIndex",
+        "(II)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let index = crate::int_arg(args, 0);
+            let length = crate::int_arg(args, 1);
+            if index < 0 || index >= length {
+                return Err(vm.throw_new(
+                    "java/lang/IndexOutOfBoundsException",
+                    Some(&alloc::format!(
+                        "Index {index} out of bounds for length {length}"
+                    )),
+                ));
+            }
+            int(index)
+        },
+    ),
+    method(
+        "checkIndex",
+        "(JJ)J",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let index = crate::long_arg(args, 0);
+            let length = crate::long_arg(args, 1);
+            if index < 0 || index >= length {
+                return Err(vm.throw_new(
+                    "java/lang/IndexOutOfBoundsException",
+                    Some(&alloc::format!(
+                        "Index {index} out of bounds for length {length}"
+                    )),
+                ));
+            }
+            long(index)
+        },
+    ),
 ];
 
 fn objects_equals(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmError> {
@@ -425,7 +473,7 @@ pub(crate) const OBJECTS: oxjvm_vm::NativeClass = class(
 // Arrays
 // -------------------------------------------------------------------------------------------
 
-const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
     method(
         "toString",
         "([I)Ljava/lang/String;",
@@ -509,7 +557,191 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
             boolean(a == b || arrays_equal(vm, a, b)?)
         },
     ),
+    method(
+        "copyOf",
+        "([Ljava/lang/Object;I)[Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_STATIC,
+        arrays_copy_of_objects,
+    ),
+    method(
+        "copyOfRange",
+        "([Ljava/lang/Object;II)[Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_STATIC,
+        arrays_copy_of_range_objects,
+    ),
+    method(
+        "asList",
+        "([Ljava/lang/Object;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_STATIC | ACC_VARARGS,
+        arrays_as_list,
+    ),
+    method(
+        "fill",
+        "([Ljava/lang/Object;Ljava/lang/Object;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_fill(vm, ref_arg(args, 0), Value::Ref(ref_arg(args, 1)), true),
+    ),
+    method("fill", "([J J)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+        arrays_fill(
+            vm,
+            ref_arg(args, 0),
+            Value::Long(crate::long_arg(args, 1)),
+            false,
+        )
+    }),
+    method("fill", "([ZZ)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+        arrays_fill(
+            vm,
+            ref_arg(args, 0),
+            Value::Int(crate::int_arg(args, 1)),
+            false,
+        )
+    }),
+    method("fill", "([BB)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+        arrays_fill(
+            vm,
+            ref_arg(args, 0),
+            Value::Int(crate::int_arg(args, 1)),
+            false,
+        )
+    }),
+    method("fill", "([CC)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+        arrays_fill(
+            vm,
+            ref_arg(args, 0),
+            Value::Int(crate::int_arg(args, 1)),
+            false,
+        )
+    }),
+    method("fill", "([SS)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+        arrays_fill(
+            vm,
+            ref_arg(args, 0),
+            Value::Int(crate::int_arg(args, 1)),
+            false,
+        )
+    }),
+    method("fill", "([FF)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+        arrays_fill(
+            vm,
+            ref_arg(args, 0),
+            Value::Float(crate::float_arg(args, 1)),
+            false,
+        )
+    }),
+    method("fill", "([DD)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+        arrays_fill(
+            vm,
+            ref_arg(args, 0),
+            Value::Double(crate::double_arg(args, 1)),
+            false,
+        )
+    }),
 ];
+
+/// Fill every slot of an array with the same value.
+fn arrays_fill(
+    vm: &mut Vm<'_>,
+    array: ObjectRef,
+    value: Value,
+    checked: bool,
+) -> Result<Value, VmError> {
+    if array.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let length = vm.array_length(array)?;
+    for index in 0..length {
+        vm.array_set(array, index as i32, value, checked)?;
+    }
+    void()
+}
+
+/// `Arrays.copyOf(Object[], int)`.
+fn arrays_copy_of_objects(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let source = ref_arg(args, 0);
+    if source.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let requested = crate::int_arg(args, 1);
+    if requested < 0 {
+        return Err(vm.throw_new(
+            "java/lang/NegativeArraySizeException",
+            Some(&alloc::format!("{requested}")),
+        ));
+    }
+    let length = vm.array_length(source)?;
+    let result = vm.allocate_array(vm.class_of(source), requested as usize)?;
+    for index in 0..length.min(requested as usize) {
+        let value = vm.array_get(source, index as i32)?;
+        vm.array_set(result, index as i32, value, true)?;
+    }
+    object(result)
+}
+
+/// `Arrays.copyOfRange(Object[], int, int)`: `to` may exceed the source length, in which case the
+/// tail is filled with `null`.
+fn arrays_copy_of_range_objects(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let source = ref_arg(args, 0);
+    if source.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let from = crate::int_arg(args, 1);
+    let to = crate::int_arg(args, 2);
+    let length = vm.array_length(source)? as i32;
+    if from < 0 || from > length {
+        return Err(vm.throw_new(
+            "java/lang/ArrayIndexOutOfBoundsException",
+            Some(&alloc::format!(
+                "arraycopy: source index {from} out of bounds for object array[{length}]"
+            )),
+        ));
+    }
+    if from > to {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some(&alloc::format!("from({from}) > to({to})")),
+        ));
+    }
+    let count = (to - from) as usize;
+    let result = vm.allocate_array(vm.class_of(source), count)?;
+    for offset in 0..count {
+        let index = from as usize + offset;
+        if index < length as usize {
+            let value = vm.array_get(source, index as i32)?;
+            vm.array_set(result, offset as i32, value, true)?;
+        }
+    }
+    object(result)
+}
+
+/// `Arrays.asList(Object[])`, returning a mutable `ArrayList` copy of the elements.
+fn arrays_as_list(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let array = ref_arg(args, 0);
+    if array.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let length = vm.array_length(array)?;
+    let mut elements = Vec::with_capacity(length);
+    for index in 0..length {
+        elements.push(vm.array_get(array, index as i32)?.as_ref());
+    }
+    let list_class = vm.resolve_class("java/util/ArrayList")?;
+    let list = vm.new_instance(list_class)?;
+    array_list_store(vm, list, &elements)?;
+    object(list)
+}
 
 fn arrays_equal(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmError> {
     let (Some(left), Some(right)) = (
@@ -772,7 +1004,7 @@ pub(crate) const RANDOM: oxjvm_vm::NativeClass = class(
 // ArrayList + iterator
 // -------------------------------------------------------------------------------------------
 
-const ARRAY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+const ARRAY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method("<init>", "()V", ACC_PUBLIC, array_list_init),
     method("<init>", "(I)V", ACC_PUBLIC, array_list_init),
     method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, array_list_add),
@@ -837,6 +1069,12 @@ const ARRAY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
         "(ILjava/lang/Object;)V",
         ACC_PUBLIC,
         array_list_insert,
+    ),
+    method(
+        "toArray",
+        "([Ljava/lang/Object;)[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        array_list_to_array_into,
     ),
 ];
 
@@ -1022,6 +1260,35 @@ fn array_list_to_array(
         vm.array_set_ref(array, index, *element)?;
     }
     object(array)
+}
+
+/// `List.toArray(T[])`: reuse `target` when it is large enough (null-terminated), otherwise
+/// allocate a new array with `target`'s runtime component type.
+fn array_list_to_array_into(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let target = ref_arg(args, 1);
+    if target.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let elements = array_list_elements(vm, receiver(args));
+    let target_length = vm.array_length(target)?;
+    if target_length < elements.len() {
+        let result = vm.allocate_array(vm.class_of(target), elements.len())?;
+        for (index, element) in elements.iter().enumerate() {
+            vm.array_set_ref(result, index, *element)?;
+        }
+        return object(result);
+    }
+    for (index, element) in elements.iter().enumerate() {
+        vm.array_set_ref(target, index, *element)?;
+    }
+    if target_length > elements.len() {
+        vm.array_set_ref(target, elements.len(), ObjectRef::NULL)?;
+    }
+    object(target)
 }
 
 fn array_list_to_string(
@@ -1425,7 +1692,7 @@ pub(crate) const HASH_MAP: oxjvm_vm::NativeClass = class(
 // Collections
 // -------------------------------------------------------------------------------------------
 
-const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
     method(
         "sort",
         "(Ljava/util/List;)V",
@@ -1453,7 +1720,35 @@ const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
             void()
         },
     ),
+    method(
+        "addAll",
+        "(Ljava/util/Collection;[Ljava/lang/Object;)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        collections_add_all,
+    ),
 ];
+
+/// `Collections.addAll(Collection, T...)`.
+fn collections_add_all(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let collection = ref_arg(args, 0);
+    let array = ref_arg(args, 1);
+    if collection.is_null() || array.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let length = vm.array_length(array)?;
+    let (class, method) = vm.resolve_virtual_method(collection, "add", "(Ljava/lang/Object;)Z")?;
+    let mut changed = false;
+    for index in 0..length {
+        let value = vm.array_get(array, index as i32)?;
+        let result = vm.invoke_method(class, method, vec![Value::Ref(collection), value])?;
+        changed |= result.as_int() != 0;
+    }
+    boolean(changed)
+}
 
 fn collections_sort(
     vm: &mut Vm<'_>,

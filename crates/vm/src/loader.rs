@@ -1201,6 +1201,20 @@ impl<'a> Vm<'a> {
         }
     }
 
+    /// Like [`read_static_ref`](Self::read_static_ref), but treats a null reference as absent.
+    ///
+    /// Reference static fields default to `null`, so lazy singletons must use this to tell
+    /// "not created yet" apart from a real value.
+    pub fn read_static_ref_if_set(
+        &self,
+        class: ClassId,
+        name: &str,
+        descriptor: &str,
+    ) -> Option<ObjectRef> {
+        self.read_static_ref(class, name, descriptor)
+            .filter(|reference| !reference.is_null())
+    }
+
     /// Write a static field with an owned value.
     pub fn set_static_value(&mut self, class: ClassId, name: &str, descriptor: &str, value: Value) {
         if let Some((declaring, field)) = self.find_method_field(class, name, descriptor) {

@@ -77,7 +77,7 @@ pub(crate) const NUMBER: oxjvm_vm::NativeClass = class(
 // Integer
 // -------------------------------------------------------------------------------------------
 
-const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
+const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
     method("<init>", "(I)V", ACC_PUBLIC, boxed_int_init),
     method("intValue", "()I", ACC_PUBLIC, |vm, _, args| {
         int(read_value_int(vm, receiver(args)))
@@ -213,7 +213,46 @@ const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
             object(vm.make_string(&text)?)
         },
     ),
+    method(
+        "getInteger",
+        "(Ljava/lang/String;)Ljava/lang/Integer;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| integer_get_integer(vm, args, Value::Ref(ObjectRef::NULL)),
+    ),
+    method(
+        "getInteger",
+        "(Ljava/lang/String;I)Ljava/lang/Integer;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let default = boxed_int(vm, int_arg(args, 1))?;
+            integer_get_integer(vm, args, default)
+        },
+    ),
+    method("max", "(II)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        int(int_arg(args, 0).max(int_arg(args, 1)))
+    }),
+    method("min", "(II)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        int(int_arg(args, 0).min(int_arg(args, 1)))
+    }),
 ];
+
+/// `Integer.getInteger`: the system property parsed as an int, or the default.
+fn integer_get_integer(vm: &mut Vm<'_>, args: &[Value], default: Value) -> Result<Value, VmError> {
+    let key = string_arg(vm, args[0])?;
+    if let Some(text) = crate::lang::system_property(vm, &key) {
+        if let Some(value) = format::parse_int(&text) {
+            return boxed_int(vm, value);
+        }
+    }
+    Ok(default)
+}
+
+fn boxed_int(vm: &mut Vm<'_>, value: i32) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/lang/Integer")?;
+    let instance = vm.new_instance(class)?;
+    write_value_int(vm, instance, value);
+    object(instance)
+}
 
 fn boxed_int_init(
     vm: &mut Vm<'_>,
@@ -224,12 +263,26 @@ fn boxed_int_init(
     void()
 }
 
+/// The `value` field of a boxed primitive, whose descriptor varies by class
+/// (`I`/`Z`/`C`/`S`/`B`/`F`).
 pub(crate) fn read_value_int(vm: &Vm<'_>, object: ObjectRef) -> i32 {
-    crate::lang::read_int_field(vm, object, "value")
+    let class = vm.class_of(object);
+    for descriptor in ["I", "Z", "C", "S", "B", "F"] {
+        if let Some(value) = vm.read_instance_int_named(object, class, "value", descriptor) {
+            return value;
+        }
+    }
+    0
 }
 
 pub(crate) fn write_value_int(vm: &mut Vm<'_>, object: ObjectRef, value: i32) {
-    crate::lang::write_int_field(vm, object, "value", value);
+    let class = vm.class_of(object);
+    for descriptor in ["I", "Z", "C", "S", "B", "F"] {
+        if let Ok((declaring, field)) = vm.find_field(class, "value", descriptor) {
+            vm.set_instance_int(object, declaring, field, value);
+            return;
+        }
+    }
 }
 
 fn boxed_int_equals(
@@ -370,7 +423,7 @@ pub(crate) const INTEGER: oxjvm_vm::NativeClass = class(
 // Long
 // -------------------------------------------------------------------------------------------
 
-const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
     method("<init>", "(J)V", ACC_PUBLIC, |vm, _, args| {
         write_value_long(vm, receiver(args), long_arg(args, 1));
         void()
@@ -487,24 +540,70 @@ const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
             long(value & value.wrapping_neg())
         },
     ),
+    method(
+        "getLong",
+        "(Ljava/lang/String;)Ljava/lang/Long;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| long_get_long(vm, args, Value::Ref(ObjectRef::NULL)),
+    ),
+    method(
+        "getLong",
+        "(Ljava/lang/String;J)Ljava/lang/Long;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let default = boxed_long(vm, long_arg(args, 1))?;
+            long_get_long(vm, args, default)
+        },
+    ),
+    method(
+        "getLong",
+        "(Ljava/lang/String;Ljava/lang/Long;)Ljava/lang/Long;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| long_get_long(vm, args, Value::Ref(ref_arg(args, 1))),
+    ),
 ];
 
-pub(crate) fn read_value_long(vm: &Vm<'_>, object: ObjectRef) -> i64 {
-    match vm.heap.get(object).map(|object| &object.data) {
-        Some(oxjvm_vm::ObjectData::Instance(fields)) if !fields.is_empty() => fields[0].as_long(),
-        _ => 0,
+/// `Long.getLong`: the system property parsed as a long, or the default when unset/unparseable.
+fn long_get_long(vm: &mut Vm<'_>, args: &[Value], default: Value) -> Result<Value, VmError> {
+    let key = string_arg(vm, args[0])?;
+    if let Some(text) = crate::lang::system_property(vm, &key) {
+        if let Some(value) = format::parse_long(&text) {
+            return boxed_long(vm, value);
+        }
     }
+    Ok(default)
+}
+
+/// The `value` field of a boxed primitive, whose descriptor is `J` (Long) or `D` (Double).
+pub(crate) fn read_value_long(vm: &Vm<'_>, object: ObjectRef) -> i64 {
+    let class = vm.class_of(object);
+    let Some(oxjvm_vm::ObjectData::Instance(fields)) = vm.heap.get(object).map(|o| &o.data) else {
+        return 0;
+    };
+    for descriptor in ["J", "D"] {
+        let entry = vm.classes.get(class);
+        if let Some(field) = entry
+            .fields
+            .iter()
+            .find(|field| field.name == "value" && field.descriptor == descriptor)
+        {
+            return fields[field.slot as usize].as_long();
+        }
+    }
+    0
 }
 
 pub(crate) fn write_value_long(vm: &mut Vm<'_>, object: ObjectRef, value: i64) {
-    if let Some(class) = vm.heap.get(object).map(|object| object.class) {
-        if let Ok((declaring, field)) = vm.find_field(class, "value", "J") {
+    let class = vm.class_of(object);
+    for descriptor in ["J", "D"] {
+        if let Ok((declaring, field)) = vm.find_field(class, "value", descriptor) {
             let slot = vm.classes.get(declaring).fields[field as usize].slot as usize;
             if let Some(oxjvm_vm::ObjectData::Instance(fields)) =
                 vm.heap.get_mut(object).map(|object| &mut object.data)
             {
                 fields[slot] = Value::Long(value);
             }
+            return;
         }
     }
 }
@@ -741,7 +840,7 @@ pub(crate) const BYTE: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const BOOLEAN_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const BOOLEAN_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method("<init>", "(Z)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), i32::from(bool_arg(args, 1)));
         void()
@@ -793,7 +892,7 @@ const BOOLEAN_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         |vm, _, args| {
             let class = vm.resolve_class("java/lang/Boolean")?;
             let name = if bool_arg(args, 0) { "TRUE" } else { "FALSE" };
-            if let Some(existing) = vm.read_static_ref(class, name, "Ljava/lang/Boolean;") {
+            if let Some(existing) = vm.read_static_ref_if_set(class, name, "Ljava/lang/Boolean;") {
                 return object(existing);
             }
             let instance = vm.new_instance(class)?;
@@ -807,6 +906,23 @@ const BOOLEAN_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         "(Z)Ljava/lang/String;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| object(vm.make_string(if bool_arg(args, 0) { "true" } else { "false" })?),
+    ),
+    method(
+        "valueOf",
+        "(Ljava/lang/String;)Ljava/lang/Boolean;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let value = parse_boolean(vm.string_value(ref_arg(args, 0)).as_deref());
+            let class = vm.resolve_class("java/lang/Boolean")?;
+            let name = if value { "TRUE" } else { "FALSE" };
+            if let Some(existing) = vm.read_static_ref_if_set(class, name, "Ljava/lang/Boolean;") {
+                return object(existing);
+            }
+            let instance = vm.new_instance(class)?;
+            write_value_int(vm, instance, i32::from(value));
+            vm.set_static_value(class, name, "Ljava/lang/Boolean;", Value::Ref(instance));
+            object(instance)
+        },
     ),
 ];
 
@@ -1024,7 +1140,7 @@ pub(crate) const CHARACTER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const FLOAT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const FLOAT_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     method("<init>", "(F)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(
             vm,
@@ -1117,6 +1233,17 @@ const FLOAT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method("isNaN", "(F)Z", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
         boolean(crate::float_arg(args, 0).is_nan())
     }),
+    method(
+        "valueOf",
+        "(F)Ljava/lang/Float;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let class = vm.resolve_class("java/lang/Float")?;
+            let instance = vm.new_instance(class)?;
+            write_value_int(vm, instance, crate::float_arg(args, 0).to_bits() as i32);
+            object(instance)
+        },
+    ),
 ];
 
 pub(crate) const FLOAT: oxjvm_vm::NativeClass = class(

@@ -136,7 +136,7 @@ fn lookup_singleton(
     _args: &[Value],
 ) -> Result<Value, VmError> {
     let class = vm.resolve_class("java/lang/invoke/MethodHandles$Lookup")?;
-    let existing = vm.read_static_ref(
+    let existing = vm.read_static_ref_if_set(
         class,
         "IMPL_LOOKUP",
         "Ljava/lang/invoke/MethodHandles$Lookup;",
