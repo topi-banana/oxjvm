@@ -808,7 +808,7 @@ const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 48] = [
 
 // The remaining `String.valueOf` overloads and `format` are declared in a second array so the
 // first stays readable; both are concatenated below.
-const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 15] = [
+const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 18] = [
     method(
         "valueOf",
         "(Z)Ljava/lang/String;",
@@ -889,10 +889,28 @@ const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 15] = [
     ),
     method("<init>", "([BII)V", ACC_PUBLIC, string_init_bytes_range),
     method(
+        "<init>",
+        "([BLjava/nio/charset/Charset;)V",
+        ACC_PUBLIC,
+        string_init_bytes_charset_object,
+    ),
+    method(
+        "<init>",
+        "([BIILjava/nio/charset/Charset;)V",
+        ACC_PUBLIC,
+        string_init_bytes_range_charset_object,
+    ),
+    method(
         "getBytes",
         "(Ljava/lang/String;)[B",
         ACC_PUBLIC,
         string_get_bytes_charset,
+    ),
+    method(
+        "getBytes",
+        "(Ljava/nio/charset/Charset;)[B",
+        ACC_PUBLIC,
+        string_get_bytes_charset_object,
     ),
 ];
 
@@ -979,13 +997,48 @@ fn string_init_bytes_range(
 }
 
 /// `String.getBytes(String)`: encode as UTF-8 (the charset name is ignored).
+/// `String.getBytes(String)`: encode with the named charset (UTF-8 when unknown).
 fn string_get_bytes_charset(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let _charset = string_arg(vm, args[1])?;
-    string_get_bytes(vm, _c, args)
+    let name = string_arg(vm, args[1])?;
+    let text = vm.string_or_empty(receiver(args));
+    let bytes = match crate::charset::canonical_name(&name) {
+        Some(canonical) => crate::charset::encode(&text, canonical),
+        None => text.into_bytes(),
+    };
+    object(byte_array_from(vm, &bytes)?)
+}
+
+/// `String.getBytes(Charset)`.
+fn string_get_bytes_charset_object(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let name = crate::charset::name_of(vm, ref_arg(args, 1));
+    let text = vm.string_or_empty(receiver(args));
+    let bytes = match crate::charset::canonical_name(&name) {
+        Some(canonical) => crate::charset::encode(&text, canonical),
+        None => text.into_bytes(),
+    };
+    object(byte_array_from(vm, &bytes)?)
+}
+
+/// Allocate a guest `byte[]` with `bytes` as its contents.
+fn byte_array_from(vm: &mut Vm<'_>, bytes: &[u8]) -> Result<ObjectRef, VmError> {
+    let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, bytes.len())?;
+    for (index, byte) in bytes.iter().enumerate() {
+        vm.array_set(
+            array,
+            index as i32,
+            Value::Int(i32::from(*byte as i8)),
+            false,
+        )?;
+    }
+    Ok(array)
 }
 
 fn string_range_check(
@@ -1022,12 +1075,56 @@ fn string_init_bytes(
     void()
 }
 
+/// `String(byte[], String)`: decode with the named charset (UTF-8 when unknown).
 fn string_init_bytes_charset(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    string_init_bytes(vm, _c, args)
+    let bytes = byte_array(vm, ref_arg(args, 1))?;
+    let name = string_arg(vm, args[2])?;
+    let units = match crate::charset::canonical_name(&name) {
+        Some(canonical) => crate::charset::decode(&bytes, canonical),
+        None => String::from_utf8_lossy(&bytes).encode_utf16().collect(),
+    };
+    write_string_payload(vm, receiver(args), units)?;
+    void()
+}
+
+/// `String(byte[], Charset)`.
+fn string_init_bytes_charset_object(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let bytes = byte_array(vm, ref_arg(args, 1))?;
+    let name = crate::charset::name_of(vm, ref_arg(args, 2));
+    let units = match crate::charset::canonical_name(&name) {
+        Some(canonical) => crate::charset::decode(&bytes, canonical),
+        None => String::from_utf8_lossy(&bytes).encode_utf16().collect(),
+    };
+    write_string_payload(vm, receiver(args), units)?;
+    void()
+}
+
+/// `String(byte[], int, int, Charset)`.
+fn string_init_bytes_range_charset_object(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let bytes = byte_array(vm, ref_arg(args, 1))?;
+    let offset = int_arg(args, 2);
+    let count = int_arg(args, 3);
+    string_range_check(vm, offset, count, bytes.len())?;
+    let slice = &bytes[offset as usize..(offset + count) as usize];
+    let name = crate::charset::name_of(vm, ref_arg(args, 4));
+    let units = match crate::charset::canonical_name(&name) {
+        Some(canonical) => crate::charset::decode(slice, canonical),
+        None => String::from_utf8_lossy(slice).encode_utf16().collect(),
+    };
+    write_string_payload(vm, receiver(args), units)?;
+    void()
 }
 
 fn byte_array(vm: &mut Vm<'_>, reference: ObjectRef) -> Result<Vec<u8>, VmError> {
@@ -2060,18 +2157,21 @@ pub(crate) const STRING: oxjvm_vm::NativeClass = {
 };
 
 /// Both `String` method arrays flattened; built by a const fn to stay `'static`.
-const STRING_ALL_METHODS: [oxjvm_vm::NativeMethodDef; 61] = flatten_string_methods();
+const STRING_ALL_METHODS: [oxjvm_vm::NativeMethodDef;
+    STRING_METHODS.len() + STRING_METHODS_EXTRA.len()] = flatten_string_methods();
 
-const fn flatten_string_methods() -> [oxjvm_vm::NativeMethodDef; 61] {
-    let mut out = [method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()); 61];
+const fn flatten_string_methods()
+-> [oxjvm_vm::NativeMethodDef; STRING_METHODS.len() + STRING_METHODS_EXTRA.len()] {
+    let mut out = [method("<init>", "()V", ACC_PUBLIC, |_, _, _| void());
+        STRING_METHODS.len() + STRING_METHODS_EXTRA.len()];
     let mut index = 0;
-    while index < 46 {
+    while index < STRING_METHODS.len() {
         out[index] = STRING_METHODS[index];
         index += 1;
     }
     let mut extra = 0;
-    while extra < 15 {
-        out[46 + extra] = STRING_METHODS_EXTRA[extra];
+    while extra < STRING_METHODS_EXTRA.len() {
+        out[STRING_METHODS.len() + extra] = STRING_METHODS_EXTRA[extra];
         extra += 1;
     }
     out

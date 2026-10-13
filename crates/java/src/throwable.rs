@@ -490,6 +490,11 @@ exception!(
     "java/lang/RuntimeException"
 );
 exception!(
+    UNSUPPORTED_CHARSET_EXCEPTION,
+    "java/nio/charset/UnsupportedCharsetException",
+    "java/lang/IllegalArgumentException"
+);
+exception!(
     ILLEGAL_MONITOR_STATE_EXCEPTION,
     "java/lang/IllegalMonitorStateException",
     "java/lang/RuntimeException"

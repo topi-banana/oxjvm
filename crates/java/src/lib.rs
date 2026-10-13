@@ -17,6 +17,7 @@ extern crate std;
 
 pub(crate) mod atomic;
 pub(crate) mod boxed;
+pub(crate) mod charset;
 pub(crate) mod concurrent;
 pub(crate) mod file;
 pub(crate) mod invoke;
@@ -100,7 +101,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 153] = [
+static REGISTRY: [NativeClass; 157] = [
     lang::OBJECT,
     lang::CLASS,
     lang::STRING,
@@ -150,6 +151,7 @@ static REGISTRY: [NativeClass; 153] = [
     throwable::ARRAY_STORE_EXCEPTION,
     throwable::CLASS_CAST_EXCEPTION,
     throwable::ILLEGAL_ARGUMENT_EXCEPTION,
+    throwable::UNSUPPORTED_CHARSET_EXCEPTION,
     throwable::ILLEGAL_MONITOR_STATE_EXCEPTION,
     throwable::ILLEGAL_STATE_EXCEPTION,
     throwable::INDEX_OUT_OF_BOUNDS_EXCEPTION,
@@ -208,6 +210,7 @@ static REGISTRY: [NativeClass; 153] = [
     uuid::UUID,
     util::HASH_MAP,
     util::IDENTITY_HASH_MAP,
+    util::SORTED_MAP,
     util::COLLECTIONS,
     invoke::METHOD_TYPE,
     invoke::METHOD_HANDLE,
@@ -248,6 +251,8 @@ static REGISTRY: [NativeClass; 153] = [
     nio::LINK_OPTION,
     nio::STANDARD_COPY_OPTION,
     nio::STANDARD_OPEN_OPTION,
+    charset::CHARSET,
+    charset::STANDARD_CHARSETS,
     nio::FILE_ATTRIBUTE,
     atomic::ATOMIC_INTEGER,
     atomic::ATOMIC_LONG,

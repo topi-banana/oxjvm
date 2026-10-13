@@ -2027,6 +2027,55 @@ pub(crate) const IDENTITY_HASH_MAP: oxjvm_vm::NativeClass = class(
     None,
 );
 
+/// `SortedMap`: only needed so types like `Charset.availableCharsets()` resolve;
+/// the concrete map returned is a plain `HashMap`.
+pub(crate) const SORTED_MAP: oxjvm_vm::NativeClass = class(
+    "java/util/SortedMap",
+    Some("java/lang/Object"),
+    &["java/util/Map"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[
+        method(
+            "comparator",
+            "()Ljava/util/Comparator;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+        method(
+            "firstKey",
+            "()Ljava/lang/Object;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+        method(
+            "lastKey",
+            "()Ljava/lang/Object;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+        method(
+            "headMap",
+            "(Ljava/lang/Object;)Ljava/util/SortedMap;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+        method(
+            "tailMap",
+            "(Ljava/lang/Object;)Ljava/util/SortedMap;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+        method(
+            "subMap",
+            "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/SortedMap;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+    ],
+    None,
+);
+
 // -------------------------------------------------------------------------------------------
 // Properties
 // -------------------------------------------------------------------------------------------
