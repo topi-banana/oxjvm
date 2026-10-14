@@ -1258,6 +1258,23 @@ fn p1_chars_stream() {
 }
 
 #[test]
+fn p1_unsafe() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/P1Unsafe").expect("P1Unsafe");
+    let (declaring, index) = vm
+        .find_method(class, "unsafe", "()Ljava/lang/String;")
+        .expect("unsafe");
+    let value = vm
+        .invoke_method(declaring, index, Vec::new())
+        .expect("unsafe");
+    assert_eq!(
+        vm.string_value(value.as_ref()).as_deref(),
+        Some("42:12:8:true:7:4096")
+    );
+}
+
+#[test]
 fn rejects_corrupted_bytecode() {
     let mut bytes = build_div_class();
     // `div` code begins with `iload_1 iload_2 idiv ireturn`; replace `ireturn` with an

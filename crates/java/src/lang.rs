@@ -4407,14 +4407,6 @@ fn char_sequence_code_points(
     crate::intstream::int_stream_of(vm, values)
 }
 
-fn char_sequence_unsupported(
-    vm: &mut Vm<'_>,
-    _c: oxjvm_vm::NativeContext,
-    _args: &[Value],
-) -> Result<Value, VmError> {
-    Err(crate::unsupported(vm, "CharSequence.chars"))
-}
-
 pub(crate) const CHAR_SEQUENCE: oxjvm_vm::NativeClass = class(
     "java/lang/CharSequence",
     Some("java/lang/Object"),

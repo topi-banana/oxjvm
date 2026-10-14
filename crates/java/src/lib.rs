@@ -32,6 +32,7 @@ pub(crate) mod reflect;
 pub(crate) mod regex;
 pub(crate) mod stream;
 pub(crate) mod throwable;
+pub(crate) mod unsafe_api;
 pub(crate) mod uri;
 pub(crate) mod util;
 pub(crate) mod uuid;
@@ -105,7 +106,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 180] = [
+static REGISTRY: [NativeClass; 182] = [
     lang::OBJECT,
     lang::CLASS,
     lang::STRING,
@@ -278,6 +279,8 @@ static REGISTRY: [NativeClass; 180] = [
     reflect::METHOD,
     reflect::FIELD,
     uri::URI,
+    unsafe_api::SUN_MISC_UNSAFE,
+    unsafe_api::JDK_INTERNAL_UNSAFE,
     charset::CHARSET,
     charset::STANDARD_CHARSETS,
     nio::FILE_ATTRIBUTE,
