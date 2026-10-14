@@ -1224,6 +1224,23 @@ fn p1_reflect() {
 }
 
 #[test]
+fn p1_legacy_collections() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/P1Legacy").expect("P1Legacy");
+    let (declaring, index) = vm
+        .find_method(class, "legacy", "()Ljava/lang/String;")
+        .expect("legacy");
+    let value = vm
+        .invoke_method(declaring, index, Vec::new())
+        .expect("legacy");
+    assert_eq!(
+        vm.string_value(value.as_ref()).as_deref(),
+        Some("true:false:3:true:2:2:2:02:1:[x, y, z]")
+    );
+}
+
+#[test]
 fn rejects_corrupted_bytecode() {
     let mut bytes = build_div_class();
     // `div` code begins with `iload_1 iload_2 idiv ireturn`; replace `ireturn` with an

@@ -104,7 +104,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 170] = [
+static REGISTRY: [NativeClass; 175] = [
     lang::OBJECT,
     lang::CLASS,
     lang::STRING,
@@ -217,6 +217,11 @@ static REGISTRY: [NativeClass; 170] = [
     uuid::UUID,
     util::HASH_MAP,
     util::IDENTITY_HASH_MAP,
+    util::ENUMERATION,
+    util::OJVM_ENUMERATION,
+    util::HASH_SET,
+    util::HASHTABLE,
+    util::VECTOR,
     util::SORTED_MAP,
     stream::BASE_STREAM,
     stream::STREAM,

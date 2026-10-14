@@ -2647,3 +2647,647 @@ pub(crate) const COLLECTIONS: oxjvm_vm::NativeClass = class(
     &COLLECTIONS_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// Enumeration + the legacy collections (HashSet, Hashtable, Vector)
+// -------------------------------------------------------------------------------------------
+
+const ENUMERATION_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "hasMoreElements",
+        "()Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "nextElement",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
+pub(crate) const ENUMERATION: oxjvm_vm::NativeClass = class(
+    "java/util/Enumeration",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &ENUMERATION_METHODS,
+    None,
+);
+
+const OJVM_ENUMERATION_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method("hasMoreElements", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let elements = vm
+            .read_ref_field(this, vm.class_of(this), "elements", "[Ljava/lang/Object;")
+            .map_or(0, |array| vm.array_length(array).unwrap_or(0));
+        boolean(crate::lang::read_int_field(vm, this, "cursor") < elements as i32)
+    }),
+    method(
+        "nextElement",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let array = vm
+                .read_ref_field(this, vm.class_of(this), "elements", "[Ljava/lang/Object;")
+                .unwrap_or(ObjectRef::NULL);
+            let cursor = crate::lang::read_int_field(vm, this, "cursor");
+            let length = vm.array_length(array).unwrap_or(0);
+            if cursor < 0 || cursor as usize >= length {
+                return Err(vm.throw_new("java/util/NoSuchElementException", None));
+            }
+            crate::lang::write_int_field(vm, this, "cursor", cursor + 1);
+            vm.array_get(array, cursor)
+        },
+    ),
+];
+
+pub(crate) const OJVM_ENUMERATION: oxjvm_vm::NativeClass = class(
+    "java/util/OjvmEnumeration",
+    Some("java/lang/Object"),
+    &["java/util/Enumeration"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[
+        field("elements", "[Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("cursor", "I", ACC_PRIVATE, None),
+    ],
+    &OJVM_ENUMERATION_METHODS,
+    None,
+);
+
+fn new_enumeration(vm: &mut Vm<'_>, elements: &[ObjectRef]) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/OjvmEnumeration")?;
+    let instance = vm.new_instance(class)?;
+    let object_class = vm.resolve_class("java/lang/Object")?;
+    let array = vm.allocate_object_array(object_class, elements.len())?;
+    for (index, element) in elements.iter().enumerate() {
+        vm.array_set_ref(array, index, *element)?;
+    }
+    let (declaring, field) = vm.find_field(class, "elements", "[Ljava/lang/Object;")?;
+    vm.set_instance_ref(instance, declaring, field, array);
+    Ok(instance)
+}
+
+fn map_keys(vm: &Vm<'_>, map: ObjectRef) -> Vec<ObjectRef> {
+    hash_map_pairs(vm, map)
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect()
+}
+
+fn map_values(vm: &Vm<'_>, map: ObjectRef) -> Vec<ObjectRef> {
+    hash_map_pairs(vm, map)
+        .into_iter()
+        .map(|(_, value)| value)
+        .collect()
+}
+
+// -------------------------------------------------------------------------------------------
+// HashSet (a wrapper over HashMap)
+// -------------------------------------------------------------------------------------------
+
+fn hash_set_map(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "map", "Ljava/util/HashMap;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn new_hash_map(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/HashMap")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, ctor) = vm
+        .find_method(class, "<init>", "()V")
+        .ok_or_else(|| VmError::internal("HashMap() missing"))?;
+    vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
+    Ok(instance)
+}
+
+fn hash_map_call(
+    vm: &mut Vm<'_>,
+    map: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    arguments: &[Value],
+) -> Result<Value, VmError> {
+    let (class, method) = vm.resolve_virtual_method(map, name, descriptor)?;
+    let mut call_args = vec![Value::Ref(map)];
+    call_args.extend_from_slice(arguments);
+    vm.invoke_method(class, method, call_args)
+}
+
+fn hash_set_present(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/lang/Boolean")?;
+    let name = "TRUE";
+    if let Some(existing) = vm.read_static_ref_if_set(class, name, "Ljava/lang/Boolean;") {
+        return Ok(existing);
+    }
+    let instance = vm.new_instance(class)?;
+    crate::boxed::write_value_int(vm, instance, 1);
+    vm.set_static_value(class, name, "Ljava/lang/Boolean;", Value::Ref(instance));
+    Ok(instance)
+}
+
+const HASH_SET_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let map = new_hash_map(vm)?;
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let (declaring, field) = vm.find_field(class, "map", "Ljava/util/HashMap;")?;
+        vm.set_instance_ref(this, declaring, field, map);
+        void()
+    }),
+    method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let map = new_hash_map(vm)?;
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let (declaring, field) = vm.find_field(class, "map", "Ljava/util/HashMap;")?;
+        vm.set_instance_ref(this, declaring, field, map);
+        void()
+    }),
+    method(
+        "<init>",
+        "(Ljava/util/Collection;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = new_hash_map(vm)?;
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "map", "Ljava/util/HashMap;")?;
+            vm.set_instance_ref(this, declaring, field, map);
+            let present = hash_set_present(vm)?;
+            for element in collection_elements(vm, ref_arg(args, 1))? {
+                hash_map_call(
+                    vm,
+                    map,
+                    "put",
+                    "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                    &[Value::Ref(element), Value::Ref(present)],
+                )?;
+            }
+            void()
+        },
+    ),
+    method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let map = hash_set_map(vm, this);
+        let present = hash_set_present(vm)?;
+        let previous = hash_map_call(
+            vm,
+            map,
+            "put",
+            "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+            &[Value::Ref(ref_arg(args, 1)), Value::Ref(present)],
+        )?;
+        boolean(previous.as_ref().is_null())
+    }),
+    method(
+        "remove",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = hash_set_map(vm, receiver(args));
+            let previous = hash_map_call(
+                vm,
+                map,
+                "remove",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                &[Value::Ref(ref_arg(args, 1))],
+            )?;
+            boolean(!previous.as_ref().is_null())
+        },
+    ),
+    method(
+        "contains",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = hash_set_map(vm, receiver(args));
+            hash_map_call(
+                vm,
+                map,
+                "containsKey",
+                "(Ljava/lang/Object;)Z",
+                &[Value::Ref(ref_arg(args, 1))],
+            )
+        },
+    ),
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        let map = hash_set_map(vm, receiver(args));
+        hash_map_call(vm, map, "size", "()I", &[])
+    }),
+    method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let map = hash_set_map(vm, receiver(args));
+        hash_map_call(vm, map, "isEmpty", "()Z", &[])
+    }),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
+        let map = hash_set_map(vm, receiver(args));
+        hash_map_call(vm, map, "clear", "()V", &[])
+    }),
+    method(
+        "iterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = hash_set_map(vm, receiver(args));
+            let keys = hash_map_call(vm, map, "keySet", "()Ljava/util/Set;", &[])?;
+            let set = keys.as_ref();
+            let (class, method) =
+                vm.resolve_virtual_method(set, "iterator", "()Ljava/util/Iterator;")?;
+            vm.invoke_method(class, method, vec![Value::Ref(set)])
+        },
+    ),
+    method(
+        "addAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let map = hash_set_map(vm, this);
+            let present = hash_set_present(vm)?;
+            let mut changed = false;
+            for element in collection_elements(vm, ref_arg(args, 1))? {
+                let previous = hash_map_call(
+                    vm,
+                    map,
+                    "put",
+                    "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                    &[Value::Ref(element), Value::Ref(present)],
+                )?;
+                changed |= previous.as_ref().is_null();
+            }
+            boolean(changed)
+        },
+    ),
+    method(
+        "containsAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let map = hash_set_map(vm, this);
+            for element in collection_elements(vm, ref_arg(args, 1))? {
+                let contains = hash_map_call(
+                    vm,
+                    map,
+                    "containsKey",
+                    "(Ljava/lang/Object;)Z",
+                    &[Value::Ref(element)],
+                )?;
+                if contains.as_int() == 0 {
+                    return boolean(false);
+                }
+            }
+            boolean(true)
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = hash_set_map(vm, receiver(args));
+            let keys = map_keys(vm, map);
+            let mut text = String::from("[");
+            for (index, key) in keys.iter().enumerate() {
+                if index > 0 {
+                    text.push_str(", ");
+                }
+                text.push_str(&value_to_string(vm, *key)?);
+            }
+            text.push(']');
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "forEach",
+        "(Ljava/util/function/Consumer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = hash_set_map(vm, receiver(args));
+            let consumer = ref_arg(args, 1);
+            let (class, method) =
+                vm.resolve_virtual_method(consumer, "accept", "(Ljava/lang/Object;)V")?;
+            for key in map_keys(vm, map) {
+                vm.invoke_method(class, method, vec![Value::Ref(consumer), Value::Ref(key)])?;
+            }
+            void()
+        },
+    ),
+];
+
+pub(crate) const HASH_SET: oxjvm_vm::NativeClass = class(
+    "java/util/HashSet",
+    Some("java/lang/Object"),
+    &[
+        "java/util/Set",
+        "java/lang/Cloneable",
+        "java/io/Serializable",
+    ],
+    ACC_PUBLIC,
+    &[field("map", "Ljava/util/HashMap;", ACC_PRIVATE, None)],
+    &HASH_SET_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// Hashtable (also a HashMap wrapper)
+// -------------------------------------------------------------------------------------------
+
+fn hashtable_map(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    hash_set_map(vm, this)
+}
+
+const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let map = new_hash_map(vm)?;
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let (declaring, field) = vm.find_field(class, "map", "Ljava/util/HashMap;")?;
+        vm.set_instance_ref(this, declaring, field, map);
+        void()
+    }),
+    method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let map = new_hash_map(vm)?;
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let (declaring, field) = vm.find_field(class, "map", "Ljava/util/HashMap;")?;
+        vm.set_instance_ref(this, declaring, field, map);
+        void()
+    }),
+    method(
+        "put",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = hashtable_map(vm, receiver(args));
+            hash_map_call(
+                vm,
+                map,
+                "put",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                &[Value::Ref(ref_arg(args, 1)), Value::Ref(ref_arg(args, 2))],
+            )
+        },
+    ),
+    method(
+        "get",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = hashtable_map(vm, receiver(args));
+            hash_map_call(
+                vm,
+                map,
+                "get",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                &[Value::Ref(ref_arg(args, 1))],
+            )
+        },
+    ),
+    method(
+        "remove",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = hashtable_map(vm, receiver(args));
+            hash_map_call(
+                vm,
+                map,
+                "remove",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                &[Value::Ref(ref_arg(args, 1))],
+            )
+        },
+    ),
+    method(
+        "containsKey",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = hashtable_map(vm, receiver(args));
+            hash_map_call(
+                vm,
+                map,
+                "containsKey",
+                "(Ljava/lang/Object;)Z",
+                &[Value::Ref(ref_arg(args, 1))],
+            )
+        },
+    ),
+    method(
+        "contains",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = hashtable_map(vm, receiver(args));
+            hash_map_call(
+                vm,
+                map,
+                "containsValue",
+                "(Ljava/lang/Object;)Z",
+                &[Value::Ref(ref_arg(args, 1))],
+            )
+        },
+    ),
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        let map = hashtable_map(vm, receiver(args));
+        hash_map_call(vm, map, "size", "()I", &[])
+    }),
+    method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let map = hashtable_map(vm, receiver(args));
+        hash_map_call(vm, map, "isEmpty", "()Z", &[])
+    }),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
+        let map = hashtable_map(vm, receiver(args));
+        hash_map_call(vm, map, "clear", "()V", &[])
+    }),
+    method(
+        "keys",
+        "()Ljava/util/Enumeration;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = hashtable_map(vm, receiver(args));
+            let keys = map_keys(vm, map);
+            object(new_enumeration(vm, &keys)?)
+        },
+    ),
+    method(
+        "elements",
+        "()Ljava/util/Enumeration;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = hashtable_map(vm, receiver(args));
+            let values = map_values(vm, map);
+            object(new_enumeration(vm, &values)?)
+        },
+    ),
+];
+
+pub(crate) const HASHTABLE: oxjvm_vm::NativeClass = class(
+    "java/util/Hashtable",
+    Some("java/lang/Object"),
+    &[
+        "java/util/Map",
+        "java/lang/Cloneable",
+        "java/io/Serializable",
+    ],
+    ACC_PUBLIC,
+    &[field("map", "Ljava/util/HashMap;", ACC_PRIVATE, None)],
+    &HASHTABLE_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// Vector (ArrayList plus the legacy element API)
+// -------------------------------------------------------------------------------------------
+
+const VECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
+    method("<init>", "()V", ACC_PUBLIC, array_list_init),
+    method("<init>", "(I)V", ACC_PUBLIC, array_list_init),
+    method("<init>", "(II)V", ACC_PUBLIC, array_list_init),
+    method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, array_list_add),
+    method(
+        "add",
+        "(ILjava/lang/Object;)V",
+        ACC_PUBLIC,
+        array_list_insert,
+    ),
+    method(
+        "addElement",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let mut elements = array_list_elements(vm, this);
+            elements.push(ref_arg(args, 1));
+            array_list_store(vm, this, &elements)?;
+            void()
+        },
+    ),
+    method(
+        "insertElementAt",
+        "(Ljava/lang/Object;I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let mut elements = array_list_elements(vm, this);
+            let index = crate::int_arg(args, 2);
+            if index < 0 || index as usize > elements.len() {
+                return Err(vm.throw_new(
+                    "java/lang/ArrayIndexOutOfBoundsException",
+                    Some(&index.to_string()),
+                ));
+            }
+            elements.insert(index as usize, ref_arg(args, 1));
+            array_list_store(vm, this, &elements)?;
+            void()
+        },
+    ),
+    method(
+        "elementAt",
+        "(I)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        array_list_get,
+    ),
+    method("get", "(I)Ljava/lang/Object;", ACC_PUBLIC, array_list_get),
+    method(
+        "set",
+        "(ILjava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        array_list_set,
+    ),
+    method(
+        "firstElement",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = array_list_elements(vm, receiver(args));
+            match elements.first() {
+                Some(first) => object(*first),
+                None => Err(vm.throw_new("java/util/NoSuchElementException", None)),
+            }
+        },
+    ),
+    method(
+        "lastElement",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = array_list_elements(vm, receiver(args));
+            match elements.last() {
+                Some(last) => object(*last),
+                None => Err(vm.throw_new("java/util/NoSuchElementException", None)),
+            }
+        },
+    ),
+    method(
+        "remove",
+        "(I)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        array_list_remove,
+    ),
+    method(
+        "remove",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        array_list_remove_object,
+    ),
+    method(
+        "removeElement",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        array_list_remove_object,
+    ),
+    method("removeElementAt", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let mut elements = array_list_elements(vm, this);
+        let index = crate::int_arg(args, 1);
+        if index < 0 || index as usize >= elements.len() {
+            return Err(vm.throw_new("java/lang/ArrayIndexOutOfBoundsException", None));
+        }
+        elements.remove(index as usize);
+        array_list_store(vm, this, &elements)?;
+        void()
+    }),
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "size"))
+    }),
+    method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "size") == 0)
+    }),
+    method("clear", "()V", ACC_PUBLIC, array_list_clear),
+    method(
+        "iterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC,
+        array_list_iterator,
+    ),
+    method(
+        "elements",
+        "()Ljava/util/Enumeration;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = array_list_elements(vm, receiver(args));
+            object(new_enumeration(vm, &elements)?)
+        },
+    ),
+];
+
+pub(crate) const VECTOR: oxjvm_vm::NativeClass = class(
+    "java/util/Vector",
+    Some("java/lang/Object"),
+    &[
+        "java/util/List",
+        "java/lang/Cloneable",
+        "java/io/Serializable",
+    ],
+    ACC_PUBLIC,
+    &[
+        field("elementData", "[Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("size", "I", ACC_PRIVATE, None),
+    ],
+    &VECTOR_METHODS,
+    None,
+);
