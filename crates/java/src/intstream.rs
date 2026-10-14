@@ -312,12 +312,18 @@ const OJVM_INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method("sum", "()I", ACC_PUBLIC, |vm, _, args| {
         int(int_elements(vm, receiver(args)).iter().copied().sum())
     }),
-    method("min", "()Ljava/util/OptionalInt;", ACC_PUBLIC, |_, _, _| {
-        Err(VmError::internal("IntStream.min not implemented"))
-    }),
-    method("max", "()Ljava/util/OptionalInt;", ACC_PUBLIC, |_, _, _| {
-        Err(VmError::internal("IntStream.max not implemented"))
-    }),
+    method(
+        "min",
+        "()Ljava/util/OptionalInt;",
+        ACC_PUBLIC,
+        |vm, _, _| Err(crate::unsupported(vm, "IntStream.min")),
+    ),
+    method(
+        "max",
+        "()Ljava/util/OptionalInt;",
+        ACC_PUBLIC,
+        |vm, _, _| Err(crate::unsupported(vm, "IntStream.max")),
+    ),
     method(
         "boxed",
         "()Ljava/util/stream/Stream;",
