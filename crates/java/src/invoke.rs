@@ -561,7 +561,7 @@ macro_rules! functional_interface {
 // Each interface carries the same shape; the dispatcher selects by descriptor, so a shared array
 // with one abstract method of each common descriptor is sufficient and lets a single class serve
 // every functional interface users link against.
-const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     method(
         "apply",
         "(Ljava/lang/Object;)Ljava/lang/Object;",
@@ -611,6 +611,24 @@ const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         crate::lang::abstract_method_pub,
     ),
     method(
+        "accept",
+        "(I)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "test",
+        "(I)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "applyAsInt",
+        "(I)I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
         "run",
         "()V",
         ACC_PUBLIC | ACC_ABSTRACT,
@@ -641,6 +659,9 @@ functional_interface!(
     "java/util/function/BinaryOperator",
     "java/util/function/BiFunction"
 );
+functional_interface!(INT_CONSUMER, "java/util/function/IntConsumer");
+functional_interface!(INT_PREDICATE, "java/util/function/IntPredicate");
+functional_interface!(INT_UNARY_OPERATOR, "java/util/function/IntUnaryOperator");
 functional_interface!(CALLABLE, "java/util/concurrent/Callable");
 functional_interface!(INT_FUNCTION, "java/util/function/IntFunction");
 

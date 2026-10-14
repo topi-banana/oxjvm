@@ -4334,7 +4334,7 @@ pub(crate) fn read_input_byte(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Option
     Ok(Some(byte))
 }
 
-const CHAR_SEQUENCE_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const CHAR_SEQUENCE_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     method("length", "()I", ACC_PUBLIC | ACC_ABSTRACT, abstract_method),
     method("charAt", "(I)C", ACC_PUBLIC | ACC_ABSTRACT, abstract_method),
     method(
@@ -4354,7 +4354,13 @@ const CHAR_SEQUENCE_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         "chars",
         "()Ljava/util/stream/IntStream;",
         ACC_PUBLIC,
-        char_sequence_unsupported,
+        char_sequence_chars,
+    ),
+    method(
+        "codePoints",
+        "()Ljava/util/stream/IntStream;",
+        ACC_PUBLIC,
+        char_sequence_code_points,
     ),
 ];
 
@@ -4366,6 +4372,39 @@ fn char_sequence_is_empty(
     let (class, method) = vm.resolve_virtual_method(receiver(args), "length", "()I")?;
     let length = vm.invoke_method(class, method, args.to_vec())?;
     boolean(length.as_int() == 0)
+}
+
+/// The UTF-16 units of any `CharSequence` (via `toString` for non-Strings).
+fn char_sequence_units(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Vec<u16>, VmError> {
+    if let Some(units) = vm.string_utf16(this) {
+        return Ok(units.to_vec());
+    }
+    let (class, method) = vm.resolve_virtual_method(this, "toString", "()Ljava/lang/String;")?;
+    let string = vm.invoke_method(class, method, vec![Value::Ref(this)])?;
+    Ok(vm
+        .string_utf16(string.as_ref())
+        .map_or_else(Vec::new, |units| units.to_vec()))
+}
+
+fn char_sequence_chars(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let units = char_sequence_units(vm, receiver(args))?;
+    let values: Vec<i32> = units.iter().map(|unit| i32::from(*unit)).collect();
+    crate::intstream::int_stream_of(vm, values)
+}
+
+fn char_sequence_code_points(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let units = char_sequence_units(vm, receiver(args))?;
+    let text = String::from_utf16_lossy(&units);
+    let values: Vec<i32> = text.chars().map(|ch| ch as i32).collect();
+    crate::intstream::int_stream_of(vm, values)
 }
 
 fn char_sequence_unsupported(
