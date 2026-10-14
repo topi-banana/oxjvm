@@ -1207,6 +1207,23 @@ fn p1_misc_batch() {
 }
 
 #[test]
+fn p1_reflect() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/P1Reflect").expect("P1Reflect");
+    let (declaring, index) = vm
+        .find_method(class, "reflect", "()Ljava/lang/String;")
+        .expect("reflect");
+    let value = vm
+        .invoke_method(declaring, index, Vec::new())
+        .expect("reflect");
+    assert_eq!(
+        vm.string_value(value.as_ref()).as_deref(),
+        Some("9:9:4:add:int:staticInt:true")
+    );
+}
+
+#[test]
 fn rejects_corrupted_bytecode() {
     let mut bytes = build_div_class();
     // `div` code begins with `iload_1 iload_2 idiv ireturn`; replace `ireturn` with an

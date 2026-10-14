@@ -360,7 +360,7 @@ fn lookup_find_constructor(
     object(value)
 }
 
-fn class_field_descriptor(vm: &mut Vm<'_>, class: oxjvm_vm::ClassId) -> String {
+pub(crate) fn class_field_descriptor(vm: &mut Vm<'_>, class: oxjvm_vm::ClassId) -> String {
     if vm.classes.get(class).kind == oxjvm_vm::ClassKind::Primitive {
         match vm.classes.get(class).primitive {
             Some(oxjvm_classfile::BaseType::Boolean) => "Z".into(),

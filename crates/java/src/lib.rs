@@ -27,6 +27,7 @@ pub(crate) mod locale;
 pub(crate) mod math;
 pub(crate) mod nio;
 pub(crate) mod optional;
+pub(crate) mod reflect;
 pub(crate) mod regex;
 pub(crate) mod stream;
 pub(crate) mod throwable;
@@ -103,7 +104,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 164] = [
+static REGISTRY: [NativeClass; 170] = [
     lang::OBJECT,
     lang::CLASS,
     lang::STRING,
@@ -154,6 +155,9 @@ static REGISTRY: [NativeClass; 164] = [
     throwable::ARRAY_STORE_EXCEPTION,
     throwable::CLASS_CAST_EXCEPTION,
     throwable::ILLEGAL_ARGUMENT_EXCEPTION,
+    throwable::REFLECTIVE_OPERATION_EXCEPTION,
+    throwable::NO_SUCH_FIELD_EXCEPTION,
+    throwable::NO_SUCH_METHOD_EXCEPTION,
     throwable::UNSUPPORTED_CHARSET_EXCEPTION,
     throwable::ILLEGAL_MONITOR_STATE_EXCEPTION,
     throwable::ILLEGAL_STATE_EXCEPTION,
@@ -259,6 +263,9 @@ static REGISTRY: [NativeClass; 164] = [
     nio::LINK_OPTION,
     nio::STANDARD_COPY_OPTION,
     nio::STANDARD_OPEN_OPTION,
+    reflect::MEMBER,
+    reflect::METHOD,
+    reflect::FIELD,
     uri::URI,
     charset::CHARSET,
     charset::STANDARD_CHARSETS,

@@ -257,6 +257,38 @@ fn integer_get_integer(vm: &mut Vm<'_>, args: &[Value], default: Value) -> Resul
     Ok(default)
 }
 
+/// Box `value` for a field/method descriptor (`I`/`J`/`Z`/`C`/`S`/`B`/`F`/`D`;
+/// reference descriptors pass the value through).
+pub(crate) fn box_value(vm: &mut Vm<'_>, value: Value, descriptor: &str) -> Result<Value, VmError> {
+    let class_name = match descriptor {
+        "Z" => "java/lang/Boolean",
+        "B" => "java/lang/Byte",
+        "C" => "java/lang/Character",
+        "S" => "java/lang/Short",
+        "I" => "java/lang/Integer",
+        "J" => "java/lang/Long",
+        "F" => "java/lang/Float",
+        "D" => "java/lang/Double",
+        _ => return Ok(value),
+    };
+    let class = vm.resolve_class(class_name)?;
+    let instance = vm.new_instance(class)?;
+    match descriptor {
+        "J" | "D" => write_value_long(vm, instance, value.as_long()),
+        _ => write_value_int(vm, instance, value.as_int()),
+    }
+    object(instance)
+}
+
+/// Unbox `reference` per `descriptor` (reference descriptors pass through).
+pub(crate) fn unbox_value(vm: &Vm<'_>, reference: ObjectRef, descriptor: &str) -> Value {
+    match descriptor {
+        "J" | "D" => Value::Long(read_value_long(vm, reference)),
+        "Z" | "B" | "C" | "S" | "I" | "F" => Value::Int(read_value_int(vm, reference)),
+        _ => Value::Ref(reference),
+    }
+}
+
 pub(crate) fn boxed_int(vm: &mut Vm<'_>, value: i32) -> Result<Value, VmError> {
     let class = vm.resolve_class("java/lang/Integer")?;
     let instance = vm.new_instance(class)?;

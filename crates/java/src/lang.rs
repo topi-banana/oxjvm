@@ -224,7 +224,7 @@ pub(crate) const OBJECT: oxjvm_vm::NativeClass = class(
 // Class
 // -------------------------------------------------------------------------------------------
 
-const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
+const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -366,6 +366,54 @@ const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
             let class = vm.resolve_class("java/lang/Module")?;
             object(vm.new_instance(class)?)
         },
+    ),
+    method(
+        "getDeclaredMethods",
+        "()[Ljava/lang/reflect/Method;",
+        ACC_PUBLIC,
+        crate::reflect::class_reflect_methods,
+    ),
+    method(
+        "getMethods",
+        "()[Ljava/lang/reflect/Method;",
+        ACC_PUBLIC,
+        crate::reflect::class_reflect_all_methods,
+    ),
+    method(
+        "getDeclaredFields",
+        "()[Ljava/lang/reflect/Field;",
+        ACC_PUBLIC,
+        crate::reflect::class_reflect_fields,
+    ),
+    method(
+        "getFields",
+        "()[Ljava/lang/reflect/Field;",
+        ACC_PUBLIC,
+        crate::reflect::class_reflect_fields,
+    ),
+    method(
+        "getDeclaredField",
+        "(Ljava/lang/String;)Ljava/lang/reflect/Field;",
+        ACC_PUBLIC,
+        crate::reflect::class_reflect_field,
+    ),
+    method(
+        "getField",
+        "(Ljava/lang/String;)Ljava/lang/reflect/Field;",
+        ACC_PUBLIC,
+        crate::reflect::class_reflect_field,
+    ),
+    method(
+        "getDeclaredMethod",
+        "(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;",
+        ACC_PUBLIC,
+        crate::reflect::class_reflect_method,
+    ),
+    method(
+        "getMethod",
+        "(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;",
+        ACC_PUBLIC,
+        crate::reflect::class_reflect_method,
     ),
 ];
 

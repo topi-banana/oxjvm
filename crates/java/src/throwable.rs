@@ -490,6 +490,17 @@ exception!(
     "java/lang/RuntimeException"
 );
 exception!(
+    NO_SUCH_FIELD_EXCEPTION,
+    "java/lang/NoSuchFieldException",
+    "java/lang/ReflectiveOperationException"
+);
+exception!(
+    NO_SUCH_METHOD_EXCEPTION,
+    "java/lang/NoSuchMethodException",
+    "java/lang/ReflectiveOperationException"
+);
+
+exception!(
     UNSUPPORTED_CHARSET_EXCEPTION,
     "java/nio/charset/UnsupportedCharsetException",
     "java/lang/IllegalArgumentException"
