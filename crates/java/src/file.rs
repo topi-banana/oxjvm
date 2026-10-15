@@ -331,10 +331,15 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
         };
         crate::uri::new_uri(vm, &text)
     }),
-    method("toPath", "()Ljava/nio/file/Path;", ACC_PUBLIC, |vm, _, args| {
-        let path = file_path(vm, receiver(args));
-        crate::nio::new_path(vm, &path)
-    }),
+    method(
+        "toPath",
+        "()Ljava/nio/file/Path;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let path = file_path(vm, receiver(args));
+            crate::nio::new_path(vm, &path)
+        },
+    ),
 ];
 
 pub(crate) const FILE: oxjvm_vm::NativeClass = class(
