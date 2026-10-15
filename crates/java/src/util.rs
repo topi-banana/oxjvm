@@ -77,7 +77,7 @@ pub(crate) const ITERATOR: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method(
         "size",
         "()I",
@@ -90,6 +90,10 @@ const COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
+    method("stream", "()Ljava/util/stream/Stream;", ACC_PUBLIC, |vm, _, args| {
+        let elements = collection_elements(vm, receiver(args))?;
+        object(crate::stream::stream_from(vm, elements)?)
+    }),
     method(
         "isEmpty",
         "()Z",
