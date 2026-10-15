@@ -2014,8 +2014,9 @@ pub(crate) const ARRAY_LIST_ITERATOR: oxjvm_vm::NativeClass = class(
 // HashMap (linear-probing arrays)
 // -------------------------------------------------------------------------------------------
 
-const HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+const HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method("<init>", "()V", ACC_PUBLIC, hash_map_init),
+    method("<init>", "(I)V", ACC_PUBLIC, hash_map_init),
     method(
         "put",
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
@@ -2769,7 +2770,7 @@ fn properties_set_property(
 // Collections
 // -------------------------------------------------------------------------------------------
 
-const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method(
         "sort",
         "(Ljava/util/List;)V",
@@ -2816,6 +2817,98 @@ const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         "(Ljava/util/Map;)Ljava/util/Map;",
         ACC_PUBLIC | ACC_STATIC,
         // As with synchronizedList, the map itself is returned.
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "emptyList",
+        "()Ljava/util/List;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(array_list_from(vm, &[])?),
+    ),
+    method(
+        "emptySet",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(set_of_values(vm, &[])?),
+    ),
+    method(
+        "emptyMap",
+        "()Ljava/util/Map;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(new_hash_map(vm)?),
+    ),
+    method(
+        "singletonList",
+        "(Ljava/lang/Object;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| object(array_list_from(vm, &[ref_arg(args, 0)])?),
+    ),
+    method(
+        "singleton",
+        "(Ljava/lang/Object;)Ljava/util/Set;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| object(set_of_values(vm, &[ref_arg(args, 0)])?),
+    ),
+    method(
+        "singletonMap",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let map = new_hash_map(vm)?;
+            hash_map_call(
+                vm,
+                map,
+                "put",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                &[Value::Ref(ref_arg(args, 0)), Value::Ref(ref_arg(args, 1))],
+            )?;
+            object(map)
+        },
+    ),
+    method(
+        "nCopies",
+        "(ILjava/lang/Object;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let count = crate::int_arg(args, 0).max(0) as usize;
+            let element = ref_arg(args, 1);
+            object(array_list_from(vm, &vec![element; count])?)
+        },
+    ),
+    method(
+        "unmodifiableList",
+        "(Ljava/util/List;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "unmodifiableSet",
+        "(Ljava/util/Set;)Ljava/util/Set;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "unmodifiableMap",
+        "(Ljava/util/Map;)Ljava/util/Map;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "unmodifiableCollection",
+        "(Ljava/util/Collection;)Ljava/util/Collection;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "synchronizedSet",
+        "(Ljava/util/Set;)Ljava/util/Set;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "synchronizedCollection",
+        "(Ljava/util/Collection;)Ljava/util/Collection;",
+        ACC_PUBLIC | ACC_STATIC,
         |_, _, args| object(ref_arg(args, 0)),
     ),
 ];
