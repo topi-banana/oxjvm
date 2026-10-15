@@ -2908,7 +2908,7 @@ pub(crate) const STRING_BUFFER: oxjvm_vm::NativeClass = class(
 // System / Runtime
 // -------------------------------------------------------------------------------------------
 
-const SYSTEM_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
+const SYSTEM_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
     method(
         "currentTimeMillis",
         "()J",
@@ -3028,6 +3028,22 @@ const SYSTEM_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
         "setIn",
         "(Ljava/io/InputStream;)V",
         ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let system = system_class(vm)?;
+            vm.set_static_value(system, "in", "Ljava/io/InputStream;", args[0]);
+            void()
+        },
+    ),
+    method(
+        "loadLibrary",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, _| void(),
+    ),
+    method(
+        "load",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC | ACC_STATIC,
         |_, _, _| void(),
     ),
     method(
@@ -3093,18 +3109,35 @@ fn system_class(vm: &mut Vm<'_>) -> Result<ClassId, VmError> {
 }
 
 /// The VM's well-known default system properties.
-pub(crate) const SYSTEM_PROPERTY_DEFAULTS: [(&str, &str); 11] = [
+pub(crate) const SYSTEM_PROPERTY_DEFAULTS: [(&str, &str); 28] = [
     ("java.version", "17"),
     ("java.specification.version", "17"),
     ("java.vm.name", "oxjvm"),
     ("java.vm.version", "0.1.0"),
-    ("os.name", "oxjvm"),
-    ("os.arch", "unknown"),
-    ("os.version", "unknown"),
+    ("java.vm.vendor", "oxjvm"),
+    ("java.vendor", "oxjvm"),
+    ("java.vendor.url", "https://oxjvm.invalid/"),
+    ("os.name", "Linux"),
+    ("os.arch", "amd64"),
+    ("os.version", "6.1.0"),
     ("file.separator", "/"),
     ("path.separator", ":"),
     ("line.separator", "\n"),
+    ("file.encoding", "UTF-8"),
+    ("sun.jnu.encoding", "UTF-8"),
     ("user.dir", "/"),
+    ("user.name", "oxjvm"),
+    ("user.home", "/tmp"),
+    ("user.country", "US"),
+    ("user.language", "en"),
+    ("user.timezone", "GMT"),
+    ("jdk.debug", "release"),
+    ("sun.arch.data.model", "64"),
+    ("sun.cpu.endian", "little"),
+    ("java.home", "/oxjvm"),
+    ("java.io.tmpdir", "/tmp"),
+    ("sun.java.command", ""),
+    ("java.awt.headless", "true"),
 ];
 
 /// Looks up a system property: guest overrides first, then the VM defaults, then the host.
@@ -3243,6 +3276,15 @@ fn system_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
         "Ljava/io/PrintStream;",
         Value::Ref(vm.stderr_object()),
     );
+    // System.in: an empty ByteArrayInputStream (tests replace it via setIn).
+    let input_class = vm.resolve_class("java/io/ByteArrayInputStream")?;
+    let input = vm.new_instance(input_class)?;
+    let (declaring, ctor) = vm
+        .find_method(input_class, "<init>", "([B)V")
+        .ok_or_else(|| VmError::internal("ByteArrayInputStream(byte[]) constructor missing"))?;
+    let empty = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, 0)?;
+    vm.invoke_method(declaring, ctor, vec![Value::Ref(input), Value::Ref(empty)])?;
+    vm.set_static_value(system, "in", "Ljava/io/InputStream;", Value::Ref(input));
     Ok(())
 }
 
@@ -3252,6 +3294,7 @@ pub(crate) const SYSTEM: oxjvm_vm::NativeClass = class(
     &[],
     ACC_PUBLIC | ACC_FINAL,
     &[
+        field("in", "Ljava/io/InputStream;", ACC_PUBLIC | ACC_STATIC, None),
         field(
             "out",
             "Ljava/io/PrintStream;",
