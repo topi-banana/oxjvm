@@ -14,6 +14,24 @@ fn class_argument_value(vm: &mut Vm<'_>, value: Value) -> Result<oxjvm_vm::Class
     crate::lang::class_argument(vm, value.as_ref())
 }
 
+/// `Unsafe.getUnsafe` for either spelling: the `theUnsafe` singleton.
+fn unsafe_singleton(
+    vm: &mut Vm<'_>,
+    ctx: oxjvm_vm::NativeContext,
+    _args: &[Value],
+) -> Result<Value, VmError> {
+    let name: &str = vm.class_name(ctx.class);
+    let descriptor = if name.contains("sun") {
+        "Lsun/misc/Unsafe;"
+    } else {
+        "Ljdk/internal/misc/Unsafe;"
+    };
+    match vm.read_static_ref_if_set(ctx.class, "theUnsafe", descriptor) {
+        Some(existing) => object(existing),
+        None => Err(vm.throw_new("java/lang/SecurityException", None)),
+    }
+}
+
 /// `arrayIndexScale` for a component class.
 fn component_scale(vm: &Vm<'_>, class: oxjvm_vm::ClassId) -> i32 {
     let name = vm.class_name(class);
@@ -182,23 +200,24 @@ unsafe_class!(
 
 /// The method table is shared by both `Unsafe` spellings, with the static
 /// `getUnsafe` handled per class in `clinit`.
-static UNSAFE_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
+static UNSAFE_METHODS: [oxjvm_vm::NativeMethodDef; 48] = [
     method(
         "getUnsafe",
         "()Ljava/lang/Object;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, ctx, _| {
-            let name: &str = vm.class_name(ctx.class);
-            let descriptor = if name.contains("sun") {
-                "Lsun/misc/Unsafe;"
-            } else {
-                "Ljdk/internal/misc/Unsafe;"
-            };
-            match vm.read_static_ref_if_set(ctx.class, "theUnsafe", descriptor) {
-                Some(existing) => object(existing),
-                None => Err(vm.throw_new("java/lang/SecurityException", None)),
-            }
-        },
+        unsafe_singleton,
+    ),
+    method(
+        "getUnsafe",
+        "()Ljdk/internal/misc/Unsafe;",
+        ACC_PUBLIC | ACC_STATIC,
+        unsafe_singleton,
+    ),
+    method(
+        "getUnsafe",
+        "()Lsun/misc/Unsafe;",
+        ACC_PUBLIC | ACC_STATIC,
+        unsafe_singleton,
     ),
     method("addressSize", "()I", ACC_PUBLIC, |_, _, _| int(8)),
     method("pageSize", "()I", ACC_PUBLIC, |_, _, _| int(4096)),
