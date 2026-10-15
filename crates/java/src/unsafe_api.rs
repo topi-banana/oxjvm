@@ -52,6 +52,9 @@ fn array_component(vm: &Vm<'_>, array: ObjectRef) -> Option<oxjvm_vm::ClassId> {
 }
 
 /// The array element index for a byte offset (`base` is 0).
+/// The HotSpot array base: element data starts 16 bytes into the object.
+const ARRAY_BASE_OFFSET: i64 = 16;
+
 fn element_index(offset: i64, scale: i32) -> i32 {
     ((offset.max(0)) / i64::from(scale.max(1))) as i32
 }
@@ -87,7 +90,7 @@ fn unsafe_get(
     }
     if array_component(vm, target).is_some() {
         let scale = array_scale_of(vm, target);
-        return vm.array_get(target, element_index(offset, scale));
+        return vm.array_get(target, element_index(offset - ARRAY_BASE_OFFSET, scale));
     }
     let slot = element_index(offset, 8);
     match vm.heap.get(target).map(|object| &object.data) {
@@ -109,7 +112,12 @@ fn unsafe_put(
     }
     if array_component(vm, target).is_some() {
         let scale = array_scale_of(vm, target);
-        vm.array_set(target, element_index(offset, scale), value, false)?;
+        vm.array_set(
+            target,
+            element_index(offset - ARRAY_BASE_OFFSET, scale),
+            value,
+            false,
+        )?;
         return void();
     }
     let slot = element_index(offset, 8) as usize;
@@ -135,20 +143,174 @@ fn value_as_long(value: Value) -> i64 {
 
 // The tables are built once per call site through `class`, so the definitions
 // are spelled out with a const-compatible length below.
+/// Install the array-layout constants shared by both `Unsafe` spellings.
+fn unsafe_install_constants(vm: &mut Vm<'_>, class: oxjvm_vm::ClassId) -> Result<(), VmError> {
+    // sun.misc.Unsafe declares the base offsets as int, jdk.internal.misc.Unsafe as long.
+    let legacy = vm.class_name(class).contains("sun");
+    for name in [
+        "ARRAY_BOOLEAN_BASE_OFFSET",
+        "ARRAY_BYTE_BASE_OFFSET",
+        "ARRAY_SHORT_BASE_OFFSET",
+        "ARRAY_CHAR_BASE_OFFSET",
+        "ARRAY_INT_BASE_OFFSET",
+        "ARRAY_LONG_BASE_OFFSET",
+        "ARRAY_FLOAT_BASE_OFFSET",
+        "ARRAY_DOUBLE_BASE_OFFSET",
+        "ARRAY_OBJECT_BASE_OFFSET",
+    ] {
+        if legacy {
+            vm.set_static_value(class, name, "I", Value::Int(16));
+        } else {
+            vm.set_static_value(class, name, "J", Value::Long(16));
+        }
+    }
+    for (name, scale) in [
+        ("ARRAY_BOOLEAN_INDEX_SCALE", 1),
+        ("ARRAY_BYTE_INDEX_SCALE", 1),
+        ("ARRAY_SHORT_INDEX_SCALE", 2),
+        ("ARRAY_CHAR_INDEX_SCALE", 2),
+        ("ARRAY_INT_INDEX_SCALE", 4),
+        ("ARRAY_LONG_INDEX_SCALE", 8),
+        ("ARRAY_FLOAT_INDEX_SCALE", 4),
+        ("ARRAY_DOUBLE_INDEX_SCALE", 8),
+        ("ARRAY_OBJECT_INDEX_SCALE", 4),
+    ] {
+        vm.set_static_value(class, name, "I", Value::Int(scale));
+    }
+    vm.set_static_value(class, "ADDRESS_SIZE", "I", Value::Int(8));
+    Ok(())
+}
+
 macro_rules! unsafe_class {
-    ($constant:ident, $name:literal, $get_unsafe:expr) => {
+    ($constant:ident, $name:literal, $offset:literal, $get_unsafe:expr) => {
         pub(crate) const $constant: oxjvm_vm::NativeClass = {
             let definition = class(
                 $name,
                 Some("java/lang/Object"),
                 &[],
                 ACC_PUBLIC | ACC_FINAL,
-                &[field(
-                    "theUnsafe",
-                    concat!("L", $name, ";"),
-                    ACC_PRIVATE | ACC_STATIC | ACC_FINAL,
-                    None,
-                )],
+                &[
+                    field(
+                        "theUnsafe",
+                        concat!("L", $name, ";"),
+                        ACC_PRIVATE | ACC_STATIC | ACC_FINAL,
+                        None,
+                    ),
+                    field(
+                        "ARRAY_BOOLEAN_BASE_OFFSET",
+                        $offset,
+                        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+                        None,
+                    ),
+                    field(
+                        "ARRAY_BYTE_BASE_OFFSET",
+                        $offset,
+                        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+                        None,
+                    ),
+                    field(
+                        "ARRAY_SHORT_BASE_OFFSET",
+                        $offset,
+                        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+                        None,
+                    ),
+                    field(
+                        "ARRAY_CHAR_BASE_OFFSET",
+                        $offset,
+                        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+                        None,
+                    ),
+                    field(
+                        "ARRAY_INT_BASE_OFFSET",
+                        $offset,
+                        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+                        None,
+                    ),
+                    field(
+                        "ARRAY_LONG_BASE_OFFSET",
+                        $offset,
+                        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+                        None,
+                    ),
+                    field(
+                        "ARRAY_FLOAT_BASE_OFFSET",
+                        $offset,
+                        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+                        None,
+                    ),
+                    field(
+                        "ARRAY_DOUBLE_BASE_OFFSET",
+                        $offset,
+                        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+                        None,
+                    ),
+                    field(
+                        "ARRAY_OBJECT_BASE_OFFSET",
+                        $offset,
+                        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+                        None,
+                    ),
+                    field(
+                        "ARRAY_BOOLEAN_INDEX_SCALE",
+                        "I",
+                        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+                        None,
+                    ),
+                    field(
+                        "ARRAY_BYTE_INDEX_SCALE",
+                        "I",
+                        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+                        None,
+                    ),
+                    field(
+                        "ARRAY_SHORT_INDEX_SCALE",
+                        "I",
+                        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+                        None,
+                    ),
+                    field(
+                        "ARRAY_CHAR_INDEX_SCALE",
+                        "I",
+                        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+                        None,
+                    ),
+                    field(
+                        "ARRAY_INT_INDEX_SCALE",
+                        "I",
+                        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+                        None,
+                    ),
+                    field(
+                        "ARRAY_LONG_INDEX_SCALE",
+                        "I",
+                        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+                        None,
+                    ),
+                    field(
+                        "ARRAY_FLOAT_INDEX_SCALE",
+                        "I",
+                        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+                        None,
+                    ),
+                    field(
+                        "ARRAY_DOUBLE_INDEX_SCALE",
+                        "I",
+                        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+                        None,
+                    ),
+                    field(
+                        "ARRAY_OBJECT_INDEX_SCALE",
+                        "I",
+                        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+                        None,
+                    ),
+                    field(
+                        "ADDRESS_SIZE",
+                        "I",
+                        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+                        None,
+                    ),
+                ],
                 &UNSAFE_METHODS,
                 Some($get_unsafe),
             );
@@ -171,6 +333,7 @@ fn unsafe_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
             Value::Ref(instance),
         );
     }
+    unsafe_install_constants(vm, class)?;
     Ok(())
 }
 
@@ -188,13 +351,15 @@ fn jdk_unsafe_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
             Value::Ref(instance),
         );
     }
+    unsafe_install_constants(vm, class)?;
     Ok(())
 }
 
-unsafe_class!(SUN_MISC_UNSAFE, "sun/misc/Unsafe", unsafe_clinit);
+unsafe_class!(SUN_MISC_UNSAFE, "sun/misc/Unsafe", "I", unsafe_clinit);
 unsafe_class!(
     JDK_INTERNAL_UNSAFE,
     "jdk/internal/misc/Unsafe",
+    "J",
     jdk_unsafe_clinit
 );
 
@@ -225,7 +390,7 @@ static UNSAFE_METHODS: [oxjvm_vm::NativeMethodDef; 48] = [
         "arrayBaseOffset",
         "(Ljava/lang/Class;)I",
         ACC_PUBLIC,
-        |_, _, _| int(0),
+        |_, _, _| int(ARRAY_BASE_OFFSET as i32),
     ),
     method(
         "arrayIndexScale",
