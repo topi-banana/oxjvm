@@ -319,6 +319,36 @@ pub(crate) const LOCALE: oxjvm_vm::NativeClass = class(
             ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
             None,
         ),
+        field(
+            "CANADA_FRENCH",
+            "Ljava/util/Locale;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "SIMPLIFIED_CHINESE",
+            "Ljava/util/Locale;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "TRADITIONAL_CHINESE",
+            "Ljava/util/Locale;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "PRC",
+            "Ljava/util/Locale;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "TAIWAN",
+            "Ljava/util/Locale;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
     ],
     &LOCALE_METHODS,
     Some(locale_clinit),
@@ -446,7 +476,7 @@ fn locale_for_language_tag(
 
 fn locale_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     let class = vm.resolve_class("java/util/Locale")?;
-    let constants: [(&str, &str, &str); 17] = [
+    let constants: [(&str, &str, &str); 22] = [
         ("ROOT", "", ""),
         ("ENGLISH", "en", ""),
         ("FRENCH", "fr", ""),
@@ -464,6 +494,11 @@ fn locale_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
         ("JAPAN", "ja", "JP"),
         ("KOREA", "ko", "KR"),
         ("CHINA", "zh", "CN"),
+        ("CANADA_FRENCH", "fr", "CA"),
+        ("SIMPLIFIED_CHINESE", "zh", "CN"),
+        ("TRADITIONAL_CHINESE", "zh", "TW"),
+        ("PRC", "zh", "CN"),
+        ("TAIWAN", "zh", "TW"),
     ];
     let (declaring, ctor) = vm
         .find_method(class, "<init>", "(Ljava/lang/String;Ljava/lang/String;)V")
