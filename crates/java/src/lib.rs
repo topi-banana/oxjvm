@@ -19,6 +19,7 @@ pub(crate) mod atomic;
 pub(crate) mod boxed;
 pub(crate) mod charset;
 pub(crate) mod concurrent;
+pub(crate) mod encoding;
 pub(crate) mod file;
 pub(crate) mod intstream;
 pub(crate) mod invoke;
@@ -107,7 +108,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 213] = [
+static REGISTRY: [NativeClass; 217] = [
     lang::OBJECT,
     lang::CLASS,
     lang::STRING,
@@ -240,6 +241,10 @@ static REGISTRY: [NativeClass; 213] = [
     util::CONCURRENT_HASH_MAP,
     util::CONCURRENT_HASH_MAP_KEY_SET,
     regex::PATTERN_PREDICATE,
+    encoding::BASE64,
+    encoding::BASE64_ENCODER,
+    encoding::BASE64_DECODER,
+    encoding::HEX_FORMAT,
     lang::THREAD_BUILDER,
     lang::THREAD_BUILDER_OF_VIRTUAL,
     lang::THREAD_BUILDER_OF_PLATFORM,
