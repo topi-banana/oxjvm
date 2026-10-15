@@ -3291,3 +3291,793 @@ pub(crate) const VECTOR: oxjvm_vm::NativeClass = class(
     &VECTOR_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// ConcurrentHashMap (+ ConcurrentMap / Map.Entry)
+//
+// A HashMap wrapper: the interpreter executes one instruction at a time, so the
+// concurrent views need no real locking.
+// -------------------------------------------------------------------------------------------
+
+const MAP_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method(
+        "getKey",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getValue",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "setValue",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
+pub(crate) const MAP_ENTRY: oxjvm_vm::NativeClass = class(
+    "java/util/Map$Entry",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &MAP_ENTRY_METHODS,
+    None,
+);
+
+fn entry_field(vm: &Vm<'_>, this: ObjectRef, name: &str) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), name, "Ljava/lang/Object;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn object_hash(vm: &mut Vm<'_>, reference: ObjectRef) -> Result<i32, VmError> {
+    if reference.is_null() {
+        return Ok(0);
+    }
+    let (class, method) = vm.resolve_virtual_method(reference, "hashCode", "()I")?;
+    Ok(vm
+        .invoke_method(class, method, vec![Value::Ref(reference)])?
+        .as_int())
+}
+
+fn values_equal(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmError> {
+    keys_equal(vm, a, b)
+}
+
+fn new_entry(vm: &mut Vm<'_>, key: ObjectRef, value: ObjectRef) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/OxjvmEntry")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "key", "Ljava/lang/Object;")?;
+    vm.set_instance_ref(instance, declaring, field, key);
+    let (declaring, field) = vm.find_field(class, "value", "Ljava/lang/Object;")?;
+    vm.set_instance_ref(instance, declaring, field, value);
+    Ok(instance)
+}
+
+const OJVM_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method(
+        "getKey",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| object(entry_field(vm, receiver(args), "key")),
+    ),
+    method(
+        "getValue",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| object(entry_field(vm, receiver(args), "value")),
+    ),
+    method(
+        "setValue",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let previous = entry_field(vm, this, "value");
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "value", "Ljava/lang/Object;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            object(previous)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = ref_arg(args, 1);
+            if other.is_null() || vm.class_of(receiver(args)) != vm.class_of(other) {
+                return boolean(false);
+            }
+            let keys = values_equal(
+                vm,
+                entry_field(vm, receiver(args), "key"),
+                entry_field(vm, other, "key"),
+            )?;
+            if !keys {
+                return boolean(false);
+            }
+            boolean(values_equal(
+                vm,
+                entry_field(vm, receiver(args), "value"),
+                entry_field(vm, other, "value"),
+            )?)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let key = object_hash(vm, entry_field(vm, this, "key"))?;
+        let value = object_hash(vm, entry_field(vm, this, "value"))?;
+        int(key ^ value)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let key = value_to_string(vm, entry_field(vm, this, "key"))?;
+            let value = value_to_string(vm, entry_field(vm, this, "value"))?;
+            object(vm.make_string(&alloc::format!("{key}={value}"))?)
+        },
+    ),
+];
+
+pub(crate) const OJVM_ENTRY: oxjvm_vm::NativeClass = class(
+    "java/util/OxjvmEntry",
+    Some("java/lang/Object"),
+    &["java/util/Map$Entry"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[
+        field("key", "Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("value", "Ljava/lang/Object;", ACC_PRIVATE, None),
+    ],
+    &OJVM_ENTRY_METHODS,
+    None,
+);
+
+fn concurrent_map(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    hash_set_map(vm, this)
+}
+
+fn new_concurrent_map(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    new_hash_map(vm)
+}
+
+fn concurrent_map_call(
+    vm: &mut Vm<'_>,
+    map: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    arguments: &[Value],
+) -> Result<Value, VmError> {
+    hash_map_call(vm, map, name, descriptor, arguments)
+}
+
+fn function_apply1(
+    vm: &mut Vm<'_>,
+    function: ObjectRef,
+    argument: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    let (class, method) =
+        vm.resolve_virtual_method(function, "apply", "(Ljava/lang/Object;)Ljava/lang/Object;")?;
+    Ok(vm
+        .invoke_method(
+            class,
+            method,
+            vec![Value::Ref(function), Value::Ref(argument)],
+        )?
+        .as_ref())
+}
+
+fn bifunction_apply2(
+    vm: &mut Vm<'_>,
+    function: ObjectRef,
+    first: ObjectRef,
+    second: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    let (class, method) = vm.resolve_virtual_method(
+        function,
+        "apply",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+    )?;
+    Ok(vm
+        .invoke_method(
+            class,
+            method,
+            vec![Value::Ref(function), Value::Ref(first), Value::Ref(second)],
+        )?
+        .as_ref())
+}
+
+/// Put through the backing map, returning the previous value.
+fn concurrent_put(
+    vm: &mut Vm<'_>,
+    map: ObjectRef,
+    key: ObjectRef,
+    value: ObjectRef,
+) -> Result<Value, VmError> {
+    concurrent_map_call(
+        vm,
+        map,
+        "put",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        &[Value::Ref(key), Value::Ref(value)],
+    )
+}
+
+const CONCURRENT_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+    method(
+        "put",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "get",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getOrDefault",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "putIfAbsent",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "remove",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "replace",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "replace",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "computeIfAbsent",
+        "(Ljava/lang/Object;Ljava/util/function/Function;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "computeIfPresent",
+        "(Ljava/lang/Object;Ljava/util/function/BiFunction;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "compute",
+        "(Ljava/lang/Object;Ljava/util/function/BiFunction;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "merge",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/util/function/BiFunction;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "forEach",
+        "(Ljava/util/function/BiConsumer;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "putAll",
+        "(Ljava/util/Map;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "entrySet",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
+pub(crate) const CONCURRENT_MAP: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/ConcurrentMap",
+    Some("java/lang/Object"),
+    &["java/util/Map"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &CONCURRENT_MAP_METHODS,
+    None,
+);
+
+const CONCURRENT_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let map = new_concurrent_map(vm)?;
+        concurrent_init(vm, args, map)
+    }),
+    method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let map = new_concurrent_map(vm)?;
+        concurrent_init(vm, args, map)
+    }),
+    method("<init>", "(Ljava/util/Map;)V", ACC_PUBLIC, |vm, _, args| {
+        let map = new_concurrent_map(vm)?;
+        concurrent_init(vm, args, map)?;
+        concurrent_put_all(vm, receiver(args), ref_arg(args, 1))
+    }),
+    method(
+        "put",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = concurrent_map(vm, receiver(args));
+            concurrent_put(vm, map, ref_arg(args, 1), ref_arg(args, 2))
+        },
+    ),
+    method(
+        "get",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = concurrent_map(vm, receiver(args));
+            concurrent_map_call(
+                vm,
+                map,
+                "get",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                &[Value::Ref(ref_arg(args, 1))],
+            )
+        },
+    ),
+    method(
+        "getOrDefault",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = concurrent_map(vm, receiver(args));
+            concurrent_map_call(
+                vm,
+                map,
+                "getOrDefault",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                &[Value::Ref(ref_arg(args, 1)), Value::Ref(ref_arg(args, 2))],
+            )
+        },
+    ),
+    method(
+        "putIfAbsent",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let map = concurrent_map(vm, this);
+            let key = ref_arg(args, 1);
+            let index = hash_map_index_of(vm, map, key)?;
+            if index >= 0 {
+                return hash_map_value_at(vm, map, index as usize);
+            }
+            concurrent_put(vm, map, key, ref_arg(args, 2))?;
+            object(ObjectRef::NULL)
+        },
+    ),
+    method(
+        "remove",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = concurrent_map(vm, receiver(args));
+            concurrent_map_call(
+                vm,
+                map,
+                "remove",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                &[Value::Ref(ref_arg(args, 1))],
+            )
+        },
+    ),
+    method(
+        "remove",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let map = concurrent_map(vm, this);
+            let key = ref_arg(args, 1);
+            let index = hash_map_index_of(vm, map, key)?;
+            if index < 0 {
+                return boolean(false);
+            }
+            let current = hash_map_value_at(vm, map, index as usize)?;
+            if !values_equal(vm, current.as_ref(), ref_arg(args, 2))? {
+                return boolean(false);
+            }
+            concurrent_map_call(
+                vm,
+                map,
+                "remove",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                &[Value::Ref(key)],
+            )?;
+            boolean(true)
+        },
+    ),
+    method(
+        "replace",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let map = concurrent_map(vm, this);
+            let key = ref_arg(args, 1);
+            let index = hash_map_index_of(vm, map, key)?;
+            if index < 0 {
+                return object(ObjectRef::NULL);
+            }
+            let previous = hash_map_value_at(vm, map, index as usize)?;
+            concurrent_put(vm, map, key, ref_arg(args, 2))?;
+            Ok(previous)
+        },
+    ),
+    method(
+        "replace",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let map = concurrent_map(vm, this);
+            let key = ref_arg(args, 1);
+            let index = hash_map_index_of(vm, map, key)?;
+            if index < 0 {
+                return boolean(false);
+            }
+            let current = hash_map_value_at(vm, map, index as usize)?;
+            if !values_equal(vm, current.as_ref(), ref_arg(args, 2))? {
+                return boolean(false);
+            }
+            concurrent_put(vm, map, key, ref_arg(args, 3))?;
+            boolean(true)
+        },
+    ),
+    method(
+        "computeIfAbsent",
+        "(Ljava/lang/Object;Ljava/util/function/Function;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let map = concurrent_map(vm, this);
+            let key = ref_arg(args, 1);
+            let index = hash_map_index_of(vm, map, key)?;
+            if index >= 0 {
+                return hash_map_value_at(vm, map, index as usize);
+            }
+            let computed = function_apply1(vm, ref_arg(args, 2), key)?;
+            if computed.is_null() {
+                return object(ObjectRef::NULL);
+            }
+            concurrent_put(vm, map, key, computed)?;
+            object(computed)
+        },
+    ),
+    method(
+        "computeIfPresent",
+        "(Ljava/lang/Object;Ljava/util/function/BiFunction;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let map = concurrent_map(vm, this);
+            let key = ref_arg(args, 1);
+            let index = hash_map_index_of(vm, map, key)?;
+            if index < 0 {
+                return object(ObjectRef::NULL);
+            }
+            let current = hash_map_value_at(vm, map, index as usize)?.as_ref();
+            let computed = bifunction_apply2(vm, ref_arg(args, 2), key, current)?;
+            if computed.is_null() {
+                concurrent_map_call(
+                    vm,
+                    map,
+                    "remove",
+                    "(Ljava/lang/Object;)Ljava/lang/Object;",
+                    &[Value::Ref(key)],
+                )?;
+                return object(ObjectRef::NULL);
+            }
+            concurrent_put(vm, map, key, computed)?;
+            object(computed)
+        },
+    ),
+    method(
+        "compute",
+        "(Ljava/lang/Object;Ljava/util/function/BiFunction;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let map = concurrent_map(vm, this);
+            let key = ref_arg(args, 1);
+            let index = hash_map_index_of(vm, map, key)?;
+            let current = if index >= 0 {
+                hash_map_value_at(vm, map, index as usize)?.as_ref()
+            } else {
+                ObjectRef::NULL
+            };
+            let computed = bifunction_apply2(vm, ref_arg(args, 2), key, current)?;
+            if computed.is_null() {
+                if index >= 0 {
+                    concurrent_map_call(
+                        vm,
+                        map,
+                        "remove",
+                        "(Ljava/lang/Object;)Ljava/lang/Object;",
+                        &[Value::Ref(key)],
+                    )?;
+                }
+                return object(ObjectRef::NULL);
+            }
+            concurrent_put(vm, map, key, computed)?;
+            object(computed)
+        },
+    ),
+    method(
+        "merge",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/util/function/BiFunction;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let map = concurrent_map(vm, this);
+            let key = ref_arg(args, 1);
+            let value = ref_arg(args, 2);
+            if value.is_null() {
+                return object(ObjectRef::NULL);
+            }
+            let index = hash_map_index_of(vm, map, key)?;
+            if index < 0 {
+                concurrent_put(vm, map, key, value)?;
+                return object(value);
+            }
+            let current = hash_map_value_at(vm, map, index as usize)?.as_ref();
+            let merged = bifunction_apply2(vm, ref_arg(args, 3), current, value)?;
+            if merged.is_null() {
+                concurrent_map_call(
+                    vm,
+                    map,
+                    "remove",
+                    "(Ljava/lang/Object;)Ljava/lang/Object;",
+                    &[Value::Ref(key)],
+                )?;
+                return object(ObjectRef::NULL);
+            }
+            concurrent_put(vm, map, key, merged)?;
+            object(merged)
+        },
+    ),
+    method(
+        "containsKey",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = concurrent_map(vm, receiver(args));
+            concurrent_map_call(
+                vm,
+                map,
+                "containsKey",
+                "(Ljava/lang/Object;)Z",
+                &[Value::Ref(ref_arg(args, 1))],
+            )
+        },
+    ),
+    method(
+        "containsValue",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = concurrent_map(vm, receiver(args));
+            concurrent_map_call(
+                vm,
+                map,
+                "containsValue",
+                "(Ljava/lang/Object;)Z",
+                &[Value::Ref(ref_arg(args, 1))],
+            )
+        },
+    ),
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        let map = concurrent_map(vm, receiver(args));
+        concurrent_map_call(vm, map, "size", "()I", &[])
+    }),
+    method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let map = concurrent_map(vm, receiver(args));
+        concurrent_map_call(vm, map, "isEmpty", "()Z", &[])
+    }),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
+        let map = concurrent_map(vm, receiver(args));
+        concurrent_map_call(vm, map, "clear", "()V", &[])
+    }),
+    method("keySet", "()Ljava/util/Set;", ACC_PUBLIC, |vm, _, args| {
+        let map = concurrent_map(vm, receiver(args));
+        concurrent_map_call(vm, map, "keySet", "()Ljava/util/Set;", &[])
+    }),
+    method(
+        "values",
+        "()Ljava/util/Collection;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = concurrent_map(vm, receiver(args));
+            concurrent_map_call(vm, map, "values", "()Ljava/util/Collection;", &[])
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = concurrent_map(vm, receiver(args));
+            concurrent_map_call(vm, map, "toString", "()Ljava/lang/String;", &[])
+        },
+    ),
+    method("putAll", "(Ljava/util/Map;)V", ACC_PUBLIC, |vm, _, args| {
+        concurrent_put_all(vm, receiver(args), ref_arg(args, 1))
+    }),
+    method(
+        "forEach",
+        "(Ljava/util/function/BiConsumer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let map = concurrent_map(vm, this);
+            let consumer = ref_arg(args, 1);
+            let (class, method) = vm.resolve_virtual_method(
+                consumer,
+                "accept",
+                "(Ljava/lang/Object;Ljava/lang/Object;)V",
+            )?;
+            for (key, value) in hash_map_pairs(vm, map) {
+                vm.invoke_method(
+                    class,
+                    method,
+                    vec![Value::Ref(consumer), Value::Ref(key), Value::Ref(value)],
+                )?;
+            }
+            void()
+        },
+    ),
+    method(
+        "entrySet",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let pairs = hash_map_pairs(vm, concurrent_map(vm, this));
+            let set_class = vm.resolve_class("java/util/HashSet")?;
+            let set = vm.new_instance(set_class)?;
+            let map_class = vm.resolve_class("java/util/HashMap")?;
+            let (declaring, ctor) = vm
+                .find_method(map_class, "<init>", "()V")
+                .ok_or_else(|| VmError::internal("HashMap() missing"))?;
+            let backing = vm.new_instance(map_class)?;
+            vm.invoke_method(declaring, ctor, vec![Value::Ref(backing)])?;
+            let (declaring, field) = vm.find_field(set_class, "map", "Ljava/util/HashMap;")?;
+            vm.set_instance_ref(set, declaring, field, backing);
+            let present = hash_set_present(vm)?;
+            for (key, value) in pairs {
+                let entry = new_entry(vm, key, value)?;
+                concurrent_map_call(
+                    vm,
+                    backing,
+                    "put",
+                    "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                    &[Value::Ref(entry), Value::Ref(present)],
+                )?;
+            }
+            object(set)
+        },
+    ),
+    method(
+        "newKeySet",
+        "()Ljava/util/concurrent/ConcurrentHashMap$KeySetView;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let map = new_concurrent_map(vm)?;
+            let view = concurrent_key_set_view(vm, map)?;
+            object(view)
+        },
+    ),
+    method(
+        "newKeySet",
+        "(I)Ljava/util/concurrent/ConcurrentHashMap$KeySetView;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let map = new_concurrent_map(vm)?;
+            let view = concurrent_key_set_view(vm, map)?;
+            object(view)
+        },
+    ),
+    method("mappingCount", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(i64::from(crate::lang::read_int_field(
+            vm,
+            concurrent_map(vm, receiver(args)),
+            "size",
+        )))
+    }),
+];
+
+fn concurrent_init(vm: &mut Vm<'_>, args: &[Value], map: ObjectRef) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, "map", "Ljava/util/HashMap;")?;
+    vm.set_instance_ref(this, declaring, field, map);
+    void()
+}
+
+fn concurrent_put_all(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    source: ObjectRef,
+) -> Result<Value, VmError> {
+    let map = concurrent_map(vm, this);
+    if source.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    // Walk the source through its key set and `get`, which every Map supports.
+    let keys = concurrent_map_call(vm, source, "keySet", "()Ljava/util/Set;", &[])?;
+    for key in collection_elements(vm, keys.as_ref())? {
+        let value = concurrent_map_call(
+            vm,
+            source,
+            "get",
+            "(Ljava/lang/Object;)Ljava/lang/Object;",
+            &[Value::Ref(key)],
+        )?;
+        concurrent_put(vm, map, key, value.as_ref())?;
+    }
+    void()
+}
+
+pub(crate) const CONCURRENT_HASH_MAP: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/ConcurrentHashMap",
+    Some("java/lang/Object"),
+    &[
+        "java/util/concurrent/ConcurrentMap",
+        "java/util/Map",
+        "java/io/Serializable",
+    ],
+    ACC_PUBLIC,
+    &[field("map", "Ljava/util/HashMap;", ACC_PRIVATE, None)],
+    &CONCURRENT_HASH_MAP_METHODS,
+    None,
+);
+
+fn concurrent_key_set_view(vm: &mut Vm<'_>, map: ObjectRef) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/concurrent/ConcurrentHashMap$KeySetView")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "map", "Ljava/util/HashMap;")?;
+    vm.set_instance_ref(instance, declaring, field, map);
+    Ok(instance)
+}
+
+/// `ConcurrentHashMap.KeySetView`: a Set view sharing the HashSet implementation.
+pub(crate) const CONCURRENT_HASH_MAP_KEY_SET: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/ConcurrentHashMap$KeySetView",
+    Some("java/lang/Object"),
+    &["java/util/Set"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[field("map", "Ljava/util/HashMap;", ACC_PRIVATE, None)],
+    &HASH_SET_METHODS,
+    None,
+);

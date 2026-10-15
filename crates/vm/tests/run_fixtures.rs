@@ -1310,6 +1310,25 @@ fn p1_uncaught_caught_by_outer_handler() {
 }
 
 #[test]
+fn p1_concurrent_hash_map() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm
+        .resolve_class("demo/P1ConcurrentMap")
+        .expect("P1ConcurrentMap");
+    let (declaring, index) = vm
+        .find_method(class, "concurrent", "()Ljava/lang/String;")
+        .expect("concurrent");
+    let value = vm
+        .invoke_method(declaring, index, Vec::new())
+        .expect("concurrent");
+    assert_eq!(
+        vm.string_value(value.as_ref()).as_deref(),
+        Some("1:1:40:42:12:true:1:11:a=11;:true:-1:12:12")
+    );
+}
+
+#[test]
 fn rejects_corrupted_bytecode() {
     let mut bytes = build_div_class();
     // `div` code begins with `iload_1 iload_2 idiv ireturn`; replace `ireturn` with an

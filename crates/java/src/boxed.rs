@@ -77,7 +77,7 @@ pub(crate) const NUMBER: oxjvm_vm::NativeClass = class(
 // Integer
 // -------------------------------------------------------------------------------------------
 
-const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
+const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
     method("<init>", "(I)V", ACC_PUBLIC, boxed_int_init),
     method("intValue", "()I", ACC_PUBLIC, |vm, _, args| {
         int(read_value_int(vm, receiver(args)))
@@ -243,6 +243,9 @@ const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
     }),
     method("min", "(II)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
         int(int_arg(args, 0).min(int_arg(args, 1)))
+    }),
+    method("sum", "(II)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        int(int_arg(args, 0).wrapping_add(int_arg(args, 1)))
     }),
 ];
 
@@ -523,7 +526,7 @@ pub(crate) const INTEGER: oxjvm_vm::NativeClass = class(
 // Long
 // -------------------------------------------------------------------------------------------
 
-const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
+const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
     method("<init>", "(J)V", ACC_PUBLIC, |vm, _, args| {
         write_value_long(vm, receiver(args), long_arg(args, 1));
         void()
@@ -682,6 +685,9 @@ const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
             int(compare_longs(a, b))
         },
     ),
+    method("sum", "(JJ)J", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        long(long_arg(args, 0).wrapping_add(long_arg(args, 1)))
+    }),
 ];
 
 /// `Long.getLong`: the system property parsed as a long, or the default when unset/unparseable.
