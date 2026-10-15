@@ -167,7 +167,7 @@ fn stream_get(vm: &mut Vm<'_>, this: ObjectRef) -> Vec<ObjectRef> {
     stream_elements(vm, this)
 }
 
-const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
+const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
     method(
         "of",
         "([Ljava/lang/Object;)Ljava/util/stream/Stream;",
@@ -311,6 +311,18 @@ const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
         abstract_method_pub,
     ),
     method(
+        "takeWhile",
+        "(Ljava/util/function/Predicate;)Ljava/util/stream/Stream;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "dropWhile",
+        "(Ljava/util/function/Predicate;)Ljava/util/stream/Stream;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
         "parallel",
         "()Ljava/util/stream/Stream;",
         ACC_PUBLIC | ACC_ABSTRACT,
@@ -389,7 +401,7 @@ pub(crate) const STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const OXJVM_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
+const OXJVM_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
     method(
         "filter",
         "(Ljava/util/function/Predicate;)Ljava/util/stream/Stream;",
@@ -615,6 +627,41 @@ const OXJVM_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
     method("isParallel", "()Z", ACC_PUBLIC, |vm, _, args| {
         boolean(crate::lang::read_int_field(vm, receiver(args), "parallel") != 0)
     }),
+    method(
+        "takeWhile",
+        "(Ljava/util/function/Predicate;)Ljava/util/stream/Stream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let predicate = ref_arg(args, 1);
+            let mut kept = Vec::new();
+            for element in stream_get(vm, receiver(args)) {
+                if call_test(vm, predicate, element)? {
+                    kept.push(element);
+                } else {
+                    break;
+                }
+            }
+            object(stream_from(vm, kept)?)
+        },
+    ),
+    method(
+        "dropWhile",
+        "(Ljava/util/function/Predicate;)Ljava/util/stream/Stream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let predicate = ref_arg(args, 1);
+            let mut dropping = true;
+            let mut kept = Vec::new();
+            for element in stream_get(vm, receiver(args)) {
+                if dropping && call_test(vm, predicate, element)? {
+                    continue;
+                }
+                dropping = false;
+                kept.push(element);
+            }
+            object(stream_from(vm, kept)?)
+        },
+    ),
     method(
         "parallel",
         "()Ljava/util/stream/BaseStream;",
