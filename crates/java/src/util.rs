@@ -90,10 +90,15 @@ const COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
-    method("stream", "()Ljava/util/stream/Stream;", ACC_PUBLIC, |vm, _, args| {
-        let elements = collection_elements(vm, receiver(args))?;
-        object(crate::stream::stream_from(vm, elements)?)
-    }),
+    method(
+        "stream",
+        "()Ljava/util/stream/Stream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = collection_elements(vm, receiver(args))?;
+            object(crate::stream::stream_from(vm, elements)?)
+        },
+    ),
     method(
         "isEmpty",
         "()Z",
@@ -422,13 +427,187 @@ pub(crate) const LIST: oxjvm_vm::NativeClass = class(
     None,
 );
 
+const SET_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+    method(
+        "of",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(set_of_values(vm, &[])?),
+    ),
+    method(
+        "of",
+        "(Ljava/lang/Object;)Ljava/util/Set;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| object(set_of_values(vm, &[ref_arg(args, 0)])?),
+    ),
+    method(
+        "of",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Set;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| object(set_of_values(vm, &[ref_arg(args, 0), ref_arg(args, 1)])?),
+    ),
+    method(
+        "of",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Set;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            object(set_of_values(
+                vm,
+                &[ref_arg(args, 0), ref_arg(args, 1), ref_arg(args, 2)],
+            )?)
+        },
+    ),
+    method(
+        "of",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Set;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            object(set_of_values(
+                vm,
+                &[
+                    ref_arg(args, 0),
+                    ref_arg(args, 1),
+                    ref_arg(args, 2),
+                    ref_arg(args, 3),
+                ],
+            )?)
+        },
+    ),
+    method(
+        "of",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Set;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            object(set_of_values(
+                vm,
+                &[
+                    ref_arg(args, 0),
+                    ref_arg(args, 1),
+                    ref_arg(args, 2),
+                    ref_arg(args, 3),
+                    ref_arg(args, 4),
+                ],
+            )?)
+        },
+    ),
+    method(
+        "of",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Set;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            object(set_of_values(
+                vm,
+                &[
+                    ref_arg(args, 0),
+                    ref_arg(args, 1),
+                    ref_arg(args, 2),
+                    ref_arg(args, 3),
+                    ref_arg(args, 4),
+                    ref_arg(args, 5),
+                ],
+            )?)
+        },
+    ),
+    method(
+        "of",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Set;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            object(set_of_values(
+                vm,
+                &[
+                    ref_arg(args, 0),
+                    ref_arg(args, 1),
+                    ref_arg(args, 2),
+                    ref_arg(args, 3),
+                    ref_arg(args, 4),
+                    ref_arg(args, 5),
+                    ref_arg(args, 6),
+                ],
+            )?)
+        },
+    ),
+    method(
+        "of",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Set;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            object(set_of_values(
+                vm,
+                &[
+                    ref_arg(args, 0),
+                    ref_arg(args, 1),
+                    ref_arg(args, 2),
+                    ref_arg(args, 3),
+                    ref_arg(args, 4),
+                    ref_arg(args, 5),
+                    ref_arg(args, 6),
+                    ref_arg(args, 7),
+                ],
+            )?)
+        },
+    ),
+    method(
+        "of",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Set;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            object(set_of_values(
+                vm,
+                &[
+                    ref_arg(args, 0),
+                    ref_arg(args, 1),
+                    ref_arg(args, 2),
+                    ref_arg(args, 3),
+                    ref_arg(args, 4),
+                    ref_arg(args, 5),
+                    ref_arg(args, 6),
+                    ref_arg(args, 7),
+                    ref_arg(args, 8),
+                ],
+            )?)
+        },
+    ),
+    method(
+        "of",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Set;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            object(set_of_values(
+                vm,
+                &[
+                    ref_arg(args, 0),
+                    ref_arg(args, 1),
+                    ref_arg(args, 2),
+                    ref_arg(args, 3),
+                    ref_arg(args, 4),
+                    ref_arg(args, 5),
+                    ref_arg(args, 6),
+                    ref_arg(args, 7),
+                    ref_arg(args, 8),
+                    ref_arg(args, 9),
+                ],
+            )?)
+        },
+    ),
+    method(
+        "of",
+        "([Ljava/lang/Object;)Ljava/util/Set;",
+        ACC_PUBLIC | ACC_STATIC | ACC_VARARGS,
+        |vm, _, args| {
+            let elements = object_array_values(vm, ref_arg(args, 0));
+            object(set_of_values(vm, &elements)?)
+        },
+    ),
+];
+
 pub(crate) const SET: oxjvm_vm::NativeClass = class(
     "java/util/Set",
     Some("java/lang/Object"),
     &["java/util/Collection"],
     ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
     &[],
-    &[],
+    &SET_METHODS,
     None,
 );
 
@@ -2658,6 +2837,33 @@ pub(crate) const COLLECTIONS: oxjvm_vm::NativeClass = class(
     &COLLECTIONS_METHODS,
     None,
 );
+
+/// A `HashSet` with no elements (the backing map is installed explicitly).
+fn new_hash_set(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/HashSet")?;
+    let set = vm.new_instance(class)?;
+    let map = new_hash_map(vm)?;
+    let (declaring, field) = vm.find_field(class, "map", "Ljava/util/HashMap;")?;
+    vm.set_instance_ref(set, declaring, field, map);
+    Ok(set)
+}
+
+/// `Set.of(...)`: a `HashSet` with the given elements.
+fn set_of_values(vm: &mut Vm<'_>, elements: &[ObjectRef]) -> Result<ObjectRef, VmError> {
+    let set = new_hash_set(vm)?;
+    let present = hash_set_present(vm)?;
+    let map = hash_set_map(vm, set);
+    for element in elements {
+        hash_map_call(
+            vm,
+            map,
+            "put",
+            "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+            &[Value::Ref(*element), Value::Ref(present)],
+        )?;
+    }
+    Ok(set)
+}
 
 // -------------------------------------------------------------------------------------------
 // Enumeration + the legacy collections (HashSet, Hashtable, Vector)
