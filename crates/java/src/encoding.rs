@@ -68,7 +68,7 @@ fn bytes_array(vm: &mut Vm<'_>, bytes: &[u8]) -> Result<ObjectRef, VmError> {
 
 fn byte_array_of(vm: &mut Vm<'_>, reference: ObjectRef) -> Result<Vec<u8>, VmError> {
     let length = vm.array_length(reference)?;
-    let mut bytes = Vec::with_capacity(length as usize);
+    let mut bytes = Vec::with_capacity(length);
     for index in 0..length {
         bytes.push(vm.array_get(reference, index as i32)?.as_int() as u8);
     }

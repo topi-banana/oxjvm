@@ -1331,8 +1331,8 @@ const FILE_READER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         let content = file_reader_content(vm, this);
         let units: Vec<u16> = content.encode_utf16().collect();
         let mut pos = crate::lang::read_int_field(vm, this, "pos");
-        let offset = crate::int_arg(args, 2);
-        let length = crate::int_arg(args, 3);
+        let offset = int_arg(args, 2);
+        let length = int_arg(args, 3);
         let array = ref_arg(args, 1);
         let mut count = 0;
         while count < length && (pos as usize) < units.len() {
@@ -1424,8 +1424,8 @@ const BUFFERED_READER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     method("read", "([CII)I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let array = ref_arg(args, 1);
-        let offset = crate::int_arg(args, 2);
-        let length = crate::int_arg(args, 3);
+        let offset = int_arg(args, 2);
+        let length = int_arg(args, 3);
         let mut count = 0;
         while count < length {
             let value = buffered_reader_read_char(vm, this)?;
@@ -1531,7 +1531,7 @@ const BUFFERED_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
             this,
             "write",
             "(I)V",
-            vec![Value::Int(crate::int_arg(args, 1))],
+            vec![Value::Int(int_arg(args, 1))],
         )
     }),
     method(
@@ -1558,8 +1558,8 @@ const BUFFERED_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
             "([CII)V",
             vec![
                 Value::Ref(ref_arg(args, 1)),
-                Value::Int(crate::int_arg(args, 2)),
-                Value::Int(crate::int_arg(args, 3)),
+                Value::Int(int_arg(args, 2)),
+                Value::Int(int_arg(args, 3)),
             ],
         )
     }),
