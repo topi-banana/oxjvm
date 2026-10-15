@@ -499,6 +499,88 @@ exception!(
     "java/io/FileNotFoundException",
     "java/io/IOException"
 );
+
+exception!(
+    GENERAL_SECURITY_EXCEPTION,
+    "java/security/GeneralSecurityException",
+    "java/lang/Exception"
+);
+exception!(
+    NO_SUCH_ALGORITHM_EXCEPTION,
+    "java/security/NoSuchAlgorithmException",
+    "java/security/GeneralSecurityException"
+);
+exception!(
+    NO_SUCH_PROVIDER_EXCEPTION,
+    "java/security/NoSuchProviderException",
+    "java/security/GeneralSecurityException"
+);
+exception!(
+    KEY_EXCEPTION,
+    "java/security/KeyException",
+    "java/security/GeneralSecurityException"
+);
+exception!(
+    INVALID_KEY_EXCEPTION,
+    "java/security/InvalidKeyException",
+    "java/security/KeyException"
+);
+exception!(
+    KEY_STORE_EXCEPTION,
+    "java/security/KeyStoreException",
+    "java/security/GeneralSecurityException"
+);
+exception!(
+    KEY_MANAGEMENT_EXCEPTION,
+    "java/security/KeyManagementException",
+    "java/security/KeyException"
+);
+exception!(
+    INVALID_ALGORITHM_PARAMETER_EXCEPTION,
+    "java/security/InvalidAlgorithmParameterException",
+    "java/security/GeneralSecurityException"
+);
+exception!(
+    SIGNATURE_EXCEPTION,
+    "java/security/SignatureException",
+    "java/security/GeneralSecurityException"
+);
+exception!(
+    CERTIFICATE_EXCEPTION,
+    "java/security/cert/CertificateException",
+    "java/security/GeneralSecurityException"
+);
+exception!(
+    CERTIFICATE_EXPIRED_EXCEPTION,
+    "java/security/cert/CertificateExpiredException",
+    "java/security/cert/CertificateException"
+);
+exception!(
+    CERTIFICATE_NOT_YET_VALID_EXCEPTION,
+    "java/security/cert/CertificateNotYetValidException",
+    "java/security/cert/CertificateException"
+);
+exception!(
+    ZIP_EXCEPTION,
+    "java/util/zip/ZipException",
+    "java/io/IOException"
+);
+exception!(
+    DATA_FORMAT_EXCEPTION,
+    "java/util/zip/DataFormatException",
+    "java/lang/Exception"
+);
+
+/// `java.util.zip.ZipConstants`: a marker interface.
+pub(crate) const ZIP_CONSTANTS: oxjvm_vm::NativeClass = class(
+    "java/util/zip/ZipConstants",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[],
+    None,
+);
 exception!(
     FILE_SYSTEM_EXCEPTION,
     "java/nio/file/FileSystemException",

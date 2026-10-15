@@ -15,6 +15,7 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+pub(crate) mod annotation;
 pub(crate) mod atomic;
 pub(crate) mod boxed;
 pub(crate) mod charset;
@@ -108,7 +109,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 217] = [
+static REGISTRY: [NativeClass; 243] = [
     lang::OBJECT,
     lang::CLASS,
     lang::STRING,
@@ -167,6 +168,21 @@ static REGISTRY: [NativeClass; 217] = [
     throwable::ACCESS_DENIED_EXCEPTION,
     throwable::NOT_DIRECTORY_EXCEPTION,
     throwable::DIRECTORY_NOT_EMPTY_EXCEPTION,
+    throwable::GENERAL_SECURITY_EXCEPTION,
+    throwable::NO_SUCH_ALGORITHM_EXCEPTION,
+    throwable::NO_SUCH_PROVIDER_EXCEPTION,
+    throwable::KEY_EXCEPTION,
+    throwable::INVALID_KEY_EXCEPTION,
+    throwable::KEY_STORE_EXCEPTION,
+    throwable::KEY_MANAGEMENT_EXCEPTION,
+    throwable::INVALID_ALGORITHM_PARAMETER_EXCEPTION,
+    throwable::SIGNATURE_EXCEPTION,
+    throwable::CERTIFICATE_EXCEPTION,
+    throwable::CERTIFICATE_EXPIRED_EXCEPTION,
+    throwable::CERTIFICATE_NOT_YET_VALID_EXCEPTION,
+    throwable::ZIP_EXCEPTION,
+    throwable::DATA_FORMAT_EXCEPTION,
+    throwable::ZIP_CONSTANTS,
     throwable::MATCH_EXCEPTION,
     throwable::FILE_NOT_FOUND_EXCEPTION,
     throwable::UNSUPPORTED_CHARSET_EXCEPTION,
@@ -210,6 +226,9 @@ static REGISTRY: [NativeClass; 217] = [
     io::WRITER,
     io::PRINT_WRITER,
     io::FILE_WRITER,
+    io::FILE_READER,
+    io::BUFFERED_READER,
+    io::BUFFERED_WRITER,
     io::OUTPUT_STREAM_WRITER,
     io::STRING_WRITER,
     util::NO_SUCH_ELEMENT_EXCEPTION,
@@ -241,6 +260,14 @@ static REGISTRY: [NativeClass; 217] = [
     util::CONCURRENT_HASH_MAP,
     util::CONCURRENT_HASH_MAP_KEY_SET,
     regex::PATTERN_PREDICATE,
+    annotation::ELEMENT_TYPE,
+    annotation::RETENTION_POLICY,
+    annotation::RETENTION,
+    annotation::TARGET,
+    annotation::DEPRECATED,
+    annotation::REPEATABLE,
+    annotation::DOCUMENTED,
+    annotation::INHERITED,
     encoding::BASE64,
     encoding::BASE64_ENCODER,
     encoding::BASE64_DECODER,

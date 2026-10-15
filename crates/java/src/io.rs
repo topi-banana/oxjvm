@@ -1258,3 +1258,338 @@ fn print_writer_init_stream(
     vm.set_instance_ref(this, declaring, field, writer);
     void()
 }
+
+// -------------------------------------------------------------------------------------------
+// FileReader
+// -------------------------------------------------------------------------------------------
+
+fn file_reader_path(vm: &Vm<'_>, this: ObjectRef) -> String {
+    vm.read_string_field(this, vm.class_of(this), "path")
+        .unwrap_or_default()
+}
+
+fn file_reader_content(vm: &Vm<'_>, this: ObjectRef) -> String {
+    vm.read_string_field(this, vm.class_of(this), "content")
+        .unwrap_or_default()
+}
+
+fn file_reader_init(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let path = file_reader_path(vm, this);
+    let bytes = vm
+        .host
+        .filesystem()
+        .and_then(|fs| fs.read(&path))
+        .unwrap_or_default();
+    let content = String::from_utf8_lossy(&bytes).into_owned();
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, "content", "Ljava/lang/String;")?;
+    let value = vm.make_string(&content)?;
+    vm.set_instance_ref(this, declaring, field, value);
+    crate::lang::write_int_field(vm, this, "pos", 0);
+    let _ = path;
+    void()
+}
+
+const FILE_READER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "path", "Ljava/lang/String;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            file_reader_init(vm, args)
+        },
+    ),
+    method("<init>", "(Ljava/io/File;)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let file = ref_arg(args, 1);
+        let path = vm
+            .read_string_field(file, vm.class_of(file), "path")
+            .unwrap_or_default();
+        let path_value = vm.make_string(&path)?;
+        let (declaring, field) = vm.find_field(vm.class_of(this), "path", "Ljava/lang/String;")?;
+        vm.set_instance_ref(this, declaring, field, path_value);
+        file_reader_init(vm, args)
+    }),
+    method("read", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let content = file_reader_content(vm, this);
+        let pos = crate::lang::read_int_field(vm, this, "pos");
+        let units: Vec<u16> = content.encode_utf16().collect();
+        if pos < 0 || pos as usize >= units.len() {
+            return int(-1);
+        }
+        crate::lang::write_int_field(vm, this, "pos", pos + 1);
+        int(i32::from(units[pos as usize]))
+    }),
+    method("read", "([CII)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let content = file_reader_content(vm, this);
+        let units: Vec<u16> = content.encode_utf16().collect();
+        let mut pos = crate::lang::read_int_field(vm, this, "pos");
+        let offset = crate::int_arg(args, 2);
+        let length = crate::int_arg(args, 3);
+        let array = ref_arg(args, 1);
+        let mut count = 0;
+        while count < length && (pos as usize) < units.len() {
+            vm.array_set(
+                array,
+                offset + count,
+                Value::Int(i32::from(units[pos as usize])),
+                false,
+            )?;
+            pos += 1;
+            count += 1;
+        }
+        crate::lang::write_int_field(vm, this, "pos", pos);
+        if count == 0 { int(-1) } else { int(count) }
+    }),
+    method("read", "([C)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let content = file_reader_content(vm, this);
+        let units: Vec<u16> = content.encode_utf16().collect();
+        let mut pos = crate::lang::read_int_field(vm, this, "pos");
+        let array = ref_arg(args, 1);
+        let length = vm.array_length(array)? as i32;
+        let mut count = 0;
+        while count < length && (pos as usize) < units.len() {
+            vm.array_set(
+                array,
+                count,
+                Value::Int(i32::from(units[pos as usize])),
+                false,
+            )?;
+            pos += 1;
+            count += 1;
+        }
+        crate::lang::write_int_field(vm, this, "pos", pos);
+        if count == 0 { int(-1) } else { int(count) }
+    }),
+    method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+];
+
+pub(crate) const FILE_READER: oxjvm_vm::NativeClass = class(
+    "java/io/FileReader",
+    Some("java/io/Reader"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("path", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("content", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("pos", "I", ACC_PRIVATE, None),
+    ],
+    &FILE_READER_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// BufferedReader
+// -------------------------------------------------------------------------------------------
+
+fn buffered_reader_in(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "in", "Ljava/io/Reader;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn buffered_reader_read_char(vm: &mut Vm<'_>, this: ObjectRef) -> Result<i32, VmError> {
+    let reader = buffered_reader_in(vm, this);
+    if reader.is_null() {
+        return Ok(-1);
+    }
+    let (class, method) = vm.resolve_virtual_method(reader, "read", "()I")?;
+    Ok(vm
+        .invoke_method(class, method, vec![Value::Ref(reader)])?
+        .as_int())
+}
+
+const BUFFERED_READER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method(
+        "<init>",
+        "(Ljava/io/Reader;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) = vm.find_field(vm.class_of(this), "in", "Ljava/io/Reader;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method("read", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(buffered_reader_read_char(vm, receiver(args))?)
+    }),
+    method("read", "([CII)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let array = ref_arg(args, 1);
+        let offset = crate::int_arg(args, 2);
+        let length = crate::int_arg(args, 3);
+        let mut count = 0;
+        while count < length {
+            let value = buffered_reader_read_char(vm, this)?;
+            if value < 0 {
+                break;
+            }
+            vm.array_set(array, offset + count, Value::Int(value), false)?;
+            count += 1;
+        }
+        if count == 0 { int(-1) } else { int(count) }
+    }),
+    method(
+        "readLine",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let mut line = String::new();
+            let mut read_any = false;
+            loop {
+                let value = buffered_reader_read_char(vm, this)?;
+                if value < 0 {
+                    break;
+                }
+                read_any = true;
+                if value == i32::from(b'\n') {
+                    break;
+                }
+                if value == i32::from(b'\r') {
+                    continue;
+                }
+                line.push(char::from_u32(value as u32).unwrap_or('\u{FFFD}'));
+            }
+            if !read_any {
+                return object(ObjectRef::NULL);
+            }
+            object(vm.make_string(&line)?)
+        },
+    ),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        let reader = buffered_reader_in(vm, receiver(args));
+        if !reader.is_null() {
+            let (class, method) = vm.resolve_virtual_method(reader, "close", "()V")?;
+            vm.invoke_method(class, method, vec![Value::Ref(reader)])?;
+        }
+        void()
+    }),
+    method("ready", "()Z", ACC_PUBLIC, |_, _, _| Ok(Value::Int(1))),
+];
+
+pub(crate) const BUFFERED_READER: oxjvm_vm::NativeClass = class(
+    "java/io/BufferedReader",
+    Some("java/io/Reader"),
+    &[],
+    ACC_PUBLIC,
+    &[field("in", "Ljava/io/Reader;", ACC_PRIVATE, None)],
+    &BUFFERED_READER_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// BufferedWriter
+// -------------------------------------------------------------------------------------------
+
+fn buffered_writer_out(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "out", "Ljava/io/Writer;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn buffered_writer_call(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    arguments: Vec<Value>,
+) -> Result<Value, VmError> {
+    let writer = buffered_writer_out(vm, this);
+    if writer.is_null() {
+        return void();
+    }
+    let (class, method) = vm.resolve_virtual_method(writer, name, descriptor)?;
+    let mut full = vec![Value::Ref(writer)];
+    full.extend(arguments);
+    vm.invoke_method(class, method, full)
+}
+
+const BUFFERED_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method(
+        "<init>",
+        "(Ljava/io/Writer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) = vm.find_field(vm.class_of(this), "out", "Ljava/io/Writer;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method("write", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        buffered_writer_call(
+            vm,
+            this,
+            "write",
+            "(I)V",
+            vec![Value::Int(crate::int_arg(args, 1))],
+        )
+    }),
+    method(
+        "write",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            buffered_writer_call(
+                vm,
+                this,
+                "write",
+                "(Ljava/lang/String;)V",
+                vec![Value::Ref(ref_arg(args, 1))],
+            )
+        },
+    ),
+    method("write", "([CII)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        buffered_writer_call(
+            vm,
+            this,
+            "write",
+            "([CII)V",
+            vec![
+                Value::Ref(ref_arg(args, 1)),
+                Value::Int(crate::int_arg(args, 2)),
+                Value::Int(crate::int_arg(args, 3)),
+            ],
+        )
+    }),
+    method("newLine", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let text = vm.make_string("\n")?;
+        buffered_writer_call(
+            vm,
+            this,
+            "write",
+            "(Ljava/lang/String;)V",
+            vec![Value::Ref(text)],
+        )
+    }),
+    method("flush", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        buffered_writer_call(vm, this, "flush", "()V", Vec::new())
+    }),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        buffered_writer_call(vm, this, "close", "()V", Vec::new())
+    }),
+];
+
+pub(crate) const BUFFERED_WRITER: oxjvm_vm::NativeClass = class(
+    "java/io/BufferedWriter",
+    Some("java/io/Writer"),
+    &[],
+    ACC_PUBLIC,
+    &[field("out", "Ljava/io/Writer;", ACC_PRIVATE, None)],
+    &BUFFERED_WRITER_METHODS,
+    None,
+);
