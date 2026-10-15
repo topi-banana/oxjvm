@@ -16,7 +16,7 @@ use crate::{
 // java.io.File
 // -------------------------------------------------------------------------------------------
 
-const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
+const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -330,6 +330,10 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
             alloc::format!("file:/{path}")
         };
         crate::uri::new_uri(vm, &text)
+    }),
+    method("toPath", "()Ljava/nio/file/Path;", ACC_PUBLIC, |vm, _, args| {
+        let path = file_path(vm, receiver(args));
+        crate::nio::new_path(vm, &path)
     }),
 ];
 

@@ -438,7 +438,7 @@ fn path_text(vm: &mut Vm<'_>, path: ObjectRef) -> ObjectRef {
     vm.make_string(&text).unwrap_or(ObjectRef::NULL)
 }
 
-fn new_path(vm: &mut Vm<'_>, path: &str) -> Result<Value, VmError> {
+pub(crate) fn new_path(vm: &mut Vm<'_>, path: &str) -> Result<Value, VmError> {
     let class = vm.resolve_class("java/nio/file/OxjvmPath")?;
     let instance = vm.new_instance(class)?;
     let (declaring, ctor) = vm
@@ -457,7 +457,7 @@ fn new_path(vm: &mut Vm<'_>, path: &str) -> Result<Value, VmError> {
 // Files
 // -------------------------------------------------------------------------------------------
 
-const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
     method(
         "createDirectories",
         "(Ljava/nio/file/Path;[Ljava/nio/file/attribute/FileAttribute;)Ljava/nio/file/Path;",
@@ -695,6 +695,68 @@ const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
             object(crate::stream::stream_from(vm, paths)?)
         },
     ),
+    method(
+        "notExists",
+        "(Ljava/nio/file/Path;[Ljava/nio/file/LinkOption;)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            boolean(fs_metadata(vm, &path).is_none())
+        },
+    ),
+    method(
+        "write",
+        "(Ljava/nio/file/Path;Ljava/lang/Iterable;[Ljava/nio/file/OpenOption;)Ljava/nio/file/Path;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let mut text = String::new();
+            for element in crate::util::collection_elements(vm, ref_arg(args, 1))? {
+                text.push_str(&text_of(vm, element)?);
+                text.push('\n');
+            }
+            files_write_text(vm, ref_arg(args, 0), &text)
+        },
+    ),
+    method(
+        "writeString",
+        "(Ljava/nio/file/Path;Ljava/lang/CharSequence;[Ljava/nio/file/OpenOption;)Ljava/nio/file/Path;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = vm.string_or_empty(ref_arg(args, 1));
+            files_write_text(vm, ref_arg(args, 0), &text)
+        },
+    ),
+    method(
+        "createTempDirectory",
+        "(Ljava/nio/file/Path;Ljava/lang/String;[Ljava/nio/file/attribute/FileAttribute;)Ljava/nio/file/Path;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let dir = path_string(vm, ref_arg(args, 0));
+            let prefix = string_arg(vm, args[1])?;
+            let seed = vm.host.random_seed();
+            let path = alloc::format!("{dir}/{prefix}{seed:016x}");
+            if !fs_create_dir(vm, &path) {
+                return Err(vm.throw_new("java/io/IOException", Some(&path)));
+            }
+            new_path(vm, &path)
+        },
+    ),
+    method(
+        "createTempFile",
+        "(Ljava/nio/file/Path;Ljava/lang/String;Ljava/lang/String;[Ljava/nio/file/attribute/FileAttribute;)Ljava/nio/file/Path;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let dir = path_string(vm, ref_arg(args, 0));
+            let prefix = string_arg(vm, args[1])?;
+            let suffix = vm.string_or_empty(ref_arg(args, 2));
+            let seed = vm.host.random_seed();
+            let path = alloc::format!("{dir}/{prefix}{seed:016x}{suffix}");
+            if !fs_write(vm, &path, &[], false) {
+                return Err(vm.throw_new("java/io/IOException", Some(&path)));
+            }
+            new_path(vm, &path)
+        },
+    ),
 ];
 
 pub(crate) const FILES: oxjvm_vm::NativeClass = class(
@@ -748,6 +810,26 @@ fn bytes_array(vm: &mut Vm<'_>, bytes: &[u8]) -> Result<Value, VmError> {
 
 fn fs_metadata(vm: &mut Vm<'_>, path: &str) -> Option<oxjvm_platform::FileMetadata> {
     vm.host.filesystem()?.metadata(path)
+}
+
+/// A CharSequence as text (via `toString` for non-Strings).
+fn text_of(vm: &mut Vm<'_>, reference: ObjectRef) -> Result<String, VmError> {
+    if let Some(text) = vm.string_value(reference) {
+        return Ok(text);
+    }
+    let (class, method) =
+        vm.resolve_virtual_method(reference, "toString", "()Ljava/lang/String;")?;
+    let text = vm.invoke_method(class, method, vec![Value::Ref(reference)])?;
+    Ok(vm.string_or_empty(text.as_ref()))
+}
+
+/// Write `text` (UTF-8) to a `Path`, returning the path.
+fn files_write_text(vm: &mut Vm<'_>, path_ref: ObjectRef, text: &str) -> Result<Value, VmError> {
+    let path = path_string(vm, path_ref);
+    if !fs_write(vm, &path, text.as_bytes(), false) {
+        return Err(vm.throw_new("java/io/IOException", Some(&path)));
+    }
+    object(path_ref)
 }
 
 fn fs_is_dir(vm: &mut Vm<'_>, path: &str) -> bool {
