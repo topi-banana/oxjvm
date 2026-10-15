@@ -468,6 +468,34 @@ fn integer_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     set_type_field(vm, "java/lang/Integer", oxjvm_classfile::BaseType::Int)
 }
 
+fn short_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    set_type_field(vm, "java/lang/Short", oxjvm_classfile::BaseType::Short)
+}
+
+fn byte_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    set_type_field(vm, "java/lang/Byte", oxjvm_classfile::BaseType::Byte)
+}
+
+fn boolean_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    set_type_field(vm, "java/lang/Boolean", oxjvm_classfile::BaseType::Boolean)
+}
+
+fn character_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    set_type_field(vm, "java/lang/Character", oxjvm_classfile::BaseType::Char)
+}
+
+fn float_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    set_type_field(vm, "java/lang/Float", oxjvm_classfile::BaseType::Float)
+}
+
+fn double_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    set_type_field(vm, "java/lang/Double", oxjvm_classfile::BaseType::Double)
+}
+
+fn void_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    set_type_field(vm, "java/lang/Void", oxjvm_classfile::BaseType::Void)
+}
+
 pub(crate) fn set_type_field(
     vm: &mut Vm<'_>,
     class_name: &str,
@@ -922,7 +950,7 @@ pub(crate) const SHORT: oxjvm_vm::NativeClass = class(
         ),
     ],
     &SHORT_METHODS,
-    None,
+    Some(short_clinit),
 );
 
 const BYTE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
@@ -1012,7 +1040,7 @@ pub(crate) const BYTE: oxjvm_vm::NativeClass = class(
         ),
     ],
     &BYTE_METHODS,
-    None,
+    Some(byte_clinit),
 );
 
 const BOOLEAN_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
@@ -1149,7 +1177,7 @@ pub(crate) const BOOLEAN: oxjvm_vm::NativeClass = class(
         ),
     ],
     &BOOLEAN_METHODS,
-    None,
+    Some(boolean_clinit),
 );
 
 /// `Boolean.parseBoolean`: true only for `"true"` in any case; a null string is false.
@@ -1354,7 +1382,7 @@ pub(crate) const CHARACTER: oxjvm_vm::NativeClass = class(
         ),
     ],
     &CHARACTER_METHODS,
-    None,
+    Some(character_clinit),
 );
 
 const FLOAT_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
@@ -1528,7 +1556,7 @@ pub(crate) const FLOAT: oxjvm_vm::NativeClass = class(
         ),
     ],
     &FLOAT_METHODS,
-    None,
+    Some(float_clinit),
 );
 
 const DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
@@ -1704,7 +1732,7 @@ pub(crate) const DOUBLE: oxjvm_vm::NativeClass = class(
         ),
     ],
     &DOUBLE_METHODS,
-    None,
+    Some(double_clinit),
 );
 
 pub(crate) const VOID: oxjvm_vm::NativeClass = class(
@@ -1719,5 +1747,5 @@ pub(crate) const VOID: oxjvm_vm::NativeClass = class(
         None,
     )],
     &[],
-    None,
+    Some(void_clinit),
 );
