@@ -871,7 +871,7 @@ const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
 
 // The remaining `String.valueOf` overloads and `format` are declared in a second array so the
 // first stays readable; both are concatenated below.
-const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 18] = [
+const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 19] = [
     method(
         "valueOf",
         "(Z)Ljava/lang/String;",
@@ -974,6 +974,12 @@ const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 18] = [
         "(Ljava/nio/charset/Charset;)[B",
         ACC_PUBLIC,
         string_get_bytes_charset_object,
+    ),
+    method(
+        "formatted",
+        "([Ljava/lang/Object;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        string_format,
     ),
 ];
 
@@ -2213,9 +2219,14 @@ pub(crate) const STRING: oxjvm_vm::NativeClass = {
             "java/lang/CharSequence",
         ],
         ACC_PUBLIC | ACC_FINAL,
-        &[],
+        &[field(
+            "CASE_INSENSITIVE_ORDER",
+            "Ljava/util/Comparator;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        )],
         &STRING_ALL_METHODS,
-        None,
+        Some(string_clinit),
     )
 };
 
@@ -2239,6 +2250,49 @@ const fn flatten_string_methods()
     }
     out
 }
+
+fn string_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let string = vm.resolve_class("java/lang/String")?;
+    let comparator_class = vm.resolve_class("java/lang/OjvmCaseInsensitiveComparator")?;
+    let comparator = vm.new_instance(comparator_class)?;
+    vm.set_static_value(
+        string,
+        "CASE_INSENSITIVE_ORDER",
+        "Ljava/util/Comparator;",
+        Value::Ref(comparator),
+    );
+    Ok(())
+}
+
+const CASE_INSENSITIVE_COMPARATOR_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "compare",
+    "(Ljava/lang/Object;Ljava/lang/Object;)I",
+    ACC_PUBLIC,
+    |vm, _, args| {
+        let first = ref_arg(args, 1);
+        let second = ref_arg(args, 2);
+        if first.is_null() {
+            return int(-1);
+        }
+        if second.is_null() {
+            return int(1);
+        }
+        let (class, method) =
+            vm.resolve_virtual_method(first, "compareToIgnoreCase", "(Ljava/lang/String;)I")?;
+        vm.invoke_method(class, method, vec![Value::Ref(first), Value::Ref(second)])
+    },
+)];
+
+/// `String.CASE_INSENSITIVE_ORDER`.
+pub(crate) const CASE_INSENSITIVE_COMPARATOR: oxjvm_vm::NativeClass = class(
+    "java/lang/OjvmCaseInsensitiveComparator",
+    Some("java/lang/Object"),
+    &["java/util/Comparator"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[],
+    &CASE_INSENSITIVE_COMPARATOR_METHODS,
+    None,
+);
 
 // -------------------------------------------------------------------------------------------
 // StringBuilder / StringBuffer
