@@ -724,7 +724,11 @@ impl<'a> Vm<'a> {
         let _ = self.host.write(stream, text.as_bytes());
         let _ = self.host.write(stream, b"\n");
         let mut frames = self.backtraces.get(&exception).cloned().unwrap_or_default();
-        frames.extend(self.capture_frames());
+        // Fall back to the live frames only when no backtrace was recorded;
+        // otherwise the frames would be printed twice.
+        if frames.is_empty() {
+            frames.extend(self.capture_frames());
+        }
         for frame in frames {
             let location = match (&frame.file_name, frame.line_number) {
                 (Some(file), Some(line)) => alloc::format!("({file}:{line})"),

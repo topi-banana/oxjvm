@@ -552,6 +552,11 @@ impl<'a> Vm<'a> {
     /// Returns `Ok(())` when control has been transferred to a handler, and
     /// [`VmError::Thrown`] when the exception escapes the current thread's floor.
     fn unwind_exception(&mut self, exception: ObjectRef) -> Result<(), VmError> {
+        let mut exception = exception;
+        // Catch types that failed to resolve during this dispatch: retrying them
+        // would raise a fresh error on every attempt.
+        let mut failed_catch_types: alloc::collections::BTreeSet<String> =
+            alloc::collections::BTreeSet::new();
         loop {
             let thread_index = self.current;
             let floor = self.threads[thread_index].floor;
@@ -562,6 +567,7 @@ impl<'a> Vm<'a> {
             let class = self.frame().class;
             let code = self.frame().code.clone();
             let mut handler: Option<Handler> = None;
+            let mut replacement: Option<ObjectRef> = None;
             for candidate in &code.exception_table {
                 if usize::from(candidate.start_pc) <= fault_pc
                     && fault_pc < usize::from(candidate.end_pc)
@@ -577,8 +583,25 @@ impl<'a> Vm<'a> {
                             .map(str::to_string);
                         match name {
                             Ok(name) => {
-                                let catch_class = self.resolve_class(&name)?;
-                                self.is_instance(exception, catch_class)
+                                if failed_catch_types.contains(&name) {
+                                    false
+                                } else {
+                                    match self.resolve_class(&name) {
+                                        Ok(catch_class) => self.is_instance(exception, catch_class),
+                                        // The catch type cannot be resolved: the
+                                        // resulting error replaces the pending
+                                        // exception and matching restarts (in this
+                                        // frame first, skipping the failed type).
+                                        Err(VmError::Thrown(error)) => {
+                                            failed_catch_types.insert(name);
+                                            if replacement.is_none() {
+                                                replacement = Some(error);
+                                            }
+                                            false
+                                        }
+                                        Err(other) => return Err(other),
+                                    }
+                                }
                             }
                             Err(_) => false,
                         }
@@ -595,6 +618,12 @@ impl<'a> Vm<'a> {
                 frame.stack.push(Value::Ref(exception));
                 frame.pc = usize::from(handler.handler_pc);
                 return Ok(());
+            }
+            if let Some(error) = replacement {
+                // Retry this frame with the resolution error before unwinding
+                // into the caller.
+                exception = error;
+                continue;
             }
             let monitor = self.frame().monitor;
             if let Some(monitor) = monitor {

@@ -1275,6 +1275,41 @@ fn p1_unsafe() {
 }
 
 #[test]
+fn p1_uncaught_exit_status() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    // `java.lang.reflect.UndeclaredThrowableException` is not defined in this VM,
+    // so the uncaught exception must still be reported and exit non-zero.
+    let status = vm.run_main("demo/P1Uncaught", &[]).expect("run_main");
+    assert_eq!(status, 1);
+    drop(vm);
+    let stderr = host.stderr_text();
+    assert!(
+        stderr.contains("Exception in thread \"main\" java.lang.NoClassDefFoundError"),
+        "{stderr}"
+    );
+    // The stack frames must not be duplicated.
+    assert_eq!(
+        stderr.matches("at demo.P1Uncaught.main").count(),
+        1,
+        "{stderr}"
+    );
+}
+
+#[test]
+fn p1_uncaught_caught_by_outer_handler() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let status = vm.run_main("demo/P1UncaughtCaught", &[]).expect("run_main");
+    assert_eq!(status, 0);
+    drop(vm);
+    assert_eq!(
+        host.stdout_text(),
+        "caught:java.lang.reflect.UndeclaredThrowableException\n"
+    );
+}
+
+#[test]
 fn rejects_corrupted_bytecode() {
     let mut bytes = build_div_class();
     // `div` code begins with `iload_1 iload_2 idiv ireturn`; replace `ireturn` with an
