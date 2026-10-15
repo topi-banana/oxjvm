@@ -2567,7 +2567,7 @@ pub(crate) const SORTED_MAP: oxjvm_vm::NativeClass = class(
 // Properties
 // -------------------------------------------------------------------------------------------
 
-const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method("<init>", "()V", ACC_PUBLIC, properties_init),
     method(
         "getProperty",
@@ -2652,6 +2652,12 @@ const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
         properties_map_call(vm, receiver(args), "clear", "()V", Vec::new())
     }),
+    method(
+        "load",
+        "(Ljava/io/InputStream;)V",
+        ACC_PUBLIC,
+        |vm, _, args| properties_load(vm, args),
+    ),
 ];
 
 pub(crate) const PROPERTIES: oxjvm_vm::NativeClass = class(
@@ -2668,6 +2674,46 @@ fn properties_map(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
     let class = vm.class_of(this);
     vm.read_ref_field(this, class, "map", "Ljava/util/HashMap;")
         .unwrap_or(ObjectRef::NULL)
+}
+
+/// `Properties.load(InputStream)`: parse `key=value` lines through `put`.
+fn properties_load(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let stream = ref_arg(args, 1);
+    let mut bytes = Vec::new();
+    if !stream.is_null() {
+        let (class, method) = vm.resolve_virtual_method(stream, "read", "()I")?;
+        loop {
+            let value = vm
+                .invoke_method(class, method, vec![Value::Ref(stream)])?
+                .as_int();
+            if value < 0 {
+                break;
+            }
+            bytes.push((value & 0xFF) as u8);
+        }
+    }
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('!') {
+            continue;
+        }
+        let (key, value) = match trimmed.split_once('=').or_else(|| trimmed.split_once(':')) {
+            Some((key, value)) => (key.trim_end(), value.trim_start()),
+            None => (trimmed, ""),
+        };
+        let key = vm.make_string(key)?;
+        let value = vm.make_string(value)?;
+        properties_map_call(
+            vm,
+            this,
+            "put",
+            "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+            vec![Value::Ref(key), Value::Ref(value)],
+        )?;
+    }
+    void()
 }
 
 fn properties_init(

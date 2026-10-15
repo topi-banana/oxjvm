@@ -18,7 +18,7 @@ use crate::{class, field, method, object, receiver, ref_arg, string_arg};
 // MethodType
 // -------------------------------------------------------------------------------------------
 
-const METHOD_TYPE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const METHOD_TYPE_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method(
         "descriptorString",
         "()Ljava/lang/String;",
@@ -44,6 +44,37 @@ const METHOD_TYPE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         |vm, _, args| {
             let descriptor = vm.method_type_of(receiver(args)).unwrap_or_default();
             object(vm.make_string(&descriptor)?)
+        },
+    ),
+    method("parameterCount", "()I", ACC_PUBLIC, |vm, _, args| {
+        let descriptor = vm.method_type_of(receiver(args)).unwrap_or_default();
+        Ok(Value::Int(descriptor_types(&descriptor).len() as i32))
+    }),
+    method(
+        "parameterType",
+        "(I)Ljava/lang/Class;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let descriptor = vm.method_type_of(receiver(args)).unwrap_or_default();
+            let types = descriptor_types(&descriptor);
+            let index = crate::int_arg(args, 1);
+            if index < 0 || index as usize >= types.len() {
+                return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+            }
+            class_object_for_descriptor(vm, &types[index as usize])
+        },
+    ),
+    method(
+        "returnType",
+        "()Ljava/lang/Class;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let descriptor = vm.method_type_of(receiver(args)).unwrap_or_default();
+            let ret = descriptor
+                .split_once(')')
+                .map_or("V", |(_, rest)| rest)
+                .to_string();
+            class_object_for_descriptor(vm, &ret)
         },
     ),
     method(
@@ -111,9 +142,79 @@ const METHOD_TYPE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
             object(vm.make_method_type(&result)?)
         },
     ),
+    method(
+        "methodType",
+        "(Ljava/lang/Class;Ljava/lang/Class;[Ljava/lang/Class;)Ljava/lang/invoke/MethodType;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let return_type = class_argument(vm, ref_arg(args, 0))?;
+            let first = class_argument(vm, ref_arg(args, 1))?;
+            let array = ref_arg(args, 2);
+            let mut parameters = Vec::new();
+            parameters.push(first);
+            let length = vm.array_length(array)?;
+            for index in 0..length {
+                let value = vm.array_get(array, index as i32)?;
+                parameters.push(class_argument(vm, value.as_ref())?);
+            }
+            method_type_from(vm, return_type, &parameters)
+        },
+    ),
 ];
 
 /// The parameter part (including parentheses) of a method descriptor.
+/// The parameter descriptors of a method descriptor.
+fn descriptor_types(descriptor: &str) -> Vec<String> {
+    let chars: Vec<char> = descriptor.chars().collect();
+    let mut types = Vec::new();
+    if chars.first() != Some(&'(') {
+        return types;
+    }
+    let mut index = 1;
+    while index < chars.len() && chars[index] != ')' {
+        let start = index;
+        while index < chars.len() && chars[index] == '[' {
+            index += 1;
+        }
+        if index < chars.len() && chars[index] == 'L' {
+            while index < chars.len() && chars[index] != ';' {
+                index += 1;
+            }
+        }
+        index += 1;
+        types.push(chars[start..index.min(chars.len())].iter().collect());
+    }
+    types
+}
+
+/// The `Class` object for a field descriptor.
+fn class_object_for_descriptor(vm: &mut Vm<'_>, descriptor: &str) -> Result<Value, VmError> {
+    let base = match descriptor {
+        "Z" => Some(oxjvm_classfile::BaseType::Boolean),
+        "B" => Some(oxjvm_classfile::BaseType::Byte),
+        "C" => Some(oxjvm_classfile::BaseType::Char),
+        "S" => Some(oxjvm_classfile::BaseType::Short),
+        "I" => Some(oxjvm_classfile::BaseType::Int),
+        "J" => Some(oxjvm_classfile::BaseType::Long),
+        "F" => Some(oxjvm_classfile::BaseType::Float),
+        "D" => Some(oxjvm_classfile::BaseType::Double),
+        _ => None,
+    };
+    if let Some(base) = base {
+        let class = vm.primitive_class(base)?;
+        return object(vm.class_object(class)?);
+    }
+    if let Some(name) = descriptor
+        .strip_prefix('L')
+        .and_then(|rest| rest.strip_suffix(';'))
+    {
+        let class = vm.resolve_class(name)?;
+        return object(vm.class_object(class)?);
+    }
+    let class = vm.resolve_class("java/lang/Object")?;
+    object(vm.class_object(class)?)
+}
+
 fn descriptor_params(descriptor: &str) -> String {
     match descriptor.find(')') {
         Some(index) => descriptor[..=index].to_string(),
