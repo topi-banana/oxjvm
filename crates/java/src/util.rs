@@ -153,7 +153,7 @@ pub(crate) const COLLECTION: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
+const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
     method(
         "size",
         "()I",
@@ -235,6 +235,12 @@ const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
     method(
         "toArray",
         "([Ljava/lang/Object;)[Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "toArray",
+        "(Ljava/util/function/IntFunction;)[Ljava/lang/Object;",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
@@ -1404,7 +1410,7 @@ pub(crate) const RANDOM: oxjvm_vm::NativeClass = class(
 // ArrayList + iterator
 // -------------------------------------------------------------------------------------------
 
-const ARRAY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
+const ARRAY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
     method("<init>", "()V", ACC_PUBLIC, array_list_init),
     method("<init>", "(I)V", ACC_PUBLIC, array_list_init),
     method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, array_list_add),
@@ -1503,6 +1509,12 @@ const ARRAY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
             array_list_store(vm, receiver(args), &elements)?;
             void()
         },
+    ),
+    method(
+        "toArray",
+        "(Ljava/util/function/IntFunction;)[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        array_list_to_array_generator,
     ),
 ];
 
@@ -1791,6 +1803,44 @@ fn array_list_to_array(
 
 /// `List.toArray(T[])`: reuse `target` when it is large enough (null-terminated), otherwise
 /// allocate a new array with `target`'s runtime component type.
+/// `List.toArray(IntFunction)`: the generator allocates the result array.
+fn array_list_to_array_generator(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let elements = array_list_elements(vm, receiver(args));
+    let generator = ref_arg(args, 1);
+    let (class, method) = vm.resolve_virtual_method(generator, "apply", "(I)Ljava/lang/Object;")?;
+    let array = vm
+        .invoke_method(
+            class,
+            method,
+            vec![Value::Ref(generator), Value::Int(elements.len() as i32)],
+        )?
+        .as_ref();
+    if array.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let length = vm.array_length(array)?;
+    if length < elements.len() {
+        return Err(vm.throw_new(
+            "java/lang/ArrayIndexOutOfBoundsException",
+            Some(&alloc::format!(
+                "Index {} out of bounds for length {length}",
+                elements.len()
+            )),
+        ));
+    }
+    for (index, element) in elements.iter().enumerate() {
+        vm.array_set_ref(array, index, *element)?;
+    }
+    if length > elements.len() {
+        vm.array_set_ref(array, elements.len(), ObjectRef::NULL)?;
+    }
+    object(array)
+}
+
 fn array_list_to_array_into(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
