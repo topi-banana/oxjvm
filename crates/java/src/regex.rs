@@ -1505,6 +1505,52 @@ fn matcher_replace(vm: &mut Vm<'_>, args: &[Value], all: bool) -> Result<Value, 
     object(vm.make_string_utf16(result)?)
 }
 
+/// `Pattern.asPredicate()`: a `Predicate` matching with `Matcher.find`.
+const PATTERN_PREDICATE_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "test",
+    "(Ljava/lang/Object;)Z",
+    ACC_PUBLIC,
+    |vm, _, args| {
+        let this = receiver(args);
+        let pattern = vm
+            .read_ref_field(
+                this,
+                vm.class_of(this),
+                "pattern",
+                "Ljava/util/regex/Pattern;",
+            )
+            .unwrap_or(ObjectRef::NULL);
+        if pattern.is_null() {
+            return boolean(false);
+        }
+        let input = ref_arg(args, 1);
+        let (class, method) = vm.resolve_virtual_method(
+            pattern,
+            "matcher",
+            "(Ljava/lang/CharSequence;)Ljava/util/regex/Matcher;",
+        )?;
+        let matcher =
+            vm.invoke_method(class, method, vec![Value::Ref(pattern), Value::Ref(input)])?;
+        let (matcher_class, find) = vm.resolve_virtual_method(matcher.as_ref(), "find", "()Z")?;
+        vm.invoke_method(matcher_class, find, vec![matcher])
+    },
+)];
+
+pub(crate) const PATTERN_PREDICATE: oxjvm_vm::NativeClass = class(
+    "java/util/regex/OxjvmPatternPredicate",
+    Some("java/lang/Object"),
+    &["java/util/function/Predicate"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[field(
+        "pattern",
+        "Ljava/util/regex/Pattern;",
+        ACC_PRIVATE,
+        None,
+    )],
+    &PATTERN_PREDICATE_METHODS,
+    None,
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1617,49 +1663,3 @@ mod tests {
         assert_eq!(span_of(&regex, "abc"), None);
     }
 }
-
-/// `Pattern.asPredicate()`: a `Predicate` matching with `Matcher.find`.
-const PATTERN_PREDICATE_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
-    "test",
-    "(Ljava/lang/Object;)Z",
-    ACC_PUBLIC,
-    |vm, _, args| {
-        let this = receiver(args);
-        let pattern = vm
-            .read_ref_field(
-                this,
-                vm.class_of(this),
-                "pattern",
-                "Ljava/util/regex/Pattern;",
-            )
-            .unwrap_or(ObjectRef::NULL);
-        if pattern.is_null() {
-            return boolean(false);
-        }
-        let input = ref_arg(args, 1);
-        let (class, method) = vm.resolve_virtual_method(
-            pattern,
-            "matcher",
-            "(Ljava/lang/CharSequence;)Ljava/util/regex/Matcher;",
-        )?;
-        let matcher =
-            vm.invoke_method(class, method, vec![Value::Ref(pattern), Value::Ref(input)])?;
-        let (matcher_class, find) = vm.resolve_virtual_method(matcher.as_ref(), "find", "()Z")?;
-        vm.invoke_method(matcher_class, find, vec![matcher])
-    },
-)];
-
-pub(crate) const PATTERN_PREDICATE: oxjvm_vm::NativeClass = class(
-    "java/util/regex/OxjvmPatternPredicate",
-    Some("java/lang/Object"),
-    &["java/util/function/Predicate"],
-    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
-    &[field(
-        "pattern",
-        "Ljava/util/regex/Pattern;",
-        ACC_PRIVATE,
-        None,
-    )],
-    &PATTERN_PREDICATE_METHODS,
-    None,
-);

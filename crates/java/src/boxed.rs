@@ -891,7 +891,7 @@ const SHORT_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         "reverseBytes",
         "(S)S",
         ACC_PUBLIC | ACC_STATIC,
-        |_, _, args| int(i32::from((crate::int_arg(args, 0) as i16).swap_bytes())),
+        |_, _, args| int(i32::from((int_arg(args, 0) as i16).swap_bytes())),
     ),
 ];
 

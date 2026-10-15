@@ -1038,8 +1038,8 @@ const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         void()
     }),
     method("write", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        let text = char::from_u32(crate::int_arg(args, 1) as u32 & 0xFFFF)
-            .map_or(String::new(), String::from);
+        let text =
+            char::from_u32(int_arg(args, 1) as u32 & 0xFFFF).map_or(String::new(), String::from);
         file_writer_write_text(vm, receiver(args), &text)
     }),
     method(
@@ -1054,8 +1054,8 @@ const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method("write", "([CII)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let array = ref_arg(args, 1);
-        let offset = crate::int_arg(args, 2);
-        let length = crate::int_arg(args, 3);
+        let offset = int_arg(args, 2);
+        let length = int_arg(args, 3);
         let mut units = Vec::new();
         for index in 0..length {
             units.push(vm.array_get(array, offset + index)?.as_int() as u16);
