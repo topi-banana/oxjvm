@@ -1119,6 +1119,33 @@ impl<'a> Vm<'a> {
         self.read_instance_int(object, declaring, field)
     }
 
+    /// Write an instance `long` field.
+    pub fn set_instance_long(&mut self, object: ObjectRef, class: ClassId, field: u32, value: i64) {
+        let slot = self.classes.get(class).fields[field as usize].slot as usize;
+        if let Some(ObjectData::Instance(fields)) =
+            self.heap.get_mut(object).map(|object| &mut object.data)
+        {
+            fields[slot] = Value::Long(value);
+        }
+    }
+
+    /// Read an instance `long` field by name and descriptor.
+    #[must_use]
+    pub fn read_instance_long_named(
+        &self,
+        object: ObjectRef,
+        class: ClassId,
+        name: &str,
+        descriptor: &str,
+    ) -> Option<i64> {
+        let (declaring, field) = self.find_method_field(class, name, descriptor)?;
+        let slot = self.classes.get(declaring).fields[field as usize].slot as usize;
+        match self.heap.get(object)?.data {
+            ObjectData::Instance(ref fields) => Some(fields[slot].as_long()),
+            _ => None,
+        }
+    }
+
     fn find_method_field(
         &self,
         class: ClassId,

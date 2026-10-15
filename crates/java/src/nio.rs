@@ -457,7 +457,7 @@ pub(crate) fn new_path(vm: &mut Vm<'_>, path: &str) -> Result<Value, VmError> {
 // Files
 // -------------------------------------------------------------------------------------------
 
-const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
+const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
     method(
         "createDirectories",
         "(Ljava/nio/file/Path;[Ljava/nio/file/attribute/FileAttribute;)Ljava/nio/file/Path;",
@@ -755,6 +755,36 @@ const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
                 return Err(vm.throw_new("java/io/IOException", Some(&path)));
             }
             new_path(vm, &path)
+        },
+    ),
+    method(
+        "readAttributes",
+        "(Ljava/nio/file/Path;Ljava/lang/Class;[Ljava/nio/file/LinkOption;)Ljava/nio/file/attribute/BasicFileAttributes;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            let Some(metadata) = fs_metadata(vm, &path) else {
+                return Err(vm.throw_new("java/io/IOException", Some(&path)));
+            };
+            let class = vm.resolve_class("java/nio/file/attribute/OjvmBasicFileAttributes")?;
+            let instance = vm.new_instance(class)?;
+            let kind = match metadata.kind {
+                FileKind::Directory => 1,
+                FileKind::File => 0,
+                _ => 2,
+            };
+            if let Some((declaring, field)) = vm.find_field_opt(class, "kind", "I") {
+                vm.set_instance_int(instance, declaring, field, kind);
+            }
+            if let Some((declaring, field)) = vm.find_field_opt(class, "size", "J") {
+                vm.set_instance_long(instance, declaring, field, metadata.len as i64);
+            }
+            for name in ["created", "accessed", "modified"] {
+                if let Some((declaring, field)) = vm.find_field_opt(class, name, "J") {
+                    vm.set_instance_long(instance, declaring, field, metadata.modified_millis);
+                }
+            }
+            object(instance)
         },
     ),
 ];
@@ -1091,4 +1121,327 @@ pub(crate) const FILE_ATTRIBUTE: oxjvm_vm::NativeClass = class(
     &[],
     &FILE_ATTRIBUTE_METHODS,
     None,
+);
+
+// -------------------------------------------------------------------------------------------
+// FileTime / BasicFileAttributes / FileVisitOption
+// -------------------------------------------------------------------------------------------
+
+const FILE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method("<init>", "(J)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if let Some((declaring, field)) = vm.find_field_opt(vm.class_of(this), "millis", "J") {
+            vm.set_instance_long(this, declaring, field, crate::long_arg(args, 1));
+        }
+        void()
+    }),
+    method(
+        "fromMillis",
+        "(J)Ljava/nio/file/attribute/FileTime;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let class = vm.resolve_class("java/nio/file/attribute/FileTime")?;
+            let instance = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "millis", "J")?;
+            vm.set_instance_long(instance, declaring, field, crate::long_arg(args, 0));
+            object(instance)
+        },
+    ),
+    method("toMillis", "()J", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        long(
+            vm.read_instance_long_named(this, class, "millis", "J")
+                .unwrap_or(0),
+        )
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let millis = vm
+                .read_instance_long_named(this, class, "millis", "J")
+                .unwrap_or(0);
+            object(vm.make_string(&alloc::format!("{millis}"))?)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = ref_arg(args, 1);
+            if other.is_null() || vm.class_of(receiver(args)) != vm.class_of(other) {
+                return boolean(false);
+            }
+            let this_millis = vm
+                .read_instance_long_named(
+                    receiver(args),
+                    vm.class_of(receiver(args)),
+                    "millis",
+                    "J",
+                )
+                .unwrap_or(0);
+            let other_millis = vm
+                .read_instance_long_named(other, vm.class_of(other), "millis", "J")
+                .unwrap_or(0);
+            boolean(this_millis == other_millis)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let millis = vm
+            .read_instance_long_named(this, vm.class_of(this), "millis", "J")
+            .unwrap_or(0);
+        int((millis ^ (millis >> 32)) as i32)
+    }),
+];
+
+pub(crate) const FILE_TIME: oxjvm_vm::NativeClass = class(
+    "java/nio/file/attribute/FileTime",
+    Some("java/lang/Object"),
+    &["java/lang/Comparable"],
+    ACC_PUBLIC | ACC_FINAL,
+    &[field("millis", "J", ACC_PRIVATE, None)],
+    &FILE_TIME_METHODS,
+    None,
+);
+
+const BASIC_FILE_ATTRIBUTES_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+    method(
+        "isDirectory",
+        "()Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "isRegularFile",
+        "()Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "isSymbolicLink",
+        "()Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "isOther",
+        "()Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "size",
+        "()J",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "creationTime",
+        "()Ljava/nio/file/attribute/FileTime;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "lastAccessTime",
+        "()Ljava/nio/file/attribute/FileTime;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "lastModifiedTime",
+        "()Ljava/nio/file/attribute/FileTime;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "fileKey",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
+pub(crate) const BASIC_FILE_ATTRIBUTES: oxjvm_vm::NativeClass = class(
+    "java/nio/file/attribute/BasicFileAttributes",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &BASIC_FILE_ATTRIBUTES_METHODS,
+    None,
+);
+
+fn attribute_kind(vm: &Vm<'_>, this: ObjectRef) -> i32 {
+    crate::lang::read_int_field(vm, this, "kind")
+}
+
+fn file_time_of(vm: &mut Vm<'_>, millis: i64) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/nio/file/attribute/FileTime")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "millis", "J")?;
+    vm.set_instance_long(instance, declaring, field, millis);
+    object(instance)
+}
+
+const OJVM_BASIC_FILE_ATTRIBUTES_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+    method("isDirectory", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(attribute_kind(vm, receiver(args)) == 1)
+    }),
+    method("isRegularFile", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(attribute_kind(vm, receiver(args)) == 0)
+    }),
+    method("isSymbolicLink", "()Z", ACC_PUBLIC, |_, _, _| {
+        boolean(false)
+    }),
+    method("isOther", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(attribute_kind(vm, receiver(args)) == 2)
+    }),
+    method("size", "()J", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        long(
+            vm.read_instance_long_named(this, vm.class_of(this), "size", "J")
+                .unwrap_or(0),
+        )
+    }),
+    method(
+        "creationTime",
+        "()Ljava/nio/file/attribute/FileTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let created = vm
+                .read_instance_long_named(this, vm.class_of(this), "created", "J")
+                .unwrap_or(0);
+            file_time_of(vm, created)
+        },
+    ),
+    method(
+        "lastAccessTime",
+        "()Ljava/nio/file/attribute/FileTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let accessed = vm
+                .read_instance_long_named(this, vm.class_of(this), "accessed", "J")
+                .unwrap_or(0);
+            file_time_of(vm, accessed)
+        },
+    ),
+    method(
+        "lastModifiedTime",
+        "()Ljava/nio/file/attribute/FileTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let modified = vm
+                .read_instance_long_named(this, vm.class_of(this), "modified", "J")
+                .unwrap_or(0);
+            file_time_of(vm, modified)
+        },
+    ),
+    method("fileKey", "()Ljava/lang/Object;", ACC_PUBLIC, |_, _, _| {
+        object(ObjectRef::NULL)
+    }),
+];
+
+pub(crate) const OJVM_BASIC_FILE_ATTRIBUTES: oxjvm_vm::NativeClass = class(
+    "java/nio/file/attribute/OjvmBasicFileAttributes",
+    Some("java/lang/Object"),
+    &["java/nio/file/attribute/BasicFileAttributes"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[
+        field("kind", "I", ACC_PRIVATE, None),
+        field("size", "J", ACC_PRIVATE, None),
+        field("created", "J", ACC_PRIVATE, None),
+        field("accessed", "J", ACC_PRIVATE, None),
+        field("modified", "J", ACC_PRIVATE, None),
+    ],
+    &OJVM_BASIC_FILE_ATTRIBUTES_METHODS,
+    None,
+);
+
+// FileVisitOption (enum-shaped)
+const FILE_VISIT_OPTION_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method("ordinal", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method("name", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, _| {
+        object(vm.make_string("FOLLOW_LINKS")?)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| object(vm.make_string("FOLLOW_LINKS")?),
+    ),
+    method(
+        "values",
+        "()[Ljava/nio/file/FileVisitOption;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/nio/file/FileVisitOption")?;
+            let array = vm.allocate_object_array(class, 1)?;
+            if let Some(option) =
+                vm.read_static_ref_if_set(class, "FOLLOW_LINKS", "Ljava/nio/file/FileVisitOption;")
+            {
+                vm.array_set_ref(array, 0, option)?;
+            }
+            object(array)
+        },
+    ),
+    method(
+        "valueOf",
+        "(Ljava/lang/String;)Ljava/nio/file/FileVisitOption;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = vm.string_or_empty(ref_arg(args, 0));
+            let class = vm.resolve_class("java/nio/file/FileVisitOption")?;
+            if name == "FOLLOW_LINKS" {
+                if let Some(option) = vm.read_static_ref_if_set(
+                    class,
+                    "FOLLOW_LINKS",
+                    "Ljava/nio/file/FileVisitOption;",
+                ) {
+                    return object(option);
+                }
+            }
+            Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some(&alloc::format!(
+                    "No enum constant java.nio.file.FileVisitOption.{name}"
+                )),
+            ))
+        },
+    ),
+];
+
+fn file_visit_option_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/nio/file/FileVisitOption")?;
+    let instance = vm.new_instance(class)?;
+    vm.set_static_value(
+        class,
+        "FOLLOW_LINKS",
+        "Ljava/nio/file/FileVisitOption;",
+        Value::Ref(instance),
+    );
+    Ok(())
+}
+
+pub(crate) const FILE_VISIT_OPTION: oxjvm_vm::NativeClass = class(
+    "java/nio/file/FileVisitOption",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[field(
+        "FOLLOW_LINKS",
+        "Ljava/nio/file/FileVisitOption;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        None,
+    )],
+    &FILE_VISIT_OPTION_METHODS,
+    Some(file_visit_option_clinit),
 );

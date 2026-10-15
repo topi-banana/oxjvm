@@ -107,7 +107,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 198] = [
+static REGISTRY: [NativeClass; 207] = [
     lang::OBJECT,
     lang::CLASS,
     lang::STRING,
@@ -161,6 +161,11 @@ static REGISTRY: [NativeClass; 198] = [
     throwable::REFLECTIVE_OPERATION_EXCEPTION,
     throwable::NO_SUCH_FIELD_EXCEPTION,
     throwable::NO_SUCH_METHOD_EXCEPTION,
+    throwable::FILE_SYSTEM_EXCEPTION,
+    throwable::NO_SUCH_FILE_EXCEPTION,
+    throwable::ACCESS_DENIED_EXCEPTION,
+    throwable::NOT_DIRECTORY_EXCEPTION,
+    throwable::DIRECTORY_NOT_EMPTY_EXCEPTION,
     throwable::MATCH_EXCEPTION,
     throwable::FILE_NOT_FOUND_EXCEPTION,
     throwable::UNSUPPORTED_CHARSET_EXCEPTION,
@@ -291,6 +296,10 @@ static REGISTRY: [NativeClass; 198] = [
     nio::OPEN_OPTION,
     nio::LINK_OPTION,
     nio::STANDARD_COPY_OPTION,
+    nio::FILE_TIME,
+    nio::BASIC_FILE_ATTRIBUTES,
+    nio::OJVM_BASIC_FILE_ATTRIBUTES,
+    nio::FILE_VISIT_OPTION,
     nio::STANDARD_OPEN_OPTION,
     reflect::MEMBER,
     reflect::METHOD,

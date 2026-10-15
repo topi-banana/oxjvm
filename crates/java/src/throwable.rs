@@ -500,6 +500,31 @@ exception!(
     "java/io/IOException"
 );
 exception!(
+    FILE_SYSTEM_EXCEPTION,
+    "java/nio/file/FileSystemException",
+    "java/io/IOException"
+);
+exception!(
+    NO_SUCH_FILE_EXCEPTION,
+    "java/nio/file/NoSuchFileException",
+    "java/nio/file/FileSystemException"
+);
+exception!(
+    ACCESS_DENIED_EXCEPTION,
+    "java/nio/file/AccessDeniedException",
+    "java/nio/file/FileSystemException"
+);
+exception!(
+    NOT_DIRECTORY_EXCEPTION,
+    "java/nio/file/NotDirectoryException",
+    "java/nio/file/FileSystemException"
+);
+exception!(
+    DIRECTORY_NOT_EMPTY_EXCEPTION,
+    "java/nio/file/DirectoryNotEmptyException",
+    "java/nio/file/FileSystemException"
+);
+exception!(
     NO_SUCH_FIELD_EXCEPTION,
     "java/lang/NoSuchFieldException",
     "java/lang/ReflectiveOperationException"
