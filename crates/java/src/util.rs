@@ -1975,12 +1975,26 @@ const ITR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
         crate::lang::write_int_field(vm, this, "cursor", cursor + 1);
         object(elements[cursor as usize])
     }),
-    method(
-        "remove",
-        "()V",
-        ACC_PUBLIC,
-        crate::lang::abstract_method_pub,
-    ),
+    method("remove", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let list = vm
+            .read_ref_field(this, vm.class_of(this), "list", "Ljava/util/List;")
+            .unwrap_or(ObjectRef::NULL);
+        let cursor = crate::lang::read_int_field(vm, this, "cursor");
+        if cursor <= 0 {
+            return Err(vm.throw_new("java/lang/IllegalStateException", None));
+        }
+        let elements = array_list_elements(vm, list);
+        let mut kept = Vec::with_capacity(elements.len().saturating_sub(1));
+        for (index, element) in elements.iter().enumerate() {
+            if index != (cursor - 1) as usize {
+                kept.push(*element);
+            }
+        }
+        array_list_store(vm, list, &kept)?;
+        crate::lang::write_int_field(vm, this, "cursor", cursor - 1);
+        void()
+    }),
 ];
 
 pub(crate) const ARRAY_LIST_ITERATOR: oxjvm_vm::NativeClass = class(
@@ -2074,7 +2088,7 @@ const HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
         "entrySet",
         "()Ljava/util/Set;",
         ACC_PUBLIC,
-        crate::lang::abstract_method_pub,
+        |vm, _, args| map_entry_set(vm, receiver(args)),
     ),
     method(
         "replace",
@@ -2427,7 +2441,7 @@ const IDENTITY_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
         "entrySet",
         "()Ljava/util/Set;",
         ACC_PUBLIC,
-        crate::lang::abstract_method_pub,
+        |vm, _, args| map_entry_set(vm, receiver(args)),
     ),
 ];
 
@@ -3637,6 +3651,28 @@ fn object_hash(vm: &mut Vm<'_>, reference: ObjectRef) -> Result<i32, VmError> {
 
 fn values_equal(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmError> {
     keys_equal(vm, a, b)
+}
+
+/// The map's entries as a `HashSet` of `Map.Entry` snapshots.
+fn map_entry_set(vm: &mut Vm<'_>, map: ObjectRef) -> Result<Value, VmError> {
+    let pairs = hash_map_pairs(vm, map);
+    let set_class = vm.resolve_class("java/util/HashSet")?;
+    let set = vm.new_instance(set_class)?;
+    let set_map = new_hash_map(vm)?;
+    let (declaring, field) = vm.find_field(set_class, "map", "Ljava/util/HashMap;")?;
+    vm.set_instance_ref(set, declaring, field, set_map);
+    let present = hash_set_present(vm)?;
+    for (key, value) in pairs {
+        let entry = new_entry(vm, key, value)?;
+        hash_map_call(
+            vm,
+            set_map,
+            "put",
+            "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+            &[Value::Ref(entry), Value::Ref(present)],
+        )?;
+    }
+    object(set)
 }
 
 fn new_entry(vm: &mut Vm<'_>, key: ObjectRef, value: ObjectRef) -> Result<ObjectRef, VmError> {

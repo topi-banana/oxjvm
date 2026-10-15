@@ -257,7 +257,7 @@ pub(crate) const INT_STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const OJVM_INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+const OJVM_INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
     method(
         "map",
         "(Ljava/util/function/IntUnaryOperator;)Ljava/util/stream/IntStream;",
@@ -445,6 +445,18 @@ const OJVM_INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
             }
             boolean(true)
         },
+    ),
+    method(
+        "parallel",
+        "()Ljava/util/stream/IntStream;",
+        ACC_PUBLIC,
+        |_, _, args| object(receiver(args)),
+    ),
+    method(
+        "sequential",
+        "()Ljava/util/stream/IntStream;",
+        ACC_PUBLIC,
+        |_, _, args| object(receiver(args)),
     ),
 ];
 
