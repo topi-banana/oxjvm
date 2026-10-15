@@ -566,6 +566,11 @@ exception!(
     "java/io/IOException"
 );
 exception!(
+    UNKNOWN_HOST_EXCEPTION,
+    "java/net/UnknownHostException",
+    "java/io/IOException"
+);
+exception!(
     DATA_FORMAT_EXCEPTION,
     "java/util/zip/DataFormatException",
     "java/lang/Exception"

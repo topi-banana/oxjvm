@@ -28,6 +28,7 @@ pub(crate) mod io;
 pub(crate) mod lang;
 pub(crate) mod locale;
 pub(crate) mod math;
+pub(crate) mod net;
 pub(crate) mod nio;
 pub(crate) mod optional;
 pub(crate) mod reflect;
@@ -109,7 +110,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 243] = [
+static REGISTRY: [NativeClass; 249] = [
     lang::OBJECT,
     lang::CLASS,
     lang::STRING,
@@ -181,6 +182,7 @@ static REGISTRY: [NativeClass; 243] = [
     throwable::CERTIFICATE_EXPIRED_EXCEPTION,
     throwable::CERTIFICATE_NOT_YET_VALID_EXCEPTION,
     throwable::ZIP_EXCEPTION,
+    throwable::UNKNOWN_HOST_EXCEPTION,
     throwable::DATA_FORMAT_EXCEPTION,
     throwable::ZIP_CONSTANTS,
     throwable::MATCH_EXCEPTION,
@@ -260,6 +262,8 @@ static REGISTRY: [NativeClass; 243] = [
     util::CONCURRENT_HASH_MAP,
     util::CONCURRENT_HASH_MAP_KEY_SET,
     regex::PATTERN_PREDICATE,
+    net::INET_ADDRESS,
+    net::INET4_ADDRESS,
     annotation::ELEMENT_TYPE,
     annotation::RETENTION_POLICY,
     annotation::RETENTION,
@@ -278,6 +282,9 @@ static REGISTRY: [NativeClass; 243] = [
     lang::OJVM_THREAD_BUILDER,
     lang::CASE_INSENSITIVE_COMPARATOR,
     util::ENUM_MAP,
+    util::LINKED_HASH_MAP,
+    util::ENUM_SET,
+    util::TIME_ZONE,
     invoke::THREAD_FACTORY,
     lang::ANNOTATION,
     stack::STACK_WALKER,
