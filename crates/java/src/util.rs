@@ -2499,7 +2499,7 @@ fn properties_set_property(
 // Collections
 // -------------------------------------------------------------------------------------------
 
-const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     method(
         "sort",
         "(Ljava/util/List;)V",
@@ -2539,6 +2539,13 @@ const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         ACC_PUBLIC | ACC_STATIC,
         // oxjvm executes one instruction at a time and has no exposed locking API,
         // so the wrapper is the list itself.
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "synchronizedMap",
+        "(Ljava/util/Map;)Ljava/util/Map;",
+        ACC_PUBLIC | ACC_STATIC,
+        // As with synchronizedList, the map itself is returned.
         |_, _, args| object(ref_arg(args, 0)),
     ),
 ];
