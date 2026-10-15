@@ -106,7 +106,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 187] = [
+static REGISTRY: [NativeClass; 191] = [
     lang::OBJECT,
     lang::CLASS,
     lang::STRING,
@@ -160,6 +160,8 @@ static REGISTRY: [NativeClass; 187] = [
     throwable::REFLECTIVE_OPERATION_EXCEPTION,
     throwable::NO_SUCH_FIELD_EXCEPTION,
     throwable::NO_SUCH_METHOD_EXCEPTION,
+    throwable::MATCH_EXCEPTION,
+    throwable::FILE_NOT_FOUND_EXCEPTION,
     throwable::UNSUPPORTED_CHARSET_EXCEPTION,
     throwable::ILLEGAL_MONITOR_STATE_EXCEPTION,
     throwable::ILLEGAL_STATE_EXCEPTION,
@@ -200,6 +202,7 @@ static REGISTRY: [NativeClass; 187] = [
     io::READER,
     io::WRITER,
     io::PRINT_WRITER,
+    io::FILE_WRITER,
     io::STRING_WRITER,
     util::NO_SUCH_ELEMENT_EXCEPTION,
     util::ITERATOR,
@@ -229,6 +232,7 @@ static REGISTRY: [NativeClass; 187] = [
     util::CONCURRENT_MAP,
     util::CONCURRENT_HASH_MAP,
     util::CONCURRENT_HASH_MAP_KEY_SET,
+    regex::PATTERN_PREDICATE,
     util::SORTED_MAP,
     intstream::INT_STREAM,
     intstream::OJVM_INT_STREAM,

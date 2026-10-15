@@ -811,7 +811,7 @@ pub(crate) const LONG: oxjvm_vm::NativeClass = class(
 // Short / Byte / Boolean / Character / Float / Double / Void
 // -------------------------------------------------------------------------------------------
 
-const SHORT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const SHORT_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method("<init>", "(S)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), int_arg(args, 1));
         void()
@@ -886,6 +886,12 @@ const SHORT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
             let b = read_value_int(vm, ref_arg(args, 1));
             int(compare_ints(a, b))
         },
+    ),
+    method(
+        "reverseBytes",
+        "(S)S",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| int(i32::from((crate::int_arg(args, 0) as i16).swap_bytes())),
     ),
 ];
 

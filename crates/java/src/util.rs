@@ -1279,7 +1279,7 @@ pub(crate) const ARRAYS: oxjvm_vm::NativeClass = class(
 // Random (exactly the java.util.Random LCG)
 // -------------------------------------------------------------------------------------------
 
-const RANDOM_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const RANDOM_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method("<init>", "()V", ACC_PUBLIC, random_init),
     method("<init>", "(J)V", ACC_PUBLIC, random_init_seed),
     method("setSeed", "(J)V", ACC_PUBLIC, |vm, _, args| {
@@ -1312,7 +1312,19 @@ const RANDOM_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
                 Some("bound must be positive"),
             ));
         }
-        next_random_int(vm, receiver(args), 31, &[bound])
+        int(next_random_bounded(vm, receiver(args), bound)?)
+    }),
+    method("nextInt", "(II)I", ACC_PUBLIC, |vm, _, args| {
+        let origin = crate::int_arg(args, 1);
+        let bound = crate::int_arg(args, 2);
+        if bound <= origin {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("bound must be greater than origin"),
+            ));
+        }
+        let value = next_random_bounded(vm, receiver(args), bound - origin)?;
+        int(origin.wrapping_add(value))
     }),
     method("nextLong", "()J", ACC_PUBLIC, |vm, _, args| {
         let high = next_random_int(vm, receiver(args), 32, &[])?;
@@ -1380,6 +1392,17 @@ fn write_random_seed(vm: &mut Vm<'_>, this: ObjectRef, seed: i64) {
             vm.heap.get_mut(this).map(|object| &mut object.data)
         {
             fields[slot] = Value::Long(seed);
+        }
+    }
+}
+
+/// A uniformly distributed value in `[0, bound)` (the JDK rejection loop).
+fn next_random_bounded(vm: &mut Vm<'_>, this: ObjectRef, bound: i32) -> Result<i32, VmError> {
+    loop {
+        let bits = next_random_int(vm, this, 31, &[])?.as_int();
+        let value = bits.rem_euclid(bound);
+        if bits - value + (bound - 1) >= 0 {
+            return Ok(value);
         }
     }
 }

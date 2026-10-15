@@ -3322,7 +3322,7 @@ fn runtime_version(vm: &mut Vm<'_>) -> Result<Value, VmError> {
     object(instance)
 }
 
-const RUNTIME_VERSION_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const RUNTIME_VERSION_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     method("feature", "()I", ACC_PUBLIC, |vm, _, args| {
         int(read_int_field(vm, receiver(args), "feature"))
     }),
@@ -3397,12 +3397,57 @@ const RUNTIME_VERSION_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
             int(runtime_version_compare(vm, receiver(args), other))
         },
     ),
+    method(
+        "parse",
+        "(Ljava/lang/String;)Ljava/lang/Runtime$Version;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| runtime_version_parse(vm, args),
+    ),
 ];
 
 /// An empty `java.util.Optional` (the value field defaults to null).
 fn empty_optional(vm: &mut Vm<'_>) -> Result<Value, VmError> {
     let class = vm.resolve_class("java/util/Optional")?;
     let instance = vm.new_instance(class)?;
+    object(instance)
+}
+
+/// `Runtime$Version.parse`: "27", "27.0.1", "27-ea+5" ...
+fn runtime_version_parse(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let text = string_arg(vm, args[0])?;
+    let (numbers, _) = match text.split_once('-') {
+        Some((numbers, rest)) => (numbers, rest),
+        None => match text.split_once('+') {
+            Some((numbers, rest)) => (numbers, rest),
+            None => (text.as_str(), ""),
+        },
+    };
+    let mut parts = Vec::new();
+    for part in numbers.split('.') {
+        match part.parse::<i32>() {
+            Ok(value) => parts.push(value),
+            Err(_) => {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some(&alloc::format!("Invalid version string: {text}")),
+                ));
+            }
+        }
+    }
+    if parts.is_empty() || parts.len() > 4 {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some(&alloc::format!("Invalid version string: {text}")),
+        ));
+    }
+    let class = vm.resolve_class("java/lang/Runtime$Version")?;
+    let instance = vm.new_instance(class)?;
+    for (index, name) in ["feature", "interim", "update", "patch"].iter().enumerate() {
+        let value = parts.get(index).copied().unwrap_or(0);
+        if let Some((declaring, field)) = vm.find_field_opt(class, name, "I") {
+            vm.set_instance_int(instance, declaring, field, value);
+        }
+    }
     object(instance)
 }
 
@@ -4015,7 +4060,7 @@ fn thread_local_with_initial(
 // ClassLoader
 // -------------------------------------------------------------------------------------------
 
-const CLASS_LOADER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const CLASS_LOADER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     method(
         "getSystemClassLoader",
         "()Ljava/lang/ClassLoader;",
@@ -4049,6 +4094,12 @@ const CLASS_LOADER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     method(
         "<init>",
         "(Ljava/lang/ClassLoader;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/ClassLoader;)V",
         ACC_PUBLIC,
         |_, _, _| void(),
     ),

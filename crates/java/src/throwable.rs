@@ -490,6 +490,16 @@ exception!(
     "java/lang/RuntimeException"
 );
 exception!(
+    MATCH_EXCEPTION,
+    "java/lang/MatchException",
+    "java/lang/RuntimeException"
+);
+exception!(
+    FILE_NOT_FOUND_EXCEPTION,
+    "java/io/FileNotFoundException",
+    "java/io/IOException"
+);
+exception!(
     NO_SUCH_FIELD_EXCEPTION,
     "java/lang/NoSuchFieldException",
     "java/lang/ReflectiveOperationException"

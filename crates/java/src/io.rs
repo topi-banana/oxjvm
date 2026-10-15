@@ -580,8 +580,9 @@ pub(crate) const BYTE_ARRAY_INPUT_STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const BYTE_ARRAY_OUTPUT_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+const BYTE_ARRAY_OUTPUT_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method("<init>", "()V", ACC_PUBLIC, byte_array_output_init),
+    method("<init>", "(I)V", ACC_PUBLIC, byte_array_output_init),
     method("write", "(I)V", ACC_PUBLIC, byte_array_output_write),
     method("write", "([BII)V", ACC_PUBLIC, |vm, ctx, args| {
         let array = ref_arg(args, 1);
@@ -721,7 +722,7 @@ pub(crate) const WRITER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PRINT_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const PRINT_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method(
         "<init>",
         "(Ljava/io/Writer;)V",
@@ -755,6 +756,18 @@ const PRINT_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method("println", "()V", ACC_PUBLIC, |vm, _, args| {
         print_writer_text(vm, receiver(args), "\n")
     }),
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        print_writer_init_string,
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/File;)V",
+        ACC_PUBLIC,
+        print_writer_init_file,
+    ),
     method("flush", "()V", ACC_PUBLIC, |_, _, _| void()),
     method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
@@ -820,8 +833,9 @@ pub(crate) const PRINT_WRITER: oxjvm_vm::NativeClass = class(
 // StringWriter
 // -------------------------------------------------------------------------------------------
 
-const STRING_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const STRING_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method("<init>", "()V", ACC_PUBLIC, string_writer_init),
+    method("<init>", "(I)V", ACC_PUBLIC, string_writer_init),
     method(
         "write",
         "(Ljava/lang/String;)V",
@@ -953,4 +967,158 @@ fn string_writer_append(
     )?;
     vm.invoke_method(class, method, vec![Value::Ref(buffer), Value::Ref(text)])?;
     void()
+}
+
+// -------------------------------------------------------------------------------------------
+// FileWriter / PrintWriter(String|File)
+// -------------------------------------------------------------------------------------------
+
+/// Write `text` to the writer's file (append mode after the first write).
+fn file_writer_write_text(vm: &mut Vm<'_>, this: ObjectRef, text: &str) -> Result<Value, VmError> {
+    let class = vm.class_of(this);
+    let path = vm
+        .read_string_field(this, class, "path")
+        .unwrap_or_default();
+    let append = crate::lang::read_int_field(vm, this, "append") != 0;
+    let written = vm
+        .host
+        .filesystem()
+        .map(|fs| fs.write(&path, text.as_bytes(), append))
+        .unwrap_or(false);
+    if !written {
+        return Err(vm.throw_new("java/io/IOException", Some(&path)));
+    }
+    crate::lang::write_int_field(vm, this, "append", 1);
+    void()
+}
+
+const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let path = crate::string_arg(vm, args[1])?;
+            vm.set_string_field(this, vm.class_of(this), "path", &path)?;
+            crate::lang::write_int_field(vm, this, "append", 0);
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Z)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let path = crate::string_arg(vm, args[1])?;
+            vm.set_string_field(this, vm.class_of(this), "path", &path)?;
+            crate::lang::write_int_field(vm, this, "append", i32::from(crate::bool_arg(args, 2)));
+            void()
+        },
+    ),
+    method("<init>", "(Ljava/io/File;)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let file = ref_arg(args, 1);
+        let path = vm
+            .read_string_field(file, vm.class_of(file), "path")
+            .unwrap_or_default();
+        vm.set_string_field(this, vm.class_of(this), "path", &path)?;
+        crate::lang::write_int_field(vm, this, "append", 0);
+        void()
+    }),
+    method("<init>", "(Ljava/io/File;Z)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let file = ref_arg(args, 1);
+        let path = vm
+            .read_string_field(file, vm.class_of(file), "path")
+            .unwrap_or_default();
+        vm.set_string_field(this, vm.class_of(this), "path", &path)?;
+        crate::lang::write_int_field(vm, this, "append", i32::from(crate::bool_arg(args, 2)));
+        void()
+    }),
+    method("write", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let text = char::from_u32(crate::int_arg(args, 1) as u32 & 0xFFFF)
+            .map_or(String::new(), String::from);
+        file_writer_write_text(vm, receiver(args), &text)
+    }),
+    method(
+        "write",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = vm.string_or_empty(ref_arg(args, 1));
+            file_writer_write_text(vm, receiver(args), &text)
+        },
+    ),
+    method("write", "([CII)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let array = ref_arg(args, 1);
+        let offset = crate::int_arg(args, 2);
+        let length = crate::int_arg(args, 3);
+        let mut units = Vec::new();
+        for index in 0..length {
+            units.push(vm.array_get(array, offset + index)?.as_int() as u16);
+        }
+        let text = String::from_utf16_lossy(&units);
+        file_writer_write_text(vm, this, &text)
+    }),
+    method("flush", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+];
+
+pub(crate) const FILE_WRITER: oxjvm_vm::NativeClass = class(
+    "java/io/FileWriter",
+    Some("java/io/Writer"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("path", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("append", "I", ACC_PRIVATE, None),
+    ],
+    &FILE_WRITER_METHODS,
+    None,
+);
+
+/// Wrap a fresh `FileWriter` around the `PrintWriter.out` field.
+fn print_writer_wrap_file_writer(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    ctor: &str,
+    argument: ObjectRef,
+) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/io/FileWriter")?;
+    let writer = vm.new_instance(class)?;
+    let (declaring, method) = vm
+        .find_method(class, "<init>", ctor)
+        .ok_or_else(|| VmError::internal("FileWriter constructor missing"))?;
+    vm.invoke_method(
+        declaring,
+        method,
+        vec![Value::Ref(writer), Value::Ref(argument)],
+    )?;
+    let print_writer_class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(print_writer_class, "out", "Ljava/io/Writer;")?;
+    vm.set_instance_ref(this, declaring, field, writer);
+    void()
+}
+
+fn print_writer_init_string(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let path = crate::string_arg(vm, args[1])?;
+    let text = vm.make_string(&path)?;
+    print_writer_wrap_file_writer(vm, this, "(Ljava/lang/String;)V", text)
+}
+
+fn print_writer_init_file(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    print_writer_wrap_file_writer(vm, this, "(Ljava/io/File;)V", ref_arg(args, 1))
 }
