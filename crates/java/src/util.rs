@@ -4371,3 +4371,180 @@ pub(crate) const CONCURRENT_HASH_MAP_KEY_SET: oxjvm_vm::NativeClass = class(
     &HASH_SET_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// EnumMap (also a HashMap wrapper; enum keys use Enum.equals/hashCode)
+// -------------------------------------------------------------------------------------------
+
+fn enum_map_map(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    hash_set_map(vm, this)
+}
+
+fn enum_map_init(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let map = new_hash_map(vm)?;
+    let this = receiver(args);
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, "map", "Ljava/util/HashMap;")?;
+    vm.set_instance_ref(this, declaring, field, map);
+    void()
+}
+
+const ENUM_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+    method(
+        "<init>",
+        "(Ljava/lang/Class;)V",
+        ACC_PUBLIC,
+        |vm, _, args| enum_map_init(vm, args),
+    ),
+    method(
+        "<init>",
+        "(Ljava/util/EnumMap;)V",
+        ACC_PUBLIC,
+        |vm, _, args| enum_map_init(vm, args),
+    ),
+    method("<init>", "(Ljava/util/Map;)V", ACC_PUBLIC, |vm, _, args| {
+        enum_map_init(vm, args)?;
+        let this = receiver(args);
+        concurrent_put_all(vm, this, ref_arg(args, 1))
+    }),
+    method(
+        "put",
+        "(Ljava/lang/Enum;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = enum_map_map(vm, receiver(args));
+            concurrent_put(vm, map, ref_arg(args, 1), ref_arg(args, 2))
+        },
+    ),
+    method(
+        "put",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_BRIDGE | ACC_SYNTHETIC,
+        |vm, _, args| {
+            let map = enum_map_map(vm, receiver(args));
+            concurrent_put(vm, map, ref_arg(args, 1), ref_arg(args, 2))
+        },
+    ),
+    method(
+        "get",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = enum_map_map(vm, receiver(args));
+            hash_map_call(
+                vm,
+                map,
+                "get",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                &[Value::Ref(ref_arg(args, 1))],
+            )
+        },
+    ),
+    method(
+        "getOrDefault",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = enum_map_map(vm, receiver(args));
+            hash_map_call(
+                vm,
+                map,
+                "getOrDefault",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                &[Value::Ref(ref_arg(args, 1)), Value::Ref(ref_arg(args, 2))],
+            )
+        },
+    ),
+    method(
+        "remove",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = enum_map_map(vm, receiver(args));
+            hash_map_call(
+                vm,
+                map,
+                "remove",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                &[Value::Ref(ref_arg(args, 1))],
+            )
+        },
+    ),
+    method(
+        "containsKey",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = enum_map_map(vm, receiver(args));
+            hash_map_call(
+                vm,
+                map,
+                "containsKey",
+                "(Ljava/lang/Object;)Z",
+                &[Value::Ref(ref_arg(args, 1))],
+            )
+        },
+    ),
+    method(
+        "containsValue",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = enum_map_map(vm, receiver(args));
+            hash_map_call(
+                vm,
+                map,
+                "containsValue",
+                "(Ljava/lang/Object;)Z",
+                &[Value::Ref(ref_arg(args, 1))],
+            )
+        },
+    ),
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        let map = enum_map_map(vm, receiver(args));
+        hash_map_call(vm, map, "size", "()I", &[])
+    }),
+    method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let map = enum_map_map(vm, receiver(args));
+        hash_map_call(vm, map, "isEmpty", "()Z", &[])
+    }),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
+        let map = enum_map_map(vm, receiver(args));
+        hash_map_call(vm, map, "clear", "()V", &[])
+    }),
+    method("keySet", "()Ljava/util/Set;", ACC_PUBLIC, |vm, _, args| {
+        let map = enum_map_map(vm, receiver(args));
+        hash_map_call(vm, map, "keySet", "()Ljava/util/Set;", &[])
+    }),
+    method(
+        "values",
+        "()Ljava/util/Collection;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = enum_map_map(vm, receiver(args));
+            hash_map_call(vm, map, "values", "()Ljava/util/Collection;", &[])
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = enum_map_map(vm, receiver(args));
+            hash_map_call(vm, map, "toString", "()Ljava/lang/String;", &[])
+        },
+    ),
+    method("putAll", "(Ljava/util/Map;)V", ACC_PUBLIC, |vm, _, args| {
+        concurrent_put_all(vm, receiver(args), ref_arg(args, 1))
+    }),
+];
+
+pub(crate) const ENUM_MAP: oxjvm_vm::NativeClass = class(
+    "java/util/EnumMap",
+    Some("java/lang/Object"),
+    &["java/util/Map", "java/io/Serializable"],
+    ACC_PUBLIC,
+    &[field("map", "Ljava/util/HashMap;", ACC_PRIVATE, None)],
+    &ENUM_MAP_METHODS,
+    None,
+);

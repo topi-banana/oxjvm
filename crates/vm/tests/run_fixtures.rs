@@ -1329,6 +1329,21 @@ fn p1_concurrent_hash_map() {
 }
 
 #[test]
+fn p1_ten() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/P1Ten").expect("P1Ten");
+    let (declaring, index) = vm
+        .find_method(class, "ten", "()Ljava/lang/String;")
+        .expect("ten");
+    let value = vm.invoke_method(declaring, index, Vec::new()).expect("ten");
+    assert_eq!(
+        vm.string_value(value.as_ref()).as_deref(),
+        Some("2:g:r:3:[ten]:true")
+    );
+}
+
+#[test]
 fn rejects_corrupted_bytecode() {
     let mut bytes = build_div_class();
     // `div` code begins with `iload_1 iload_2 idiv ireturn`; replace `ireturn` with an

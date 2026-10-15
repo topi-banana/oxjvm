@@ -4720,3 +4720,40 @@ pub(crate) const STACK_TRACE_ELEMENT: oxjvm_vm::NativeClass = class(
     &STACK_TRACE_ELEMENT_METHODS,
     None,
 );
+
+const ANNOTATION_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "annotationType",
+        "()Ljava/lang/Class;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "hashCode",
+        "()I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+];
+
+pub(crate) const ANNOTATION: oxjvm_vm::NativeClass = class(
+    "java/lang/annotation/Annotation",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &ANNOTATION_METHODS,
+    None,
+);

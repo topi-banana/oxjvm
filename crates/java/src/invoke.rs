@@ -561,7 +561,7 @@ macro_rules! functional_interface {
 // Each interface carries the same shape; the dispatcher selects by descriptor, so a shared array
 // with one abstract method of each common descriptor is sufficient and lets a single class serve
 // every functional interface users link against.
-const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
+const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method(
         "apply",
         "(Ljava/lang/Object;)Ljava/lang/Object;",
@@ -629,6 +629,12 @@ const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
         crate::lang::abstract_method_pub,
     ),
     method(
+        "newThread",
+        "(Ljava/lang/Runnable;)Ljava/lang/Thread;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
         "run",
         "()V",
         ACC_PUBLIC | ACC_ABSTRACT,
@@ -664,6 +670,7 @@ functional_interface!(INT_PREDICATE, "java/util/function/IntPredicate");
 functional_interface!(INT_UNARY_OPERATOR, "java/util/function/IntUnaryOperator");
 functional_interface!(CALLABLE, "java/util/concurrent/Callable");
 functional_interface!(INT_FUNCTION, "java/util/function/IntFunction");
+functional_interface!(THREAD_FACTORY, "java/util/concurrent/ThreadFactory");
 
 pub(crate) const APPENDABLE: oxjvm_vm::NativeClass = class(
     "java/lang/Appendable",
