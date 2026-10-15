@@ -3689,7 +3689,7 @@ pub(crate) const RUNTIME: oxjvm_vm::NativeClass = class(
 // Thread
 // -------------------------------------------------------------------------------------------
 
-const THREAD_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
+const THREAD_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
     method("<init>", "()V", ACC_PUBLIC, thread_init),
     method("<init>", "(Ljava/lang/Runnable;)V", ACC_PUBLIC, thread_init),
     method("<init>", "(Ljava/lang/String;)V", ACC_PUBLIC, thread_init),
@@ -3901,6 +3901,18 @@ const THREAD_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
             )
         },
     ),
+    method(
+        "ofVirtual",
+        "()Ljava/lang/Thread$Builder$OfVirtual;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| new_thread_builder(vm),
+    ),
+    method(
+        "ofPlatform",
+        "()Ljava/lang/Thread$Builder$OfPlatform;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| new_thread_builder(vm),
+    ),
 ];
 
 fn thread_init(
@@ -3966,6 +3978,218 @@ fn thread_run(
     }
     void()
 }
+
+// -------------------------------------------------------------------------------------------
+// Thread.Builder
+// -------------------------------------------------------------------------------------------
+
+fn new_thread_builder(vm: &mut Vm<'_>) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/lang/OjvmThreadBuilder")?;
+    object(vm.new_instance(class)?)
+}
+
+fn thread_builder_name(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, "name", "Ljava/lang/String;")?;
+    vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+    object(this)
+}
+
+/// `unstarted`/`start`: create the thread (named if a name was set).
+fn thread_builder_make(vm: &mut Vm<'_>, args: &[Value], start: bool) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let target = ref_arg(args, 1);
+    let thread_class = vm.resolve_class("java/lang/Thread")?;
+    let thread = vm.new_instance(thread_class)?;
+    let (declaring, ctor) = vm
+        .find_method(thread_class, "<init>", "(Ljava/lang/Runnable;)V")
+        .ok_or_else(|| VmError::internal("Thread(Runnable) constructor missing"))?;
+    vm.invoke_method(
+        declaring,
+        ctor,
+        vec![Value::Ref(thread), Value::Ref(target)],
+    )?;
+    if let Some(name) = vm.read_string_field(this, vm.class_of(this), "name") {
+        if !name.is_empty() {
+            let value = vm.make_string(&name)?;
+            let (declaring, method) =
+                vm.resolve_virtual_method(thread, "setName", "(Ljava/lang/String;)V")?;
+            vm.invoke_method(
+                declaring,
+                method,
+                vec![Value::Ref(thread), Value::Ref(value)],
+            )?;
+        }
+    }
+    if start {
+        let (declaring, method) = vm.resolve_virtual_method(thread, "start", "()V")?;
+        vm.invoke_method(declaring, method, vec![Value::Ref(thread)])?;
+    }
+    object(thread)
+}
+
+const THREAD_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method(
+        "name",
+        "(Ljava/lang/String;)Ljava/lang/Thread$Builder;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "name",
+        "(Ljava/lang/String;J)Ljava/lang/Thread$Builder;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "unstarted",
+        "(Ljava/lang/Runnable;)Ljava/lang/Thread;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "start",
+        "(Ljava/lang/Runnable;)Ljava/lang/Thread;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "factory",
+        "()Ljava/util/concurrent/ThreadFactory;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+];
+
+pub(crate) const THREAD_BUILDER: oxjvm_vm::NativeClass = class(
+    "java/lang/Thread$Builder",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &THREAD_BUILDER_METHODS,
+    None,
+);
+
+const OF_VIRTUAL_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "name",
+        "(Ljava/lang/String;)Ljava/lang/Thread$Builder$OfVirtual;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "name",
+        "(Ljava/lang/String;J)Ljava/lang/Thread$Builder$OfVirtual;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+];
+
+pub(crate) const THREAD_BUILDER_OF_VIRTUAL: oxjvm_vm::NativeClass = class(
+    "java/lang/Thread$Builder$OfVirtual",
+    Some("java/lang/Object"),
+    &["java/lang/Thread$Builder"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &OF_VIRTUAL_METHODS,
+    None,
+);
+
+const OF_PLATFORM_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "name",
+        "(Ljava/lang/String;)Ljava/lang/Thread$Builder$OfPlatform;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "name",
+        "(Ljava/lang/String;J)Ljava/lang/Thread$Builder$OfPlatform;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+];
+
+pub(crate) const THREAD_BUILDER_OF_PLATFORM: oxjvm_vm::NativeClass = class(
+    "java/lang/Thread$Builder$OfPlatform",
+    Some("java/lang/Object"),
+    &["java/lang/Thread$Builder"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &OF_PLATFORM_METHODS,
+    None,
+);
+
+const OJVM_THREAD_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+    method(
+        "name",
+        "(Ljava/lang/String;)Ljava/lang/Thread$Builder;",
+        ACC_PUBLIC,
+        thread_builder_name,
+    ),
+    method(
+        "name",
+        "(Ljava/lang/String;)Ljava/lang/Thread$Builder$OfVirtual;",
+        ACC_PUBLIC,
+        thread_builder_name,
+    ),
+    method(
+        "name",
+        "(Ljava/lang/String;)Ljava/lang/Thread$Builder$OfPlatform;",
+        ACC_PUBLIC,
+        thread_builder_name,
+    ),
+    method(
+        "name",
+        "(Ljava/lang/String;J)Ljava/lang/Thread$Builder;",
+        ACC_PUBLIC,
+        thread_builder_name,
+    ),
+    method(
+        "name",
+        "(Ljava/lang/String;J)Ljava/lang/Thread$Builder$OfVirtual;",
+        ACC_PUBLIC,
+        thread_builder_name,
+    ),
+    method(
+        "name",
+        "(Ljava/lang/String;J)Ljava/lang/Thread$Builder$OfPlatform;",
+        ACC_PUBLIC,
+        thread_builder_name,
+    ),
+    method(
+        "unstarted",
+        "(Ljava/lang/Runnable;)Ljava/lang/Thread;",
+        ACC_PUBLIC,
+        |vm, _, args| thread_builder_make(vm, args, false),
+    ),
+    method(
+        "start",
+        "(Ljava/lang/Runnable;)Ljava/lang/Thread;",
+        ACC_PUBLIC,
+        |vm, _, args| thread_builder_make(vm, args, true),
+    ),
+];
+
+pub(crate) const OJVM_THREAD_BUILDER: oxjvm_vm::NativeClass = class(
+    "java/lang/OjvmThreadBuilder",
+    Some("java/lang/Object"),
+    &[
+        "java/lang/Thread$Builder",
+        "java/lang/Thread$Builder$OfVirtual",
+        "java/lang/Thread$Builder$OfPlatform",
+    ],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[field("name", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &OJVM_THREAD_BUILDER_METHODS,
+    None,
+);
 
 pub(crate) const THREAD: oxjvm_vm::NativeClass = class(
     "java/lang/Thread",
