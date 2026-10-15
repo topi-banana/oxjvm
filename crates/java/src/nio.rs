@@ -68,7 +68,7 @@ fn join_path(base: &str, child: &str) -> String {
 // Path (concrete implementation) + Paths
 // -------------------------------------------------------------------------------------------
 
-const PATH_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+const PATH_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -254,6 +254,15 @@ const PATH_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         }
         int(hash)
     }),
+    method("toUri", "()Ljava/net/URI;", ACC_PUBLIC, |vm, _, args| {
+        let path = path_string(vm, receiver(args));
+        let text = if path.starts_with('/') {
+            alloc::format!("file:{path}")
+        } else {
+            alloc::format!("file:/{path}")
+        };
+        crate::uri::new_uri(vm, &text)
+    }),
 ];
 
 pub(crate) const OXJVM_PATH: oxjvm_vm::NativeClass = class(
@@ -270,7 +279,7 @@ pub(crate) const OXJVM_PATH: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PATH_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const PATH_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method(
         "of",
         "(Ljava/lang/String;[Ljava/lang/String;)Ljava/nio/file/Path;",
@@ -373,6 +382,12 @@ const PATH_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
+    method(
+        "toUri",
+        "()Ljava/net/URI;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
 ];
 
 pub(crate) const PATH: oxjvm_vm::NativeClass = class(
@@ -457,7 +472,7 @@ pub(crate) fn new_path(vm: &mut Vm<'_>, path: &str) -> Result<Value, VmError> {
 // Files
 // -------------------------------------------------------------------------------------------
 
-const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
+const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
     method(
         "createDirectories",
         "(Ljava/nio/file/Path;[Ljava/nio/file/attribute/FileAttribute;)Ljava/nio/file/Path;",
@@ -785,6 +800,23 @@ const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
                 }
             }
             object(instance)
+        },
+    ),
+    method(
+        "createTempFile",
+        "(Ljava/lang/String;Ljava/lang/String;[Ljava/nio/file/attribute/FileAttribute;)Ljava/nio/file/Path;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let prefix = string_arg(vm, args[0])?;
+            let suffix = vm.string_or_empty(ref_arg(args, 1));
+            let dir = crate::lang::system_property(vm, "java.io.tmpdir")
+                .unwrap_or_else(|| String::from("/tmp"));
+            let seed = vm.host.random_seed();
+            let path = alloc::format!("{dir}/{prefix}{seed:016x}{suffix}");
+            if !fs_write(vm, &path, &[], false) {
+                return Err(vm.throw_new("java/io/IOException", Some(&path)));
+            }
+            new_path(vm, &path)
         },
     ),
 ];
