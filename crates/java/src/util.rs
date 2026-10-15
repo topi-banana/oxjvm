@@ -4723,3 +4723,287 @@ pub(crate) const ENUM_MAP: oxjvm_vm::NativeClass = class(
     &ENUM_MAP_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// LinkedHashMap / EnumSet
+// -------------------------------------------------------------------------------------------
+
+/// `LinkedHashMap`: the same insertion-ordered storage as the native HashMap.
+pub(crate) const LINKED_HASH_MAP: oxjvm_vm::NativeClass = class(
+    "java/util/LinkedHashMap",
+    Some("java/util/HashMap"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("keys", "[Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("values", "[Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("size", "I", ACC_PRIVATE, None),
+    ],
+    &HASH_MAP_METHODS,
+    None,
+);
+
+fn enum_set_map(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    hash_set_map(vm, this)
+}
+
+fn new_enum_set(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/EnumSet")?;
+    let set = vm.new_instance(class)?;
+    let map = new_hash_map(vm)?;
+    let (declaring, field) = vm.find_field(class, "map", "Ljava/util/HashMap;")?;
+    vm.set_instance_ref(set, declaring, field, map);
+    Ok(set)
+}
+
+fn enum_set_add(vm: &mut Vm<'_>, this: ObjectRef, element: ObjectRef) -> Result<Value, VmError> {
+    let map = enum_set_map(vm, this);
+    let index = hash_map_index_of(vm, map, element)?;
+    if index >= 0 {
+        return boolean(false);
+    }
+    let present = hash_set_present(vm)?;
+    hash_map_call(
+        vm,
+        map,
+        "put",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        &[Value::Ref(element), Value::Ref(present)],
+    )?;
+    boolean(true)
+}
+
+const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+    method(
+        "noneOf",
+        "(Ljava/lang/Class;)Ljava/util/EnumSet;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(new_enum_set(vm)?),
+    ),
+    method(
+        "of",
+        "(Ljava/lang/Enum;)Ljava/util/EnumSet;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let set = new_enum_set(vm)?;
+            enum_set_add(vm, set, ref_arg(args, 0))?;
+            object(set)
+        },
+    ),
+    method(
+        "of",
+        "(Ljava/lang/Enum;Ljava/lang/Enum;)Ljava/util/EnumSet;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let set = new_enum_set(vm)?;
+            enum_set_add(vm, set, ref_arg(args, 0))?;
+            enum_set_add(vm, set, ref_arg(args, 1))?;
+            object(set)
+        },
+    ),
+    method(
+        "of",
+        "(Ljava/lang/Enum;Ljava/lang/Enum;Ljava/lang/Enum;Ljava/lang/Enum;Ljava/lang/Enum;)Ljava/util/EnumSet;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let set = new_enum_set(vm)?;
+            for index in 0..5 {
+                enum_set_add(vm, set, ref_arg(args, index))?;
+            }
+            object(set)
+        },
+    ),
+    method(
+        "of",
+        "(Ljava/lang/Enum;[Ljava/lang/Enum;)Ljava/util/EnumSet;",
+        ACC_PUBLIC | ACC_STATIC | ACC_VARARGS,
+        |vm, _, args| {
+            let set = new_enum_set(vm)?;
+            enum_set_add(vm, set, ref_arg(args, 0))?;
+            let array = ref_arg(args, 1);
+            if !array.is_null() {
+                let length = vm.array_length(array)?;
+                for index in 0..length {
+                    let element = vm.array_get(array, index as i32)?.as_ref();
+                    enum_set_add(vm, set, element)?;
+                }
+            }
+            object(set)
+        },
+    ),
+    method("add", "(Ljava/lang/Enum;)Z", ACC_PUBLIC, |vm, _, args| {
+        enum_set_add(vm, receiver(args), ref_arg(args, 1))
+    }),
+    method(
+        "add",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC | ACC_BRIDGE | ACC_SYNTHETIC,
+        |vm, _, args| enum_set_add(vm, receiver(args), ref_arg(args, 1)),
+    ),
+    method(
+        "remove",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = enum_set_map(vm, receiver(args));
+            let index = hash_map_index_of(vm, map, ref_arg(args, 1))?;
+            if index < 0 {
+                return boolean(false);
+            }
+            hash_map_call(
+                vm,
+                map,
+                "remove",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                &[Value::Ref(ref_arg(args, 1))],
+            )?;
+            boolean(true)
+        },
+    ),
+    method(
+        "contains",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = enum_set_map(vm, receiver(args));
+            let index = hash_map_index_of(vm, map, ref_arg(args, 1))?;
+            boolean(index >= 0)
+        },
+    ),
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        let map = enum_set_map(vm, receiver(args));
+        hash_map_call(vm, map, "size", "()I", &[])
+    }),
+    method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let map = enum_set_map(vm, receiver(args));
+        hash_map_call(vm, map, "isEmpty", "()Z", &[])
+    }),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
+        let map = enum_set_map(vm, receiver(args));
+        hash_map_call(vm, map, "clear", "()V", &[])
+    }),
+    method(
+        "iterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = enum_set_map(vm, receiver(args));
+            let mut keys = Vec::new();
+            for (key, _) in hash_map_pairs(vm, map) {
+                keys.push(key);
+            }
+            let list = array_list_from(vm, &keys)?;
+            let (class, method) =
+                vm.resolve_virtual_method(list, "iterator", "()Ljava/util/Iterator;")?;
+            vm.invoke_method(class, method, vec![Value::Ref(list)])
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = enum_set_map(vm, receiver(args));
+            hash_map_call(vm, map, "toString", "()Ljava/lang/String;", &[])
+        },
+    ),
+];
+
+pub(crate) const ENUM_SET: oxjvm_vm::NativeClass = class(
+    "java/util/EnumSet",
+    Some("java/lang/Object"),
+    &["java/util/Set", "java/io/Serializable"],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[field("map", "Ljava/util/HashMap;", ACC_PRIVATE, None)],
+    &ENUM_SET_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// TimeZone
+// -------------------------------------------------------------------------------------------
+
+fn time_zone_id(vm: &Vm<'_>, this: ObjectRef) -> String {
+    vm.read_string_field(this, vm.class_of(this), "id")
+        .unwrap_or_default()
+}
+
+fn new_time_zone(vm: &mut Vm<'_>, id: &str) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/util/TimeZone")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "id", "Ljava/lang/String;")?;
+    let text = vm.make_string(id)?;
+    vm.set_instance_ref(instance, declaring, field, text);
+    object(instance)
+}
+
+const TIME_ZONE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+    method(
+        "getDefault",
+        "()Ljava/util/TimeZone;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| new_time_zone(vm, "GMT"),
+    ),
+    method(
+        "getTimeZone",
+        "(Ljava/lang/String;)Ljava/util/TimeZone;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let id = vm.string_or_empty(ref_arg(args, 0));
+            let id = if id.is_empty() {
+                String::from("GMT")
+            } else {
+                id
+            };
+            new_time_zone(vm, &id)
+        },
+    ),
+    method(
+        "getID",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let id = time_zone_id(vm, receiver(args));
+            object(vm.make_string(&id)?)
+        },
+    ),
+    method(
+        "setID",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "id", "Ljava/lang/String;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method("getRawOffset", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method("getOffset", "(J)I", ACC_PUBLIC, |_, _, _| int(0)),
+    method("useDaylightTime", "()Z", ACC_PUBLIC, |_, _, _| {
+        boolean(false)
+    }),
+    method(
+        "getAvailableIDs",
+        "()[Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let string_class = vm.resolve_class("java/lang/String")?;
+            let array = vm.allocate_object_array(string_class, 1)?;
+            let text = vm.make_string("GMT")?;
+            vm.array_set_ref(array, 0, text)?;
+            object(array)
+        },
+    ),
+];
+
+pub(crate) const TIME_ZONE: oxjvm_vm::NativeClass = class(
+    "java/util/TimeZone",
+    Some("java/lang/Object"),
+    &["java/io/Serializable"],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[field("id", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &TIME_ZONE_METHODS,
+    None,
+);
