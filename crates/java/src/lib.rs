@@ -17,6 +17,7 @@ extern crate std;
 
 pub(crate) mod annotation;
 pub(crate) mod atomic;
+pub(crate) mod beans;
 pub(crate) mod boxed;
 pub(crate) mod charset;
 pub(crate) mod concurrent;
@@ -111,7 +112,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 272] = [
+static REGISTRY: [NativeClass; 280] = [
     lang::OBJECT,
     lang::CLASS,
     lang::STRING,
@@ -175,6 +176,8 @@ static REGISTRY: [NativeClass; 272] = [
     throwable::NO_SUCH_PROVIDER_EXCEPTION,
     throwable::KEY_EXCEPTION,
     throwable::INVALID_KEY_EXCEPTION,
+    throwable::UNRECOVERABLE_KEY_EXCEPTION,
+    throwable::MALFORMED_URL_EXCEPTION,
     throwable::KEY_STORE_EXCEPTION,
     throwable::KEY_MANAGEMENT_EXCEPTION,
     throwable::INVALID_ALGORITHM_PARAMETER_EXCEPTION,
@@ -267,6 +270,8 @@ static REGISTRY: [NativeClass; 272] = [
     regex::PATTERN_PREDICATE,
     net::INET_ADDRESS,
     net::INET4_ADDRESS,
+    net::STANDARD_PROTOCOL_FAMILY,
+    beans::EXCEPTION_LISTENER,
     annotation::ELEMENT_TYPE,
     annotation::RETENTION_POLICY,
     annotation::RETENTION,
@@ -384,6 +389,10 @@ static REGISTRY: [NativeClass; 272] = [
     atomic::ATOMIC_BOOLEAN,
     concurrent::TIME_UNIT,
     concurrent::COUNT_DOWN_LATCH,
+    concurrent::CONDITION,
+    concurrent::LOCK,
+    util::SORTED_SET,
+    util::NAVIGABLE_SET,
 ];
 
 /// A read-only view of a string argument.

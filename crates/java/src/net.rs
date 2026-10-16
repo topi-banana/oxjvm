@@ -426,3 +426,133 @@ pub(crate) const INET4_ADDRESS: oxjvm_vm::NativeClass = class(
     &INET4_ADDRESS_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// StandardProtocolFamily (enum-shaped)
+// -------------------------------------------------------------------------------------------
+
+const STANDARD_PROTOCOL_FAMILIES: [&str; 3] = ["INET", "INET6", "UNIX"];
+
+fn standard_protocol_family_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/net/StandardProtocolFamily")?;
+    for (index, name) in STANDARD_PROTOCOL_FAMILIES.iter().enumerate() {
+        let instance = vm.new_instance(class)?;
+        if let Some((declaring, field)) = vm.find_field_opt(class, "ordinal", "I") {
+            vm.set_instance_int(instance, declaring, field, index as i32);
+        }
+        if let Some((declaring, field)) = vm.find_field_opt(class, "name", "Ljava/lang/String;") {
+            let text = vm.make_string(name)?;
+            vm.set_instance_ref(instance, declaring, field, text);
+        }
+        vm.set_static_value(
+            class,
+            name,
+            "Ljava/net/StandardProtocolFamily;",
+            Value::Ref(instance),
+        );
+    }
+    Ok(())
+}
+
+const STANDARD_PROTOCOL_FAMILY_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method("ordinal", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "ordinal"))
+    }),
+    method("name", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
+        object(
+            vm.read_ref_field(
+                receiver(args),
+                vm.class_of(receiver(args)),
+                "name",
+                "Ljava/lang/String;",
+            )
+            .unwrap_or(ObjectRef::NULL),
+        )
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(
+                vm.read_ref_field(
+                    receiver(args),
+                    vm.class_of(receiver(args)),
+                    "name",
+                    "Ljava/lang/String;",
+                )
+                .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method(
+        "values",
+        "()[Ljava/net/StandardProtocolFamily;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/net/StandardProtocolFamily")?;
+            let array = vm.allocate_object_array(class, STANDARD_PROTOCOL_FAMILIES.len())?;
+            for (index, name) in STANDARD_PROTOCOL_FAMILIES.iter().enumerate() {
+                if let Some(value) =
+                    vm.read_static_ref_if_set(class, name, "Ljava/net/StandardProtocolFamily;")
+                {
+                    vm.array_set_ref(array, index, value)?;
+                }
+            }
+            object(array)
+        },
+    ),
+    method(
+        "valueOf",
+        "(Ljava/lang/String;)Ljava/net/StandardProtocolFamily;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = crate::string_arg(vm, args[0])?;
+            let class = vm.resolve_class("java/net/StandardProtocolFamily")?;
+            if STANDARD_PROTOCOL_FAMILIES.contains(&name.as_str()) {
+                if let Some(value) =
+                    vm.read_static_ref_if_set(class, &name, "Ljava/net/StandardProtocolFamily;")
+                {
+                    return object(value);
+                }
+            }
+            Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some(&alloc::format!(
+                    "No enum constant java.net.StandardProtocolFamily.{name}"
+                )),
+            ))
+        },
+    ),
+];
+
+pub(crate) const STANDARD_PROTOCOL_FAMILY: oxjvm_vm::NativeClass = class(
+    "java/net/StandardProtocolFamily",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("ordinal", "I", ACC_PRIVATE | ACC_FINAL, None),
+        field("name", "Ljava/lang/String;", ACC_PRIVATE | ACC_FINAL, None),
+        field(
+            "INET",
+            "Ljava/net/StandardProtocolFamily;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "INET6",
+            "Ljava/net/StandardProtocolFamily;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "UNIX",
+            "Ljava/net/StandardProtocolFamily;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+    ],
+    &STANDARD_PROTOCOL_FAMILY_METHODS,
+    Some(standard_protocol_family_clinit),
+);

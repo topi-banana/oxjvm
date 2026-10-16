@@ -414,7 +414,7 @@ fn object_elements(vm: &mut Vm<'_>, reference: ObjectRef) -> Option<Vec<ObjectRe
 fn stack_walker_instance(vm: &mut Vm<'_>, retain: bool) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class("java/lang/StackWalker")?;
     let instance = vm.new_instance(class)?;
-    if let Some((declaring, field)) = vm.find_field_opt(class, "retainClass", "Z") {
+    if let Some((declaring, field)) = vm.find_field_opt(class, "retainClass", "I") {
         vm.set_instance_int(instance, declaring, field, i32::from(retain));
     }
     Ok(instance)
@@ -549,7 +549,7 @@ pub(crate) const STACK_WALKER: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_FINAL,
-    &[field("retainClass", "Z", ACC_PRIVATE, None)],
+    &[field("retainClass", "I", ACC_PRIVATE, None)],
     &STACK_WALKER_METHODS,
     None,
 );

@@ -617,6 +617,86 @@ pub(crate) const SET: oxjvm_vm::NativeClass = class(
     None,
 );
 
+const SORTED_SET_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "comparator",
+        "()Ljava/util/Comparator;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "first",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "last",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "subSet",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/SortedSet;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
+pub(crate) const SORTED_SET: oxjvm_vm::NativeClass = class(
+    "java/util/SortedSet",
+    Some("java/lang/Object"),
+    &["java/util/Set"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &SORTED_SET_METHODS,
+    None,
+);
+
+const NAVIGABLE_SET_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method(
+        "first",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "last",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "pollFirst",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "pollLast",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "descendingSet",
+        "()Ljava/util/NavigableSet;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
+pub(crate) const NAVIGABLE_SET: oxjvm_vm::NativeClass = class(
+    "java/util/NavigableSet",
+    Some("java/lang/Object"),
+    &["java/util/SortedSet"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &NAVIGABLE_SET_METHODS,
+    None,
+);
+
 const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method(
         "put",

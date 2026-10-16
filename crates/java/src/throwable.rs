@@ -526,6 +526,16 @@ exception!(
     "java/security/KeyException"
 );
 exception!(
+    UNRECOVERABLE_KEY_EXCEPTION,
+    "java/security/UnrecoverableKeyException",
+    "java/security/KeyException"
+);
+exception!(
+    MALFORMED_URL_EXCEPTION,
+    "java/net/MalformedURLException",
+    "java/io/IOException"
+);
+exception!(
     KEY_STORE_EXCEPTION,
     "java/security/KeyStoreException",
     "java/security/GeneralSecurityException"

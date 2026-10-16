@@ -314,3 +314,83 @@ pub(crate) const COUNT_DOWN_LATCH: oxjvm_vm::NativeClass = class(
     &COUNT_DOWN_LATCH_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// java.util.concurrent.locks
+// -------------------------------------------------------------------------------------------
+
+pub(crate) const CONDITION: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/locks/Condition",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[
+        method(
+            "await",
+            "()V",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+        method(
+            "signal",
+            "()V",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+        method(
+            "signalAll",
+            "()V",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+    ],
+    None,
+);
+
+pub(crate) const LOCK: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/locks/Lock",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[
+        method(
+            "lock",
+            "()V",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+        method(
+            "lockInterruptibly",
+            "()V",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+        method(
+            "tryLock",
+            "()Z",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+        method(
+            "tryLock",
+            "(JLjava/util/concurrent/TimeUnit;)Z",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+        method(
+            "unlock",
+            "()V",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+        method(
+            "newCondition",
+            "()Ljava/util/concurrent/locks/Condition;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+    ],
+    None,
+);
