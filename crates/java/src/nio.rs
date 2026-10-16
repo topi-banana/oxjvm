@@ -68,7 +68,7 @@ fn join_path(base: &str, child: &str) -> String {
 // Path (concrete implementation) + Paths
 // -------------------------------------------------------------------------------------------
 
-const PATH_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
+const PATH_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -263,6 +263,31 @@ const PATH_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
         };
         crate::uri::new_uri(vm, &text)
     }),
+    method(
+        "relativize",
+        "(Ljava/nio/file/Path;)Ljava/nio/file/Path;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let base = path_string(vm, receiver(args));
+            let other = path_string(vm, ref_arg(args, 1));
+            let base_parts: Vec<&str> = base.split('/').filter(|p| !p.is_empty()).collect();
+            let other_parts: Vec<&str> = other.split('/').filter(|p| !p.is_empty()).collect();
+            let mut common = 0;
+            while common < base_parts.len()
+                && common < other_parts.len()
+                && base_parts[common] == other_parts[common]
+            {
+                common += 1;
+            }
+            if common == 0 && base_parts.first() != other_parts.first() {
+                // Not relativizable: the JDK returns the other path unchanged.
+                return new_path(vm, &other);
+            }
+            let mut result = vec![".."; base_parts.len() - common];
+            result.extend_from_slice(&other_parts[common..]);
+            new_path(vm, &result.join("/"))
+        },
+    ),
 ];
 
 pub(crate) const OXJVM_PATH: oxjvm_vm::NativeClass = class(
@@ -279,7 +304,7 @@ pub(crate) const OXJVM_PATH: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PATH_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+const PATH_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
     method(
         "of",
         "(Ljava/lang/String;[Ljava/lang/String;)Ljava/nio/file/Path;",
@@ -388,6 +413,12 @@ const PATH_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
+    method(
+        "relativize",
+        "(Ljava/nio/file/Path;)Ljava/nio/file/Path;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
 ];
 
 pub(crate) const PATH: oxjvm_vm::NativeClass = class(
@@ -472,7 +503,7 @@ pub(crate) fn new_path(vm: &mut Vm<'_>, path: &str) -> Result<Value, VmError> {
 // Files
 // -------------------------------------------------------------------------------------------
 
-const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
+const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
     method(
         "createDirectories",
         "(Ljava/nio/file/Path;[Ljava/nio/file/attribute/FileAttribute;)Ljava/nio/file/Path;",
@@ -819,6 +850,96 @@ const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
             new_path(vm, &path)
         },
     ),
+    method(
+        "walk",
+        "(Ljava/nio/file/Path;[Ljava/nio/file/FileVisitOption;)Ljava/util/stream/Stream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            let mut paths = Vec::new();
+            walk_paths(vm, &path, 0, usize::MAX, &mut paths)?;
+            paths_to_stream(vm, &paths)
+        },
+    ),
+    method(
+        "walk",
+        "(Ljava/nio/file/Path;I[Ljava/nio/file/FileVisitOption;)Ljava/util/stream/Stream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            let max_depth = crate::int_arg(args, 1).max(0) as usize;
+            let mut paths = Vec::new();
+            walk_paths(vm, &path, 0, max_depth, &mut paths)?;
+            paths_to_stream(vm, &paths)
+        },
+    ),
+    method(
+        "find",
+        "(Ljava/nio/file/Path;ILjava/util/function/BiPredicate;[Ljava/nio/file/FileVisitOption;)Ljava/util/stream/Stream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            let max_depth = crate::int_arg(args, 1).max(0) as usize;
+            let predicate = ref_arg(args, 2);
+            let mut paths = Vec::new();
+            walk_paths(vm, &path, 0, max_depth, &mut paths)?;
+            let mut kept = Vec::new();
+            for candidate in &paths {
+                let attributes = make_basic_attributes(vm, candidate)?;
+                let instance = new_path(vm, candidate)?.as_ref();
+                let (class, method) = vm.resolve_virtual_method(
+                    predicate,
+                    "test",
+                    "(Ljava/lang/Object;Ljava/lang/Object;)Z",
+                )?;
+                let matched = vm
+                    .invoke_method(
+                        class,
+                        method,
+                        vec![
+                            Value::Ref(predicate),
+                            Value::Ref(instance),
+                            Value::Ref(attributes),
+                        ],
+                    )?
+                    .as_int();
+                if matched != 0 {
+                    kept.push(instance);
+                }
+            }
+            object(crate::stream::stream_from(vm, kept)?)
+        },
+    ),
+    method(
+        "newBufferedWriter",
+        "(Ljava/nio/file/Path;[Ljava/nio/file/OpenOption;)Ljava/io/BufferedWriter;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            let writer_class = vm.resolve_class("java/io/FileWriter")?;
+            let writer = vm.new_instance(writer_class)?;
+            let (declaring, ctor) = vm
+                .find_method(writer_class, "<init>", "(Ljava/lang/String;)V")
+                .ok_or_else(|| VmError::internal("FileWriter(String) missing"))?;
+            let path_text = vm.make_string(&path)?;
+            vm.invoke_method(
+                declaring,
+                ctor,
+                vec![Value::Ref(writer), Value::Ref(path_text)],
+            )?;
+            let buffered_class = vm.resolve_class("java/io/BufferedWriter")?;
+            let buffered = vm.new_instance(buffered_class)?;
+            let (declaring, ctor) = vm
+                .find_method(buffered_class, "<init>", "(Ljava/io/Writer;)V")
+                .ok_or_else(|| VmError::internal("BufferedWriter(Writer) missing"))?;
+            vm.invoke_method(
+                declaring,
+                ctor,
+                vec![Value::Ref(buffered), Value::Ref(writer)],
+            )?;
+            object(buffered)
+        },
+    ),
 ];
 
 pub(crate) const FILES: oxjvm_vm::NativeClass = class(
@@ -896,6 +1017,74 @@ fn files_write_text(vm: &mut Vm<'_>, path_ref: ObjectRef, text: &str) -> Result<
 
 fn fs_is_dir(vm: &mut Vm<'_>, path: &str) -> bool {
     fs_metadata(vm, path).is_some_and(|metadata| metadata.kind == FileKind::Directory)
+}
+
+fn fs_list(vm: &mut Vm<'_>, path: &str) -> Option<Vec<String>> {
+    vm.host.filesystem()?.list(path)
+}
+
+/// Build an `OjvmBasicFileAttributes` for `path`, as `Files.readAttributes`/`Files.find` need.
+fn make_basic_attributes(vm: &mut Vm<'_>, path: &str) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/nio/file/attribute/OjvmBasicFileAttributes")?;
+    let instance = vm.new_instance(class)?;
+    let metadata = fs_metadata(vm, path);
+    let (kind, len, modified) = match metadata {
+        Some(metadata) => (
+            match metadata.kind {
+                FileKind::Directory => 1,
+                FileKind::File => 0,
+                _ => 2,
+            },
+            metadata.len as i64,
+            metadata.modified_millis,
+        ),
+        None => (2, 0, 0),
+    };
+    if let Some((declaring, field)) = vm.find_field_opt(class, "kind", "I") {
+        vm.set_instance_int(instance, declaring, field, kind);
+    }
+    if let Some((declaring, field)) = vm.find_field_opt(class, "size", "J") {
+        vm.set_instance_long(instance, declaring, field, len);
+    }
+    for name in ["created", "accessed", "modified"] {
+        if let Some((declaring, field)) = vm.find_field_opt(class, name, "J") {
+            vm.set_instance_long(instance, declaring, field, modified);
+        }
+    }
+    Ok(instance)
+}
+
+/// Depth-first walk of `path` (a file or a directory), appending every visited path.
+fn walk_paths(
+    vm: &mut Vm<'_>,
+    path: &str,
+    depth: usize,
+    max_depth: usize,
+    out: &mut Vec<String>,
+) -> Result<(), VmError> {
+    out.push(String::from(path));
+    if fs_is_dir(vm, path) {
+        if max_depth != usize::MAX && depth >= max_depth {
+            return Ok(());
+        }
+        if let Some(entries) = fs_list(vm, path) {
+            let mut sorted = entries;
+            sorted.sort();
+            for entry in sorted {
+                let child = join_path(path, &entry);
+                walk_paths(vm, &child, depth + 1, max_depth, out)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn paths_to_stream(vm: &mut Vm<'_>, paths: &[String]) -> Result<Value, VmError> {
+    let mut objects = Vec::with_capacity(paths.len());
+    for path in paths {
+        objects.push(new_path(vm, path)?.as_ref());
+    }
+    object(crate::stream::stream_from(vm, objects)?)
 }
 
 fn fs_write(vm: &mut Vm<'_>, path: &str, bytes: &[u8], append: bool) -> bool {
@@ -1476,4 +1665,53 @@ pub(crate) const FILE_VISIT_OPTION: oxjvm_vm::NativeClass = class(
     )],
     &FILE_VISIT_OPTION_METHODS,
     Some(file_visit_option_clinit),
+);
+
+// -------------------------------------------------------------------------------------------
+// DirectoryStream / DirectoryStream$Filter / FilenameFilter
+// -------------------------------------------------------------------------------------------
+
+pub(crate) const DIRECTORY_STREAM: oxjvm_vm::NativeClass = class(
+    "java/nio/file/DirectoryStream",
+    Some("java/lang/Object"),
+    &["java/io/Closeable", "java/lang/Iterable"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[method(
+        "iterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    )],
+    None,
+);
+
+pub(crate) const DIRECTORY_STREAM_FILTER: oxjvm_vm::NativeClass = class(
+    "java/nio/file/DirectoryStream$Filter",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[method(
+        "accept",
+        "(Ljava/nio/file/Path;)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    )],
+    None,
+);
+
+pub(crate) const FILENAME_FILTER: oxjvm_vm::NativeClass = class(
+    "java/io/FilenameFilter",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[method(
+        "accept",
+        "(Ljava/io/File;Ljava/lang/String;)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    )],
+    None,
 );

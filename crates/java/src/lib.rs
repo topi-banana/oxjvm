@@ -111,7 +111,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 269] = [
+static REGISTRY: [NativeClass; 272] = [
     lang::OBJECT,
     lang::CLASS,
     lang::STRING,
@@ -366,6 +366,9 @@ static REGISTRY: [NativeClass; 269] = [
     nio::BASIC_FILE_ATTRIBUTES,
     nio::OJVM_BASIC_FILE_ATTRIBUTES,
     nio::FILE_VISIT_OPTION,
+    nio::DIRECTORY_STREAM,
+    nio::DIRECTORY_STREAM_FILTER,
+    nio::FILENAME_FILTER,
     nio::STANDARD_OPEN_OPTION,
     reflect::MEMBER,
     reflect::METHOD,
