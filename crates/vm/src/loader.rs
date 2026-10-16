@@ -15,7 +15,7 @@ use alloc::vec::Vec;
 use oxjvm_classfile::attribute::AttributeData;
 use oxjvm_classfile::descriptor::MethodDescriptor;
 use oxjvm_classfile::flags::*;
-use oxjvm_classfile::{ClassFile, ConstantPool, CpInfo, FieldType};
+use oxjvm_classfile::{BaseType, ClassFile, ConstantPool, CpInfo, FieldType};
 
 use crate::class::{
     ArrayComponent, Class, ClassId, ClassKind, ClassState, Code, Field, Handler, Method,
@@ -1892,6 +1892,7 @@ fn lambda_invoke_native(
     };
     let target = definition.target.clone();
     let slots = definition.captured_slots.clone();
+    let sam_descriptor = definition.sam_descriptor.clone();
     let mut call_args = Vec::with_capacity(slots.len() + args.len());
     if let Some(ObjectData::Instance(fields)) = vm.heap.get(receiver).map(|object| &object.data) {
         for slot in &slots {
@@ -1899,7 +1900,113 @@ fn lambda_invoke_native(
         }
     }
     call_args.extend_from_slice(&args[1..]);
+    // LambdaMetafactory adapts the implementation method to the SAM type (`asType`): box a
+    // primitive result returned to a reference-returning SAM (`String::length` as
+    // `Function<String,Integer>`), and unbox a reference argument handed to a primitive parameter
+    // (`Integer::valueOf` as `Function<Integer,Integer>`).  The impl method's declared type is the
+    // source of truth for which half needs adapting.
+    let Some((target_params, target_returns)) = handle_method_type(vm, &target) else {
+        return vm.invoke_handle(&target, &call_args);
+    };
+    let sam = MethodDescriptor::parse(&sam_descriptor).ok();
+    if let Some(sam) = sam {
+        let count = sam.parameters.len().min(call_args.len());
+        let argument_start = call_args.len() - count;
+        let parameter_start = target_params.len().saturating_sub(count);
+        for index in 0..count {
+            let sam_type = &sam.parameters[index];
+            if let Some(FieldType::Base(base)) = target_params.get(parameter_start + index) {
+                let is_reference = matches!(sam_type, FieldType::Object(_) | FieldType::Array(_));
+                if is_reference {
+                    let converted = unbox_primitive(vm, *base, call_args[argument_start + index])?;
+                    call_args[argument_start + index] = converted;
+                }
+            }
+        }
+        let result = vm.invoke_handle(&target, &call_args)?;
+        if let (Some(FieldType::Base(base)), Some(sam_return)) = (target_returns, &sam.returns) {
+            if matches!(sam_return, FieldType::Object(_) | FieldType::Array(_)) {
+                return box_primitive(vm, base, result);
+            }
+        }
+        return Ok(result);
+    }
     vm.invoke_handle(&target, &call_args)
+}
+
+/// The `(params)return` type of a method handle, with a virtual/special receiver as the first
+/// parameter.  `None` when it cannot be derived (getters/setters, constructors).
+fn handle_method_type(
+    vm: &Vm<'_>,
+    handle: &MethodHandleValue,
+) -> Option<(Vec<FieldType>, Option<FieldType>)> {
+    let descriptor = match handle {
+        MethodHandleValue::Static { class, method } => vm.classes.get(*class).methods
+            [*method as usize]
+            .descriptor
+            .clone(),
+        MethodHandleValue::Virtual { class, method }
+        | MethodHandleValue::Special { class, method } => {
+            let method_descriptor = &vm.classes.get(*class).methods[*method as usize].descriptor;
+            let name = vm.class_name(*class);
+            let receiver = if name.starts_with('[') {
+                name.to_string()
+            } else {
+                format!("L{name};")
+            };
+            format!("({receiver}{}", &method_descriptor[1..])
+        }
+        MethodHandleValue::Bound { target, .. } => {
+            let (mut params, returns) = handle_method_type(vm, target)?;
+            if !params.is_empty() {
+                params.remove(0);
+            }
+            let parameters: String = params.iter().map(FieldType::descriptor).collect();
+            let returns = returns.map_or_else(|| String::from("V"), |field| field.descriptor());
+            format!("({parameters}){returns}")
+        }
+        _ => return None,
+    };
+    let parsed = MethodDescriptor::parse(&descriptor).ok()?;
+    Some((parsed.parameters, parsed.returns))
+}
+
+/// `Box.valueOf(value)` for the SAM's primitive-to-reference adaptation.
+fn box_primitive(vm: &mut Vm<'_>, base: BaseType, value: Value) -> Result<Value, VmError> {
+    let (class_name, descriptor) = match base {
+        BaseType::Boolean => ("java/lang/Boolean", "(Z)Ljava/lang/Boolean;"),
+        BaseType::Byte => ("java/lang/Byte", "(B)Ljava/lang/Byte;"),
+        BaseType::Char => ("java/lang/Character", "(C)Ljava/lang/Character;"),
+        BaseType::Short => ("java/lang/Short", "(S)Ljava/lang/Short;"),
+        BaseType::Int => ("java/lang/Integer", "(I)Ljava/lang/Integer;"),
+        BaseType::Long => ("java/lang/Long", "(J)Ljava/lang/Long;"),
+        BaseType::Float => ("java/lang/Float", "(F)Ljava/lang/Float;"),
+        BaseType::Double => ("java/lang/Double", "(D)Ljava/lang/Double;"),
+        BaseType::Void => return Ok(value),
+    };
+    let class = vm.resolve_class(class_name)?;
+    let (declaring, method) = vm
+        .find_method(class, "valueOf", descriptor)
+        .ok_or_else(|| VmError::internal("boxing valueOf missing"))?;
+    vm.invoke_method(declaring, method, vec![value])
+}
+
+/// `value.xxxValue()` for the SAM's reference-to-primitive adaptation.
+fn unbox_primitive(vm: &mut Vm<'_>, base: BaseType, value: Value) -> Result<Value, VmError> {
+    let (name, descriptor) = match base {
+        BaseType::Boolean => ("booleanValue", "()Z"),
+        BaseType::Byte => ("byteValue", "()B"),
+        BaseType::Char => ("charValue", "()C"),
+        BaseType::Short => ("shortValue", "()S"),
+        BaseType::Int => ("intValue", "()I"),
+        BaseType::Long => ("longValue", "()J"),
+        BaseType::Float => ("floatValue", "()F"),
+        BaseType::Double => ("doubleValue", "()D"),
+        BaseType::Void => return Ok(value),
+    };
+    let object = value.as_ref();
+    let (declaring, method) = vm.resolve_virtual_method(object, name, descriptor)?;
+    vm.invoke_method(declaring, method, vec![Value::Ref(object)])
 }
 
 /// A set of class names in the process of being loaded.
