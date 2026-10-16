@@ -2520,6 +2520,19 @@ pub(crate) fn write_int_field(vm: &mut Vm<'_>, object: ObjectRef, name: &str, va
     }
 }
 
+pub(crate) fn read_long_field(vm: &Vm<'_>, object: ObjectRef, name: &str) -> i64 {
+    let class = vm.class_of(object);
+    vm.read_instance_long_named(object, class, name, "J")
+        .unwrap_or(0)
+}
+
+pub(crate) fn write_long_field(vm: &mut Vm<'_>, object: ObjectRef, name: &str, value: i64) {
+    let class = vm.class_of(object);
+    if let Some((declaring, field)) = vm.find_field_opt(class, name, "J") {
+        vm.set_instance_long(object, declaring, field, value);
+    }
+}
+
 fn builder_store(
     vm: &mut Vm<'_>,
     this: ObjectRef,
@@ -3903,10 +3916,17 @@ const THREAD_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
         |vm, _, args| {
             let this = receiver(args);
             let class = vm.class_of(this);
-            object(
-                vm.read_ref_field(this, class, "contextClassLoader", "Ljava/lang/ClassLoader;")
-                    .unwrap_or(ObjectRef::NULL),
-            )
+            let loader = vm
+                .read_ref_field(this, class, "contextClassLoader", "Ljava/lang/ClassLoader;")
+                .unwrap_or(ObjectRef::NULL);
+            // The JVM initialises a thread's context class loader to the system class loader;
+            // libraries such as TestNG call `getContextClassLoader().getResourceAsStream(...)`
+            // unconditionally, so a null value would NPE.
+            if loader.is_null() {
+                object(system_class_loader(vm)?)
+            } else {
+                object(loader)
+            }
         },
     ),
     method(

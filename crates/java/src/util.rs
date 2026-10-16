@@ -3489,6 +3489,297 @@ pub(crate) const HASH_SET: oxjvm_vm::NativeClass = class(
     None,
 );
 
+/// `LinkedHashSet`: insertion-ordered in the JDK; here it inherits `HashSet`'s map-backed
+/// behaviour (iteration order is not guaranteed, which no test depends on).
+pub(crate) const LINKED_HASH_SET: oxjvm_vm::NativeClass = class(
+    "java/util/LinkedHashSet",
+    Some("java/util/HashSet"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &[],
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// BitSet
+// -------------------------------------------------------------------------------------------
+
+fn bitset_words(vm: &mut Vm<'_>, this: ObjectRef) -> Vec<u64> {
+    match vm.read_ref_field(this, vm.class_of(this), "words", "[J") {
+        Some(array) => {
+            let length = vm.array_length(array).unwrap_or(0);
+            let mut words = Vec::with_capacity(length);
+            let mut reads = Vec::with_capacity(length);
+            for index in 0..length {
+                reads.push(
+                    vm.array_get(array, index as i32)
+                        .map(Value::as_long)
+                        .unwrap_or(0) as u64,
+                );
+            }
+            words.append(&mut reads);
+            words
+        }
+        None => Vec::new(),
+    }
+}
+
+fn bitset_store(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    words: &[u64],
+    min_bits: usize,
+) -> Result<(), VmError> {
+    let mut length = min_bits.div_ceil(64);
+    length = length.max(
+        words
+            .iter()
+            .rposition(|word| *word != 0)
+            .map_or(0, |i| i + 1),
+    );
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, "words", "[J")?;
+    let array = vm.allocate_array_of(ArrayComponent::Long, length)?;
+    for (index, word) in words.iter().take(length).enumerate() {
+        vm.array_set(array, index as i32, Value::Long(*word as i64), false)?;
+    }
+    vm.set_instance_ref(this, declaring, field, array);
+    Ok(())
+}
+
+fn bit_set_range(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    from: usize,
+    to: usize,
+    value: bool,
+) -> Result<(), VmError> {
+    let mut words = bitset_words(vm, this);
+    if from >= to {
+        return Ok(());
+    }
+    words.resize(to.div_ceil(64), 0);
+    for bit in from..to {
+        let word = bit / 64;
+        let mask = 1u64 << (bit % 64);
+        if value {
+            words[word] |= mask;
+        } else {
+            words[word] &= !mask;
+        }
+    }
+    bitset_store(vm, this, &words, 0)
+}
+
+const BITSET_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        bitset_store(vm, receiver(args), &[], 0)?;
+        void()
+    }),
+    method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let size = crate::int_arg(args, 1).max(0) as usize;
+        bitset_store(vm, receiver(args), &[], size)?;
+        void()
+    }),
+    method("get", "(I)Z", ACC_PUBLIC, |vm, _, args| {
+        let words = bitset_words(vm, receiver(args));
+        let bit = crate::int_arg(args, 1);
+        if bit < 0 {
+            return Err(vm.throw_new(
+                "java/lang/IndexOutOfBoundsException",
+                Some(&alloc::format!("bit index < 0: {bit}")),
+            ));
+        }
+        let bit = bit as usize;
+        boolean((words.get(bit / 64).copied().unwrap_or(0) >> (bit % 64)) & 1 == 1)
+    }),
+    method("set", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let bit = crate::int_arg(args, 1).max(0) as usize;
+        bit_set_range(vm, receiver(args), bit, bit + 1, true)?;
+        void()
+    }),
+    method("set", "(IZ)V", ACC_PUBLIC, |vm, _, args| {
+        if crate::int_arg(args, 1) < 0 {
+            return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", Some("bit index < 0")));
+        }
+        let bit = crate::int_arg(args, 1) as usize;
+        bit_set_range(
+            vm,
+            receiver(args),
+            bit,
+            bit + 1,
+            crate::int_arg(args, 2) != 0,
+        )?;
+        void()
+    }),
+    method("set", "(II)V", ACC_PUBLIC, |vm, _, args| {
+        let from = crate::int_arg(args, 1).max(0) as usize;
+        let to = crate::int_arg(args, 2).max(0) as usize;
+        bit_set_range(vm, receiver(args), from, to, true)?;
+        void()
+    }),
+    method("clear", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let bit = crate::int_arg(args, 1).max(0) as usize;
+        bit_set_range(vm, receiver(args), bit, bit + 1, false)?;
+        void()
+    }),
+    method("clear", "(II)V", ACC_PUBLIC, |vm, _, args| {
+        let from = crate::int_arg(args, 1).max(0) as usize;
+        let to = crate::int_arg(args, 2).max(0) as usize;
+        bit_set_range(vm, receiver(args), from, to, false)?;
+        void()
+    }),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
+        bitset_store(vm, receiver(args), &[], 0)?;
+        void()
+    }),
+    method("flip", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let bit = crate::int_arg(args, 1).max(0) as usize;
+        let words = bitset_words(vm, receiver(args));
+        let value = (words.get(bit / 64).copied().unwrap_or(0) >> (bit % 64)) & 1 == 0;
+        bit_set_range(vm, receiver(args), bit, bit + 1, value)?;
+        void()
+    }),
+    method("length", "()I", ACC_PUBLIC, |vm, _, args| {
+        let words = bitset_words(vm, receiver(args));
+        for (index, word) in words.iter().enumerate().rev() {
+            if *word != 0 {
+                return int(index as i32 * 64 + (64 - word.leading_zeros() as i32));
+            }
+        }
+        int(0)
+    }),
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(bitset_words(vm, receiver(args)).len() as i32 * 64)
+    }),
+    method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(
+            bitset_words(vm, receiver(args))
+                .iter()
+                .all(|word| *word == 0),
+        )
+    }),
+    method("cardinality", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(bitset_words(vm, receiver(args))
+            .iter()
+            .map(|word| word.count_ones() as i32)
+            .sum())
+    }),
+    method("nextSetBit", "(I)I", ACC_PUBLIC, |vm, _, args| {
+        let words = bitset_words(vm, receiver(args));
+        let from = crate::int_arg(args, 1).max(0) as usize;
+        for bit in from..words.len() * 64 {
+            if (words[bit / 64] >> (bit % 64)) & 1 == 1 {
+                return int(bit as i32);
+            }
+        }
+        int(-1)
+    }),
+    method("and", "(Ljava/util/BitSet;)V", ACC_PUBLIC, |vm, _, args| {
+        let other = bitset_words(vm, ref_arg(args, 1));
+        let mut words = bitset_words(vm, receiver(args));
+        for (index, word) in words.iter_mut().enumerate() {
+            *word &= other.get(index).copied().unwrap_or(0);
+        }
+        bitset_store(vm, receiver(args), &words, 0)?;
+        void()
+    }),
+    method("or", "(Ljava/util/BitSet;)V", ACC_PUBLIC, |vm, _, args| {
+        let other = bitset_words(vm, ref_arg(args, 1));
+        let mut words = bitset_words(vm, receiver(args));
+        words.resize(words.len().max(other.len()), 0);
+        for (index, word) in other.iter().enumerate() {
+            words[index] |= *word;
+        }
+        bitset_store(vm, receiver(args), &words, 0)?;
+        void()
+    }),
+    method("xor", "(Ljava/util/BitSet;)V", ACC_PUBLIC, |vm, _, args| {
+        let other = bitset_words(vm, ref_arg(args, 1));
+        let mut words = bitset_words(vm, receiver(args));
+        words.resize(words.len().max(other.len()), 0);
+        for (index, word) in other.iter().enumerate() {
+            words[index] ^= *word;
+        }
+        bitset_store(vm, receiver(args), &words, 0)?;
+        void()
+    }),
+    method(
+        "andNot",
+        "(Ljava/util/BitSet;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = bitset_words(vm, ref_arg(args, 1));
+            let mut words = bitset_words(vm, receiver(args));
+            for (index, word) in words.iter_mut().enumerate() {
+                *word &= !other.get(index).copied().unwrap_or(0);
+            }
+            bitset_store(vm, receiver(args), &words, 0)?;
+            void()
+        },
+    ),
+    method("toLongArray", "()[J", ACC_PUBLIC, |vm, _, args| {
+        let words = bitset_words(vm, receiver(args));
+        object(words_from_u64(vm, &words)?)
+    }),
+    method(
+        "valueOf",
+        "([J)Ljava/util/BitSet;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            let length = vm.array_length(array)?;
+            let mut words = Vec::with_capacity(length);
+            for index in 0..length {
+                words.push(vm.array_get(array, index as i32)?.as_long() as u64);
+            }
+            let class = vm.resolve_class("java/util/BitSet")?;
+            let instance = vm.new_instance(class)?;
+            bitset_store(vm, instance, &words, 0)?;
+            object(instance)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = ref_arg(args, 1);
+            if other.is_null() {
+                return boolean(false);
+            }
+            boolean(bitset_words(vm, receiver(args)) == bitset_words(vm, other))
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let words = bitset_words(vm, receiver(args));
+        let mut hash = 1234i64;
+        for (index, word) in words.iter().enumerate() {
+            hash ^= (*word as i64).wrapping_mul((index as i64) + 1);
+        }
+        int(hash as i32)
+    }),
+];
+
+fn words_from_u64(vm: &mut Vm<'_>, words: &[u64]) -> Result<ObjectRef, VmError> {
+    let array = vm.allocate_array_of(ArrayComponent::Long, words.len())?;
+    for (index, word) in words.iter().enumerate() {
+        vm.array_set(array, index as i32, Value::Long(*word as i64), false)?;
+    }
+    Ok(array)
+}
+
+pub(crate) const BIT_SET: oxjvm_vm::NativeClass = class(
+    "java/util/BitSet",
+    Some("java/lang/Object"),
+    &["java/lang/Cloneable", "java/io/Serializable"],
+    ACC_PUBLIC,
+    &[field("words", "[J", ACC_PRIVATE, None)],
+    &BITSET_METHODS,
+    None,
+);
+
 // -------------------------------------------------------------------------------------------
 // Hashtable (also a HashMap wrapper)
 // -------------------------------------------------------------------------------------------
