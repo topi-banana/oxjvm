@@ -771,6 +771,9 @@ functional_interface!(INT_PREDICATE, "java/util/function/IntPredicate");
 functional_interface!(INT_UNARY_OPERATOR, "java/util/function/IntUnaryOperator");
 functional_interface!(CALLABLE, "java/util/concurrent/Callable");
 functional_interface!(INT_FUNCTION, "java/util/function/IntFunction");
+functional_interface!(TO_INT_FUNCTION, "java/util/function/ToIntFunction");
+functional_interface!(TO_LONG_FUNCTION, "java/util/function/ToLongFunction");
+functional_interface!(TO_DOUBLE_FUNCTION, "java/util/function/ToDoubleFunction");
 functional_interface!(THREAD_FACTORY, "java/util/concurrent/ThreadFactory");
 
 pub(crate) const APPENDABLE: oxjvm_vm::NativeClass = class(

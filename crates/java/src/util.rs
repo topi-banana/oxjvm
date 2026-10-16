@@ -3091,6 +3091,61 @@ fn set_of_values(vm: &mut Vm<'_>, elements: &[ObjectRef]) -> Result<ObjectRef, V
     Ok(set)
 }
 
+/// A fresh `HashSet` containing `elements` (the `Collectors.toSet` backing store).
+pub(crate) fn hash_set_from(vm: &mut Vm<'_>, elements: &[ObjectRef]) -> Result<ObjectRef, VmError> {
+    let set = new_hash_set(vm)?;
+    let present = hash_set_present(vm)?;
+    let map = hash_set_map(vm, set);
+    for element in elements {
+        hash_map_call(
+            vm,
+            map,
+            "put",
+            "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+            &[Value::Ref(*element), Value::Ref(present)],
+        )?;
+    }
+    Ok(set)
+}
+
+/// A fresh `HashMap` (the `Collectors.toMap` backing store).
+pub(crate) fn hash_map_new(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    new_hash_map(vm)
+}
+
+/// `map.put(key, value)`, discarding the previous value.
+pub(crate) fn hash_map_insert(
+    vm: &mut Vm<'_>,
+    map: ObjectRef,
+    key: ObjectRef,
+    value: ObjectRef,
+) -> Result<(), VmError> {
+    hash_map_call(
+        vm,
+        map,
+        "put",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        &[Value::Ref(key), Value::Ref(value)],
+    )?;
+    Ok(())
+}
+
+/// `map.get(key)`.
+pub(crate) fn hash_map_lookup(
+    vm: &mut Vm<'_>,
+    map: ObjectRef,
+    key: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    Ok(hash_map_call(
+        vm,
+        map,
+        "get",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        &[Value::Ref(key)],
+    )?
+    .as_ref())
+}
+
 // -------------------------------------------------------------------------------------------
 // Enumeration + the legacy collections (HashSet, Hashtable, Vector)
 // -------------------------------------------------------------------------------------------

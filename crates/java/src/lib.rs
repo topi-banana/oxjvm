@@ -110,7 +110,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 249] = [
+static REGISTRY: [NativeClass; 255] = [
     lang::OBJECT,
     lang::CLASS,
     lang::STRING,
@@ -298,6 +298,9 @@ static REGISTRY: [NativeClass; 249] = [
     stream::STREAM,
     stream::OXJVM_STREAM,
     stream::STREAM_ITERATOR,
+    stream::COLLECTOR,
+    stream::COLLECTORS,
+    stream::OJVM_COLLECTOR,
     util::COLLECTIONS,
     invoke::METHOD_TYPE,
     invoke::METHOD_HANDLE,
@@ -321,6 +324,9 @@ static REGISTRY: [NativeClass; 249] = [
     invoke::INT_PREDICATE,
     invoke::INT_UNARY_OPERATOR,
     invoke::INT_FUNCTION,
+    invoke::TO_INT_FUNCTION,
+    invoke::TO_LONG_FUNCTION,
+    invoke::TO_DOUBLE_FUNCTION,
     invoke::APPENDABLE,
     regex::PATTERN,
     regex::MATCHER,

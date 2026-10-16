@@ -782,10 +782,18 @@ fn parse_long_arg(vm: &mut Vm<'_>, value: Value) -> Result<i64, VmError> {
 }
 
 /// Boxes a `long` into a fresh `java/lang/Long`.
-fn boxed_long(vm: &mut Vm<'_>, value: i64) -> Result<Value, VmError> {
+pub(crate) fn boxed_long(vm: &mut Vm<'_>, value: i64) -> Result<Value, VmError> {
     let class = vm.resolve_class("java/lang/Long")?;
     let instance = vm.new_instance(class)?;
     write_value_long(vm, instance, value);
+    object(instance)
+}
+
+/// Boxes a `double` into a fresh `java/lang/Double` (its `value` field is stored as raw bits).
+pub(crate) fn boxed_double(vm: &mut Vm<'_>, value: f64) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/lang/Double")?;
+    let instance = vm.new_instance(class)?;
+    write_value_long(vm, instance, value.to_bits() as i64);
     object(instance)
 }
 

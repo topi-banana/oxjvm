@@ -167,7 +167,7 @@ fn stream_get(vm: &mut Vm<'_>, this: ObjectRef) -> Vec<ObjectRef> {
     stream_elements(vm, this)
 }
 
-const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
+const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
     method(
         "of",
         "([Ljava/lang/Object;)Ljava/util/stream/Stream;",
@@ -340,6 +340,18 @@ const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         ACC_PUBLIC | ACC_ABSTRACT,
         abstract_method_pub,
     ),
+    method(
+        "collect",
+        "(Ljava/util/stream/Collector;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "collect",
+        "(Ljava/util/function/Supplier;Ljava/util/function/BiConsumer;Ljava/util/function/BiConsumer;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
 ];
 
 const BASE_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
@@ -401,7 +413,7 @@ pub(crate) const STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const OXJVM_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
+const OXJVM_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
     method(
         "filter",
         "(Ljava/util/function/Predicate;)Ljava/util/stream/Stream;",
@@ -713,6 +725,23 @@ const OXJVM_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
         ACC_PUBLIC | ACC_BRIDGE | ACC_SYNTHETIC,
         |_vm, _, args| object(receiver(args)),
     ),
+    method(
+        "collect",
+        "(Ljava/util/stream/Collector;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| stream_collect(vm, args),
+    ),
+    method(
+        "collect",
+        "(Ljava/util/function/Supplier;Ljava/util/function/BiConsumer;Ljava/util/function/BiConsumer;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let collector =
+                make_custom_collector(vm, ref_arg(args, 1), ref_arg(args, 2), ObjectRef::NULL)?;
+            let elements = stream_get(vm, receiver(args));
+            collect_elements(vm, collector, elements)
+        },
+    ),
 ];
 
 fn stream_for_each(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
@@ -767,6 +796,753 @@ const STREAM_ITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
     }),
     method("remove", "()V", ACC_PUBLIC, abstract_method_pub),
 ];
+
+// -------------------------------------------------------------------------------------------
+// `Collectors` / `Collector`: an eager `collect` over the stream snapshot.
+//
+// The JDK's `Collectors` factories return a `CollectorImpl`; oxjvm returns an
+// `OjvmCollector` that carries a small kind tag plus the functions the factory
+// was given.  `Stream.collect` reads the tag and performs the reduction
+// directly.  A collector that is *not* an `OjvmCollector` (a hand-written
+// `Collector`) goes through the generic supplier/accumulator/finisher path.
+// -------------------------------------------------------------------------------------------
+
+pub(crate) const COLLECTOR_CLASS: &str = "java/util/stream/OjvmCollector";
+
+const COLLECT_TO_LIST: i32 = 0;
+const COLLECT_TO_SET: i32 = 1;
+const COLLECT_TO_COLLECTION: i32 = 2;
+const COLLECT_JOINING: i32 = 3;
+const COLLECT_COUNTING: i32 = 4;
+const COLLECT_SUMMING_INT: i32 = 5;
+const COLLECT_SUMMING_LONG: i32 = 6;
+const COLLECT_SUMMING_DOUBLE: i32 = 7;
+const COLLECT_TO_MAP: i32 = 8;
+const COLLECT_UNMODIFIABLE_LIST: i32 = 9;
+const COLLECT_UNMODIFIABLE_SET: i32 = 10;
+const COLLECT_MAPPING: i32 = 11;
+const COLLECT_AVERAGING_INT: i32 = 12;
+const COLLECT_AVERAGING_LONG: i32 = 13;
+const COLLECT_AVERAGING_DOUBLE: i32 = 14;
+const COLLECT_TO_UNMODIFIABLE_MAP: i32 = 15;
+const COLLECT_CUSTOM: i32 = 16;
+const COLLECT_REDUCING: i32 = 17;
+
+fn collector_new(vm: &mut Vm<'_>, kind: i32) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class(COLLECTOR_CLASS)?;
+    let collector = vm.new_instance(class)?;
+    crate::lang::write_int_field(vm, collector, "kind", kind);
+    Ok(collector)
+}
+
+fn collector_set(vm: &mut Vm<'_>, collector: ObjectRef, name: &str, value: ObjectRef) {
+    let class = vm.class_of(collector);
+    if let Some((declaring, field)) = vm.find_field_opt(class, name, "Ljava/lang/Object;") {
+        vm.set_instance_ref(collector, declaring, field, value);
+    }
+}
+
+fn collector_get(vm: &Vm<'_>, collector: ObjectRef, name: &str) -> ObjectRef {
+    vm.read_ref_field(
+        collector,
+        vm.class_of(collector),
+        name,
+        "Ljava/lang/Object;",
+    )
+    .unwrap_or(ObjectRef::NULL)
+}
+
+/// `collector.kind` when `collector` is an `OjvmCollector`, else `None`.
+fn collector_kind(vm: &Vm<'_>, collector: ObjectRef) -> Option<i32> {
+    if collector.is_null() || vm.class_name(vm.class_of(collector)) != COLLECTOR_CLASS {
+        return None;
+    }
+    Some(crate::lang::read_int_field(vm, collector, "kind"))
+}
+
+fn call_apply1(
+    vm: &mut Vm<'_>,
+    function: ObjectRef,
+    argument: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    let (class, method) =
+        vm.resolve_virtual_method(function, "apply", "(Ljava/lang/Object;)Ljava/lang/Object;")?;
+    Ok(vm
+        .invoke_method(
+            class,
+            method,
+            vec![Value::Ref(function), Value::Ref(argument)],
+        )?
+        .as_ref())
+}
+
+fn call_apply2(
+    vm: &mut Vm<'_>,
+    function: ObjectRef,
+    first: ObjectRef,
+    second: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    let (class, method) = vm.resolve_virtual_method(
+        function,
+        "apply",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+    )?;
+    Ok(vm
+        .invoke_method(
+            class,
+            method,
+            vec![Value::Ref(function), Value::Ref(first), Value::Ref(second)],
+        )?
+        .as_ref())
+}
+
+fn call_apply_as_int(
+    vm: &mut Vm<'_>,
+    function: ObjectRef,
+    argument: ObjectRef,
+) -> Result<i32, VmError> {
+    let (class, method) =
+        vm.resolve_virtual_method(function, "applyAsInt", "(Ljava/lang/Object;)I")?;
+    Ok(vm
+        .invoke_method(
+            class,
+            method,
+            vec![Value::Ref(function), Value::Ref(argument)],
+        )?
+        .as_int())
+}
+
+fn call_apply_as_long(
+    vm: &mut Vm<'_>,
+    function: ObjectRef,
+    argument: ObjectRef,
+) -> Result<i64, VmError> {
+    let (class, method) =
+        vm.resolve_virtual_method(function, "applyAsLong", "(Ljava/lang/Object;)J")?;
+    Ok(vm
+        .invoke_method(
+            class,
+            method,
+            vec![Value::Ref(function), Value::Ref(argument)],
+        )?
+        .as_long())
+}
+
+fn call_apply_as_double(
+    vm: &mut Vm<'_>,
+    function: ObjectRef,
+    argument: ObjectRef,
+) -> Result<f64, VmError> {
+    let (class, method) =
+        vm.resolve_virtual_method(function, "applyAsDouble", "(Ljava/lang/Object;)D")?;
+    let bits = vm
+        .invoke_method(
+            class,
+            method,
+            vec![Value::Ref(function), Value::Ref(argument)],
+        )?
+        .as_long();
+    Ok(f64::from_bits(bits as u64))
+}
+
+/// `Object.toString()` of an element, resolving the actual class.
+fn element_text(vm: &mut Vm<'_>, value: ObjectRef) -> Result<alloc::string::String, VmError> {
+    if value.is_null() {
+        return Ok(alloc::string::String::from("null"));
+    }
+    let (class, method) = vm.resolve_virtual_method(value, "toString", "()Ljava/lang/String;")?;
+    let text = vm
+        .invoke_method(class, method, vec![Value::Ref(value)])?
+        .as_ref();
+    Ok(vm
+        .string_value(text)
+        .unwrap_or_else(|| alloc::string::String::from("null")))
+}
+
+/// `supplier.get()` for a `java.util.function.Supplier`.
+fn call_supplier(vm: &mut Vm<'_>, supplier: ObjectRef) -> Result<ObjectRef, VmError> {
+    let (class, method) = vm.resolve_virtual_method(supplier, "get", "()Ljava/lang/Object;")?;
+    Ok(vm
+        .invoke_method(class, method, vec![Value::Ref(supplier)])?
+        .as_ref())
+}
+
+fn build_joining(
+    vm: &mut Vm<'_>,
+    elements: &[ObjectRef],
+    delimiter: ObjectRef,
+    prefix: ObjectRef,
+    suffix: ObjectRef,
+) -> Result<Value, VmError> {
+    let delimiter = if delimiter.is_null() {
+        alloc::string::String::new()
+    } else {
+        vm.string_value(delimiter).unwrap_or_default()
+    };
+    let prefix = if prefix.is_null() {
+        alloc::string::String::new()
+    } else {
+        vm.string_value(prefix).unwrap_or_default()
+    };
+    let suffix = if suffix.is_null() {
+        alloc::string::String::new()
+    } else {
+        vm.string_value(suffix).unwrap_or_default()
+    };
+    let mut out = prefix;
+    for (index, element) in elements.iter().enumerate() {
+        if index > 0 {
+            out.push_str(&delimiter);
+        }
+        out.push_str(&element_text(vm, *element)?);
+    }
+    out.push_str(&suffix);
+    object(vm.make_string(&out)?)
+}
+
+fn collect_to_map(
+    vm: &mut Vm<'_>,
+    collector: ObjectRef,
+    elements: &[ObjectRef],
+) -> Result<Value, VmError> {
+    let key_mapper = collector_get(vm, collector, "f1");
+    let value_mapper = collector_get(vm, collector, "f2");
+    let merge = collector_get(vm, collector, "f3");
+    let map_supplier = collector_get(vm, collector, "f4");
+    let map = if map_supplier.is_null() {
+        crate::util::hash_map_new(vm)?
+    } else {
+        call_supplier(vm, map_supplier)?
+    };
+    for element in elements {
+        let key = call_apply1(vm, key_mapper, *element)?;
+        let value = call_apply1(vm, value_mapper, *element)?;
+        if key.is_null() || value.is_null() {
+            return Err(vm.throw_new(
+                "java/lang/NullPointerException",
+                Some("element cannot be mapped to a null key"),
+            ));
+        }
+        let existing = crate::util::hash_map_lookup(vm, map, key)?;
+        let value = if !existing.is_null() && !merge.is_null() {
+            call_apply2(vm, merge, existing, value)?
+        } else {
+            value
+        };
+        crate::util::hash_map_insert(vm, map, key, value)?;
+    }
+    object(map)
+}
+
+fn collect_elements(
+    vm: &mut Vm<'_>,
+    collector: ObjectRef,
+    elements: Vec<ObjectRef>,
+) -> Result<Value, VmError> {
+    let Some(kind) = collector_kind(vm, collector) else {
+        return generic_collect(vm, collector, elements);
+    };
+    match kind {
+        COLLECT_TO_LIST | COLLECT_UNMODIFIABLE_LIST => {
+            object(crate::util::array_list_from(vm, &elements)?)
+        }
+        COLLECT_TO_SET | COLLECT_UNMODIFIABLE_SET => {
+            object(crate::util::hash_set_from(vm, &elements)?)
+        }
+        COLLECT_TO_COLLECTION => {
+            let supplier = collector_get(vm, collector, "f4");
+            let container = call_supplier(vm, supplier)?;
+            let (class, method) =
+                vm.resolve_virtual_method(container, "add", "(Ljava/lang/Object;)Z")?;
+            for element in &elements {
+                vm.invoke_method(
+                    class,
+                    method,
+                    vec![Value::Ref(container), Value::Ref(*element)],
+                )?;
+            }
+            object(container)
+        }
+        COLLECT_JOINING => build_joining(
+            vm,
+            &elements,
+            collector_get(vm, collector, "s1"),
+            collector_get(vm, collector, "s2"),
+            collector_get(vm, collector, "s3"),
+        ),
+        COLLECT_COUNTING => crate::boxed::boxed_long(vm, elements.len() as i64),
+        COLLECT_SUMMING_INT => {
+            let mapper = collector_get(vm, collector, "f1");
+            let mut sum = 0i32;
+            for element in &elements {
+                sum = sum.wrapping_add(call_apply_as_int(vm, mapper, *element)?);
+            }
+            crate::boxed::boxed_int(vm, sum)
+        }
+        COLLECT_SUMMING_LONG => {
+            let mapper = collector_get(vm, collector, "f1");
+            let mut sum = 0i64;
+            for element in &elements {
+                sum = sum.wrapping_add(call_apply_as_long(vm, mapper, *element)?);
+            }
+            crate::boxed::boxed_long(vm, sum)
+        }
+        COLLECT_SUMMING_DOUBLE => {
+            let mapper = collector_get(vm, collector, "f1");
+            let mut sum = 0.0f64;
+            for element in &elements {
+                sum += call_apply_as_double(vm, mapper, *element)?;
+            }
+            crate::boxed::boxed_double(vm, sum)
+        }
+        COLLECT_AVERAGING_INT => {
+            let mapper = collector_get(vm, collector, "f1");
+            let mut sum = 0i64;
+            for element in &elements {
+                sum += i64::from(call_apply_as_int(vm, mapper, *element)?);
+            }
+            let average = if elements.is_empty() {
+                0.0
+            } else {
+                sum as f64 / elements.len() as f64
+            };
+            crate::boxed::boxed_double(vm, average)
+        }
+        COLLECT_AVERAGING_LONG => {
+            let mapper = collector_get(vm, collector, "f1");
+            let mut sum = 0i64;
+            for element in &elements {
+                sum = sum.wrapping_add(call_apply_as_long(vm, mapper, *element)?);
+            }
+            let average = if elements.is_empty() {
+                0.0
+            } else {
+                sum as f64 / elements.len() as f64
+            };
+            crate::boxed::boxed_double(vm, average)
+        }
+        COLLECT_AVERAGING_DOUBLE => {
+            let mapper = collector_get(vm, collector, "f1");
+            let mut sum = 0.0f64;
+            for element in &elements {
+                sum += call_apply_as_double(vm, mapper, *element)?;
+            }
+            let average = if elements.is_empty() {
+                0.0
+            } else {
+                sum / elements.len() as f64
+            };
+            crate::boxed::boxed_double(vm, average)
+        }
+        COLLECT_TO_MAP | COLLECT_TO_UNMODIFIABLE_MAP => collect_to_map(vm, collector, &elements),
+        COLLECT_MAPPING => {
+            let mapper = collector_get(vm, collector, "f1");
+            let downstream = collector_get(vm, collector, "f3");
+            let mut mapped = Vec::with_capacity(elements.len());
+            for element in &elements {
+                mapped.push(call_apply1(vm, mapper, *element)?);
+            }
+            collect_elements(vm, downstream, mapped)
+        }
+        COLLECT_REDUCING => {
+            let identity = collector_get(vm, collector, "f4");
+            let operator = collector_get(vm, collector, "f2");
+            let mut result = identity;
+            for element in &elements {
+                result = call_apply2(vm, operator, result, *element)?;
+            }
+            object(result)
+        }
+        COLLECT_CUSTOM => generic_collect(vm, collector, elements),
+        _ => generic_collect(vm, collector, elements),
+    }
+}
+
+/// The generic `Collector` protocol: `supplier`, then `accumulator` per element, then `finisher`.
+fn generic_collect(
+    vm: &mut Vm<'_>,
+    collector: ObjectRef,
+    elements: Vec<ObjectRef>,
+) -> Result<Value, VmError> {
+    let kind = collector_kind(vm, collector);
+    let (supplier, accumulator, finisher) = if kind.is_some() {
+        (
+            collector_get(vm, collector, "f4"),
+            collector_get(vm, collector, "f1"),
+            collector_get(vm, collector, "f2"),
+        )
+    } else {
+        let (class, method) =
+            vm.resolve_virtual_method(collector, "supplier", "()Ljava/util/function/Supplier;")?;
+        let supplier = vm
+            .invoke_method(class, method, vec![Value::Ref(collector)])?
+            .as_ref();
+        let (class, method) = vm.resolve_virtual_method(
+            collector,
+            "accumulator",
+            "()Ljava/util/function/BiConsumer;",
+        )?;
+        let accumulator = vm
+            .invoke_method(class, method, vec![Value::Ref(collector)])?
+            .as_ref();
+        let (class, method) =
+            vm.resolve_virtual_method(collector, "finisher", "()Ljava/util/function/Function;")?;
+        let finisher = vm
+            .invoke_method(class, method, vec![Value::Ref(collector)])?
+            .as_ref();
+        (supplier, accumulator, finisher)
+    };
+    let container = call_supplier(vm, supplier)?;
+    let (class, method) = vm.resolve_virtual_method(
+        accumulator,
+        "accept",
+        "(Ljava/lang/Object;Ljava/lang/Object;)V",
+    )?;
+    for element in &elements {
+        vm.invoke_method(
+            class,
+            method,
+            vec![
+                Value::Ref(accumulator),
+                Value::Ref(container),
+                Value::Ref(*element),
+            ],
+        )?;
+    }
+    if finisher.is_null() {
+        return object(container);
+    }
+    Ok(Value::Ref(call_apply1(vm, finisher, container)?))
+}
+
+fn stream_collect(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let collector = ref_arg(args, 1);
+    let elements = stream_get(vm, receiver(args));
+    collect_elements(vm, collector, elements)
+}
+
+/// `Collector.of(...)` / `Collectors.toCollection`: keep the arbitrary functions for the generic path.
+fn make_custom_collector(
+    vm: &mut Vm<'_>,
+    supplier: ObjectRef,
+    accumulator: ObjectRef,
+    finisher: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    let collector = collector_new(vm, COLLECT_CUSTOM)?;
+    collector_set(vm, collector, "f4", supplier);
+    collector_set(vm, collector, "f1", accumulator);
+    collector_set(vm, collector, "f2", finisher);
+    Ok(collector)
+}
+
+const COLLECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method(
+        "of",
+        "(Ljava/util/function/Supplier;Ljava/util/function/BiConsumer;Ljava/util/function/BinaryOperator;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector =
+                make_custom_collector(vm, ref_arg(args, 0), ref_arg(args, 1), ObjectRef::NULL)?;
+            object(collector)
+        },
+    ),
+    method(
+        "of",
+        "(Ljava/util/function/Supplier;Ljava/util/function/BiConsumer;Ljava/util/function/BinaryOperator;Ljava/util/function/Function;[Ljava/util/stream/Collector$Characteristics;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector =
+                make_custom_collector(vm, ref_arg(args, 0), ref_arg(args, 1), ref_arg(args, 3))?;
+            object(collector)
+        },
+    ),
+    method(
+        "supplier",
+        "()Ljava/util/function/Supplier;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "accumulator",
+        "()Ljava/util/function/BiConsumer;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "finisher",
+        "()Ljava/util/function/Function;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "characteristics",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+];
+
+pub(crate) const COLLECTOR: oxjvm_vm::NativeClass = class(
+    "java/util/stream/Collector",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &COLLECTOR_METHODS,
+    None,
+);
+
+const COLLECTORS_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
+    method(
+        "toList",
+        "()Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(collector_new(vm, COLLECT_TO_LIST)?),
+    ),
+    method(
+        "toUnmodifiableList",
+        "()Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(collector_new(vm, COLLECT_UNMODIFIABLE_LIST)?),
+    ),
+    method(
+        "toSet",
+        "()Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(collector_new(vm, COLLECT_TO_SET)?),
+    ),
+    method(
+        "toUnmodifiableSet",
+        "()Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(collector_new(vm, COLLECT_UNMODIFIABLE_SET)?),
+    ),
+    method(
+        "toCollection",
+        "(Ljava/util/function/Supplier;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_TO_COLLECTION)?;
+            collector_set(vm, collector, "f4", ref_arg(args, 0));
+            object(collector)
+        },
+    ),
+    method(
+        "joining",
+        "()Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(collector_new(vm, COLLECT_JOINING)?),
+    ),
+    method(
+        "joining",
+        "(Ljava/lang/CharSequence;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_JOINING)?;
+            collector_set(vm, collector, "s1", ref_arg(args, 0));
+            object(collector)
+        },
+    ),
+    method(
+        "joining",
+        "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_JOINING)?;
+            collector_set(vm, collector, "s1", ref_arg(args, 0));
+            collector_set(vm, collector, "s2", ref_arg(args, 1));
+            collector_set(vm, collector, "s3", ref_arg(args, 2));
+            object(collector)
+        },
+    ),
+    method(
+        "counting",
+        "()Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(collector_new(vm, COLLECT_COUNTING)?),
+    ),
+    method(
+        "summingInt",
+        "(Ljava/util/function/ToIntFunction;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_SUMMING_INT)?;
+            collector_set(vm, collector, "f1", ref_arg(args, 0));
+            object(collector)
+        },
+    ),
+    method(
+        "summingLong",
+        "(Ljava/util/function/ToLongFunction;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_SUMMING_LONG)?;
+            collector_set(vm, collector, "f1", ref_arg(args, 0));
+            object(collector)
+        },
+    ),
+    method(
+        "summingDouble",
+        "(Ljava/util/function/ToDoubleFunction;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_SUMMING_DOUBLE)?;
+            collector_set(vm, collector, "f1", ref_arg(args, 0));
+            object(collector)
+        },
+    ),
+    method(
+        "averagingInt",
+        "(Ljava/util/function/ToIntFunction;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_AVERAGING_INT)?;
+            collector_set(vm, collector, "f1", ref_arg(args, 0));
+            object(collector)
+        },
+    ),
+    method(
+        "averagingLong",
+        "(Ljava/util/function/ToLongFunction;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_AVERAGING_LONG)?;
+            collector_set(vm, collector, "f1", ref_arg(args, 0));
+            object(collector)
+        },
+    ),
+    method(
+        "averagingDouble",
+        "(Ljava/util/function/ToDoubleFunction;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_AVERAGING_DOUBLE)?;
+            collector_set(vm, collector, "f1", ref_arg(args, 0));
+            object(collector)
+        },
+    ),
+    method(
+        "toMap",
+        "(Ljava/util/function/Function;Ljava/util/function/Function;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_TO_MAP)?;
+            collector_set(vm, collector, "f1", ref_arg(args, 0));
+            collector_set(vm, collector, "f2", ref_arg(args, 1));
+            object(collector)
+        },
+    ),
+    method(
+        "toMap",
+        "(Ljava/util/function/Function;Ljava/util/function/Function;Ljava/util/function/BinaryOperator;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_TO_MAP)?;
+            collector_set(vm, collector, "f1", ref_arg(args, 0));
+            collector_set(vm, collector, "f2", ref_arg(args, 1));
+            collector_set(vm, collector, "f3", ref_arg(args, 2));
+            object(collector)
+        },
+    ),
+    method(
+        "toMap",
+        "(Ljava/util/function/Function;Ljava/util/function/Function;Ljava/util/function/BinaryOperator;Ljava/util/function/Supplier;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_TO_MAP)?;
+            collector_set(vm, collector, "f1", ref_arg(args, 0));
+            collector_set(vm, collector, "f2", ref_arg(args, 1));
+            collector_set(vm, collector, "f3", ref_arg(args, 2));
+            collector_set(vm, collector, "f4", ref_arg(args, 3));
+            object(collector)
+        },
+    ),
+    method(
+        "toUnmodifiableMap",
+        "(Ljava/util/function/Function;Ljava/util/function/Function;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_TO_UNMODIFIABLE_MAP)?;
+            collector_set(vm, collector, "f1", ref_arg(args, 0));
+            collector_set(vm, collector, "f2", ref_arg(args, 1));
+            object(collector)
+        },
+    ),
+    method(
+        "mapping",
+        "(Ljava/util/function/Function;Ljava/util/stream/Collector;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_MAPPING)?;
+            collector_set(vm, collector, "f1", ref_arg(args, 0));
+            collector_set(vm, collector, "f3", ref_arg(args, 1));
+            object(collector)
+        },
+    ),
+    method(
+        "reducing",
+        "(Ljava/lang/Object;Ljava/util/function/BinaryOperator;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_REDUCING)?;
+            collector_set(vm, collector, "f4", ref_arg(args, 0));
+            collector_set(vm, collector, "f2", ref_arg(args, 1));
+            object(collector)
+        },
+    ),
+    // Placeholder so the count is stable while keeping the widely used factories above.
+    method(
+        "toUnmodifiableMap",
+        "(Ljava/util/function/Function;Ljava/util/function/Function;Ljava/util/function/BinaryOperator;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_TO_UNMODIFIABLE_MAP)?;
+            collector_set(vm, collector, "f1", ref_arg(args, 0));
+            collector_set(vm, collector, "f2", ref_arg(args, 1));
+            collector_set(vm, collector, "f3", ref_arg(args, 2));
+            object(collector)
+        },
+    ),
+];
+
+pub(crate) const COLLECTORS: oxjvm_vm::NativeClass = class(
+    "java/util/stream/Collectors",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[],
+    &COLLECTORS_METHODS,
+    None,
+);
+
+const OJVM_COLLECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "characteristics",
+    "()Ljava/util/Set;",
+    ACC_PUBLIC,
+    |vm, _, _args| {
+        // The factories above all finish with the identity function.
+        object(crate::util::hash_set_from(vm, &[])?)
+    },
+)];
+
+pub(crate) const OJVM_COLLECTOR: oxjvm_vm::NativeClass = class(
+    "java/util/stream/OjvmCollector",
+    Some("java/lang/Object"),
+    &["java/util/stream/Collector"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[
+        field("kind", "I", ACC_PUBLIC, None),
+        field("f1", "Ljava/lang/Object;", ACC_PUBLIC, None),
+        field("f2", "Ljava/lang/Object;", ACC_PUBLIC, None),
+        field("f3", "Ljava/lang/Object;", ACC_PUBLIC, None),
+        field("f4", "Ljava/lang/Object;", ACC_PUBLIC, None),
+        field("s1", "Ljava/lang/Object;", ACC_PUBLIC, None),
+        field("s2", "Ljava/lang/Object;", ACC_PUBLIC, None),
+        field("s3", "Ljava/lang/Object;", ACC_PUBLIC, None),
+    ],
+    &OJVM_COLLECTOR_METHODS,
+    None,
+);
 
 pub(crate) const STREAM_ITERATOR: oxjvm_vm::NativeClass = class(
     "java/util/stream/OxjvmStream$Itr",
