@@ -3163,7 +3163,7 @@ fn system_class(vm: &mut Vm<'_>) -> Result<ClassId, VmError> {
 }
 
 /// The VM's well-known default system properties.
-pub(crate) const SYSTEM_PROPERTY_DEFAULTS: [(&str, &str); 28] = [
+pub(crate) const SYSTEM_PROPERTY_DEFAULTS: [(&str, &str); 27] = [
     ("java.version", "17"),
     ("java.specification.version", "17"),
     ("java.vm.name", "oxjvm"),
@@ -3179,7 +3179,6 @@ pub(crate) const SYSTEM_PROPERTY_DEFAULTS: [(&str, &str); 28] = [
     ("line.separator", "\n"),
     ("file.encoding", "UTF-8"),
     ("sun.jnu.encoding", "UTF-8"),
-    ("user.dir", "/"),
     ("user.name", "oxjvm"),
     ("user.home", "/tmp"),
     ("user.country", "US"),
@@ -3209,6 +3208,11 @@ pub(crate) fn system_property(vm: &mut Vm<'_>, key: &str) -> Option<String> {
         // Virtual defaults that depend on runtime state rather than a constant.
         "java.class.path" => Some(String::new()),
         "java.io.tmpdir" => Some("/tmp".to_string()),
+        // `user.dir` is the process working directory, which only the host knows.  It used to be
+        // pinned to "/" in the defaults above, which shadowed the host's real value (jtreg runs
+        // each test in its own scratch directory, so `Paths.get("genSrc").toAbsolutePath()`
+        // resolved to `/genSrc` instead of `<scratch>/genSrc`).
+        "user.dir" => vm.host_property(key).or_else(|| Some(String::from("/"))),
         _ => vm.host_property(key),
     }
 }
@@ -3276,6 +3280,10 @@ fn system_get_properties(
     let host_entries = vm.host.properties();
     entries.extend(host_entries);
     entries.extend(vm.property_overrides());
+    if !entries.iter().any(|(key, _)| key == "user.dir") {
+        let value = system_property(vm, "user.dir").unwrap_or_else(|| String::from("/"));
+        entries.push(("user.dir".to_string(), value));
+    }
     for (key, value) in entries {
         let key = vm.make_string(&key)?;
         let value = vm.make_string(&value)?;

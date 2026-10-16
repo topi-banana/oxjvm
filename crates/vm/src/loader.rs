@@ -997,8 +997,12 @@ impl<'a> Vm<'a> {
                         if self.is_instance(exception, error_class) {
                             exception
                         } else {
-                            let wrapper =
-                                self.throw_new("java/lang/ExceptionInInitializerError", None);
+                            // JVMS 5.5: wrap the thrown exception as the cause so the reported
+                            // `ExceptionInInitializerError` carries the original throwable.
+                            let wrapper = self.throw_new_with_cause(
+                                "java/lang/ExceptionInInitializerError",
+                                exception,
+                            );
                             if let VmError::Thrown(wrapper) = wrapper {
                                 wrapper
                             } else {

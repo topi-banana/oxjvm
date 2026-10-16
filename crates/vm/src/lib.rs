@@ -371,8 +371,9 @@ impl<'a> Vm<'a> {
             return Ok(1);
         };
         let args_array = self.make_args_array(args)?;
+        let main_thread = self.current;
         let result = self.invoke_method(method.0, method.1, vec![Value::Ref(args_array)]);
-        let status = match result {
+        let mut status = match result {
             Ok(_) => 0,
             Err(VmError::Thrown(exception)) => {
                 self.print_uncaught("main", exception);
@@ -384,6 +385,18 @@ impl<'a> Vm<'a> {
         // The JVM keeps running until every non-daemon thread has finished.
         while self.has_alive_non_daemon() {
             self.schedule_step()?;
+        }
+        // `main`'s uncaught exception can be observed by a nested invocation rather than the
+        // launcher's own (`<clinit>` driven by another thread runs the whole scheduler, so it may
+        // terminate `main` for us).  `handle_uncaught` has already printed the trace; surface the
+        // non-zero status the launcher owes in that case too.
+        if status == 0
+            && self
+                .threads
+                .get(main_thread)
+                .is_some_and(|thread| thread.uncaught.is_some())
+        {
+            status = 1;
         }
         Ok(status)
     }
@@ -702,6 +715,36 @@ impl<'a> Vm<'a> {
                 None => vec![Value::Ref(object)],
             };
             self.invoke_method(constructor_class, constructor, args)?;
+            Ok(object)
+        })();
+        match result {
+            Ok(exception) => VmError::Thrown(exception),
+            Err(error) => error,
+        }
+    }
+
+    /// Create and throw an exception of `class_name` wrapping `cause`, the way the JVM links an
+    /// `ExceptionInInitializerError` to the exception its `<clinit>` threw.
+    ///
+    /// Uses the `(Ljava/lang/Throwable;)V` constructor so `getCause`/`printStackTrace` report the
+    /// original throwable.  Falls back to a plain `throw_new` if the class has no such constructor.
+    pub fn throw_new_with_cause(&mut self, class_name: &str, cause: Ref) -> VmError {
+        let result = (|| -> Result<Ref, VmError> {
+            let class = self.resolve_class(class_name)?;
+            let Some((constructor_class, constructor)) =
+                self.find_method(class, "<init>", "(Ljava/lang/Throwable;)V")
+            else {
+                return match self.throw_new(class_name, None) {
+                    VmError::Thrown(exception) => Ok(exception),
+                    other => Err(other),
+                };
+            };
+            let object = self.new_instance(class)?;
+            self.invoke_method(
+                constructor_class,
+                constructor,
+                vec![Value::Ref(object), Value::Ref(cause)],
+            )?;
             Ok(object)
         })();
         match result {

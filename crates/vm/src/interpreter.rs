@@ -397,6 +397,15 @@ impl<'a> Vm<'a> {
         // A re-entrant call (from a native or <clinit>) must resume the caller at its
         // current pc.  Only the launcher (floor == 0) has no caller to resume.
         let caller_pc = if floor > 0 { self.frame().pc } else { 0 };
+        // `return_from_frame` pushes the callee's result onto the caller's operand stack,
+        // which is what an `invoke*` instruction expects.  This API returns the value
+        // directly instead, so snapshot the caller's stack depth and restore it once the
+        // callee has returned; otherwise the value would be left behind on the caller.
+        let caller_stack = if floor > 0 {
+            Some(self.threads[thread].frames[floor - 1].stack.len())
+        } else {
+            None
+        };
         self.threads[thread].floor = floor;
         let result = if let Some(_native) = definition.native {
             self.invoke_native_blocking(class, method, args)
@@ -420,6 +429,11 @@ impl<'a> Vm<'a> {
             }
             self.return_slot = None;
             let driven = self.drive_until(thread, floor);
+            if let Some(depth) = caller_stack {
+                if let Some(frame) = self.threads[thread].frames.get_mut(floor - 1) {
+                    frame.stack.truncate(depth);
+                }
+            }
             match driven {
                 Ok(()) => Ok(self.return_slot.take().unwrap_or(Value::Int(0))),
                 Err(error) => Err(error),
