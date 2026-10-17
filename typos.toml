@@ -9,3 +9,6 @@ Ifle = "Ifle"
 # `mis` is the prefix in pinned prose ("mis-handles", "mis-read"); not a misspelling of
 # "miss"/"mist".
 mis = "mis"
+# `IZ` is the JVM descriptor for a `(int, boolean)` parameter list (JVMS §4.3.3), e.g. in
+# `(IZ)V`; not a misspelling of "is".
+IZ = "IZ"
