@@ -697,7 +697,7 @@ pub(crate) const NAVIGABLE_SET: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method(
         "put",
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
@@ -742,6 +742,18 @@ const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     ),
     method(
         "keySet",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "putAll",
+        "(Ljava/util/Map;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "entrySet",
         "()Ljava/util/Set;",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
@@ -2158,7 +2170,9 @@ const HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
             boolean(values.iter().any(|value| *value == ref_arg(args, 1)))
         },
     ),
-    method("putAll", "(Ljava/util/Map;)V", ACC_PUBLIC, |_, _, _| void()),
+    method("putAll", "(Ljava/util/Map;)V", ACC_PUBLIC, |vm, _, args| {
+        hash_map_put_all(vm, receiver(args), ref_arg(args, 1))
+    }),
     method(
         "toString",
         "()Ljava/lang/String;",
@@ -2511,7 +2525,9 @@ const IDENTITY_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
             boolean(values.iter().any(|value| *value == ref_arg(args, 1)))
         },
     ),
-    method("putAll", "(Ljava/util/Map;)V", ACC_PUBLIC, |_, _, _| void()),
+    method("putAll", "(Ljava/util/Map;)V", ACC_PUBLIC, |vm, _, args| {
+        hash_map_put_all(vm, receiver(args), ref_arg(args, 1))
+    }),
     method(
         "toString",
         "()Ljava/lang/String;",
@@ -2647,7 +2663,7 @@ pub(crate) const SORTED_MAP: oxjvm_vm::NativeClass = class(
 // Properties
 // -------------------------------------------------------------------------------------------
 
-const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method("<init>", "()V", ACC_PUBLIC, properties_init),
     method(
         "getProperty",
@@ -2732,6 +2748,23 @@ const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
         properties_map_call(vm, receiver(args), "clear", "()V", Vec::new())
     }),
+    method("putAll", "(Ljava/util/Map;)V", ACC_PUBLIC, |vm, _, args| {
+        let map = properties_map(vm, receiver(args));
+        hash_map_put_all(vm, map, ref_arg(args, 1))
+    }),
+    method("keySet", "()Ljava/util/Set;", ACC_PUBLIC, |vm, _, args| {
+        let map = properties_map(vm, receiver(args));
+        hash_map_call(vm, map, "keySet", "()Ljava/util/Set;", &[])
+    }),
+    method(
+        "entrySet",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = properties_map(vm, receiver(args));
+            hash_map_call(vm, map, "entrySet", "()Ljava/util/Set;", &[])
+        },
+    ),
     method(
         "load",
         "(Ljava/io/InputStream;)V",
@@ -3355,6 +3388,33 @@ fn hash_map_call(
     vm.invoke_method(class, method, call_args)
 }
 
+/// Merge `source` into `this` (`Map.putAll`).  The source is walked through
+/// its own `keySet` and `get`, so this works for any `Map` implementation
+/// (including wrappers that delegate through native methods).
+fn hash_map_put_all(vm: &mut Vm<'_>, this: ObjectRef, source: ObjectRef) -> Result<Value, VmError> {
+    if source.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let keys = hash_map_call(vm, source, "keySet", "()Ljava/util/Set;", &[])?;
+    for key in collection_elements(vm, keys.as_ref())? {
+        let value = hash_map_call(
+            vm,
+            source,
+            "get",
+            "(Ljava/lang/Object;)Ljava/lang/Object;",
+            &[Value::Ref(key)],
+        )?;
+        hash_map_call(
+            vm,
+            this,
+            "put",
+            "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+            &[Value::Ref(key), Value::Ref(value.as_ref())],
+        )?;
+    }
+    void()
+}
+
 fn hash_set_present(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class("java/lang/Boolean")?;
     let name = "TRUE";
@@ -3868,7 +3928,7 @@ fn hashtable_map(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
     hash_set_map(vm, this)
 }
 
-const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let map = new_hash_map(vm)?;
         let this = receiver(args);
@@ -3990,6 +4050,23 @@ const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
             let map = hashtable_map(vm, receiver(args));
             let values = map_values(vm, map);
             object(new_enumeration(vm, &values)?)
+        },
+    ),
+    method("putAll", "(Ljava/util/Map;)V", ACC_PUBLIC, |vm, _, args| {
+        let map = hashtable_map(vm, receiver(args));
+        hash_map_put_all(vm, map, ref_arg(args, 1))
+    }),
+    method("keySet", "()Ljava/util/Set;", ACC_PUBLIC, |vm, _, args| {
+        let map = hashtable_map(vm, receiver(args));
+        hash_map_call(vm, map, "keySet", "()Ljava/util/Set;", &[])
+    }),
+    method(
+        "entrySet",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = hashtable_map(vm, receiver(args));
+            hash_map_call(vm, map, "entrySet", "()Ljava/util/Set;", &[])
         },
     ),
 ];
@@ -4990,7 +5067,7 @@ fn enum_map_init(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
     void()
 }
 
-const ENUM_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const ENUM_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method(
         "<init>",
         "(Ljava/lang/Class;)V",
@@ -5138,6 +5215,15 @@ const ENUM_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method("putAll", "(Ljava/util/Map;)V", ACC_PUBLIC, |vm, _, args| {
         concurrent_put_all(vm, receiver(args), ref_arg(args, 1))
     }),
+    method(
+        "entrySet",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = enum_map_map(vm, receiver(args));
+            hash_map_call(vm, map, "entrySet", "()Ljava/util/Set;", &[])
+        },
+    ),
 ];
 
 pub(crate) const ENUM_MAP: oxjvm_vm::NativeClass = class(
