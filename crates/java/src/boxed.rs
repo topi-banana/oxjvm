@@ -477,7 +477,14 @@ fn byte_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
 }
 
 fn boolean_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
-    set_type_field(vm, "java/lang/Boolean", oxjvm_classfile::BaseType::Boolean)
+    set_type_field(vm, "java/lang/Boolean", oxjvm_classfile::BaseType::Boolean)?;
+    let class = vm.resolve_class("java/lang/Boolean")?;
+    for (name, value) in [("TRUE", true), ("FALSE", false)] {
+        let instance = vm.new_instance(class)?;
+        write_value_int(vm, instance, i32::from(value));
+        vm.set_static_value(class, name, "Ljava/lang/Boolean;", Value::Ref(instance));
+    }
+    Ok(())
 }
 
 fn character_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
