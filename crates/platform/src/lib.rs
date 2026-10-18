@@ -145,6 +145,25 @@ pub trait Host {
         let _ = path;
         None
     }
+
+    /// Every class-path resource with this path, in class-path order.
+    ///
+    /// `ClassLoader.getResources` turns the hits into `URL`s and `ServiceLoader` reads
+    /// `META-INF/services` entries, so a hit carries both the naming URL and the bytes.
+    fn find_resources(&mut self, path: &str) -> Vec<ResourceHit> {
+        let _ = path;
+        Vec::new()
+    }
+}
+
+/// One occurrence of a class-path resource inside a class-path entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceHit {
+    /// A URL naming the resource: `file:` for a directory entry, `jar:file:...!/entry`
+    /// for an archive.
+    pub url: String,
+    /// The resource bytes.
+    pub bytes: Vec<u8>,
 }
 
 /// An in-memory class path, keyed by internal class name.

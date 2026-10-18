@@ -235,6 +235,41 @@ impl Host for StdHost {
         None
     }
 
+    fn find_resources(&mut self, resource: &str) -> Vec<oxjvm_platform::ResourceHit> {
+        let mut hits = Vec::new();
+        for path in &self.classpath {
+            if path.is_dir() {
+                let candidate = path.join(resource);
+                let absolute = fs::canonicalize(&candidate).unwrap_or_else(|_| candidate.clone());
+                if let Ok(bytes) = fs::read(&candidate) {
+                    let url = format!("file:{}", absolute.display());
+                    hits.push(oxjvm_platform::ResourceHit { url, bytes });
+                } else if candidate.is_dir() {
+                    // Class-path scanners ask for directories; the JDK names them with a
+                    // trailing slash and no content.
+                    let url = format!("file:{}/", absolute.display());
+                    hits.push(oxjvm_platform::ResourceHit {
+                        url,
+                        bytes: Vec::new(),
+                    });
+                }
+            } else if path.extension().is_some_and(|extension| extension == "jar") {
+                let Ok(bytes) = fs::read(path) else {
+                    continue;
+                };
+                let Ok(archive) = oxjvm_platform::zip::ZipArchive::new(&bytes) else {
+                    continue;
+                };
+                if let Ok(Some(entry)) = archive.read(resource) {
+                    let absolute = fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+                    let url = format!("jar:file:{}!/{resource}", absolute.display());
+                    hits.push(oxjvm_platform::ResourceHit { url, bytes: entry });
+                }
+            }
+        }
+        hits
+    }
+
     fn write(&mut self, stream: Stream, bytes: &[u8]) -> Result<(), HostError> {
         match stream {
             Stream::Stdout => {

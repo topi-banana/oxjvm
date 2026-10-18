@@ -224,7 +224,7 @@ pub(crate) const OBJECT: oxjvm_vm::NativeClass = class(
 // Class
 // -------------------------------------------------------------------------------------------
 
-const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
+const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -335,6 +335,12 @@ const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
             let resource = resource.strip_prefix('/').unwrap_or(&resource);
             resource_as_stream(vm, resource)
         },
+    ),
+    method(
+        "getResource",
+        "(Ljava/lang/String;)Ljava/net/URL;",
+        ACC_PUBLIC,
+        class_get_resource,
     ),
     method(
         "toString",
@@ -4409,7 +4415,7 @@ fn thread_local_with_initial(
 // ClassLoader
 // -------------------------------------------------------------------------------------------
 
-const CLASS_LOADER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+const CLASS_LOADER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method(
         "getSystemClassLoader",
         "()Ljava/lang/ClassLoader;",
@@ -4432,7 +4438,20 @@ const CLASS_LOADER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         "getResource",
         "(Ljava/lang/String;)Ljava/net/URL;",
         ACC_PUBLIC,
-        |_, _, _| object(ObjectRef::NULL),
+        |vm, _, args| {
+            let name = string_arg(vm, args[1])?;
+            object(first_resource_url(vm, &name)?)
+        },
+    ),
+    method(
+        "getResources",
+        "(Ljava/lang/String;)Ljava/util/Enumeration;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = string_arg(vm, args[1])?;
+            let urls = resource_urls(vm, &name)?;
+            object(crate::util::new_enumeration(vm, &urls)?)
+        },
     ),
     method(
         "getResourceAsStream",
@@ -4452,7 +4471,52 @@ const CLASS_LOADER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         ACC_PUBLIC,
         |_, _, _| void(),
     ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| object(vm.make_string("sun.misc.Launcher$AppClassLoader")?),
+    ),
 ];
+
+/// The URL of the first class-path resource with this name, or null.
+fn first_resource_url(vm: &mut Vm<'_>, resource: &str) -> Result<ObjectRef, VmError> {
+    match vm.host.find_resources(resource).first() {
+        Some(hit) => crate::net::new_url(vm, &hit.url),
+        None => Ok(ObjectRef::NULL),
+    }
+}
+
+/// Every class-path resource with this name, as `URL`s in class-path order.
+fn resource_urls(vm: &mut Vm<'_>, resource: &str) -> Result<Vec<ObjectRef>, VmError> {
+    let hits = vm.host.find_resources(resource);
+    let mut urls = Vec::with_capacity(hits.len());
+    for hit in hits {
+        urls.push(crate::net::new_url(vm, &hit.url)?);
+    }
+    Ok(urls)
+}
+
+/// `Class.getResource`: a leading `/` names an absolute resource, anything else is
+/// resolved against the class's package.
+fn class_get_resource(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let name = string_arg(vm, args[1])?;
+    let class = class_argument(vm, receiver(args))?;
+    let resource = if let Some(absolute) = name.strip_prefix('/') {
+        String::from(absolute)
+    } else {
+        let full = vm.class_name(class).to_string();
+        match full.rfind('/') {
+            Some(index) => alloc::format!("{}{}", &full[..index + 1], name),
+            None => name.clone(),
+        }
+    };
+    object(first_resource_url(vm, &resource)?)
+}
 
 fn class_loader_load_class(
     vm: &mut Vm<'_>,

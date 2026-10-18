@@ -2929,7 +2929,7 @@ fn properties_set_property(
 // Collections
 // -------------------------------------------------------------------------------------------
 
-const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
     method(
         "sort",
         "(Ljava/util/List;)V",
@@ -3069,6 +3069,15 @@ const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         "(Ljava/util/Collection;)Ljava/util/Collection;",
         ACC_PUBLIC | ACC_STATIC,
         |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "list",
+        "(Ljava/util/Enumeration;)Ljava/util/ArrayList;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let elements = enumeration_elements(vm, ref_arg(args, 0))?;
+            object(array_list_from(vm, &elements)?)
+        },
     ),
 ];
 
@@ -3329,7 +3338,10 @@ pub(crate) const OJVM_ENUMERATION: oxjvm_vm::NativeClass = class(
     None,
 );
 
-fn new_enumeration(vm: &mut Vm<'_>, elements: &[ObjectRef]) -> Result<ObjectRef, VmError> {
+pub(crate) fn new_enumeration(
+    vm: &mut Vm<'_>,
+    elements: &[ObjectRef],
+) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class("java/util/OjvmEnumeration")?;
     let instance = vm.new_instance(class)?;
     let object_class = vm.resolve_class("java/lang/Object")?;
@@ -3340,6 +3352,28 @@ fn new_enumeration(vm: &mut Vm<'_>, elements: &[ObjectRef]) -> Result<ObjectRef,
     let (declaring, field) = vm.find_field(class, "elements", "[Ljava/lang/Object;")?;
     vm.set_instance_ref(instance, declaring, field, array);
     Ok(instance)
+}
+
+/// Drain an `Enumeration` into a `Vec`, the way `Collections.list` does.
+pub(crate) fn enumeration_elements(
+    vm: &mut Vm<'_>,
+    enumeration: ObjectRef,
+) -> Result<Vec<ObjectRef>, VmError> {
+    if enumeration.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let (has_class, has_more) = vm.resolve_virtual_method(enumeration, "hasMoreElements", "()Z")?;
+    let (next_class, next) =
+        vm.resolve_virtual_method(enumeration, "nextElement", "()Ljava/lang/Object;")?;
+    let mut elements = Vec::new();
+    loop {
+        let value = vm.invoke_method(has_class, has_more, vec![Value::Ref(enumeration)])?;
+        if value.as_int() == 0 {
+            return Ok(elements);
+        }
+        let value = vm.invoke_method(next_class, next, vec![Value::Ref(enumeration)])?;
+        elements.push(value.as_ref());
+    }
 }
 
 fn map_keys(vm: &Vm<'_>, map: ObjectRef) -> Vec<ObjectRef> {
