@@ -82,15 +82,16 @@ enum Node {
         max: Option<usize>,
         lazy: bool,
     },
+    Scoped(Flags, Box<Node>),
 }
 
 #[derive(Clone, Debug)]
 enum Inst {
-    Char(u16),
-    Any,
-    Class(ClassSet),
-    Start,
-    End,
+    Char(u16, bool),
+    Any(bool),
+    Class(ClassSet, bool),
+    Start(bool),
+    End(bool),
     WordBoundary(bool),
     SaveStart(usize),
     SaveEnd(usize),
@@ -99,13 +100,18 @@ enum Inst {
     Match,
 }
 
+/// The matching flags in effect for a node.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Flags {
+    case_insensitive: bool,
+    multiline: bool,
+    dotall: bool,
+}
+
 /// A compiled pattern.
 pub(crate) struct Regex {
     prog: Vec<Inst>,
     groups: usize,
-    case_insensitive: bool,
-    multiline: bool,
-    dotall: bool,
 }
 
 /// One match with its capture spans (UTF-16 offsets).
@@ -139,11 +145,45 @@ struct Parser<'a> {
     pattern: &'a [u16],
     pos: usize,
     groups: usize,
+    case_insensitive: bool,
+    multiline: bool,
+    dotall: bool,
 }
 
 type ParseError = (String, usize);
 
+/// A flag letter inside `(?...)`, which applies to the whole pattern.
+fn is_flag_char(ch: u16) -> bool {
+    matches!(
+        ch,
+        x if x == b'i' as u16
+            || x == b'm' as u16
+            || x == b's' as u16
+            || x == b'd' as u16
+            || x == b'u' as u16
+            || x == b'x' as u16
+            || x == b'U' as u16
+    )
+}
+
 impl<'a> Parser<'a> {
+    fn set_flag(&mut self, ch: u16, enable: bool) {
+        if ch == b'i' as u16 {
+            self.case_insensitive = enable;
+        } else if ch == b'm' as u16 {
+            self.multiline = enable;
+        } else if ch == b's' as u16 {
+            self.dotall = enable;
+        }
+    }
+
+    fn flags(&self) -> Flags {
+        Flags {
+            case_insensitive: self.case_insensitive,
+            multiline: self.multiline,
+            dotall: self.dotall,
+        }
+    }
     fn peek(&self) -> Option<u16> {
         self.pattern.get(self.pos).copied()
     }
@@ -156,7 +196,7 @@ impl<'a> Parser<'a> {
         ch
     }
 
-    fn parse(mut self) -> Result<(Node, usize), ParseError> {
+    fn parse(&mut self) -> Result<(Node, usize), ParseError> {
         let node = self.parse_alternation()?;
         if self.pos < self.pattern.len() {
             return Err(("Unmatched closing ')'".into(), self.pos));
@@ -193,6 +233,12 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_repeat(&mut self) -> Result<Node, ParseError> {
+        let flags = self.flags();
+        let node = self.parse_repeat_inner()?;
+        Ok(Node::Scoped(flags, Box::new(node)))
+    }
+
+    fn parse_repeat_inner(&mut self) -> Result<Node, ParseError> {
         let atom = self.parse_atom()?;
         let (min, max) = match self.peek() {
             Some(ch) if ch == b'*' as u16 => {
@@ -284,6 +330,61 @@ impl<'a> Parser<'a> {
                             let inner = self.parse_alternation()?;
                             self.expect_close()?;
                             Ok(inner)
+                        }
+                        Some(ch) if is_flag_char(ch) || ch == b'-' as u16 => {
+                            let mut enable = true;
+                            let mut flags = Vec::new();
+                            let mut first = Some(ch);
+                            loop {
+                                let current = match first.take() {
+                                    Some(ch) => ch,
+                                    None => match self.next() {
+                                        Some(ch) => ch,
+                                        None => {
+                                            return Err((
+                                                "Unknown inline modifier".into(),
+                                                self.pos,
+                                            ));
+                                        }
+                                    },
+                                };
+                                if current == b')' as u16 {
+                                    break;
+                                }
+                                if current == b':' as u16 {
+                                    let mut scoped = self.flags();
+                                    for flag in &flags {
+                                        if *flag == b'i' as u16 {
+                                            scoped.case_insensitive = enable;
+                                        } else if *flag == b'm' as u16 {
+                                            scoped.multiline = enable;
+                                        } else if *flag == b's' as u16 {
+                                            scoped.dotall = enable;
+                                        }
+                                    }
+                                    let saved = self.flags();
+                                    self.case_insensitive = scoped.case_insensitive;
+                                    self.multiline = scoped.multiline;
+                                    self.dotall = scoped.dotall;
+                                    let inner = self.parse_alternation()?;
+                                    self.case_insensitive = saved.case_insensitive;
+                                    self.multiline = saved.multiline;
+                                    self.dotall = saved.dotall;
+                                    self.expect_close()?;
+                                    return Ok(Node::Scoped(scoped, Box::new(inner)));
+                                }
+                                if current == b'-' as u16 {
+                                    enable = false;
+                                } else if is_flag_char(current) {
+                                    flags.push(current);
+                                } else {
+                                    return Err(("Unknown inline modifier".into(), self.pos));
+                                }
+                            }
+                            for flag in flags {
+                                self.set_flag(flag, enable);
+                            }
+                            Ok(Node::Empty)
                         }
                         _ => Err(("Unsupported group construct".into(), self.pos)),
                     }
@@ -421,36 +522,37 @@ fn single_class(item: ClassItem) -> ClassSet {
     }
 }
 
-fn compile_node(node: &Node, prog: &mut Vec<Inst>) {
+fn compile_node(node: &Node, prog: &mut Vec<Inst>, flags: Flags) {
     match node {
         Node::Empty => {}
-        Node::Char(ch) => prog.push(Inst::Char(*ch)),
-        Node::Any => prog.push(Inst::Any),
-        Node::Class(set) => prog.push(Inst::Class(set.clone())),
-        Node::Start => prog.push(Inst::Start),
-        Node::End => prog.push(Inst::End),
+        Node::Scoped(inner_flags, inner) => compile_node(inner, prog, *inner_flags),
+        Node::Char(ch) => prog.push(Inst::Char(*ch, flags.case_insensitive)),
+        Node::Any => prog.push(Inst::Any(flags.dotall)),
+        Node::Class(set) => prog.push(Inst::Class(set.clone(), flags.case_insensitive)),
+        Node::Start => prog.push(Inst::Start(flags.multiline)),
+        Node::End => prog.push(Inst::End(flags.multiline)),
         Node::WordBoundary(positive) => prog.push(Inst::WordBoundary(*positive)),
         Node::Group(index, inner) => {
             prog.push(Inst::SaveStart(*index));
-            compile_node(inner, prog);
+            compile_node(inner, prog, flags);
             prog.push(Inst::SaveEnd(*index));
         }
         Node::Concat(nodes) => {
             for child in nodes {
-                compile_node(child, prog);
+                compile_node(child, prog, flags);
             }
         }
         Node::Alternate(branches) => {
             let mut jumps = Vec::new();
             for (index, branch) in branches.iter().enumerate() {
                 if index + 1 == branches.len() {
-                    compile_node(branch, prog);
+                    compile_node(branch, prog, flags);
                     break;
                 }
                 let split = prog.len();
                 prog.push(Inst::Split(0, 0));
                 let body = prog.len();
-                compile_node(branch, prog);
+                compile_node(branch, prog, flags);
                 let jump = prog.len();
                 prog.push(Inst::Jmp(usize::MAX));
                 jumps.push(jump);
@@ -469,14 +571,14 @@ fn compile_node(node: &Node, prog: &mut Vec<Inst>) {
             lazy,
         } => {
             for _ in 0..*min {
-                compile_node(node, prog);
+                compile_node(node, prog, flags);
             }
             match max {
                 None => {
                     let split = prog.len();
                     prog.push(Inst::Split(0, 0));
                     let body = prog.len();
-                    compile_node(node, prog);
+                    compile_node(node, prog, flags);
                     prog.push(Inst::Jmp(split));
                     let end = prog.len();
                     prog[split] = if *lazy {
@@ -492,7 +594,7 @@ fn compile_node(node: &Node, prog: &mut Vec<Inst>) {
                         let split = prog.len();
                         prog.push(Inst::Split(0, 0));
                         splits.push(split);
-                        compile_node(node, prog);
+                        compile_node(node, prog, flags);
                     }
                     let end = prog.len();
                     for split in splits {
@@ -510,9 +612,11 @@ fn compile_node(node: &Node, prog: &mut Vec<Inst>) {
 
 /// Compile a pattern (UTF-16 units) with the given flags.
 pub(crate) fn compile(pattern: &[u16], flags: i32) -> Result<Regex, (String, usize)> {
-    let case_insensitive = flags & FLAG_CASE_INSENSITIVE != 0;
-    let multiline = flags & FLAG_MULTILINE != 0;
-    let dotall = flags & FLAG_DOTALL != 0;
+    let initial = Flags {
+        case_insensitive: flags & FLAG_CASE_INSENSITIVE != 0,
+        multiline: flags & FLAG_MULTILINE != 0,
+        dotall: flags & FLAG_DOTALL != 0,
+    };
     let literal = flags & FLAG_LITERAL != 0;
     let (node, groups) = if literal {
         let node = if pattern.is_empty() {
@@ -522,23 +626,20 @@ pub(crate) fn compile(pattern: &[u16], flags: i32) -> Result<Regex, (String, usi
         };
         (node, 0)
     } else {
-        let parser = Parser {
+        let mut parser = Parser {
             pattern,
             pos: 0,
             groups: 0,
+            case_insensitive: initial.case_insensitive,
+            multiline: initial.multiline,
+            dotall: initial.dotall,
         };
         parser.parse()?
     };
     let mut prog = Vec::new();
-    compile_node(&node, &mut prog);
+    compile_node(&node, &mut prog, initial);
     prog.push(Inst::Match);
-    Ok(Regex {
-        prog,
-        groups,
-        case_insensitive,
-        multiline,
-        dotall,
-    })
+    Ok(Regex { prog, groups })
 }
 
 /// Compile a pattern from a Rust string, reporting errors as `PatternSyntaxException`.
@@ -563,40 +664,40 @@ fn run(
         }
         match &regex.prog[pc] {
             Inst::Match => return Some(pos),
-            Inst::Char(expected) => {
-                if pos < text.len() && eq_char(text[pos], *expected, regex.case_insensitive) {
+            Inst::Char(expected, case_insensitive) => {
+                if pos < text.len() && eq_char(text[pos], *expected, *case_insensitive) {
                     pc += 1;
                     pos += 1;
                     continue;
                 }
                 return None;
             }
-            Inst::Any => {
-                if pos < text.len() && (regex.dotall || text[pos] != 0x0A) {
+            Inst::Any(dotall) => {
+                if pos < text.len() && (*dotall || text[pos] != 0x0A) {
                     pc += 1;
                     pos += 1;
                     continue;
                 }
                 return None;
             }
-            Inst::Class(set) => {
-                if pos < text.len() && set.matches(text[pos], regex.case_insensitive) {
+            Inst::Class(set, case_insensitive) => {
+                if pos < text.len() && set.matches(text[pos], *case_insensitive) {
                     pc += 1;
                     pos += 1;
                     continue;
                 }
                 return None;
             }
-            Inst::Start => {
-                let ok = pos == 0 || (regex.multiline && text[pos - 1] == 0x0A);
+            Inst::Start(multiline) => {
+                let ok = pos == 0 || (*multiline && text[pos - 1] == 0x0A);
                 if ok {
                     pc += 1;
                     continue;
                 }
                 return None;
             }
-            Inst::End => {
-                let ok = pos == text.len() || (regex.multiline && text[pos] == 0x0A);
+            Inst::End(multiline) => {
+                let ok = pos == text.len() || (*multiline && text[pos] == 0x0A);
                 if ok {
                     pc += 1;
                     continue;
