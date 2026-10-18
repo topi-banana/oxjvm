@@ -697,3 +697,8 @@ exception!(
     "java/lang/InterruptedException",
     "java/lang/Exception"
 );
+exception!(
+    SERVICE_CONFIGURATION_ERROR,
+    "java/util/ServiceConfigurationError",
+    "java/lang/Error"
+);

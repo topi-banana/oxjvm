@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 use oxjvm_classfile::flags::*;
 
 use crate::lang::abstract_method_pub;
-use crate::{boolean, class, field, long, method, object, receiver, ref_arg, void};
+use crate::{boolean, class, field, int, long, method, object, receiver, ref_arg, void};
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
 pub(crate) const STREAM_CLASS: &str = "java/util/stream/OxjvmStream";
@@ -1554,5 +1554,174 @@ pub(crate) const STREAM_ITERATOR: oxjvm_vm::NativeClass = class(
         field("cursor", "I", ACC_PRIVATE, None),
     ],
     &STREAM_ITERATOR_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// Spliterator + StreamSupport
+// -------------------------------------------------------------------------------------------
+
+const SPLITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method(
+        "tryAdvance",
+        "(Ljava/util/function/Consumer;)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "forEachRemaining",
+        "(Ljava/util/function/Consumer;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "trySplit",
+        "()Ljava/util/Spliterator;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "estimateSize",
+        "()J",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "characteristics",
+        "()I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+];
+
+pub(crate) const SPLITERATOR: oxjvm_vm::NativeClass = class(
+    "java/util/Spliterator",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &SPLITERATOR_METHODS,
+    None,
+);
+
+/// `ORDERED`.
+const SPLITERATOR_ORDERED: i32 = 0x10;
+
+const OJVM_SPLITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method(
+        "tryAdvance",
+        "(Ljava/util/function/Consumer;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let elements = stream_elements(vm, this);
+            let cursor = crate::lang::read_int_field(vm, this, "cursor");
+            if cursor < 0 || cursor as usize >= elements.len() {
+                return boolean(false);
+            }
+            call_accept(vm, ref_arg(args, 1), elements[cursor as usize])?;
+            crate::lang::write_int_field(vm, this, "cursor", cursor + 1);
+            boolean(true)
+        },
+    ),
+    method(
+        "forEachRemaining",
+        "(Ljava/util/function/Consumer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let consumer = ref_arg(args, 1);
+            loop {
+                let elements = stream_elements(vm, this);
+                let cursor = crate::lang::read_int_field(vm, this, "cursor");
+                if cursor < 0 || cursor as usize >= elements.len() {
+                    return void();
+                }
+                call_accept(vm, consumer, elements[cursor as usize])?;
+                crate::lang::write_int_field(vm, this, "cursor", cursor + 1);
+            }
+        },
+    ),
+    method(
+        "trySplit",
+        "()Ljava/util/Spliterator;",
+        ACC_PUBLIC,
+        // Splitting only buys parallelism, and these streams are eager and single-threaded.
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method("estimateSize", "()J", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let elements = stream_elements(vm, this);
+        let cursor = crate::lang::read_int_field(vm, this, "cursor").max(0) as usize;
+        long((elements.len() - cursor.min(elements.len())) as i64)
+    }),
+    method("characteristics", "()I", ACC_PUBLIC, |_, _, _| {
+        int(SPLITERATOR_ORDERED)
+    }),
+    method("getExactSizeIfKnown", "()J", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let elements = stream_elements(vm, this);
+        let cursor = crate::lang::read_int_field(vm, this, "cursor").max(0) as usize;
+        long((elements.len() - cursor.min(elements.len())) as i64)
+    }),
+];
+
+pub(crate) const OJVM_SPLITERATOR: oxjvm_vm::NativeClass = class(
+    "java/util/OjvmSpliterator",
+    Some("java/lang/Object"),
+    &["java/util/Spliterator"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[
+        field("elements", "[Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("cursor", "I", ACC_PRIVATE, None),
+    ],
+    &OJVM_SPLITERATOR_METHODS,
+    None,
+);
+
+/// Build an `OjvmSpliterator` over `elements`.
+pub(crate) fn spliterator_from(
+    vm: &mut Vm<'_>,
+    elements: &[ObjectRef],
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/OjvmSpliterator")?;
+    let instance = vm.new_instance(class)?;
+    let object_class = vm.resolve_class("java/lang/Object")?;
+    let array = vm.allocate_object_array(object_class, elements.len())?;
+    for (index, element) in elements.iter().enumerate() {
+        vm.array_set_ref(array, index, *element)?;
+    }
+    let (declaring, field) = vm.find_field(class, "elements", "[Ljava/lang/Object;")?;
+    vm.set_instance_ref(instance, declaring, field, array);
+    Ok(instance)
+}
+
+const STREAM_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "stream",
+    "(Ljava/util/Spliterator;Z)Ljava/util/stream/Stream;",
+    ACC_PUBLIC | ACC_STATIC,
+    |vm, _, args| {
+        let spliterator = ref_arg(args, 0);
+        if spliterator.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let spliterator_class = vm.resolve_class("java/util/OjvmSpliterator")?;
+        if vm.class_of(spliterator) == spliterator_class {
+            return object(stream_from(vm, stream_elements(vm, spliterator))?);
+        }
+        Err(vm.throw_new(
+            "java/lang/UnsupportedOperationException",
+            Some("StreamSupport.stream: only oxjvm spliterators are supported"),
+        ))
+    },
+)];
+
+pub(crate) const STREAM_SUPPORT: oxjvm_vm::NativeClass = class(
+    "java/util/stream/StreamSupport",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[],
+    &STREAM_SUPPORT_METHODS,
     None,
 );

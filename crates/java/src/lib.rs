@@ -35,6 +35,7 @@ pub(crate) mod nio;
 pub(crate) mod optional;
 pub(crate) mod reflect;
 pub(crate) mod regex;
+pub(crate) mod service_loader;
 pub(crate) mod stack;
 pub(crate) mod stream;
 pub(crate) mod throwable;
@@ -112,7 +113,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 281] = [
+static REGISTRY: [NativeClass; 288] = [
     lang::OBJECT,
     lang::CLASS,
     lang::STRING,
@@ -238,6 +239,7 @@ static REGISTRY: [NativeClass; 281] = [
     io::OUTPUT_STREAM_WRITER,
     io::STRING_WRITER,
     util::NO_SUCH_ELEMENT_EXCEPTION,
+    throwable::SERVICE_CONFIGURATION_ERROR,
     util::ITERATOR,
     util::COLLECTION,
     util::LIST,
@@ -305,7 +307,10 @@ static REGISTRY: [NativeClass; 281] = [
     intstream::OJVM_INT_STREAM,
     stream::BASE_STREAM,
     stream::STREAM,
+    stream::SPLITERATOR,
     stream::OXJVM_STREAM,
+    stream::OJVM_SPLITERATOR,
+    stream::STREAM_SUPPORT,
     stream::STREAM_ITERATOR,
     stream::COLLECTOR,
     stream::COLLECTORS,
@@ -323,6 +328,9 @@ static REGISTRY: [NativeClass; 281] = [
     logging::LOGGER,
     logging::LOG_MANAGER,
     util::COLLECTIONS,
+    service_loader::SERVICE_LOADER,
+    service_loader::SERVICE_LOADER_PROVIDER,
+    service_loader::OJVM_PROVIDER,
     invoke::METHOD_TYPE,
     invoke::METHOD_HANDLE,
     invoke::METHOD_HANDLES,
