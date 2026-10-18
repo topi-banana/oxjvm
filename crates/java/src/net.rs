@@ -2,10 +2,11 @@
 //! `localhost` only (no real name resolution or sockets).
 
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 use oxjvm_classfile::flags::*;
 
-use crate::{boolean, class, field, int, method, object, receiver, ref_arg};
+use crate::{boolean, class, field, int, method, object, receiver, ref_arg, string_arg, void};
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
 fn parse_ipv4(text: &str) -> Option<[u8; 4]> {
@@ -263,7 +264,7 @@ macro_rules! address_methods {
                 concat!("(Ljava/lang/String;)L", $class_name, ";"),
                 ACC_PUBLIC | ACC_STATIC,
                 |vm, _, args| {
-                    let text = crate::string_arg(vm, args[0])?;
+                    let text = string_arg(vm, args[0])?;
                     resolve_address(vm, "java/net/Inet4Address", &text)
                 },
             ),
@@ -298,7 +299,7 @@ macro_rules! address_methods {
                 concat!("(Ljava/lang/String;)[L", $class_name, ";"),
                 ACC_PUBLIC | ACC_STATIC,
                 |vm, _, args| {
-                    let text = crate::string_arg(vm, args[0])?;
+                    let text = string_arg(vm, args[0])?;
                     let address = resolve_address(vm, "java/net/Inet4Address", &text)?;
                     let class = vm.resolve_class($class_name)?;
                     let array = vm.allocate_object_array(class, 1)?;
@@ -353,7 +354,7 @@ const INET4_ADDRESS_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         "(Ljava/lang/String;)Ljava/net/Inet4Address;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            let text = crate::string_arg(vm, args[0])?;
+            let text = string_arg(vm, args[0])?;
             resolve_address(vm, "java/net/Inet4Address", &text)
         },
     ),
@@ -362,7 +363,7 @@ const INET4_ADDRESS_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         "(Ljava/lang/String;)[Ljava/net/InetAddress;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            let text = crate::string_arg(vm, args[0])?;
+            let text = string_arg(vm, args[0])?;
             let address = resolve_address(vm, "java/net/Inet4Address", &text)?;
             let class = vm.resolve_class("java/net/InetAddress")?;
             let array = vm.allocate_object_array(class, 1)?;
@@ -507,7 +508,7 @@ const STANDARD_PROTOCOL_FAMILY_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         "(Ljava/lang/String;)Ljava/net/StandardProtocolFamily;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            let name = crate::string_arg(vm, args[0])?;
+            let name = string_arg(vm, args[0])?;
             let class = vm.resolve_class("java/net/StandardProtocolFamily")?;
             if STANDARD_PROTOCOL_FAMILIES.contains(&name.as_str()) {
                 if let Some(value) =
@@ -556,3 +557,294 @@ pub(crate) const STANDARD_PROTOCOL_FAMILY: oxjvm_vm::NativeClass = class(
     &STANDARD_PROTOCOL_FAMILY_METHODS,
     Some(standard_protocol_family_clinit),
 );
+
+// -------------------------------------------------------------------------------------------
+// URL: a minimal URL holding its textual form (no protocol handlers or streams).
+// -------------------------------------------------------------------------------------------
+
+fn url_text(vm: &Vm<'_>, this: ObjectRef) -> String {
+    vm.read_string_field(this, vm.class_of(this), "spec")
+        .unwrap_or_default()
+}
+
+/// A protocol is present when a non-empty segment before `:` is free of `/`.
+fn url_has_protocol(text: &str) -> bool {
+    match text.find(':') {
+        Some(index) => index > 0 && !text[..index].contains('/'),
+        None => false,
+    }
+}
+
+struct UrlParts<'a> {
+    protocol: &'a str,
+    authority: Option<&'a str>,
+    path: &'a str,
+    query: Option<&'a str>,
+    reference: Option<&'a str>,
+}
+
+fn url_parts(text: &str) -> UrlParts<'_> {
+    let (protocol, rest) = match text.find(':') {
+        Some(index) => (&text[..index], &text[index + 1..]),
+        None => ("", text),
+    };
+    let (authority, rest) = match rest.strip_prefix("//") {
+        Some(after) => {
+            let end = after.find(['/', '?', '#']).unwrap_or(after.len());
+            (Some(&after[..end]), &after[end..])
+        }
+        None => (None, rest),
+    };
+    let (rest, reference) = match rest.find('#') {
+        Some(index) => (&rest[..index], Some(&rest[index + 1..])),
+        None => (rest, None),
+    };
+    let (path, query) = match rest.find('?') {
+        Some(index) => (&rest[..index], Some(&rest[index + 1..])),
+        None => (rest, None),
+    };
+    UrlParts {
+        protocol,
+        authority,
+        path,
+        query,
+        reference,
+    }
+}
+
+fn url_without_userinfo(authority: &str) -> &str {
+    match authority.rfind('@') {
+        Some(index) => &authority[index + 1..],
+        None => authority,
+    }
+}
+
+fn url_host(authority: &str) -> &str {
+    let host = url_without_userinfo(authority);
+    if let Some(rest) = host.strip_prefix('[') {
+        return match rest.find(']') {
+            Some(index) => &host[..index + 2],
+            None => host,
+        };
+    }
+    match host.rfind(':') {
+        Some(index) => &host[..index],
+        None => host,
+    }
+}
+
+fn url_port(authority: &str) -> i32 {
+    let host = url_without_userinfo(authority);
+    let port = if let Some(rest) = host.strip_prefix('[') {
+        match rest.find(']') {
+            Some(index) => &rest[index + 1..],
+            None => "",
+        }
+    } else {
+        match host.rfind(':') {
+            Some(index) => &host[index..],
+            None => "",
+        }
+    };
+    match port.strip_prefix(':') {
+        Some(text) if !text.is_empty() => text.parse().unwrap_or(-1),
+        _ => -1,
+    }
+}
+
+const URL_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = string_arg(vm, args[1])?;
+            if !url_has_protocol(&text) {
+                return Err(vm.throw_new(
+                    "java/net/MalformedURLException",
+                    Some(&alloc::format!("no protocol: {text}")),
+                ));
+            }
+            let this = receiver(args);
+            vm.set_string_field(this, vm.class_of(this), "spec", &text)?;
+            void()
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = url_text(vm, receiver(args));
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "toExternalForm",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = url_text(vm, receiver(args));
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "getProtocol",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = url_text(vm, receiver(args));
+            object(vm.make_string(url_parts(&text).protocol)?)
+        },
+    ),
+    method(
+        "getAuthority",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = url_text(vm, receiver(args));
+            match url_parts(&text).authority {
+                Some(authority) => object(vm.make_string(authority)?),
+                None => object(ObjectRef::NULL),
+            }
+        },
+    ),
+    method(
+        "getUserInfo",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = url_text(vm, receiver(args));
+            let userinfo =
+                url_parts(&text)
+                    .authority
+                    .and_then(|authority| match authority.rfind('@') {
+                        Some(index) if index > 0 => Some(&authority[..index]),
+                        _ => None,
+                    });
+            match userinfo {
+                Some(userinfo) => object(vm.make_string(userinfo)?),
+                None => object(ObjectRef::NULL),
+            }
+        },
+    ),
+    method(
+        "getHost",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = url_text(vm, receiver(args));
+            // The JDK returns an empty host (not null) when there is no authority.
+            let host = match url_parts(&text).authority {
+                Some(authority) => String::from(url_host(authority)),
+                None => String::new(),
+            };
+            object(vm.make_string(&host)?)
+        },
+    ),
+    method("getPort", "()I", ACC_PUBLIC, |vm, _, args| {
+        let text = url_text(vm, receiver(args));
+        match url_parts(&text).authority {
+            Some(authority) => int(url_port(authority)),
+            None => int(-1),
+        }
+    }),
+    method("getDefaultPort", "()I", ACC_PUBLIC, |_, _, _| int(-1)),
+    method(
+        "getPath",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = url_text(vm, receiver(args));
+            object(vm.make_string(url_parts(&text).path)?)
+        },
+    ),
+    method(
+        "getQuery",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = url_text(vm, receiver(args));
+            match url_parts(&text).query {
+                Some(query) => object(vm.make_string(query)?),
+                None => object(ObjectRef::NULL),
+            }
+        },
+    ),
+    method(
+        "getRef",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = url_text(vm, receiver(args));
+            match url_parts(&text).reference {
+                Some(reference) => object(vm.make_string(reference)?),
+                None => object(ObjectRef::NULL),
+            }
+        },
+    ),
+    method(
+        "getFile",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = url_text(vm, receiver(args));
+            let parts = url_parts(&text);
+            let file = match parts.query {
+                Some(query) => alloc::format!("{}?{query}", parts.path),
+                None => String::from(parts.path),
+            };
+            object(vm.make_string(&file)?)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = ref_arg(args, 1);
+            if other.is_null() || vm.class_of(receiver(args)) != vm.class_of(other) {
+                return boolean(false);
+            }
+            boolean(url_text(vm, receiver(args)) == url_text(vm, other))
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let text = url_text(vm, receiver(args));
+        let mut hash = 0i32;
+        for unit in text.encode_utf16() {
+            hash = hash.wrapping_mul(31).wrapping_add(i32::from(unit));
+        }
+        int(hash)
+    }),
+    method("toURI", "()Ljava/net/URI;", ACC_PUBLIC, |vm, _, args| {
+        let text = url_text(vm, receiver(args));
+        crate::uri::new_uri(vm, &text)
+    }),
+];
+
+pub(crate) const URL: oxjvm_vm::NativeClass = class(
+    "java/net/URL",
+    Some("java/lang/Object"),
+    &["java/io/Serializable"],
+    ACC_PUBLIC | ACC_FINAL,
+    &[field("spec", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &URL_METHODS,
+    None,
+);
+
+/// Create a `java.net.URL` for `text` (`URI.toURL` uses this).
+pub(crate) fn new_url(vm: &mut Vm<'_>, text: &str) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/net/URL")?;
+    let instance = vm.new_instance(class)?;
+    let string = vm.make_string(text)?;
+    let (declaring, ctor) = vm
+        .find_method(class, "<init>", "(Ljava/lang/String;)V")
+        .ok_or_else(|| VmError::internal("URL lacks its constructor"))?;
+    vm.invoke_method(
+        declaring,
+        ctor,
+        vec![Value::Ref(instance), Value::Ref(string)],
+    )?;
+    Ok(instance)
+}

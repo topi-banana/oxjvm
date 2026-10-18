@@ -30,7 +30,7 @@ fn uri_init(
     void()
 }
 
-const URI_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const URI_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method("<init>", "(Ljava/lang/String;)V", ACC_PUBLIC, uri_init),
     method(
         "toString",
@@ -98,6 +98,16 @@ const URI_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
             object(vm.make_string(&text)?)
         },
     ),
+    method("toURL", "()Ljava/net/URL;", ACC_PUBLIC, |vm, _, args| {
+        let text = uri_text(vm, receiver(args));
+        if uri_scheme(&text).is_none() {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("URI is not absolute"),
+            ));
+        }
+        object(crate::net::new_url(vm, &text)?)
+    }),
 ];
 
 pub(crate) const URI: oxjvm_vm::NativeClass = class(

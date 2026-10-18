@@ -112,7 +112,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 280] = [
+static REGISTRY: [NativeClass; 281] = [
     lang::OBJECT,
     lang::CLASS,
     lang::STRING,
@@ -270,6 +270,7 @@ static REGISTRY: [NativeClass; 280] = [
     regex::PATTERN_PREDICATE,
     net::INET_ADDRESS,
     net::INET4_ADDRESS,
+    net::URL,
     net::STANDARD_PROTOCOL_FAMILY,
     beans::EXCEPTION_LISTENER,
     annotation::ELEMENT_TYPE,
