@@ -2679,7 +2679,7 @@ const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     ),
     method(
         "setProperty",
-        "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+        "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/Object;",
         ACC_PUBLIC,
         properties_set_property,
     ),
