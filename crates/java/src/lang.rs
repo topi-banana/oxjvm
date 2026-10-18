@@ -224,7 +224,7 @@ pub(crate) const OBJECT: oxjvm_vm::NativeClass = class(
 // Class
 // -------------------------------------------------------------------------------------------
 
-const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
+const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -236,6 +236,12 @@ const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         class_get_simple_name,
+    ),
+    method(
+        "getCanonicalName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        class_get_canonical_name,
     ),
     method(
         "getSuperclass",
@@ -465,6 +471,66 @@ fn class_get_simple_name(
         base.rsplit('$').next().unwrap_or(base).to_string()
     };
     object(vm.make_string(&simple)?)
+}
+
+fn class_get_canonical_name(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let class = class_argument(vm, receiver(args))?;
+    let name = vm.class_name(class).to_string();
+    let text = if vm.classes.get(class).kind == oxjvm_vm::ClassKind::Primitive {
+        name
+    } else if name.starts_with('[') {
+        let mut dimensions = 0;
+        let mut rest = name.as_str();
+        while let Some(next) = rest.strip_prefix('[') {
+            dimensions += 1;
+            rest = next;
+        }
+        let mut component = if let Some(object) = rest.strip_prefix('L') {
+            object.strip_suffix(';').unwrap_or(object).replace('/', ".")
+        } else {
+            primitive_name(rest).to_string()
+        };
+        for _ in 0..dimensions {
+            component.push_str("[]");
+        }
+        component
+    } else {
+        if is_anonymous(name.as_str()) {
+            return object(ObjectRef::NULL);
+        }
+        name.replace(['/', '$'], ".")
+    };
+    object(vm.make_string(&text)?)
+}
+
+/// Whether a binary name belongs to a lambda, anonymous, or local class, whose canonical
+/// name is null.
+fn is_anonymous(name: &str) -> bool {
+    match name.rsplit('$').next() {
+        Some(segment) if segment.len() < name.len() => {
+            segment.as_bytes().first().is_some_and(u8::is_ascii_digit)
+        }
+        _ => false,
+    }
+}
+
+/// The Java spelling of a primitive descriptor character (`I` → `int`).
+fn primitive_name(descriptor: &str) -> &'static str {
+    match descriptor {
+        "Z" => "boolean",
+        "B" => "byte",
+        "C" => "char",
+        "S" => "short",
+        "I" => "int",
+        "J" => "long",
+        "F" => "float",
+        "D" => "double",
+        _ => "void",
+    }
 }
 
 fn class_get_superclass(
