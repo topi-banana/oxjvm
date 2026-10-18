@@ -7,7 +7,9 @@ use alloc::vec::Vec;
 use oxjvm_classfile::flags::*;
 use oxjvm_vm::{ArrayComponent, ArrayData, ObjectData, ObjectRef, Value, Vm, VmError};
 
-use crate::{boolean, class, field, int, long, method, object, receiver, ref_arg, void};
+use crate::{
+    boolean, class, field, int, long, method, object, receiver, ref_arg, string_arg, void,
+};
 
 // -------------------------------------------------------------------------------------------
 // NoSuchElementException + interfaces
@@ -5657,3 +5659,112 @@ pub(crate) const TIME_ZONE: oxjvm_vm::NativeClass = class(
     &TIME_ZONE_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// Scanner (string sources)
+// -------------------------------------------------------------------------------------------
+
+const SCANNER_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "input", "Ljava/lang/String;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method(
+        "findInLine",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        scanner_find_in_line,
+    ),
+    method(
+        "match",
+        "()Ljava/util/regex/MatchResult;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let matched = vm
+                .read_ref_field(this, class, "match", "Ljava/util/regex/MatchResult;")
+                .unwrap_or(ObjectRef::NULL);
+            if matched.is_null() {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalStateException",
+                    Some("No match result available"),
+                ));
+            }
+            object(matched)
+        },
+    ),
+    method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+];
+
+pub(crate) const SCANNER: oxjvm_vm::NativeClass = class(
+    "java/util/Scanner",
+    Some("java/lang/Object"),
+    &["java/io/Closeable"],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("input", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("position", "I", ACC_PRIVATE, None),
+        field("match", "Ljava/util/regex/MatchResult;", ACC_PRIVATE, None),
+    ],
+    &SCANNER_METHODS,
+    None,
+);
+
+/// `Scanner.findInLine`: the first match of `pattern` in the current line, or null.
+///
+/// The scan starts at the stored position, stops at the line terminator, and advances the
+/// position past the match; `match()` then reports the same match.
+fn scanner_find_in_line(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let class = vm.class_of(this);
+    let pattern_text = string_arg(vm, args[1])?;
+    let input = vm
+        .read_string_field(this, class, "input")
+        .unwrap_or_default();
+    let units: Vec<u16> = input.encode_utf16().collect();
+    let position = crate::lang::read_int_field(vm, this, "position").max(0) as usize;
+    let position = position.min(units.len());
+    let mut line_end = units.len();
+    for (offset, unit) in units[position..].iter().enumerate() {
+        if *unit == u16::from(b'\n') || *unit == u16::from(b'\r') {
+            line_end = position + offset;
+            break;
+        }
+    }
+    let line = String::from_utf16_lossy(&units[position..line_end]);
+    let line = vm.make_string(&line)?;
+    let pattern = crate::regex::compile_pattern(vm, &pattern_text)?;
+    let matcher = crate::regex::matcher_for(vm, pattern, line)?;
+    let (matcher_class, find) = vm.resolve_virtual_method(matcher, "find", "()Z")?;
+    let found = vm
+        .invoke_method(matcher_class, find, vec![Value::Ref(matcher)])?
+        .as_int()
+        != 0;
+    if !found {
+        return object(ObjectRef::NULL);
+    }
+    let (text_class, group) =
+        vm.resolve_virtual_method(matcher, "group", "()Ljava/lang/String;")?;
+    let text = vm.invoke_method(text_class, group, vec![Value::Ref(matcher)])?;
+    let (end_class, end) = vm.resolve_virtual_method(matcher, "end", "()I")?;
+    let consumed = vm
+        .invoke_method(end_class, end, vec![Value::Ref(matcher)])?
+        .as_int();
+    crate::lang::write_int_field(vm, this, "position", position as i32 + consumed);
+    let (declaring, field) = vm.find_field(class, "match", "Ljava/util/regex/MatchResult;")?;
+    vm.set_instance_ref(this, declaring, field, matcher);
+    Ok(text)
+}

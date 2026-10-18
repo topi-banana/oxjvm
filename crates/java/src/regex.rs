@@ -978,6 +978,21 @@ fn pattern_compile(vm: &mut Vm<'_>, args: &[Value], flags: i32) -> Result<Value,
     object(instance)
 }
 
+/// Compile `text` the way `Pattern.compile(String)` does, returning the `Pattern` object.
+pub(crate) fn compile_pattern(vm: &mut Vm<'_>, text: &str) -> Result<ObjectRef, VmError> {
+    let pattern = vm.make_string(text)?;
+    Ok(pattern_compile(vm, &[Value::Ref(pattern)], 0)?.as_ref())
+}
+
+/// Build a `Matcher` for `pattern` over `input`, the way `Pattern.matcher` does.
+pub(crate) fn matcher_for(
+    vm: &mut Vm<'_>,
+    pattern: ObjectRef,
+    input: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    Ok(matcher_new(vm, pattern, input)?.as_ref())
+}
+
 fn pattern_syntax_error(vm: &mut Vm<'_>, message: &str, pattern: &str, index: i32) -> VmError {
     let class = vm.resolve_class("java/util/regex/PatternSyntaxException");
     let Ok(class) = class else {
@@ -1123,7 +1138,7 @@ const MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     }),
     method("groupCount", "()I", ACC_PUBLIC, |vm, _, args| {
         let (_, groups) = pattern_regex_for(vm, receiver(args))?;
-        int(groups.saturating_sub(1) as i32)
+        int(groups as i32)
     }),
     method(
         "pattern",
