@@ -47,7 +47,11 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
         "(Ljava/lang/String;Ljava/lang/String;)V",
         ACC_PUBLIC,
         |vm, _, args| {
-            let parent = string_arg(vm, args[1])?;
+            let parent = if ref_arg(args, 1).is_null() {
+                String::new()
+            } else {
+                string_arg(vm, args[1])?
+            };
             let child = string_arg(vm, args[2])?;
             file_init_path(vm, receiver(args), join_paths(&parent, &child))
         },
@@ -57,7 +61,11 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
         "(Ljava/io/File;Ljava/lang/String;)V",
         ACC_PUBLIC,
         |vm, _, args| {
-            let parent = file_path(vm, ref_arg(args, 1));
+            let parent = if ref_arg(args, 1).is_null() {
+                String::new()
+            } else {
+                file_path(vm, ref_arg(args, 1))
+            };
             let child = string_arg(vm, args[2])?;
             file_init_path(vm, receiver(args), join_paths(&parent, &child))
         },
