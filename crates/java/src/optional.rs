@@ -7,7 +7,7 @@ use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
 use crate::{boolean, class, field, method, object, receiver, ref_arg, void};
 
-const OPTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+const OPTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method(
         "<init>",
         "(Ljava/lang/Object;)V",
@@ -90,6 +90,27 @@ const OPTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
             } else {
                 object(value)
             }
+        },
+    ),
+    method(
+        "orElseThrow",
+        "(Ljava/util/function/Supplier;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let value = optional_value(vm, receiver(args));
+            if !value.is_null() {
+                return object(value);
+            }
+            let supplier = ref_arg(args, 1);
+            if supplier.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(supplier, "get", "()Ljava/lang/Object;")?;
+            let thrown = vm
+                .invoke_method(class, method, vec![Value::Ref(supplier)])?
+                .as_ref();
+            Err(VmError::Thrown(thrown))
         },
     ),
     method(

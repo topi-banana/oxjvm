@@ -697,9 +697,15 @@ pub(crate) const NAVIGABLE_SET: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method(
         "put",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "putIfAbsent",
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
@@ -2106,7 +2112,7 @@ pub(crate) const ARRAY_LIST_ITERATOR: oxjvm_vm::NativeClass = class(
 // HashMap (linear-probing arrays)
 // -------------------------------------------------------------------------------------------
 
-const HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method("<init>", "()V", ACC_PUBLIC, hash_map_init),
     method("<init>", "(I)V", ACC_PUBLIC, hash_map_init),
     method(
@@ -2114,6 +2120,12 @@ const HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
         ACC_PUBLIC,
         hash_map_put,
+    ),
+    method(
+        "putIfAbsent",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| map_put_if_absent(vm, receiver(args), ref_arg(args, 1), ref_arg(args, 2)),
     ),
     method(
         "get",
@@ -2461,7 +2473,7 @@ pub(crate) const HASH_MAP: oxjvm_vm::NativeClass = class(
 // IdentityHashMap (key identity, same pair-array layout as HashMap)
 // -------------------------------------------------------------------------------------------
 
-const IDENTITY_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+const IDENTITY_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method("<init>", "()V", ACC_PUBLIC, hash_map_init),
     method("<init>", "(I)V", ACC_PUBLIC, hash_map_init),
     method(
@@ -2469,6 +2481,12 @@ const IDENTITY_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
         ACC_PUBLIC,
         identity_map_put,
+    ),
+    method(
+        "putIfAbsent",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| map_put_if_absent(vm, receiver(args), ref_arg(args, 1), ref_arg(args, 2)),
     ),
     method(
         "get",
@@ -2663,7 +2681,7 @@ pub(crate) const SORTED_MAP: oxjvm_vm::NativeClass = class(
 // Properties
 // -------------------------------------------------------------------------------------------
 
-const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
     method("<init>", "()V", ACC_PUBLIC, properties_init),
     method(
         "getProperty",
@@ -2708,6 +2726,19 @@ const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
                 "put",
                 "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
                 vec![Value::Ref(ref_arg(args, 1)), Value::Ref(ref_arg(args, 2))],
+            )
+        },
+    ),
+    method(
+        "putIfAbsent",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            map_put_if_absent(
+                vm,
+                properties_map(vm, receiver(args)),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
             )
         },
     ),
@@ -3266,6 +3297,34 @@ pub(crate) fn hash_map_lookup(
         &[Value::Ref(key)],
     )?
     .as_ref())
+}
+
+/// `Map.putIfAbsent`: store the value only when the key has no (non-null) mapping yet.
+///
+/// The lookups go through the map's own `get`/`put`, so the legacy wrappers
+/// (`Properties`, `Hashtable`, `EnumMap`) and the concurrent maps share one implementation.
+pub(crate) fn map_put_if_absent(
+    vm: &mut Vm<'_>,
+    map: ObjectRef,
+    key: ObjectRef,
+    value: ObjectRef,
+) -> Result<Value, VmError> {
+    let (class, get) =
+        vm.resolve_virtual_method(map, "get", "(Ljava/lang/Object;)Ljava/lang/Object;")?;
+    let existing = vm.invoke_method(class, get, vec![Value::Ref(map), Value::Ref(key)])?;
+    if !existing.as_ref().is_null() {
+        return Ok(existing);
+    }
+    let (class, put) = vm.resolve_virtual_method(
+        map,
+        "put",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+    )?;
+    vm.invoke_method(
+        class,
+        put,
+        vec![Value::Ref(map), Value::Ref(key), Value::Ref(value)],
+    )
 }
 
 // -------------------------------------------------------------------------------------------
@@ -3962,7 +4021,7 @@ fn hashtable_map(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
     hash_set_map(vm, this)
 }
 
-const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let map = new_hash_map(vm)?;
         let this = receiver(args);
@@ -3991,6 +4050,19 @@ const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
                 "put",
                 "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
                 &[Value::Ref(ref_arg(args, 1)), Value::Ref(ref_arg(args, 2))],
+            )
+        },
+    ),
+    method(
+        "putIfAbsent",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            map_put_if_absent(
+                vm,
+                hashtable_map(vm, receiver(args)),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
             )
         },
     ),
@@ -4513,9 +4585,15 @@ fn concurrent_put(
     )
 }
 
-const CONCURRENT_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+const CONCURRENT_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method(
         "put",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "putIfAbsent",
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
@@ -4610,7 +4688,7 @@ pub(crate) const CONCURRENT_MAP: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const CONCURRENT_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
+const CONCURRENT_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let map = new_concurrent_map(vm)?;
         concurrent_init(vm, args, map)
@@ -4631,6 +4709,19 @@ const CONCURRENT_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
         |vm, _, args| {
             let map = concurrent_map(vm, receiver(args));
             concurrent_put(vm, map, ref_arg(args, 1), ref_arg(args, 2))
+        },
+    ),
+    method(
+        "putIfAbsent",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            map_put_if_absent(
+                vm,
+                concurrent_map(vm, receiver(args)),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+            )
         },
     ),
     method(
@@ -5101,7 +5192,7 @@ fn enum_map_init(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
     void()
 }
 
-const ENUM_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+const ENUM_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
     method(
         "<init>",
         "(Ljava/lang/Class;)V",
@@ -5135,6 +5226,19 @@ const ENUM_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         |vm, _, args| {
             let map = enum_map_map(vm, receiver(args));
             concurrent_put(vm, map, ref_arg(args, 1), ref_arg(args, 2))
+        },
+    ),
+    method(
+        "putIfAbsent",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            map_put_if_absent(
+                vm,
+                enum_map_map(vm, receiver(args)),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+            )
         },
     ),
     method(
