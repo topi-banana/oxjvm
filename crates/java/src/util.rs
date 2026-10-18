@@ -963,7 +963,7 @@ pub(crate) const OBJECTS: oxjvm_vm::NativeClass = class(
 // Arrays
 // -------------------------------------------------------------------------------------------
 
-const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
+const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
     method(
         "toString",
         "([I)Ljava/lang/String;",
@@ -1071,7 +1071,7 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| arrays_fill(vm, ref_arg(args, 0), Value::Ref(ref_arg(args, 1)), true),
     ),
-    method("fill", "([J J)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+    method("fill", "([JJ)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
         arrays_fill(
             vm,
             ref_arg(args, 0),
@@ -1133,7 +1133,238 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| crate::stream::stream_of_array(vm, ref_arg(args, 0)),
     ),
+    method("sort", "([I)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+        arrays_sort_int(vm, ref_arg(args, 0))
+    }),
+    method("sort", "([J)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+        arrays_sort_long(vm, ref_arg(args, 0))
+    }),
+    method("sort", "([S)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+        arrays_sort_short(vm, ref_arg(args, 0))
+    }),
+    method("sort", "([C)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+        arrays_sort_char(vm, ref_arg(args, 0))
+    }),
+    method("sort", "([B)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+        arrays_sort_byte(vm, ref_arg(args, 0))
+    }),
+    method("sort", "([F)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+        arrays_sort_float(vm, ref_arg(args, 0))
+    }),
+    method("sort", "([D)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+        arrays_sort_double(vm, ref_arg(args, 0))
+    }),
+    method(
+        "sort",
+        "([Ljava/lang/Object;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_sort_objects(vm, args, false),
+    ),
+    method(
+        "sort",
+        "([Ljava/lang/Object;Ljava/util/Comparator;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_sort_objects(vm, args, true),
+    ),
 ];
+
+/// Sort an integer array; `Values` are read and written in the array's own component width.
+fn arrays_sort_int(vm: &mut Vm<'_>, array: ObjectRef) -> Result<Value, VmError> {
+    arrays_sort_primitive(vm, array, ArrayComponent::Int)
+}
+
+fn arrays_sort_long(vm: &mut Vm<'_>, array: ObjectRef) -> Result<Value, VmError> {
+    arrays_sort_primitive(vm, array, ArrayComponent::Long)
+}
+
+fn arrays_sort_short(vm: &mut Vm<'_>, array: ObjectRef) -> Result<Value, VmError> {
+    arrays_sort_primitive(vm, array, ArrayComponent::Short)
+}
+
+fn arrays_sort_char(vm: &mut Vm<'_>, array: ObjectRef) -> Result<Value, VmError> {
+    arrays_sort_primitive(vm, array, ArrayComponent::Char)
+}
+
+fn arrays_sort_byte(vm: &mut Vm<'_>, array: ObjectRef) -> Result<Value, VmError> {
+    arrays_sort_primitive(vm, array, ArrayComponent::Byte)
+}
+
+fn arrays_sort_float(vm: &mut Vm<'_>, array: ObjectRef) -> Result<Value, VmError> {
+    arrays_sort_primitive(vm, array, ArrayComponent::Float)
+}
+
+fn arrays_sort_double(vm: &mut Vm<'_>, array: ObjectRef) -> Result<Value, VmError> {
+    arrays_sort_primitive(vm, array, ArrayComponent::Double)
+}
+
+/// Sort a primitive array in place with the natural order of its component.
+fn arrays_sort_primitive(
+    vm: &mut Vm<'_>,
+    array: ObjectRef,
+    component: ArrayComponent,
+) -> Result<Value, VmError> {
+    if array.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let length = vm.array_length(array)?;
+    if matches!(component, ArrayComponent::Int | ArrayComponent::Long) {
+        let mut values: Vec<Value> = Vec::with_capacity(length);
+        for index in 0..length {
+            values.push(vm.array_get(array, index as i32)?);
+        }
+        if component == ArrayComponent::Int {
+            values.sort_by_key(|value| value.as_int());
+        } else {
+            values.sort_by_key(|value| value.as_long());
+        }
+        for (index, value) in values.into_iter().enumerate() {
+            vm.array_set(array, index as i32, value, false)?;
+        }
+        return void();
+    }
+    if matches!(
+        component,
+        ArrayComponent::Byte | ArrayComponent::Char | ArrayComponent::Short | ArrayComponent::Float
+    ) {
+        let mut values: Vec<i32> = Vec::with_capacity(length);
+        for index in 0..length {
+            let value = vm.array_get(array, index as i32)?;
+            values.push(if component == ArrayComponent::Float {
+                sortable_float(value).to_bits() as i32
+            } else {
+                value.as_int()
+            });
+        }
+        if component == ArrayComponent::Float {
+            values.sort_by(|a, b| f32::from_bits(*a as u32).total_cmp(&f32::from_bits(*b as u32)));
+        } else {
+            let key: fn(i32) -> i32 = match component {
+                ArrayComponent::Byte => |value| i32::from(value as i8),
+                ArrayComponent::Short => |value| i32::from(value as i16),
+                _ => |value| i32::from(value as u16),
+            };
+            values.sort_by_key(|value| key(*value));
+        }
+        for (index, value) in values.into_iter().enumerate() {
+            let slot = if component == ArrayComponent::Float {
+                Value::Float(sortable_float(Value::Int(value)))
+            } else {
+                Value::Int(value)
+            };
+            vm.array_set(array, index as i32, slot, false)?;
+        }
+        return void();
+    }
+    let mut values: Vec<f64> = Vec::with_capacity(length);
+    for index in 0..length {
+        values.push(sortable_double(vm.array_get(array, index as i32)?));
+    }
+    values.sort_by(f64::total_cmp);
+    for (index, value) in values.into_iter().enumerate() {
+        vm.array_set(array, index as i32, Value::Double(value), false)?;
+    }
+    void()
+}
+
+/// A float slot's value: either a `Float` or the raw bits in an `Int`.
+fn sortable_float(value: Value) -> f32 {
+    match value {
+        Value::Float(value) => value,
+        Value::Int(bits) => f32::from_bits(bits as u32),
+        _ => 0.0,
+    }
+}
+
+/// A double slot's value: either a `Double` or the raw bits in a `Long`/`Int`.
+fn sortable_double(value: Value) -> f64 {
+    match value {
+        Value::Double(value) => value,
+        Value::Long(bits) => f64::from_bits(bits as u64),
+        Value::Int(bits) => f64::from_bits(bits as u32 as u64),
+        _ => 0.0,
+    }
+}
+
+/// `Arrays.sort(Object[])` and `Arrays.sort(Object[], Comparator)`.
+fn arrays_sort_objects(
+    vm: &mut Vm<'_>,
+    args: &[Value],
+    with_comparator: bool,
+) -> Result<Value, VmError> {
+    let array = ref_arg(args, 0);
+    if array.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let comparator = if with_comparator {
+        let comparator = ref_arg(args, 1);
+        if comparator.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        Some(comparator)
+    } else {
+        None
+    };
+    let length = vm.array_length(array)?;
+    let mut values: Vec<Value> = Vec::with_capacity(length);
+    for index in 0..length {
+        values.push(vm.array_get(array, index as i32)?);
+    }
+    let mut error: Option<VmError> = None;
+    values.sort_by(|a, b| {
+        if error.is_some() {
+            return core::cmp::Ordering::Equal;
+        }
+        let ordered = match comparator {
+            Some(comparator) => compare_with(vm, comparator, *a, *b),
+            None => compare_natural(vm, *a, *b),
+        };
+        match ordered {
+            Ok(ordering) => ordering,
+            Err(failure) => {
+                error = Some(failure);
+                core::cmp::Ordering::Equal
+            }
+        }
+    });
+    if let Some(failure) = error {
+        return Err(failure);
+    }
+    for (index, value) in values.into_iter().enumerate() {
+        vm.array_set(array, index as i32, value, true)?;
+    }
+    void()
+}
+
+/// `a.compareTo(b)` through the virtual method table.
+fn compare_natural(vm: &mut Vm<'_>, a: Value, b: Value) -> Result<core::cmp::Ordering, VmError> {
+    let left = a.as_ref();
+    if left.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let (class, method) = vm.resolve_virtual_method(left, "compareTo", "(Ljava/lang/Object;)I")?;
+    let result = vm
+        .invoke_method(class, method, vec![Value::Ref(left), b])?
+        .as_int();
+    Ok(result.cmp(&0))
+}
+
+/// `comparator.compare(a, b)` through the virtual method table.
+fn compare_with(
+    vm: &mut Vm<'_>,
+    comparator: ObjectRef,
+    a: Value,
+    b: Value,
+) -> Result<core::cmp::Ordering, VmError> {
+    let (class, method) = vm.resolve_virtual_method(
+        comparator,
+        "compare",
+        "(Ljava/lang/Object;Ljava/lang/Object;)I",
+    )?;
+    let result = vm
+        .invoke_method(class, method, vec![Value::Ref(comparator), a, b])?
+        .as_int();
+    Ok(result.cmp(&0))
+}
 
 /// Fill every slot of an array with the same value.
 fn arrays_fill(

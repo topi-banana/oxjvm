@@ -3,20 +3,44 @@
 //! Enough for `File.toURI` and the usual `toString`/`getScheme`/`getPath`/
 //! `isAbsolute` checks; no parsing beyond the scheme delimiter.
 
+use alloc::string::String;
 use alloc::vec;
+use alloc::vec::Vec;
 use oxjvm_classfile::flags::*;
 
 use crate::{boolean, class, field, int, method, object, receiver, ref_arg, string_arg, void};
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
-fn uri_text(vm: &Vm<'_>, this: ObjectRef) -> alloc::string::String {
+fn uri_text(vm: &Vm<'_>, this: ObjectRef) -> String {
     vm.read_string_field(this, vm.class_of(this), "string")
         .unwrap_or_default()
 }
 
-fn uri_scheme(text: &str) -> Option<alloc::string::String> {
+fn uri_scheme(text: &str) -> Option<String> {
     let index = text.find(':')?;
     Some(text[..index].into())
+}
+
+/// Percent-decode a URI path (`%20` becomes a space); malformed escapes stay as they are.
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let hex = core::str::from_utf8(&bytes[index + 1..index + 3])
+                .ok()
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+            if let Some(byte) = hex {
+                out.push(byte);
+                index += 3;
+                continue;
+            }
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn uri_init(
@@ -30,8 +54,28 @@ fn uri_init(
     void()
 }
 
-const URI_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const URI_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method("<init>", "(Ljava/lang/String;)V", ACC_PUBLIC, uri_init),
+    method(
+        "create",
+        "(Ljava/lang/String;)Ljava/net/URI;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = string_arg(vm, args[0])?;
+            let class = vm.resolve_class("java/net/URI")?;
+            let instance = vm.new_instance(class)?;
+            let (declaring, ctor) = vm
+                .find_method(class, "<init>", "(Ljava/lang/String;)V")
+                .ok_or_else(|| VmError::internal("URI lacks its constructor"))?;
+            let text = vm.make_string(&text)?;
+            vm.invoke_method(
+                declaring,
+                ctor,
+                vec![Value::Ref(instance), Value::Ref(text)],
+            )?;
+            object(instance)
+        },
+    ),
     method(
         "toString",
         "()Ljava/lang/String;",
@@ -59,9 +103,24 @@ const URI_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let text = uri_text(vm, receiver(args));
+            let path = match text.find(':') {
+                Some(index) => &text[index + 1..],
+                None => text.as_str(),
+            };
+            object(vm.make_string(&percent_decode(path))?)
+        },
+    ),
+    method(
+        "getRawPath",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = uri_text(vm, receiver(args));
             match text.find(':') {
-                Some(index) => object(vm.make_string(&text[index + 1..])?),
-                None => object(vm.make_string(&text)?),
+                Some(index) if !text[index + 1..].is_empty() => {
+                    object(vm.make_string(&text[index + 1..])?)
+                }
+                _ => object(ObjectRef::NULL),
             }
         },
     ),

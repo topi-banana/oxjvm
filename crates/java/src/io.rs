@@ -221,7 +221,7 @@ pub(crate) const FILTER_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PRINT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
+const PRINT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
     method(
         "<init>",
         "(Ljava/io/OutputStream;)V",
@@ -229,6 +229,36 @@ const PRINT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
         print_stream_init,
     ),
     method("<init>", "(I)V", ACC_PUBLIC, print_stream_init_kind),
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;Z)V",
+        ACC_PUBLIC,
+        print_stream_init,
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;ZLjava/lang/String;)V",
+        ACC_PUBLIC,
+        print_stream_init,
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/File;)V",
+        ACC_PUBLIC,
+        print_stream_init_file,
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/File;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        print_stream_init_file,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        print_stream_init_string,
+    ),
     method("print", "(Z)V", ACC_PUBLIC, |vm, _, args| {
         let text = if crate::bool_arg(args, 1) {
             "true"
@@ -355,14 +385,55 @@ fn print_stream_init(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let this = receiver(args);
+    print_stream_out(vm, receiver(args), ref_arg(args, 1))
+}
+
+/// Point a print stream at an `OutputStream`; the kind stays 0 so writes reach `out`.
+fn print_stream_out(vm: &mut Vm<'_>, this: ObjectRef, stream: ObjectRef) -> Result<Value, VmError> {
     let class = vm.class_of(this);
     if let Some((declaring, field)) = vm.find_field_opt(class, "out", "Ljava/io/OutputStream;") {
-        vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+        vm.set_instance_ref(this, declaring, field, stream);
     }
     let (declaring, field) = vm.find_field(class, "kind", "I")?;
-    vm.set_instance_int(this, declaring, field, 1);
+    vm.set_instance_int(this, declaring, field, 0);
     void()
+}
+
+/// `PrintStream(File)` / `PrintStream(File, String)`: a file output stream for the path.
+fn print_stream_init_file(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let path = crate::file::file_path(vm, ref_arg(args, 1));
+    let stream = new_file_output_stream(vm, &path)?;
+    print_stream_out(vm, receiver(args), stream)
+}
+
+/// `PrintStream(String)`: a file output stream for the path.
+fn print_stream_init_string(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let path = crate::string_arg(vm, args[1])?;
+    let stream = new_file_output_stream(vm, &path)?;
+    print_stream_out(vm, receiver(args), stream)
+}
+
+fn new_file_output_stream(vm: &mut Vm<'_>, path: &str) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/io/FileOutputStream")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, ctor) = vm
+        .find_method(class, "<init>", "(Ljava/lang/String;)V")
+        .ok_or_else(|| VmError::internal("FileOutputStream lacks its constructor"))?;
+    let text = vm.make_string(path)?;
+    vm.invoke_method(
+        declaring,
+        ctor,
+        vec![Value::Ref(instance), Value::Ref(text)],
+    )?;
+    Ok(instance)
 }
 
 fn print_stream_init_kind(
@@ -386,18 +457,47 @@ fn stream_of(vm: &Vm<'_>, print_stream: ObjectRef) -> oxjvm_platform::Stream {
     }
 }
 
+/// Write raw bytes to a print stream: through its `OutputStream` when it has one, to the
+/// host's stdout/stderr for the `System.out`/`System.err` streams otherwise.
+fn print_stream_write(vm: &mut Vm<'_>, this: ObjectRef, bytes: &[u8]) -> Result<Value, VmError> {
+    if this.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let class = vm.class_of(this);
+    let out = vm
+        .read_ref_field(this, class, "out", "Ljava/io/OutputStream;")
+        .unwrap_or(ObjectRef::NULL);
+    if !out.is_null() {
+        let array = write_bytes_array(vm, bytes)?;
+        let (declaring, method) = vm.resolve_virtual_method(out, "write", "([B)V")?;
+        vm.invoke_method(declaring, method, vec![Value::Ref(out), Value::Ref(array)])?;
+        return void();
+    }
+    let stream = stream_of(vm, this);
+    vm.write_host(stream, bytes);
+    void()
+}
+
+fn write_bytes_array(vm: &mut Vm<'_>, bytes: &[u8]) -> Result<ObjectRef, VmError> {
+    let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, bytes.len())?;
+    for (index, byte) in bytes.iter().enumerate() {
+        vm.array_set(
+            array,
+            index as i32,
+            Value::Int(i32::from(*byte as i8)),
+            false,
+        )?;
+    }
+    Ok(array)
+}
+
 /// Write a value to a print stream, flushing is left to the host.
 pub(crate) fn print_text(
     vm: &mut Vm<'_>,
     print_stream: ObjectRef,
     text: &str,
 ) -> Result<Value, VmError> {
-    if print_stream.is_null() {
-        return Err(vm.throw_new("java/lang/NullPointerException", None));
-    }
-    let stream = stream_of(vm, print_stream);
-    vm.write_host(stream, text.as_bytes());
-    void()
+    print_stream_write(vm, print_stream, text.as_bytes())
 }
 
 /// `PrintStream.printf`/`format`: the formatted string, without a newline.
@@ -427,13 +527,8 @@ fn object_array_elements(vm: &Vm<'_>, array: ObjectRef) -> Vec<ObjectRef> {
 }
 
 fn print_line(vm: &mut Vm<'_>, print_stream: ObjectRef, text: &str) -> Result<Value, VmError> {
-    if print_stream.is_null() {
-        return Err(vm.throw_new("java/lang/NullPointerException", None));
-    }
-    let stream = stream_of(vm, print_stream);
-    vm.write_host(stream, text.as_bytes());
-    vm.write_host(stream, b"\n");
-    void()
+    print_stream_write(vm, print_stream, text.as_bytes())?;
+    print_stream_write(vm, print_stream, b"\n")
 }
 
 fn print_chars(
@@ -484,13 +579,28 @@ pub(crate) const PRINT_STREAM: oxjvm_vm::NativeClass = class(
 // InputStream / ByteArray streams
 // -------------------------------------------------------------------------------------------
 
-const INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+const INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     method(
         "read",
         "()I",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
+    method("readAllBytes", "()[B", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let mut bytes = Vec::new();
+        loop {
+            let (declaring, method) = vm.resolve_virtual_method(this, "read", "()I")?;
+            let value = vm
+                .invoke_method(declaring, method, vec![Value::Ref(this)])?
+                .as_int();
+            if value < 0 {
+                break;
+            }
+            bytes.push(value as u8);
+        }
+        object(write_bytes_array(vm, &bytes)?)
+    }),
     method("read", "([B)I", ACC_PUBLIC, |vm, _, args| {
         let (declaring, method) = vm.resolve_virtual_method(receiver(args), "read", "([BII)I")?;
         vm.invoke_method(
@@ -580,7 +690,7 @@ pub(crate) const BYTE_ARRAY_INPUT_STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const BYTE_ARRAY_OUTPUT_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const BYTE_ARRAY_OUTPUT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method("<init>", "()V", ACC_PUBLIC, byte_array_output_init),
     method("<init>", "(I)V", ACC_PUBLIC, byte_array_output_init),
     method("write", "(I)V", ACC_PUBLIC, byte_array_output_write),
@@ -615,7 +725,64 @@ const BYTE_ARRAY_OUTPUT_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method("size", "()I", ACC_PUBLIC, |vm, _, args| {
         int(crate::lang::read_int_field(vm, receiver(args), "count"))
     }),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let (declaring, field) = vm.find_field(vm.class_of(this), "count", "I")?;
+        vm.set_instance_int(this, declaring, field, 0);
+        void()
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let bytes = byte_array_output_bytes(vm, receiver(args))?;
+            object(vm.make_string(&String::from_utf8_lossy(&bytes))?)
+        },
+    ),
+    method(
+        "toString",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let bytes = byte_array_output_bytes(vm, receiver(args))?;
+            object(vm.make_string(&String::from_utf8_lossy(&bytes))?)
+        },
+    ),
+    method(
+        "writeTo",
+        "(Ljava/io/OutputStream;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let bytes = byte_array_output_bytes(vm, receiver(args))?;
+            let stream = ref_arg(args, 1);
+            if stream.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let array = write_bytes_array(vm, &bytes)?;
+            let (declaring, method) = vm.resolve_virtual_method(stream, "write", "([B)V")?;
+            vm.invoke_method(
+                declaring,
+                method,
+                vec![Value::Ref(stream), Value::Ref(array)],
+            )?;
+            void()
+        },
+    ),
 ];
+
+/// The bytes a `ByteArrayOutputStream` has collected so far.
+fn byte_array_output_bytes(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Vec<u8>, VmError> {
+    let count = crate::lang::read_int_field(vm, this, "count").max(0);
+    let buffer = vm
+        .read_ref_field(this, vm.class_of(this), "buf", "[B")
+        .unwrap_or(ObjectRef::NULL);
+    let mut bytes = Vec::with_capacity(count as usize);
+    for index in 0..count {
+        bytes.push(vm.array_get(buffer, index)?.as_int() as u8);
+    }
+    Ok(bytes)
+}
 
 fn byte_array_output_init(
     vm: &mut Vm<'_>,
@@ -697,16 +864,71 @@ pub(crate) const READER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+const WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     method(
         "write",
         "(I)V",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
+    method(
+        "write",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        writer_write_string,
+    ),
+    method(
+        "write",
+        "(Ljava/lang/String;II)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = ref_arg(args, 1);
+            if text.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(text, "substring", "(II)Ljava/lang/String;")?;
+            let slice = vm.invoke_method(
+                class,
+                method,
+                vec![
+                    Value::Ref(text),
+                    Value::Int(int_arg(args, 2)),
+                    Value::Int(int_arg(args, 2) + int_arg(args, 3)),
+                ],
+            )?;
+            let this = receiver(args);
+            let (declaring, method) =
+                vm.resolve_virtual_method(this, "write", "(Ljava/lang/String;)V")?;
+            vm.invoke_method(declaring, method, vec![Value::Ref(this), slice])
+        },
+    ),
     method("flush", "()V", ACC_PUBLIC, |_, _, _| void()),
     method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
 ];
+
+/// `Writer.write(String)`: the units of the string through the abstract `write(int)`.
+fn writer_write_string(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let text = ref_arg(args, 1);
+    if text.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let value = vm.string_value(text).unwrap_or_default();
+    let this = receiver(args);
+    for unit in value.encode_utf16() {
+        let (declaring, method) = vm.resolve_virtual_method(this, "write", "(I)V")?;
+        vm.invoke_method(
+            declaring,
+            method,
+            vec![Value::Ref(this), Value::Int(i32::from(unit))],
+        )?;
+    }
+    void()
+}
 
 pub(crate) const WRITER: oxjvm_vm::NativeClass = class(
     "java/io/Writer",
@@ -722,7 +944,7 @@ pub(crate) const WRITER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PRINT_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const PRINT_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method(
         "<init>",
         "(Ljava/io/Writer;)V",
@@ -733,6 +955,51 @@ const PRINT_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
             let (declaring, field) = vm.find_field(class, "out", "Ljava/io/Writer;")?;
             vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
             void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/Writer;Z)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "out", "Ljava/io/Writer;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method(
+        "write",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = vm.string_or_empty(ref_arg(args, 1));
+            print_writer_text(vm, receiver(args), &text)
+        },
+    ),
+    method(
+        "write",
+        "(Ljava/lang/String;II)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = ref_arg(args, 1);
+            if text.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(text, "substring", "(II)Ljava/lang/String;")?;
+            let slice = vm.invoke_method(
+                class,
+                method,
+                vec![
+                    Value::Ref(text),
+                    Value::Int(int_arg(args, 2)),
+                    Value::Int(int_arg(args, 2) + int_arg(args, 3)),
+                ],
+            )?;
+            let value = vm.string_or_empty(slice.as_ref());
+            print_writer_text(vm, receiver(args), &value)
         },
     ),
     method(
@@ -767,6 +1034,24 @@ const PRINT_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         "(Ljava/io/File;)V",
         ACC_PUBLIC,
         print_writer_init_file,
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/File;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        print_writer_init_file,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        print_writer_init_string,
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;)V",
+        ACC_PUBLIC,
+        print_writer_init_stream,
     ),
     method(
         "<init>",
@@ -1161,10 +1446,22 @@ fn output_stream_writer_write_text(
     void()
 }
 
-const OUTPUT_STREAM_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const OUTPUT_STREAM_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     method(
         "<init>",
         "(Ljava/io/OutputStream;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "out", "Ljava/io/OutputStream;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;Ljava/lang/String;)V",
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
@@ -1512,10 +1809,21 @@ fn buffered_writer_call(
     vm.invoke_method(class, method, full)
 }
 
-const BUFFERED_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+const BUFFERED_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method(
         "<init>",
         "(Ljava/io/Writer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) = vm.find_field(vm.class_of(this), "out", "Ljava/io/Writer;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/Writer;I)V",
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);

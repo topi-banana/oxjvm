@@ -13,10 +13,26 @@ use crate::{
 };
 
 // -------------------------------------------------------------------------------------------
-// java.io.File
+// java.io.File / java.io.FileFilter
 // -------------------------------------------------------------------------------------------
 
-const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
+/// `java.io.FileFilter`: tests whether a path name should be accepted.
+pub(crate) const FILE_FILTER: oxjvm_vm::NativeClass = class(
+    "java/io/FileFilter",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[method(
+        "accept",
+        "(Ljava/io/File;)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    )],
+    None,
+);
+
+const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -239,6 +255,69 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
         },
     ),
     method(
+        "list",
+        "(Ljava/io/FilenameFilter;)[Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let filter = ref_arg(args, 1);
+            if filter.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let path = file_path(vm, receiver(args));
+            let Some(names) = fs_list(vm, &path) else {
+                return object(ObjectRef::NULL);
+            };
+            let directory = new_file(vm, &path)?;
+            let accepted = filter_names(vm, &names, |vm, name| {
+                let text = vm.make_string(name)?;
+                let (declaring, method) = vm.resolve_virtual_method(
+                    filter,
+                    "accept",
+                    "(Ljava/io/File;Ljava/lang/String;)Z",
+                )?;
+                Ok(vm
+                    .invoke_method(
+                        declaring,
+                        method,
+                        vec![Value::Ref(filter), directory, Value::Ref(text)],
+                    )?
+                    .as_int()
+                    != 0)
+            })?;
+            crate::lang::string_array(vm, &accepted)
+        },
+    ),
+    method(
+        "list",
+        "(Ljava/io/FileFilter;)[Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let filter = ref_arg(args, 1);
+            if filter.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let path = file_path(vm, receiver(args));
+            let Some(names) = fs_list(vm, &path) else {
+                return object(ObjectRef::NULL);
+            };
+            let accepted = filter_names(vm, &names, |vm, name| {
+                let full = join_paths(&path, name);
+                let entry = new_file(vm, &full)?;
+                let (declaring, method) =
+                    vm.resolve_virtual_method(filter, "accept", "(Ljava/io/File;)Z")?;
+                Ok(vm
+                    .invoke_method(
+                        declaring,
+                        method,
+                        vec![Value::Ref(filter), Value::Ref(entry.as_ref())],
+                    )?
+                    .as_int()
+                    != 0)
+            })?;
+            crate::lang::string_array(vm, &accepted)
+        },
+    ),
+    method(
         "listFiles",
         "()[Ljava/io/File;",
         ACC_PUBLIC,
@@ -255,6 +334,69 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
                 vm.array_set_ref(array, index, value.as_ref())?;
             }
             object(array)
+        },
+    ),
+    method(
+        "listFiles",
+        "(Ljava/io/FilenameFilter;)[Ljava/io/File;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let filter = ref_arg(args, 1);
+            if filter.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let path = file_path(vm, receiver(args));
+            let Some(names) = fs_list(vm, &path) else {
+                return object(ObjectRef::NULL);
+            };
+            let directory = new_file(vm, &path)?;
+            let accepted = filter_names(vm, &names, |vm, name| {
+                let text = vm.make_string(name)?;
+                let (declaring, method) = vm.resolve_virtual_method(
+                    filter,
+                    "accept",
+                    "(Ljava/io/File;Ljava/lang/String;)Z",
+                )?;
+                Ok(vm
+                    .invoke_method(
+                        declaring,
+                        method,
+                        vec![Value::Ref(filter), directory, Value::Ref(text)],
+                    )?
+                    .as_int()
+                    != 0)
+            })?;
+            file_array(vm, &accepted_paths(&path, &accepted))
+        },
+    ),
+    method(
+        "listFiles",
+        "(Ljava/io/FileFilter;)[Ljava/io/File;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let filter = ref_arg(args, 1);
+            if filter.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let path = file_path(vm, receiver(args));
+            let Some(names) = fs_list(vm, &path) else {
+                return object(ObjectRef::NULL);
+            };
+            let accepted = filter_names(vm, &names, |vm, name| {
+                let full = join_paths(&path, name);
+                let entry = new_file(vm, &full)?;
+                let (declaring, method) =
+                    vm.resolve_virtual_method(filter, "accept", "(Ljava/io/File;)Z")?;
+                Ok(vm
+                    .invoke_method(
+                        declaring,
+                        method,
+                        vec![Value::Ref(filter), Value::Ref(entry.as_ref())],
+                    )?
+                    .as_int()
+                    != 0)
+            })?;
+            file_array(vm, &accepted_paths(&path, &accepted))
         },
     ),
     method(
@@ -444,6 +586,37 @@ fn join_paths(parent: &str, child: &str) -> String {
     } else {
         alloc::format!("{parent}/{child}")
     }
+}
+
+/// The entries a listing filter accepts, as full paths.
+fn filter_names(
+    vm: &mut Vm<'_>,
+    names: &[String],
+    mut accept: impl FnMut(&mut Vm<'_>, &str) -> Result<bool, VmError>,
+) -> Result<Vec<String>, VmError> {
+    let mut accepted = Vec::new();
+    for name in names {
+        if accept(vm, name)? {
+            accepted.push(name.clone());
+        }
+    }
+    Ok(accepted)
+}
+
+/// The accepted names below `path` as full paths.
+fn accepted_paths(path: &str, names: &[String]) -> Vec<String> {
+    names.iter().map(|name| join_paths(path, name)).collect()
+}
+
+/// An array of `File` objects for the given paths.
+fn file_array(vm: &mut Vm<'_>, paths: &[String]) -> Result<Value, VmError> {
+    let file_class = vm.resolve_class("java/io/File")?;
+    let array = vm.allocate_object_array(file_class, paths.len())?;
+    for (index, path) in paths.iter().enumerate() {
+        let value = new_file(vm, path)?;
+        vm.array_set_ref(array, index, value.as_ref())?;
+    }
+    object(array)
 }
 
 pub(crate) fn parent_of_path(path: &str) -> Option<String> {
