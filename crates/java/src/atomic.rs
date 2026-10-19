@@ -417,3 +417,135 @@ pub(crate) const ATOMIC_BOOLEAN: oxjvm_vm::NativeClass = class(
     &ATOMIC_BOOLEAN_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// AtomicReference
+// -------------------------------------------------------------------------------------------
+
+fn atomic_reference_value(vm: &oxjvm_vm::Vm<'_>, this: oxjvm_vm::ObjectRef) -> oxjvm_vm::ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "value", "Ljava/lang/Object;")
+        .unwrap_or(oxjvm_vm::ObjectRef::NULL)
+}
+
+fn atomic_reference_set(
+    vm: &mut oxjvm_vm::Vm<'_>,
+    this: oxjvm_vm::ObjectRef,
+    value: oxjvm_vm::ObjectRef,
+) {
+    if let Ok((declaring, field)) = vm.find_field(vm.class_of(this), "value", "Ljava/lang/Object;")
+    {
+        vm.set_instance_ref(this, declaring, field, value);
+    }
+}
+
+const ATOMIC_REFERENCE_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        atomic_reference_set(vm, receiver(args), oxjvm_vm::ObjectRef::NULL);
+        void()
+    }),
+    method(
+        "<init>",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            atomic_reference_set(vm, receiver(args), crate::ref_arg(args, 1));
+            void()
+        },
+    ),
+    method(
+        "get",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| object(atomic_reference_value(vm, receiver(args))),
+    ),
+    method(
+        "set",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            atomic_reference_set(vm, receiver(args), crate::ref_arg(args, 1));
+            void()
+        },
+    ),
+    method(
+        "getAndSet",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            let this = receiver(args);
+            let previous = atomic_reference_value(vm, this);
+            atomic_reference_set(vm, this, crate::ref_arg(args, 1));
+            object(previous)
+        },
+    ),
+    method(
+        "compareAndSet",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Z",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            let this = receiver(args);
+            let expected = crate::ref_arg(args, 1);
+            let current = atomic_reference_value(vm, this);
+            if current == expected {
+                atomic_reference_set(vm, this, crate::ref_arg(args, 2));
+                boolean(true)
+            } else {
+                boolean(false)
+            }
+        },
+    ),
+    method(
+        "weakCompareAndSet",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Z",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            let this = receiver(args);
+            let expected = crate::ref_arg(args, 1);
+            let current = atomic_reference_value(vm, this);
+            if current == expected {
+                atomic_reference_set(vm, this, crate::ref_arg(args, 2));
+                boolean(true)
+            } else {
+                boolean(false)
+            }
+        },
+    ),
+    method(
+        "lazySet",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            atomic_reference_set(vm, receiver(args), crate::ref_arg(args, 1));
+            void()
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let value = atomic_reference_value(vm, receiver(args));
+            let text = vm.display_value(
+                &oxjvm_classfile::FieldType::Object("java/lang/Object".into()),
+                oxjvm_vm::Value::Ref(value),
+            )?;
+            object(vm.make_string(&text)?)
+        },
+    ),
+];
+
+/// `AtomicReference`: a single volatile reference field.
+pub(crate) const ATOMIC_REFERENCE: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/atomic/AtomicReference",
+    Some("java/lang/Object"),
+    &["java/io/Serializable"],
+    ACC_PUBLIC,
+    &[field(
+        "value",
+        "Ljava/lang/Object;",
+        ACC_PRIVATE | ACC_VOLATILE,
+        None,
+    )],
+    &ATOMIC_REFERENCE_METHODS,
+    None,
+);

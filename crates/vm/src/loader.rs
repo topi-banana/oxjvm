@@ -62,6 +62,17 @@ fn annotation_default(attributes: &[Attribute]) -> Option<ElementValue> {
         })
 }
 
+/// The generic `Signature` attribute text, when present.
+fn signature_text(attributes: &[Attribute], pool: &ConstantPool) -> Option<String> {
+    attributes
+        .iter()
+        .find_map(|attribute| match &attribute.data {
+            AttributeData::Signature(index) => pool.utf8(*index).ok(),
+            _ => None,
+        })
+        .map(str::to_string)
+}
+
 /// A resolved method reference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResolvedMethod {
@@ -229,6 +240,7 @@ impl<'a> Vm<'a> {
                 is_static,
                 slot,
                 constant,
+                signature: signature_text(&field.attributes, &parsed.constant_pool),
                 annotations: visible_annotations(&field.attributes),
             });
         }
@@ -287,6 +299,7 @@ impl<'a> Vm<'a> {
                 native: None,
                 exceptions,
                 parameter_names,
+                signature: signature_text(&method.attributes, &parsed.constant_pool),
                 annotations: visible_annotations(&method.attributes),
                 parameter_annotations: visible_parameter_annotations(&method.attributes),
                 annotation_default: annotation_default(&method.attributes),
@@ -575,6 +588,7 @@ impl<'a> Vm<'a> {
                 is_static,
                 slot,
                 constant: None,
+                signature: None,
                 annotations: Vec::new(),
             });
         }
@@ -590,6 +604,7 @@ impl<'a> Vm<'a> {
                 native: Some(method.native),
                 exceptions: Vec::new(),
                 parameter_names: Vec::new(),
+                signature: None,
                 annotations: Vec::new(),
                 parameter_annotations: Vec::new(),
                 annotation_default: None,
@@ -1617,6 +1632,7 @@ impl<'a> Vm<'a> {
                 is_static: false,
                 slot,
                 constant: None,
+                signature: None,
                 annotations: Vec::new(),
             });
         }
@@ -1630,6 +1646,7 @@ impl<'a> Vm<'a> {
             native: Some(lambda_constructor_native),
             exceptions: Vec::new(),
             parameter_names: Vec::new(),
+            signature: None,
             annotations: Vec::new(),
             parameter_annotations: Vec::new(),
             annotation_default: None,
@@ -1643,6 +1660,7 @@ impl<'a> Vm<'a> {
             native: Some(lambda_invoke_native),
             exceptions: Vec::new(),
             parameter_names: Vec::new(),
+            signature: None,
             annotations: Vec::new(),
             parameter_annotations: Vec::new(),
             annotation_default: None,
@@ -1809,9 +1827,15 @@ impl<'a> Vm<'a> {
                 }
             }
             8 => {
+                // Instantiate the *referenced* class, but invoke the constructor where it is
+                // declared: constructors are not inherited, yet native classes may declare
+                // theirs on a superclass.
                 let resolved = self.resolve_method_ref(class, reference)?;
+                let target = self.method_ref_class(class, reference)?;
                 MethodHandleValue::New {
-                    class: resolved.class,
+                    class: target,
+                    declaring: resolved.class,
+                    method: resolved.method,
                 }
             }
             other => {
@@ -1821,6 +1845,32 @@ impl<'a> Vm<'a> {
                 ));
             }
         })
+    }
+
+    /// The class named by a `Methodref`/`InterfaceMethodref` constant.
+    fn method_ref_class(&mut self, class: ClassId, cp_index: u16) -> Result<ClassId, VmError> {
+        let name = {
+            let target_class = self.classes.get(class);
+            let pool = &target_class.constant_pool;
+            let info = pool.get(cp_index).map_err(|error| {
+                VmError::invalid_code(target_class.name.clone(), error.to_string())
+            })?;
+            match info {
+                CpInfo::Methodref { class, .. } | CpInfo::InterfaceMethodref { class, .. } => pool
+                    .class_name(*class)
+                    .map_err(|error| {
+                        VmError::invalid_code(target_class.name.clone(), error.to_string())
+                    })?
+                    .to_string(),
+                other => {
+                    return Err(VmError::invalid_code(
+                        target_class.name.clone(),
+                        format!("method reference names {}", other.kind_name()),
+                    ));
+                }
+            }
+        };
+        self.resolve_class(&name)
     }
 
     /// Invoke a resolved method handle value.
@@ -1857,22 +1907,15 @@ impl<'a> Vm<'a> {
             MethodHandleValue::Special { class, method } => {
                 self.invoke_method(*class, *method, args.to_vec())
             }
-            MethodHandleValue::New { class } => {
+            MethodHandleValue::New {
+                class,
+                declaring,
+                method,
+            } => {
                 let object = self.new_instance(*class)?;
-                let descriptor = {
-                    let mut text = String::from("(");
-                    for value in args {
-                        text.push_str(&descriptor_of_value(self, value));
-                    }
-                    text.push_str(")V");
-                    text
-                };
-                let (declaring, constructor) = self
-                    .find_method(*class, "<init>", &descriptor)
-                    .ok_or_else(|| self.throw_new("java/lang/NoSuchMethodError", Some("<init>")))?;
                 let mut call_args = vec![Value::Ref(object)];
                 call_args.extend_from_slice(args);
-                self.invoke_method(declaring, constructor, call_args)?;
+                self.invoke_method(*declaring, *method, call_args)?;
                 Ok(Value::Ref(object))
             }
             MethodHandleValue::StaticGetter { class, field } => {
@@ -1920,28 +1963,6 @@ impl<'a> Vm<'a> {
                     Ok(value)
                 } else {
                     Err(self.throw_new("java/lang/ClassCastException", None))
-                }
-            }
-        }
-    }
-}
-
-/// The descriptor of a runtime value, used to build `<init>` descriptors for reflective calls.
-pub(crate) fn descriptor_of_value(vm: &Vm<'_>, value: &Value) -> String {
-    match value {
-        Value::Int(_) => "I".into(),
-        Value::Long(_) => "J".into(),
-        Value::Float(_) => "F".into(),
-        Value::Double(_) => "D".into(),
-        Value::Ref(reference) => {
-            if reference.is_null() {
-                "Ljava/lang/Object;".into()
-            } else {
-                let name = vm.class_name(vm.class_of(*reference));
-                if name.starts_with('[') {
-                    name.into()
-                } else {
-                    alloc::format!("L{name};")
                 }
             }
         }

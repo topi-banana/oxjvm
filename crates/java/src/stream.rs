@@ -167,7 +167,7 @@ fn stream_get(vm: &mut Vm<'_>, this: ObjectRef) -> Vec<ObjectRef> {
     stream_elements(vm, this)
 }
 
-const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
+const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
     method(
         "of",
         "([Ljava/lang/Object;)Ljava/util/stream/Stream;",
@@ -233,6 +233,18 @@ const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
         abstract_method_pub,
     ),
     method(
+        "flatMap",
+        "(Ljava/util/function/Function;)Ljava/util/stream/Stream;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "peek",
+        "(Ljava/util/function/Consumer;)Ljava/util/stream/Stream;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
         "forEach",
         "(Ljava/util/function/Consumer;)V",
         ACC_PUBLIC | ACC_ABSTRACT,
@@ -289,6 +301,18 @@ const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
     method(
         "findAny",
         "()Ljava/util/Optional;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "reduce",
+        "(Ljava/lang/Object;Ljava/util/function/BinaryOperator;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "reduce",
+        "(Ljava/util/function/BinaryOperator;)Ljava/util/Optional;",
         ACC_PUBLIC | ACC_ABSTRACT,
         abstract_method_pub,
     ),
@@ -413,7 +437,7 @@ pub(crate) const STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const OXJVM_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
+const OXJVM_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
     method(
         "filter",
         "(Ljava/util/function/Predicate;)Ljava/util/stream/Stream;",
@@ -481,6 +505,33 @@ const OXJVM_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
             let elements = stream_get(vm, receiver(args));
             let sorted = sort_elements(vm, elements, Some(ref_arg(args, 1)))?;
             object(stream_from(vm, sorted)?)
+        },
+    ),
+    method(
+        "flatMap",
+        "(Ljava/util/function/Function;)Ljava/util/stream/Stream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let mapper = ref_arg(args, 1);
+            let mut mapped_elements = Vec::new();
+            for element in stream_get(vm, receiver(args)) {
+                let mapped = call_apply1(vm, mapper, element)?;
+                mapped_elements.extend(stream_elements(vm, mapped));
+            }
+            object(stream_from(vm, mapped_elements)?)
+        },
+    ),
+    method(
+        "peek",
+        "(Ljava/util/function/Consumer;)Ljava/util/stream/Stream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let consumer = ref_arg(args, 1);
+            let elements = stream_get(vm, receiver(args));
+            for element in &elements {
+                call_accept(vm, consumer, *element)?;
+            }
+            object(stream_from(vm, elements)?)
         },
     ),
     method(
@@ -587,6 +638,18 @@ const OXJVM_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
         "()Ljava/util/Optional;",
         ACC_PUBLIC,
         |vm, _, args| stream_find(vm, args),
+    ),
+    method(
+        "reduce",
+        "(Ljava/lang/Object;Ljava/util/function/BinaryOperator;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| stream_reduce_with_identity(vm, args),
+    ),
+    method(
+        "reduce",
+        "(Ljava/util/function/BinaryOperator;)Ljava/util/Optional;",
+        ACC_PUBLIC,
+        |vm, _, args| stream_reduce(vm, args),
     ),
     method(
         "limit",
@@ -760,6 +823,48 @@ fn stream_find(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
     }
 }
 
+/// `Stream.reduce(identity, accumulator)`: left fold starting from the identity.
+fn stream_reduce_with_identity(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let mut result = ref_arg(args, 1);
+    let operator = ref_arg(args, 2);
+    for element in stream_get(vm, receiver(args)) {
+        result = stream_apply_binary(vm, operator, result, element)?;
+    }
+    object(result)
+}
+
+/// `Stream.reduce(accumulator)`: left fold, empty when the stream is empty.
+fn stream_reduce(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let operator = ref_arg(args, 1);
+    let mut elements = stream_get(vm, receiver(args)).into_iter();
+    let Some(mut result) = elements.next() else {
+        return crate::optional::optional_empty_value(vm);
+    };
+    for element in elements {
+        result = stream_apply_binary(vm, operator, result, element)?;
+    }
+    crate::optional::optional_new(vm, result)
+}
+
+fn stream_apply_binary(
+    vm: &mut Vm<'_>,
+    operator: ObjectRef,
+    left: ObjectRef,
+    right: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    let (class, method) = vm.resolve_virtual_method(
+        operator,
+        "apply",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+    )?;
+    let result = vm.invoke_method(
+        class,
+        method,
+        vec![Value::Ref(operator), Value::Ref(left), Value::Ref(right)],
+    )?;
+    Ok(result.as_ref())
+}
+
 pub(crate) const OXJVM_STREAM: oxjvm_vm::NativeClass = class(
     "java/util/stream/OxjvmStream",
     Some("java/lang/Object"),
@@ -827,6 +932,8 @@ const COLLECT_AVERAGING_DOUBLE: i32 = 14;
 const COLLECT_TO_UNMODIFIABLE_MAP: i32 = 15;
 const COLLECT_CUSTOM: i32 = 16;
 const COLLECT_REDUCING: i32 = 17;
+const COLLECT_PARTITIONING: i32 = 18;
+const COLLECT_COLLECTING_AND_THEN: i32 = 19;
 
 fn collector_new(vm: &mut Vm<'_>, kind: i32) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class(COLLECTOR_CLASS)?;
@@ -1153,6 +1260,37 @@ fn collect_elements(
             }
             object(result)
         }
+        COLLECT_PARTITIONING => {
+            let predicate = collector_get(vm, collector, "f1");
+            let mut yes = Vec::new();
+            let mut no = Vec::new();
+            for element in &elements {
+                if call_test(vm, predicate, *element)? {
+                    yes.push(*element);
+                } else {
+                    no.push(*element);
+                }
+            }
+            let map = crate::util::hash_map_new(vm)?;
+            let boolean = vm.resolve_class("java/lang/Boolean")?;
+            let true_key = vm
+                .read_static_ref_if_set(boolean, "TRUE", "Ljava/lang/Boolean;")
+                .unwrap_or(ObjectRef::NULL);
+            let false_key = vm
+                .read_static_ref_if_set(boolean, "FALSE", "Ljava/lang/Boolean;")
+                .unwrap_or(ObjectRef::NULL);
+            let yes_list = crate::util::array_list_from(vm, &yes)?;
+            let no_list = crate::util::array_list_from(vm, &no)?;
+            crate::util::hash_map_insert(vm, map, true_key, yes_list)?;
+            crate::util::hash_map_insert(vm, map, false_key, no_list)?;
+            object(map)
+        }
+        COLLECT_COLLECTING_AND_THEN => {
+            let downstream = collector_get(vm, collector, "f4");
+            let finisher = collector_get(vm, collector, "f2");
+            let result = collect_elements(vm, downstream, elements)?;
+            object(call_apply1(vm, finisher, result.as_ref())?)
+        }
         COLLECT_CUSTOM => generic_collect(vm, collector, elements),
         _ => generic_collect(vm, collector, elements),
     }
@@ -1292,7 +1430,7 @@ pub(crate) const COLLECTOR: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const COLLECTORS_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
+const COLLECTORS_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
     method(
         "toList",
         "()Ljava/util/stream/Collector;",
@@ -1324,6 +1462,27 @@ const COLLECTORS_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
         |vm, _, args| {
             let collector = collector_new(vm, COLLECT_TO_COLLECTION)?;
             collector_set(vm, collector, "f4", ref_arg(args, 0));
+            object(collector)
+        },
+    ),
+    method(
+        "partitioningBy",
+        "(Ljava/util/function/Predicate;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_PARTITIONING)?;
+            collector_set(vm, collector, "f1", ref_arg(args, 0));
+            object(collector)
+        },
+    ),
+    method(
+        "collectingAndThen",
+        "(Ljava/util/stream/Collector;Ljava/util/function/Function;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_COLLECTING_AND_THEN)?;
+            collector_set(vm, collector, "f4", ref_arg(args, 0));
+            collector_set(vm, collector, "f2", ref_arg(args, 1));
             object(collector)
         },
     ),

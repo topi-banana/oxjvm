@@ -206,7 +206,7 @@ macro_rules! annotation_interface {
         pub(crate) const $constant: oxjvm_vm::NativeClass = class(
             $name,
             Some("java/lang/Object"),
-            &[],
+            &["java/lang/annotation/Annotation"],
             ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
             &[],
             $methods,
@@ -452,17 +452,20 @@ fn ensure_values_field(vm: &mut Vm<'_>, class: ClassId) {
         is_static: false,
         slot,
         constant: None,
+        signature: None,
         annotations: Vec::new(),
     });
 }
 
-/// Back every abstract element method with [`annotation_element_native`].
+/// Back every element method with [`annotation_element_native`].
+///
+/// Native annotation interfaces (such as `java.lang.annotation.Repeatable`) register their
+/// elements with the abstract stub, which [`Method::is_abstract`] does not report as abstract
+/// because it has a native body; overwrite it unconditionally.
 fn install_element_natives(vm: &mut Vm<'_>, class: ClassId, elements: &[ElementMethod]) {
     for element in elements {
         let method = &mut vm.classes.get_mut(class).methods[element.index];
-        if method.is_abstract() {
-            method.native = Some(annotation_element_native);
-        }
+        method.native = Some(annotation_element_native);
     }
 }
 

@@ -14,7 +14,7 @@ use crate::{class, field, method, object, receiver, ref_arg, void};
 // Throwable
 // -------------------------------------------------------------------------------------------
 
-const THROWABLE_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+const THROWABLE_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method("<init>", "()V", ACC_PUBLIC, exception_ctor),
     method(
         "<init>",
@@ -25,6 +25,12 @@ const THROWABLE_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method(
         "<init>",
         "(Ljava/lang/String;Ljava/lang/Throwable;)V",
+        ACC_PUBLIC,
+        exception_ctor,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/Throwable;ZZ)V",
         ACC_PUBLIC,
         exception_ctor,
     ),
@@ -77,6 +83,12 @@ const THROWABLE_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
         throwable_print_stack_trace_stream,
     ),
     method(
+        "printStackTrace",
+        "(Ljava/io/PrintWriter;)V",
+        ACC_PUBLIC,
+        throwable_print_stack_trace_writer,
+    ),
+    method(
         "fillInStackTrace",
         "()Ljava/lang/Throwable;",
         ACC_PUBLIC,
@@ -98,7 +110,74 @@ const THROWABLE_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
         ACC_PUBLIC,
         throwable_set_stack_trace,
     ),
+    method(
+        "addSuppressed",
+        "(Ljava/lang/Throwable;)V",
+        ACC_PUBLIC,
+        throwable_add_suppressed,
+    ),
+    method(
+        "getSuppressed",
+        "()[Ljava/lang/Throwable;",
+        ACC_PUBLIC,
+        throwable_get_suppressed,
+    ),
 ];
+
+fn throwable_add_suppressed(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let suppressed = ref_arg(args, 1);
+    if suppressed.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    if suppressed == this {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("Self-suppression not permitted"),
+        ));
+    }
+    let class = vm.class_of(this);
+    let existing = vm
+        .read_ref_field(this, class, "suppressed", "[Ljava/lang/Throwable;")
+        .unwrap_or(ObjectRef::NULL);
+    let throwable = vm.resolve_class("java/lang/Throwable")?;
+    let length = if existing.is_null() {
+        0
+    } else {
+        vm.array_length(existing)?
+    };
+    let array = vm.allocate_object_array(throwable, length + 1)?;
+    for index in 0..length {
+        let element = vm.array_get(existing, index as i32)?.as_ref();
+        vm.array_set_ref(array, index, element)?;
+    }
+    vm.array_set_ref(array, length, suppressed)?;
+    let (declaring, field) = vm.find_field(class, "suppressed", "[Ljava/lang/Throwable;")?;
+    vm.set_instance_ref(this, declaring, field, array);
+    void()
+}
+
+fn throwable_get_suppressed(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let class = vm.class_of(this);
+    let array = vm
+        .read_ref_field(this, class, "suppressed", "[Ljava/lang/Throwable;")
+        .unwrap_or(ObjectRef::NULL);
+    if array.is_null() {
+        let throwable = vm.resolve_class("java/lang/Throwable")?;
+        let empty = vm.allocate_object_array(throwable, 0)?;
+        return object(empty);
+    }
+    object(array)
+}
 
 /// The generic exception constructor: message/cause bookkeeping in `Throwable`, delegation to the
 /// superclass constructor otherwise.
@@ -115,15 +194,15 @@ pub(crate) fn exception_ctor(
     let throwable = vm.resolve_class("java/lang/Throwable")?;
     if class == throwable {
         let detail = match descriptor.as_str() {
-            "(Ljava/lang/String;)V" | "(Ljava/lang/String;Ljava/lang/Throwable;)V" => {
-                ref_arg(args, 1)
-            }
+            "(Ljava/lang/String;)V"
+            | "(Ljava/lang/String;Ljava/lang/Throwable;)V"
+            | "(Ljava/lang/String;Ljava/lang/Throwable;ZZ)V" => ref_arg(args, 1),
             _ => ObjectRef::NULL,
         };
         let cause = match descriptor.as_str() {
-            "(Ljava/lang/String;Ljava/lang/Throwable;)V" | "(Ljava/lang/Throwable;)V" => {
-                ref_arg(args, args.len() - 1)
-            }
+            "(Ljava/lang/String;Ljava/lang/Throwable;)V"
+            | "(Ljava/lang/String;Ljava/lang/Throwable;ZZ)V"
+            | "(Ljava/lang/Throwable;)V" => ref_arg(args, 2),
             _ => ObjectRef::NULL,
         };
         let (declaring, field) = vm.find_field(class, "detailMessage", "Ljava/lang/String;")?;
@@ -235,6 +314,24 @@ fn throwable_print_stack_trace_stream(
     void()
 }
 
+/// `printStackTrace(PrintWriter)`: the writer receives the same text as `System.err` would.
+fn throwable_print_stack_trace_writer(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let writer = ref_arg(args, 1);
+    if !writer.is_null() {
+        let text = vm.throwable_text(this);
+        let string = vm.make_string(&text)?;
+        let (class, method) =
+            vm.resolve_virtual_method(writer, "print", "(Ljava/lang/String;)V")?;
+        vm.invoke_method(class, method, vec![Value::Ref(writer), Value::Ref(string)])?;
+    }
+    void()
+}
+
 fn throwable_get_stack_trace(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
@@ -326,6 +423,7 @@ pub(crate) const THROWABLE: oxjvm_vm::NativeClass = class(
     &[
         field("detailMessage", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("cause", "Ljava/lang/Throwable;", ACC_PRIVATE, None),
+        field("suppressed", "[Ljava/lang/Throwable;", ACC_PRIVATE, None),
     ],
     &THROWABLE_METHODS,
     None,
@@ -335,7 +433,7 @@ pub(crate) const THROWABLE: oxjvm_vm::NativeClass = class(
 // The exception hierarchy
 // -------------------------------------------------------------------------------------------
 
-const EXCEPTION_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+const EXCEPTION_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     method("<init>", "()V", ACC_PUBLIC, exception_ctor),
     method(
         "<init>",
@@ -346,6 +444,12 @@ const EXCEPTION_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
     method(
         "<init>",
         "(Ljava/lang/String;Ljava/lang/Throwable;)V",
+        ACC_PUBLIC,
+        exception_ctor,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/Throwable;ZZ)V",
         ACC_PUBLIC,
         exception_ctor,
     ),

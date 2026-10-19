@@ -364,6 +364,21 @@ impl<'a> Vm<'a> {
             .and_then(|parsed| parsed.returns)
     }
 
+    /// A ` on ReceiverClass` suffix for dispatch errors, when the first argument is a reference.
+    fn receiver_note(&self, args: &[Value]) -> String {
+        let Some(Value::Ref(reference)) = args.first() else {
+            return String::new();
+        };
+        if reference.is_null() {
+            return String::new();
+        }
+        self.heap
+            .get(*reference)
+            .map_or_else(String::new, |object| {
+                alloc::format!(" on {}", self.classes.get(object.class).name)
+            })
+    }
+
     /// Invoke a method and wait for its result. This is the API natives and the launcher use; it
     /// handles monitor contention and scheduling internally.
     ///
@@ -382,10 +397,11 @@ impl<'a> Vm<'a> {
         }
         if definition.is_abstract() {
             let name = self.classes.get(class).name.clone();
+            let note = self.receiver_note(&args);
             return Err(self.throw_new(
                 "java/lang/AbstractMethodError",
                 Some(&alloc::format!(
-                    "{name}.{}{}",
+                    "{name}.{}{}{note}",
                     definition.name,
                     definition.descriptor
                 )),
@@ -487,10 +503,11 @@ impl<'a> Vm<'a> {
         let definition = self.classes.get(class).methods[method as usize].clone();
         if definition.is_abstract() {
             let name = self.classes.get(class).name.clone();
+            let note = self.receiver_note(&args);
             return Err(self.throw_new(
                 "java/lang/AbstractMethodError",
                 Some(&alloc::format!(
-                    "{name}.{}{}",
+                    "{name}.{}{}{note}",
                     definition.name,
                     definition.descriptor
                 )),

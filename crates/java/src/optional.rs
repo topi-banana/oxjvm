@@ -7,7 +7,7 @@ use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
 use crate::{boolean, class, field, method, object, receiver, ref_arg, void};
 
-const OPTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+const OPTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
     method(
         "<init>",
         "(Ljava/lang/Object;)V",
@@ -130,6 +130,33 @@ const OPTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
                 vm.resolve_virtual_method(consumer, "accept", "(Ljava/lang/Object;)V")?;
             vm.invoke_method(class, method, vec![Value::Ref(consumer), Value::Ref(value)])?;
             void()
+        },
+    ),
+    method(
+        "flatMap",
+        "(Ljava/util/function/Function;)Ljava/util/Optional;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let value = optional_value(vm, receiver(args));
+            let function = ref_arg(args, 1);
+            if function.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            if value.is_null() {
+                return optional_new(vm, ObjectRef::NULL);
+            }
+            let (class, method) = vm.resolve_virtual_method(
+                function,
+                "apply",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+            )?;
+            let mapped =
+                vm.invoke_method(class, method, vec![Value::Ref(function), Value::Ref(value)])?;
+            let mapped = mapped.as_ref();
+            if mapped.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(mapped)
         },
     ),
     method(

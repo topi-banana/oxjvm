@@ -69,6 +69,8 @@ pub struct Field {
     pub slot: u16,
     /// The `ConstantValue` attribute value, resolved at preparation time.
     pub constant: Option<Value>,
+    /// The generic `Signature` attribute, when present.
+    pub signature: Option<String>,
     /// `RuntimeVisibleAnnotations`, kept unresolved against the declaring class's pool.
     pub annotations: Vec<oxjvm_classfile::Annotation>,
 }
@@ -92,6 +94,8 @@ pub struct Method {
     pub exceptions: Vec<ClassId>,
     /// Parameter names from `MethodParameters`/`LocalVariableTable`, when present.
     pub parameter_names: Vec<Option<String>>,
+    /// The generic `Signature` attribute, when present.
+    pub signature: Option<String>,
     /// `RuntimeVisibleAnnotations`, kept unresolved against the declaring class's pool.
     pub annotations: Vec<oxjvm_classfile::Annotation>,
     /// `RuntimeVisibleParameterAnnotations`, one entry per parameter.

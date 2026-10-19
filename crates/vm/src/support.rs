@@ -361,7 +361,11 @@ impl<'a> Vm<'a> {
         };
         let definition = &self.classes.get(declaring).methods[method as usize];
         Ok(if constructor {
-            MethodHandleValue::New { class: declaring }
+            MethodHandleValue::New {
+                class: declaring,
+                declaring,
+                method,
+            }
         } else if definition.is_static() || static_only {
             MethodHandleValue::Static {
                 class: declaring,

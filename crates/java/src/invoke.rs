@@ -662,7 +662,7 @@ macro_rules! functional_interface {
 // Each interface carries the same shape; the dispatcher selects by descriptor, so a shared array
 // with one abstract method of each common descriptor is sufficient and lets a single class serve
 // every functional interface users link against.
-const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method(
         "apply",
         "(Ljava/lang/Object;)Ljava/lang/Object;",
@@ -747,7 +747,125 @@ const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
+    method(
+        "identity",
+        "()Ljava/util/function/Function;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/util/function/OxjvmIdentity")?;
+            let instance = vm.new_instance(class)?;
+            object(instance)
+        },
+    ),
+    method(
+        "and",
+        "(Ljava/util/function/Predicate;)Ljava/util/function/Predicate;",
+        ACC_PUBLIC,
+        |vm, _, args| predicate_combine(vm, 0, receiver(args), ref_arg(args, 1)),
+    ),
+    method(
+        "or",
+        "(Ljava/util/function/Predicate;)Ljava/util/function/Predicate;",
+        ACC_PUBLIC,
+        |vm, _, args| predicate_combine(vm, 1, receiver(args), ref_arg(args, 1)),
+    ),
+    method(
+        "negate",
+        "()Ljava/util/function/Predicate;",
+        ACC_PUBLIC,
+        |vm, _, args| predicate_combine(vm, 2, receiver(args), ObjectRef::NULL),
+    ),
 ];
+
+fn predicate_combine(
+    vm: &mut Vm<'_>,
+    op: i32,
+    left: ObjectRef,
+    right: ObjectRef,
+) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/util/function/OxjvmPredicate")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "op", "I")?;
+    vm.set_instance_int(instance, declaring, field, op);
+    let (declaring, field) = vm.find_field(class, "left", "Ljava/util/function/Predicate;")?;
+    vm.set_instance_ref(instance, declaring, field, left);
+    let (declaring, field) = vm.find_field(class, "right", "Ljava/util/function/Predicate;")?;
+    vm.set_instance_ref(instance, declaring, field, right);
+    object(instance)
+}
+
+fn predicate_test(
+    vm: &mut Vm<'_>,
+    predicate: ObjectRef,
+    value: ObjectRef,
+) -> Result<bool, VmError> {
+    let (class, method) = vm.resolve_virtual_method(predicate, "test", "(Ljava/lang/Object;)Z")?;
+    Ok(vm
+        .invoke_method(
+            class,
+            method,
+            alloc::vec![Value::Ref(predicate), Value::Ref(value)],
+        )?
+        .as_int()
+        != 0)
+}
+
+const PREDICATE_COMBINER_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "test",
+    "(Ljava/lang/Object;)Z",
+    ACC_PUBLIC,
+    |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let op = crate::lang::read_int_field(vm, this, "op");
+        let left = vm
+            .read_ref_field(this, class, "left", "Ljava/util/function/Predicate;")
+            .unwrap_or(ObjectRef::NULL);
+        let right = vm
+            .read_ref_field(this, class, "right", "Ljava/util/function/Predicate;")
+            .unwrap_or(ObjectRef::NULL);
+        let value = ref_arg(args, 1);
+        let result = match op {
+            0 => predicate_test(vm, left, value)? && predicate_test(vm, right, value)?,
+            1 => predicate_test(vm, left, value)? || predicate_test(vm, right, value)?,
+            _ => !predicate_test(vm, left, value)?,
+        };
+        crate::boolean(result)
+    },
+)];
+
+/// A composite `Predicate` from `and`, `or`, and `negate`.
+pub(crate) const PREDICATE_COMBINER: oxjvm_vm::NativeClass = class(
+    "java/util/function/OxjvmPredicate",
+    Some("java/lang/Object"),
+    &["java/util/function/Predicate"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[
+        field("op", "I", ACC_PRIVATE, None),
+        field("left", "Ljava/util/function/Predicate;", ACC_PRIVATE, None),
+        field("right", "Ljava/util/function/Predicate;", ACC_PRIVATE, None),
+    ],
+    &PREDICATE_COMBINER_METHODS,
+    None,
+);
+
+const IDENTITY_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "apply",
+    "(Ljava/lang/Object;)Ljava/lang/Object;",
+    ACC_PUBLIC,
+    |_, _, args| object(ref_arg(args, 1)),
+)];
+
+/// The receiver `Function.identity()` returns: stateless, returning its argument unchanged.
+pub(crate) const OJVM_IDENTITY: oxjvm_vm::NativeClass = class(
+    "java/util/function/OxjvmIdentity",
+    Some("java/lang/Object"),
+    &["java/util/function/Function"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[],
+    &IDENTITY_METHODS,
+    None,
+);
 
 functional_interface!(FUNCTION, "java/util/function/Function");
 functional_interface!(BIFUNCTION, "java/util/function/BiFunction");

@@ -239,7 +239,7 @@ pub(crate) const OBJECT: oxjvm_vm::NativeClass = class(
 // Class
 // -------------------------------------------------------------------------------------------
 
-const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
+const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 56] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -257,6 +257,12 @@ const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         class_get_canonical_name,
+    ),
+    method(
+        "getTypeName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        class_get_type_name,
     ),
     method(
         "getSuperclass",
@@ -277,22 +283,103 @@ const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
         class_get_component_type,
     ),
     method("isInterface", "()Z", ACC_PUBLIC, |vm, _, args| {
-        boolean(vm.classes.get(vm.class_of(receiver(args))).is_interface())
+        let class = class_argument(vm, receiver(args))?;
+        boolean(vm.classes.get(class).is_interface())
     }),
     method("isArray", "()Z", ACC_PUBLIC, |vm, _, args| {
-        boolean(vm.classes.get(vm.class_of(receiver(args))).kind == oxjvm_vm::ClassKind::Array)
+        let class = class_argument(vm, receiver(args))?;
+        boolean(vm.classes.get(class).kind == oxjvm_vm::ClassKind::Array)
     }),
     method("isPrimitive", "()Z", ACC_PUBLIC, |vm, _, args| {
-        boolean(vm.classes.get(vm.class_of(receiver(args))).kind == oxjvm_vm::ClassKind::Primitive)
+        let class = class_argument(vm, receiver(args))?;
+        boolean(vm.classes.get(class).kind == oxjvm_vm::ClassKind::Primitive)
     }),
     method("isEnum", "()Z", ACC_PUBLIC, |vm, _, args| {
-        boolean(vm.classes.get(vm.class_of(receiver(args))).is_enum)
+        let class = class_argument(vm, receiver(args))?;
+        boolean(vm.classes.get(class).is_enum)
     }),
+    method(
+        "getEnumConstants",
+        "()[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        class_get_enum_constants,
+    ),
     method("isSynthetic", "()Z", ACC_PUBLIC, |vm, _, args| {
-        boolean(vm.classes.get(vm.class_of(receiver(args))).access_flags & ACC_SYNTHETIC != 0)
+        let class = class_argument(vm, receiver(args))?;
+        boolean(vm.classes.get(class).access_flags & ACC_SYNTHETIC != 0)
+    }),
+    method("isMemberClass", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let class = class_argument(vm, receiver(args))?;
+        boolean(vm.classes.get(class).declaring_class_name.is_some())
+    }),
+    method(
+        "getClasses",
+        "()[Ljava/lang/Class;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = class_argument(vm, receiver(args))?;
+            let mut members: Vec<ClassId> = Vec::new();
+            let mut current = Some(class);
+            while let Some(candidate) = current {
+                let name = vm.classes.get(candidate).name.clone();
+                for entry in vm.classes.all() {
+                    if entry.declaring_class_name.as_deref() == Some(&name)
+                        && entry.access_flags & ACC_PUBLIC != 0
+                    {
+                        members.push(entry.id);
+                    }
+                }
+                current = vm.classes.get(candidate).super_class;
+            }
+            let class_class = vm.resolve_class("java/lang/Class")?;
+            let array = vm.allocate_object_array(class_class, members.len())?;
+            for (index, member) in members.iter().enumerate() {
+                let class_object = vm.class_object(*member)?;
+                vm.array_set_ref(array, index, class_object)?;
+            }
+            object(array)
+        },
+    ),
+    method(
+        "getDeclaredClasses",
+        "()[Ljava/lang/Class;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = class_argument(vm, receiver(args))?;
+            let name = vm.classes.get(class).name.clone();
+            let members: Vec<ClassId> = vm
+                .classes
+                .all()
+                .iter()
+                .filter(|candidate| candidate.declaring_class_name.as_deref() == Some(&name))
+                .map(|candidate| candidate.id)
+                .collect();
+            let class_class = vm.resolve_class("java/lang/Class")?;
+            let array = vm.allocate_object_array(class_class, members.len())?;
+            for (index, member) in members.iter().enumerate() {
+                let class_object = vm.class_object(*member)?;
+                vm.array_set_ref(array, index, class_object)?;
+            }
+            object(array)
+        },
+    ),
+    method("isLocalClass", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let class = class_argument(vm, receiver(args))?;
+        let definition = vm.classes.get(class);
+        boolean(
+            definition.declaring_class_name.is_none() && definition.enclosing_class_name.is_some(),
+        )
+    }),
+    method("isAnonymousClass", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let class = class_argument(vm, receiver(args))?;
+        // Distinguishing anonymous from local classes needs `InnerClasses.inner_name_index`,
+        // which the loader does not retain; anonymous classes never contain declarations that
+        // discovery selects, so reporting `false` is safe.
+        boolean(vm.classes.get(class).name.contains("$$Lambda$"))
     }),
     method("isAnnotation", "()Z", ACC_PUBLIC, |vm, _, args| {
-        boolean(vm.classes.get(vm.class_of(receiver(args))).access_flags & ACC_ANNOTATION != 0)
+        let class = class_argument(vm, receiver(args))?;
+        boolean(vm.classes.get(class).access_flags & ACC_ANNOTATION != 0)
     }),
     method(
         "isAssignableFrom",
@@ -420,7 +507,7 @@ const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
         "getFields",
         "()[Ljava/lang/reflect/Field;",
         ACC_PUBLIC,
-        crate::reflect::class_reflect_fields,
+        crate::reflect::class_reflect_all_fields,
     ),
     method(
         "getDeclaredField",
@@ -432,7 +519,7 @@ const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
         "getField",
         "(Ljava/lang/String;)Ljava/lang/reflect/Field;",
         ACC_PUBLIC,
-        crate::reflect::class_reflect_field,
+        crate::reflect::class_reflect_all_field,
     ),
     method(
         "getDeclaredMethod",
@@ -641,6 +728,22 @@ fn class_get_canonical_name(
         Some(text) => object(vm.make_string(&text)?),
         None => object(ObjectRef::NULL),
     }
+}
+
+/// `Class.getTypeName`: the canonical form for arrays and primitives, the binary name otherwise.
+fn class_get_type_name(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let class = class_argument(vm, receiver(args))?;
+    let name = vm.class_name(class);
+    let text = if name.starts_with('[') {
+        canonical_name(vm, class).unwrap_or_else(|| name.to_string())
+    } else {
+        name.replace('/', ".")
+    };
+    object(vm.make_string(&text)?)
 }
 
 /// The canonical name of a class, or `None` for a lambda/anonymous/local class.
@@ -872,6 +975,34 @@ fn class_is_record(
     boolean(vm.class_is_subtype(class, record))
 }
 
+/// `Class.getEnumConstants()`: a fresh copy of the enum's `$VALUES` array, or null.
+fn class_get_enum_constants(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let class = class_argument(vm, receiver(args))?;
+    if !vm.classes.get(class).is_enum {
+        return object(ObjectRef::NULL);
+    }
+    vm.ensure_initialized(class)?;
+    let descriptor = vm
+        .classes
+        .get(class)
+        .fields
+        .iter()
+        .find(|field| field.name == "$VALUES")
+        .map(|field| field.descriptor.clone());
+    let Some(descriptor) = descriptor else {
+        return object(ObjectRef::NULL);
+    };
+    let Some(values) = vm.read_static_ref_if_set(class, "$VALUES", &descriptor) else {
+        return object(ObjectRef::NULL);
+    };
+    let clone = vm.clone_object(values)?;
+    object(clone)
+}
+
 /// The internal package name of a class, following arrays to their component.
 fn package_name_of(vm: &Vm<'_>, class: ClassId) -> String {
     let mut class = class;
@@ -967,13 +1098,90 @@ fn package_annotation(
     }
 }
 
-const PACKAGE_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const PACKAGE_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
     method(
         "getName",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         package_get_name,
     ),
+    // Package metadata beyond the name is not carried by the class path, so the version and
+    // vendor getters answer with `null`, as the JDK does for packages without a manifest.
+    method(
+        "getSpecificationTitle",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "getSpecificationVersion",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "getSpecificationVendor",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "getImplementationTitle",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "getImplementationVersion",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "getImplementationVendor",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method("isSealed", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method(
+        "isSealed",
+        "(Ljava/net/URL;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            boolean(false)
+        },
+    ),
+    method(
+        "isCompatibleWith",
+        "(Ljava/lang/String;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let desired = string_arg(vm, args[1])?;
+            if desired.is_empty() {
+                return Err(vm.throw_new("java/lang/NumberFormatException", None));
+            }
+            // Without a specification version no package can be compatible.
+            boolean(false)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let package = receiver(args);
+        let class = vm.class_of(package);
+        let name = vm
+            .read_ref_field(package, class, "packageName", "Ljava/lang/String;")
+            .unwrap_or(ObjectRef::NULL);
+        if name.is_null() {
+            return int(0);
+        }
+        let (class, method) = vm.resolve_virtual_method(name, "hashCode", "()I")?;
+        int(vm
+            .invoke_method(class, method, alloc::vec![Value::Ref(name)])?
+            .as_int())
+    }),
     method(
         "getAnnotation",
         "(Ljava/lang/Class;)Ljava/lang/annotation/Annotation;",
@@ -1110,7 +1318,11 @@ pub(crate) const PACKAGE: oxjvm_vm::NativeClass = class(
 pub(crate) const CLASS: oxjvm_vm::NativeClass = class(
     "java/lang/Class",
     Some("java/lang/Object"),
-    &["java/io/Serializable", "java/lang/reflect/AnnotatedElement"],
+    &[
+        "java/io/Serializable",
+        "java/lang/reflect/AnnotatedElement",
+        "java/lang/reflect/Type",
+    ],
     ACC_PUBLIC | ACC_FINAL,
     &[],
     &CLASS_METHODS,
@@ -1121,7 +1333,7 @@ pub(crate) const CLASS: oxjvm_vm::NativeClass = class(
 // String
 // -------------------------------------------------------------------------------------------
 
-const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
+const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 52] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "<init>",
@@ -1219,6 +1431,34 @@ const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
         string_index_of_string_from,
     ),
     method("lastIndexOf", "(I)I", ACC_PUBLIC, string_last_index_of_char),
+    method("lastIndexOf", "(II)I", ACC_PUBLIC, |vm, _, args| {
+        let units = vm
+            .string_utf16(receiver(args))
+            .map(<[u16]>::to_vec)
+            .unwrap_or_default();
+        let ch = int_arg(args, 1) as u16;
+        let from = (int_arg(args, 2) as isize).min(units.len() as isize);
+        if from < 0 {
+            return int(-1);
+        }
+        let found = units[..=from as usize]
+            .iter()
+            .rposition(|unit| *unit == ch)
+            .map_or(-1, |index| index as i32);
+        int(found)
+    }),
+    method(
+        "lastIndexOf",
+        "(Ljava/lang/String;)I",
+        ACC_PUBLIC,
+        |vm, _, args| string_last_index_of_string(vm, args, i32::MAX),
+    ),
+    method(
+        "lastIndexOf",
+        "(Ljava/lang/String;I)I",
+        ACC_PUBLIC,
+        |vm, _, args| string_last_index_of_string(vm, args, int_arg(args, 2)),
+    ),
     method(
         "startsWith",
         "(Ljava/lang/String;)Z",
@@ -1328,7 +1568,7 @@ const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
 
 // The remaining `String.valueOf` overloads and `format` are declared in a second array so the
 // first stays readable; both are concatenated below.
-const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 19] = [
+const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 20] = [
     method(
         "valueOf",
         "(Z)Ljava/lang/String;",
@@ -1376,6 +1616,12 @@ const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 19] = [
         "(Ljava/lang/CharSequence;[Ljava/lang/CharSequence;)Ljava/lang/String;",
         ACC_PUBLIC | ACC_STATIC,
         string_join,
+    ),
+    method(
+        "join",
+        "(Ljava/lang/CharSequence;Ljava/lang/Iterable;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        string_join_iterable,
     ),
     method(
         "split",
@@ -1767,8 +2013,12 @@ fn string_equals_ignore_case(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
+    let other = ref_arg(args, 1);
+    if other.is_null() {
+        return boolean(false);
+    }
     let this = vm.string_or_empty(receiver(args));
-    let other = string_arg(vm, args[1])?;
+    let other = vm.string_or_empty(other);
     boolean(this.eq_ignore_ascii_case(&other))
 }
 
@@ -1962,6 +2212,37 @@ fn string_index_of_string_from(
         .ok_or_else(|| vm.throw_new("java/lang/NullPointerException", None))?;
     let from = int_arg(args, 2).max(0) as usize;
     int(find_units(&haystack, &needle, from))
+}
+
+/// The last occurrence of `needle` at or before `from` (JDK's `lastIndexOf(String, int)`).
+fn string_last_index_of_string(
+    vm: &mut Vm<'_>,
+    args: &[Value],
+    from: i32,
+) -> Result<Value, VmError> {
+    let haystack = vm
+        .string_utf16(receiver(args))
+        .map(<[u16]>::to_vec)
+        .unwrap_or_default();
+    let needle = vm
+        .string_utf16(ref_arg(args, 1))
+        .map(<[u16]>::to_vec)
+        .ok_or_else(|| vm.throw_new("java/lang/NullPointerException", None))?;
+    if needle.is_empty() {
+        let index = (from as isize).clamp(0, haystack.len() as isize);
+        return int(index as i32);
+    }
+    let limit = (from as isize).min(haystack.len() as isize - needle.len() as isize);
+    if limit < 0 {
+        return int(-1);
+    }
+    let last = limit as usize;
+    for start in (0..=last).rev() {
+        if haystack[start..].starts_with(&needle) {
+            return int(start as i32);
+        }
+    }
+    int(-1)
 }
 
 fn string_last_index_of_char(
@@ -2565,6 +2846,51 @@ fn string_join(
     object(vm.make_string(&out)?)
 }
 
+/// `String.join(CharSequence, Iterable<? extends CharSequence>)`.
+fn string_join_iterable(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let delimiter = vm.string_or_empty(ref_arg(args, 0));
+    let iterable = ref_arg(args, 1);
+    let mut out = String::new();
+    let (class, method) =
+        vm.resolve_virtual_method(iterable, "iterator", "()Ljava/util/Iterator;")?;
+    let iterator = vm
+        .invoke_method(class, method, vec![Value::Ref(iterable)])?
+        .as_ref();
+    let mut first = true;
+    loop {
+        let (class, method) = vm.resolve_virtual_method(iterator, "hasNext", "()Z")?;
+        if vm
+            .invoke_method(class, method, vec![Value::Ref(iterator)])?
+            .as_int()
+            == 0
+        {
+            break;
+        }
+        let (class, method) =
+            vm.resolve_virtual_method(iterator, "next", "()Ljava/lang/Object;")?;
+        let element = vm
+            .invoke_method(class, method, vec![Value::Ref(iterator)])?
+            .as_ref();
+        if !first {
+            out.push_str(&delimiter);
+        }
+        first = false;
+        if element.is_null() {
+            out.push_str("null");
+        } else {
+            let (class, method) =
+                vm.resolve_virtual_method(element, "toString", "()Ljava/lang/String;")?;
+            let text = vm.invoke_method(class, method, vec![Value::Ref(element)])?;
+            out.push_str(&vm.string_or_empty(text.as_ref()));
+        }
+    }
+    object(vm.make_string(&out)?)
+}
+
 fn string_split(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
@@ -2755,7 +3081,7 @@ pub(crate) const CASE_INSENSITIVE_COMPARATOR: oxjvm_vm::NativeClass = class(
 // StringBuilder / StringBuffer
 // -------------------------------------------------------------------------------------------
 
-const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
+const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
     method("<init>", "()V", ACC_PUBLIC, builder_init),
     method("<init>", "(I)V", ACC_PUBLIC, builder_init_capacity),
     method(
@@ -2799,6 +3125,12 @@ const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
         "([CII)Ljava/lang/StringBuilder;",
         ACC_PUBLIC,
         builder_append_chars_range,
+    ),
+    method(
+        "append",
+        "(Ljava/lang/CharSequence;II)Ljava/lang/StringBuilder;",
+        ACC_PUBLIC,
+        builder_append_sequence_range,
     ),
     method(
         "append",
@@ -3069,8 +3401,7 @@ fn builder_init_sequence(
     if reference.is_null() {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
-    let text = vm.string_or_empty(reference);
-    let units: Vec<u16> = text.encode_utf16().collect();
+    let units = char_sequence_units(vm, reference)?;
     builder_store(vm, receiver(args), &units, units.len())?;
     void()
 }
@@ -3111,6 +3442,36 @@ fn builder_append_sequence(
         vm.string_or_empty(reference)
     };
     builder_append_text(vm, receiver(args), &text)
+}
+
+fn builder_append_sequence_range(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let reference = ref_arg(args, 1);
+    let start = int_arg(args, 2);
+    let end = int_arg(args, 3);
+    let units = if reference.is_null() {
+        vec![b'n' as u16, b'u' as u16, b'l' as u16, b'l' as u16]
+    } else {
+        char_sequence_units(vm, reference)?
+    };
+    if start < 0 || end > units.len() as i32 || start > end {
+        return Err(vm.throw_new(
+            "java/lang/IndexOutOfBoundsException",
+            Some(&alloc::format!(
+                "start {start}, end {end}, length {}",
+                units.len()
+            )),
+        ));
+    }
+    let slice = &units[start as usize..end as usize];
+    let (mut current, count) = builder_state(vm, receiver(args));
+    current.truncate(count);
+    current.extend_from_slice(slice);
+    builder_store(vm, receiver(args), &current, count + slice.len())?;
+    object(receiver(args))
 }
 
 fn builder_append_text(vm: &mut Vm<'_>, this: ObjectRef, text: &str) -> Result<Value, VmError> {
@@ -3432,12 +3793,19 @@ pub(crate) const STRING_BUFFER: oxjvm_vm::NativeClass = class(
 // System / Runtime
 // -------------------------------------------------------------------------------------------
 
-const SYSTEM_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
+const SYSTEM_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
     method(
         "currentTimeMillis",
         "()J",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _| long(vm.host_time_millis()),
+    ),
+    // The standard streams are never connected to a terminal here, so `console()` reports none.
+    method(
+        "console",
+        "()Ljava/io/Console;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, _| object(ObjectRef::NULL),
     ),
     method("nanoTime", "()J", ACC_PUBLIC | ACC_STATIC, |vm, _, _| {
         long(vm.host_nano_time())
@@ -4148,6 +4516,164 @@ pub(crate) const MODULE: oxjvm_vm::NativeClass = class(
     None,
 );
 
+// -------------------------------------------------------------------------------------------
+// ProcessBuilder
+// -------------------------------------------------------------------------------------------
+
+/// Store a command (a `String[]` or `List`) as the builder's `List<String>` command.
+fn process_builder_store_command(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    command: ObjectRef,
+) -> Result<Value, VmError> {
+    let list = if command.is_null() {
+        crate::util::array_list_from(vm, &[])?
+    } else if vm.class_name(vm.class_of(command)).starts_with('[') {
+        let length = vm.array_length(command)?;
+        let mut elements = Vec::new();
+        for index in 0..length {
+            elements.push(vm.array_get(command, index as i32)?.as_ref());
+        }
+        crate::util::array_list_from(vm, &elements)?
+    } else {
+        command
+    };
+    let (declaring, field) = vm.find_field(vm.class_of(this), "command", "Ljava/util/List;")?;
+    vm.set_instance_ref(this, declaring, field, list);
+    object(this)
+}
+
+const PROCESS_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+    method(
+        "<init>",
+        "([Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| process_builder_store_command(vm, receiver(args), ref_arg(args, 1)),
+    ),
+    method(
+        "<init>",
+        "(Ljava/util/List;)V",
+        ACC_PUBLIC,
+        |vm, _, args| process_builder_store_command(vm, receiver(args), ref_arg(args, 1)),
+    ),
+    method(
+        "command",
+        "()Ljava/util/List;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let command = vm
+                .read_ref_field(this, vm.class_of(this), "command", "Ljava/util/List;")
+                .unwrap_or(ObjectRef::NULL);
+            object(command)
+        },
+    ),
+    method(
+        "command",
+        "([Ljava/lang/String;)Ljava/lang/ProcessBuilder;",
+        ACC_PUBLIC,
+        |vm, _, args| process_builder_store_command(vm, receiver(args), ref_arg(args, 1)),
+    ),
+    method(
+        "command",
+        "(Ljava/util/List;)Ljava/lang/ProcessBuilder;",
+        ACC_PUBLIC,
+        |vm, _, args| process_builder_store_command(vm, receiver(args), ref_arg(args, 1)),
+    ),
+    method("start", "()Ljava/lang/Process;", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new(
+            "java/io/IOException",
+            Some("cannot start external processes"),
+        ))
+    }),
+    method("redirectErrorStream", "()Z", ACC_PUBLIC, |_, _, _| {
+        boolean(false)
+    }),
+    method(
+        "redirectErrorStream",
+        "(Z)Ljava/lang/ProcessBuilder;",
+        ACC_PUBLIC,
+        |_, _, args| object(receiver(args)),
+    ),
+    method(
+        "redirectInput",
+        "(Ljava/lang/ProcessBuilder$Redirect;)Ljava/lang/ProcessBuilder;",
+        ACC_PUBLIC,
+        |_, _, args| object(receiver(args)),
+    ),
+    method(
+        "redirectOutput",
+        "(Ljava/lang/ProcessBuilder$Redirect;)Ljava/lang/ProcessBuilder;",
+        ACC_PUBLIC,
+        |_, _, args| object(receiver(args)),
+    ),
+    method(
+        "redirectError",
+        "(Ljava/lang/ProcessBuilder$Redirect;)Ljava/lang/ProcessBuilder;",
+        ACC_PUBLIC,
+        |_, _, args| object(receiver(args)),
+    ),
+    method("directory", "()Ljava/io/File;", ACC_PUBLIC, |_, _, _| {
+        object(ObjectRef::NULL)
+    }),
+    method(
+        "directory",
+        "(Ljava/io/File;)Ljava/lang/ProcessBuilder;",
+        ACC_PUBLIC,
+        |_, _, args| object(receiver(args)),
+    ),
+    method(
+        "environment",
+        "()Ljava/util/Map;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/util/HashMap")?;
+            object(vm.new_instance(class)?)
+        },
+    ),
+];
+
+/// `ProcessBuilder$Redirect`: only the constants are needed, so the fields stay null.
+pub(crate) const PROCESS_BUILDER_REDIRECT: oxjvm_vm::NativeClass = class(
+    "java/lang/ProcessBuilder$Redirect",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field(
+            "INHERIT",
+            "Ljava/lang/ProcessBuilder$Redirect;",
+            ACC_PUBLIC | ACC_STATIC,
+            None,
+        ),
+        field(
+            "PIPE",
+            "Ljava/lang/ProcessBuilder$Redirect;",
+            ACC_PUBLIC | ACC_STATIC,
+            None,
+        ),
+        field(
+            "DISCARD",
+            "Ljava/lang/ProcessBuilder$Redirect;",
+            ACC_PUBLIC | ACC_STATIC,
+            None,
+        ),
+    ],
+    &[],
+    None,
+);
+
+/// `java.lang.ProcessBuilder`: external processes cannot be started (`start` throws).
+pub(crate) const PROCESS_BUILDER: oxjvm_vm::NativeClass = class(
+    "java/lang/ProcessBuilder",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[field("command", "Ljava/util/List;", ACC_PRIVATE, None)],
+    &PROCESS_BUILDER_METHODS,
+    None,
+);
+
 pub(crate) const RUNTIME: oxjvm_vm::NativeClass = class(
     "java/lang/Runtime",
     Some("java/lang/Object"),
@@ -4737,6 +5263,17 @@ pub(crate) const THREAD_LOCAL: oxjvm_vm::NativeClass = class(
     None,
 );
 
+/// `InheritableThreadLocal`: the same value storage as `ThreadLocal`.
+pub(crate) const INHERITABLE_THREAD_LOCAL: oxjvm_vm::NativeClass = class(
+    "java/lang/InheritableThreadLocal",
+    Some("java/lang/ThreadLocal"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &THREAD_LOCAL_METHODS,
+    None,
+);
+
 /// The current thread's `ThreadLocal` map, created on demand.
 fn thread_locals_map(vm: &mut Vm<'_>, create: bool) -> Result<ObjectRef, VmError> {
     let thread = vm.current_thread_object();
@@ -5056,7 +5593,7 @@ pub(crate) fn resource_as_stream(vm: &mut Vm<'_>, resource: &str) -> Result<Valu
 // Enum / Record
 // -------------------------------------------------------------------------------------------
 
-const ENUM_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const ENUM_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method("<init>", "(Ljava/lang/String;I)V", ACC_PROTECTED, enum_init),
     method(
         "name",
@@ -5104,6 +5641,20 @@ const ENUM_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
             let this = receiver(args);
             let other = ref_arg(args, 1);
             if vm.class_of(this) != vm.class_of(other) {
+                return Err(vm.throw_new("java/lang/ClassCastException", None));
+            }
+            int(read_int_field(vm, this, "ordinal") - read_int_field(vm, other, "ordinal"))
+        },
+    ),
+    // The `Comparable` bridge that the compiler would generate for `Enum<E>`.
+    method(
+        "compareTo",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC | ACC_FINAL | ACC_BRIDGE | ACC_SYNTHETIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if other.is_null() || vm.class_of(this) != vm.class_of(other) {
                 return Err(vm.throw_new("java/lang/ClassCastException", None));
             }
             int(read_int_field(vm, this, "ordinal") - read_int_field(vm, other, "ordinal"))
@@ -5214,9 +5765,16 @@ fn abstract_method(
     let method = vm.classes.get(ctx.class).methods[ctx.method as usize]
         .name
         .clone();
+    let receiver = match _args.first() {
+        Some(Value::Ref(reference)) if !reference.is_null() => {
+            let receiver_class = vm.class_name(vm.class_of(*reference)).to_string();
+            alloc::format!(" on {receiver_class}")
+        }
+        _ => String::new(),
+    };
     Err(vm.throw_new(
         "java/lang/AbstractMethodError",
-        Some(&alloc::format!("{class}.{method}")),
+        Some(&alloc::format!("{class}.{method}{receiver}")),
     ))
 }
 
@@ -5422,18 +5980,112 @@ pub(crate) const AUTO_CLOSEABLE: oxjvm_vm::NativeClass = class(
     None,
 );
 
+fn comparator_from_function(
+    vm: &mut Vm<'_>,
+    function: ObjectRef,
+    comparator: ObjectRef,
+) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/util/Comparator$FunctionComparator")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "function", "Ljava/util/function/Function;")?;
+    vm.set_instance_ref(instance, declaring, field, function);
+    let (declaring, field) = vm.find_field(class, "comparator", "Ljava/util/Comparator;")?;
+    vm.set_instance_ref(instance, declaring, field, comparator);
+    object(instance)
+}
+
+fn comparator_natural(vm: &mut Vm<'_>) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/util/Collections$ReverseComparator")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "comparator", "Ljava/util/Comparator;")?;
+    vm.set_instance_ref(instance, declaring, field, ObjectRef::NULL);
+    object(instance)
+}
+
+const COMPARATOR_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+    method(
+        "compare",
+        "(Ljava/lang/Object;Ljava/lang/Object;)I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method,
+    ),
+    method(
+        "reversed",
+        "()Ljava/util/Comparator;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method,
+    ),
+    method(
+        "thenComparing",
+        "(Ljava/util/Comparator;)Ljava/util/Comparator;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method,
+    ),
+    method(
+        "thenComparing",
+        "(Ljava/util/function/Function;)Ljava/util/Comparator;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method,
+    ),
+    method(
+        "comparing",
+        "(Ljava/util/function/Function;)Ljava/util/Comparator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| comparator_from_function(vm, ref_arg(args, 0), ObjectRef::NULL),
+    ),
+    method(
+        "comparing",
+        "(Ljava/util/function/Function;Ljava/util/Comparator;)Ljava/util/Comparator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| comparator_from_function(vm, ref_arg(args, 0), ref_arg(args, 1)),
+    ),
+    method(
+        "comparingInt",
+        "(Ljava/util/function/ToIntFunction;)Ljava/util/Comparator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| comparator_from_function(vm, ref_arg(args, 0), ObjectRef::NULL),
+    ),
+    method(
+        "comparingLong",
+        "(Ljava/util/function/ToLongFunction;)Ljava/util/Comparator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| comparator_from_function(vm, ref_arg(args, 0), ObjectRef::NULL),
+    ),
+    method(
+        "comparingDouble",
+        "(Ljava/util/function/ToDoubleFunction;)Ljava/util/Comparator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| comparator_from_function(vm, ref_arg(args, 0), ObjectRef::NULL),
+    ),
+    method(
+        "naturalOrder",
+        "()Ljava/util/Comparator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| comparator_natural(vm),
+    ),
+    method(
+        "reverseOrder",
+        "()Ljava/util/Comparator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let natural = comparator_natural(vm)?.as_ref();
+            let class = vm.resolve_class("java/util/Collections$ReverseComparator")?;
+            let instance = vm.new_instance(class)?;
+            let (declaring, field) =
+                vm.find_field(class, "comparator", "Ljava/util/Comparator;")?;
+            vm.set_instance_ref(instance, declaring, field, natural);
+            object(instance)
+        },
+    ),
+];
+
 pub(crate) const COMPARATOR: oxjvm_vm::NativeClass = class(
     "java/util/Comparator",
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
     &[],
-    &[method(
-        "compare",
-        "(Ljava/lang/Object;Ljava/lang/Object;)I",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        abstract_method,
-    )],
+    &COMPARATOR_METHODS,
     None,
 );
 

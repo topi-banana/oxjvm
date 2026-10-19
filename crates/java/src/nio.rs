@@ -1715,3 +1715,81 @@ pub(crate) const FILENAME_FILTER: oxjvm_vm::NativeClass = class(
     )],
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// ByteOrder
+// -------------------------------------------------------------------------------------------
+
+fn byte_order_instance(
+    vm: &mut Vm<'_>,
+    class: oxjvm_vm::ClassId,
+    name: &str,
+) -> Result<Value, VmError> {
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "name", "Ljava/lang/String;")?;
+    let text = vm.make_string(name)?;
+    vm.set_instance_ref(instance, declaring, field, text);
+    Ok(Value::Ref(instance))
+}
+
+fn byte_order_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/nio/ByteOrder")?;
+    for name in ["BIG_ENDIAN", "LITTLE_ENDIAN"] {
+        let value = byte_order_instance(vm, class, name)?;
+        vm.set_static_value(class, name, "Ljava/nio/ByteOrder;", value);
+    }
+    Ok(())
+}
+
+const BYTE_ORDER_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let name = vm
+                .read_string_field(this, vm.class_of(this), "name")
+                .unwrap_or_default();
+            object(vm.make_string(&name)?)
+        },
+    ),
+    method(
+        "nativeOrder",
+        "()Ljava/nio/ByteOrder;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/nio/ByteOrder")?;
+            vm.ensure_initialized(class)?;
+            let value = vm
+                .read_static_ref_if_set(class, "LITTLE_ENDIAN", "Ljava/nio/ByteOrder;")
+                .unwrap_or(ObjectRef::NULL);
+            object(value)
+        },
+    ),
+];
+
+/// `java.nio.ByteOrder`: one of the two singleton constants.
+pub(crate) const BYTE_ORDER: oxjvm_vm::NativeClass = class(
+    "java/nio/ByteOrder",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("name", "Ljava/lang/String;", ACC_PRIVATE | ACC_FINAL, None),
+        field(
+            "BIG_ENDIAN",
+            "Ljava/nio/ByteOrder;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "LITTLE_ENDIAN",
+            "Ljava/nio/ByteOrder;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+    ],
+    &BYTE_ORDER_METHODS,
+    Some(byte_order_clinit),
+);

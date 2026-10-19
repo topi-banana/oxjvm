@@ -1,6 +1,7 @@
 //! The boxed primitive classes and `Number`.
 
 use alloc::string::{String, ToString};
+use alloc::vec;
 
 use oxjvm_classfile::flags::*;
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError, format};
@@ -77,7 +78,7 @@ pub(crate) const NUMBER: oxjvm_vm::NativeClass = class(
 // Integer
 // -------------------------------------------------------------------------------------------
 
-const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
+const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
     method("<init>", "(I)V", ACC_PUBLIC, boxed_int_init),
     method("intValue", "()I", ACC_PUBLIC, |vm, _, args| {
         int(read_value_int(vm, receiver(args)))
@@ -173,6 +174,12 @@ const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
         boxed_int_value_of,
     ),
     method(
+        "decode",
+        "(Ljava/lang/String;)Ljava/lang/Integer;",
+        ACC_PUBLIC | ACC_STATIC,
+        boxed_integer_decode,
+    ),
+    method(
         "valueOf",
         "(Ljava/lang/String;)Ljava/lang/Integer;",
         ACC_PUBLIC | ACC_STATIC,
@@ -186,6 +193,9 @@ const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
     ),
     method("compare", "(II)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
         int(int_arg(args, 0).cmp(&int_arg(args, 1)) as i32)
+    }),
+    method("signum", "(I)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        int(int_arg(args, 0).signum())
     }),
     method(
         "compareUnsigned",
@@ -473,6 +483,65 @@ fn parse_int_10(
     }
 }
 
+/// The shared numeric part of `Integer.decode`/`Long.decode`: sign, radix prefix and digits.
+fn decode_integer(text: &str) -> Option<i128> {
+    let (negative, rest) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text.strip_prefix('+').unwrap_or(text)),
+    };
+    let (radix, digits) = if let Some(rest) = rest
+        .strip_prefix("0x")
+        .or_else(|| rest.strip_prefix("0X"))
+        .or_else(|| rest.strip_prefix('#'))
+    {
+        (16u32, rest)
+    } else if let Some(rest) = rest.strip_prefix('0') {
+        if rest.is_empty() {
+            (10u32, "0")
+        } else {
+            (8u32, rest)
+        }
+    } else {
+        (10u32, rest)
+    };
+    let magnitude = u128::from_str_radix(digits, radix).ok()?;
+    Some(if negative {
+        -(magnitude as i128)
+    } else {
+        magnitude as i128
+    })
+}
+
+fn boxed_integer_decode(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let text = string_arg(vm, args[0])?;
+    match decode_integer(&text).and_then(|value| i32::try_from(value).ok()) {
+        Some(value) => boxed_int(vm, value),
+        None => Err(vm.throw_new(
+            "java/lang/NumberFormatException",
+            Some(&alloc::format!("For input string: \"{text}\"")),
+        )),
+    }
+}
+
+fn boxed_long_decode(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let text = string_arg(vm, args[0])?;
+    match decode_integer(&text).and_then(|value| i64::try_from(value).ok()) {
+        Some(value) => boxed_long(vm, value),
+        None => Err(vm.throw_new(
+            "java/lang/NumberFormatException",
+            Some(&alloc::format!("For input string: \"{text}\"")),
+        )),
+    }
+}
+
 fn parse_int_radix(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
@@ -612,7 +681,7 @@ pub(crate) const INTEGER: oxjvm_vm::NativeClass = class(
 // Long
 // -------------------------------------------------------------------------------------------
 
-const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
+const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
     method("<init>", "(J)V", ACC_PUBLIC, |vm, _, args| {
         write_value_long(vm, receiver(args), long_arg(args, 1));
         void()
@@ -670,6 +739,12 @@ const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         "(Ljava/lang/String;)J",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| long(parse_long_arg(vm, args[0])?),
+    ),
+    method(
+        "decode",
+        "(Ljava/lang/String;)Ljava/lang/Long;",
+        ACC_PUBLIC | ACC_STATIC,
+        boxed_long_decode,
     ),
     method(
         "valueOf",
@@ -1261,7 +1336,7 @@ fn boolean_get_boolean(
     ))
 }
 
-const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
+const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
     method("<init>", "(C)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), int_arg(args, 1));
         void()
@@ -1412,6 +1487,235 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
             int(compare_ints(a, b))
         },
     ),
+    method(
+        "charCount",
+        "(I)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| int(if int_arg(args, 0) >= 0x1_0000 { 2 } else { 1 }),
+    ),
+    method(
+        "codePointAt",
+        "(Ljava/lang/CharSequence;I)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let sequence = ref_arg(args, 0);
+            let index = int_arg(args, 1);
+            let (char_at_class, char_at) = vm.resolve_virtual_method(sequence, "charAt", "(I)C")?;
+            let high = vm
+                .invoke_method(
+                    char_at_class,
+                    char_at,
+                    vec![Value::Ref(sequence), Value::Int(index)],
+                )?
+                .as_int() as u32
+                & 0xFFFF;
+            if (0xD800..0xDC00).contains(&high) {
+                let (length_class, length) =
+                    vm.resolve_virtual_method(sequence, "length", "()I")?;
+                let length = vm
+                    .invoke_method(length_class, length, vec![Value::Ref(sequence)])?
+                    .as_int();
+                if index + 1 < length {
+                    let low = vm
+                        .invoke_method(
+                            char_at_class,
+                            char_at,
+                            vec![Value::Ref(sequence), Value::Int(index + 1)],
+                        )?
+                        .as_int() as u32
+                        & 0xFFFF;
+                    if (0xDC00..0xE000).contains(&low) {
+                        return int((0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00)) as i32);
+                    }
+                }
+            }
+            int(high as i32)
+        },
+    ),
+    method(
+        "codePointAt",
+        "([CI)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            let index = int_arg(args, 1);
+            let length = vm.array_length(array)? as i32;
+            if index < 0 || index >= length {
+                return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+            }
+            let high = vm.array_get(array, index)?.as_int() as u32 & 0xFFFF;
+            if (0xD800..0xDC00).contains(&high) && index + 1 < length {
+                let low = vm.array_get(array, index + 1)?.as_int() as u32 & 0xFFFF;
+                if (0xDC00..0xE000).contains(&low) {
+                    return int((0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00)) as i32);
+                }
+            }
+            int(high as i32)
+        },
+    ),
+    method(
+        "isSurrogate",
+        "(C)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let unit = int_arg(args, 0) as u32 & 0xFFFF;
+            boolean((0xD800..0xE000).contains(&unit))
+        },
+    ),
+    method(
+        "isHighSurrogate",
+        "(C)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let unit = int_arg(args, 0) as u32 & 0xFFFF;
+            boolean((0xD800..0xDC00).contains(&unit))
+        },
+    ),
+    method(
+        "isLowSurrogate",
+        "(C)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let unit = int_arg(args, 0) as u32 & 0xFFFF;
+            boolean((0xDC00..0xE000).contains(&unit))
+        },
+    ),
+    method(
+        "toCodePoint",
+        "(CC)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let high = int_arg(args, 0) as u32 & 0xFFFF;
+            let low = int_arg(args, 1) as u32 & 0xFFFF;
+            int((0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00)) as i32)
+        },
+    ),
+    method(
+        "charCount",
+        "(I)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let code_point = int_arg(args, 0) as u32;
+            int(if code_point >= 0x10000 { 2 } else { 1 })
+        },
+    ),
+    method(
+        "isBmpCodePoint",
+        "(I)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let code_point = int_arg(args, 0) as u32;
+            boolean(code_point <= 0xFFFF)
+        },
+    ),
+    method(
+        "isValidCodePoint",
+        "(I)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let code_point = int_arg(args, 0) as u32;
+            boolean(code_point <= 0x10FFFF)
+        },
+    ),
+    method("isDigit", "(C)Z", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        let unit = int_arg(args, 0) as u32 & 0xFFFF;
+        boolean(char::from_u32(unit).is_some_and(|ch| ch.is_ascii_digit()))
+    }),
+    method("isLetter", "(C)Z", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        let unit = int_arg(args, 0) as u32 & 0xFFFF;
+        boolean(char::from_u32(unit).is_some_and(|ch| ch.is_alphabetic()))
+    }),
+    method(
+        "isSpaceChar",
+        "(C)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let unit = int_arg(args, 0) as u32 & 0xFFFF;
+            boolean(char::from_u32(unit).is_some_and(|ch| ch.is_whitespace() || ch == '\u{a0}'))
+        },
+    ),
+    method(
+        "isAlphabetic",
+        "(I)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let code_point = int_arg(args, 0) as u32;
+            boolean(char::from_u32(code_point).is_some_and(|ch| ch.is_alphabetic()))
+        },
+    ),
+    method(
+        "isJavaIdentifierStart",
+        "(C)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let unit = int_arg(args, 0) as u32 & 0xFFFF;
+            boolean(
+                char::from_u32(unit).is_some_and(|ch| ch == '_' || ch == '$' || ch.is_alphabetic()),
+            )
+        },
+    ),
+    method(
+        "isJavaIdentifierPart",
+        "(C)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let unit = int_arg(args, 0) as u32 & 0xFFFF;
+            boolean(char::from_u32(unit).is_some_and(|ch| {
+                ch == '_'
+                    || ch == '$'
+                    || ch.is_alphanumeric()
+                    || ch == '\u{200c}'
+                    || ch == '\u{200d}'
+            }))
+        },
+    ),
+    method(
+        "isDefined",
+        "(C)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let unit = int_arg(args, 0) as u32 & 0xFFFF;
+            boolean(char::from_u32(unit).is_some())
+        },
+    ),
+    method(
+        "isWhitespace",
+        "(I)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let code_point = int_arg(args, 0) as u32;
+            boolean(char::from_u32(code_point).is_some_and(|ch| ch.is_whitespace()))
+        },
+    ),
+    method(
+        "isSpaceChar",
+        "(I)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let code_point = int_arg(args, 0) as u32;
+            boolean(
+                char::from_u32(code_point).is_some_and(|ch| ch.is_whitespace() || ch == '\u{a0}'),
+            )
+        },
+    ),
+    method(
+        "isISOControl",
+        "(C)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let unit = int_arg(args, 0) as u32 & 0xFFFF;
+            boolean((0x00..=0x1F).contains(&unit) || (0x7F..=0x9F).contains(&unit))
+        },
+    ),
+    method(
+        "isISOControl",
+        "(I)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let code_point = int_arg(args, 0) as u32;
+            boolean((0x00..=0x1F).contains(&code_point) || (0x7F..=0x9F).contains(&code_point))
+        },
+    ),
 ];
 
 pub(crate) const CHARACTER: oxjvm_vm::NativeClass = class(
@@ -1442,6 +1746,180 @@ pub(crate) const CHARACTER: oxjvm_vm::NativeClass = class(
     ],
     &CHARACTER_METHODS,
     Some(character_clinit),
+);
+
+// -------------------------------------------------------------------------------------------
+// Character.UnicodeBlock
+// -------------------------------------------------------------------------------------------
+
+/// The `UnicodeBlock` constants picocli compares against, with their code point ranges.
+const UNICODE_BLOCKS: [(&str, u32, u32); 15] = [
+    ("HIRAGANA", 0x3040, 0x309F),
+    ("KATAKANA", 0x30A0, 0x30FF),
+    ("KATAKANA_PHONETIC_EXTENSIONS", 0x31F0, 0x31FF),
+    ("HANGUL_COMPATIBILITY_JAMO", 0x3130, 0x318F),
+    ("HANGUL_JAMO", 0x1100, 0x11FF),
+    ("HANGUL_SYLLABLES", 0xAC00, 0xD7AF),
+    ("CJK_UNIFIED_IDEOGRAPHS", 0x4E00, 0x9FFF),
+    ("CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A", 0x3400, 0x4DBF),
+    ("CJK_UNIFIED_IDEOGRAPHS_EXTENSION_B", 0x20000, 0x2A6DF),
+    ("CJK_COMPATIBILITY_FORMS", 0xFE30, 0xFE4F),
+    ("CJK_COMPATIBILITY_IDEOGRAPHS", 0xF900, 0xFAFF),
+    ("CJK_RADICALS_SUPPLEMENT", 0x2E80, 0x2EFF),
+    ("CJK_SYMBOLS_AND_PUNCTUATION", 0x3000, 0x303F),
+    ("ENCLOSED_CJK_LETTERS_AND_MONTHS", 0x3200, 0x32FF),
+    ("HALFWIDTH_AND_FULLWIDTH_FORMS", 0xFF00, 0xFFEF),
+];
+
+/// Create the block constants once; every field must be non-null before `of` is compared with
+/// them, otherwise unrelated code points would compare equal to an unset field.
+fn unicode_block_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/lang/Character$UnicodeBlock")?;
+    for (name, _, _) in UNICODE_BLOCKS {
+        if vm
+            .read_static_ref_if_set(class, name, "Ljava/lang/Character$UnicodeBlock;")
+            .is_some()
+        {
+            continue;
+        }
+        let instance = vm.new_instance(class)?;
+        vm.set_static_value(
+            class,
+            name,
+            "Ljava/lang/Character$UnicodeBlock;",
+            Value::Ref(instance),
+        );
+    }
+    Ok(())
+}
+
+const UNICODE_BLOCK_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "of",
+    "(I)Ljava/lang/Character$UnicodeBlock;",
+    ACC_PUBLIC | ACC_STATIC,
+    |vm, _, args| {
+        let code_point = int_arg(args, 0) as u32;
+        let Some((name, _, _)) = UNICODE_BLOCKS
+            .iter()
+            .find(|(_, start, end)| (*start..=*end).contains(&code_point))
+        else {
+            return object(ObjectRef::NULL);
+        };
+        let name = *name;
+        let class = vm.resolve_class("java/lang/Character$UnicodeBlock")?;
+        let block =
+            match vm.read_static_ref_if_set(class, name, "Ljava/lang/Character$UnicodeBlock;") {
+                Some(block) => block,
+                None => {
+                    unicode_block_clinit(vm)?;
+                    vm.read_static_ref_if_set(class, name, "Ljava/lang/Character$UnicodeBlock;")
+                        .unwrap_or(ObjectRef::NULL)
+                }
+            };
+        object(block)
+    },
+)];
+
+/// `Character.UnicodeBlock`: the constants are identity compared, so `of` must return them.
+pub(crate) const UNICODE_BLOCK: oxjvm_vm::NativeClass = class(
+    "java/lang/Character$UnicodeBlock",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field(
+            "HIRAGANA",
+            "Ljava/lang/Character$UnicodeBlock;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "KATAKANA",
+            "Ljava/lang/Character$UnicodeBlock;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "KATAKANA_PHONETIC_EXTENSIONS",
+            "Ljava/lang/Character$UnicodeBlock;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "HANGUL_COMPATIBILITY_JAMO",
+            "Ljava/lang/Character$UnicodeBlock;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "HANGUL_JAMO",
+            "Ljava/lang/Character$UnicodeBlock;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "HANGUL_SYLLABLES",
+            "Ljava/lang/Character$UnicodeBlock;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "CJK_UNIFIED_IDEOGRAPHS",
+            "Ljava/lang/Character$UnicodeBlock;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A",
+            "Ljava/lang/Character$UnicodeBlock;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "CJK_UNIFIED_IDEOGRAPHS_EXTENSION_B",
+            "Ljava/lang/Character$UnicodeBlock;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "CJK_COMPATIBILITY_FORMS",
+            "Ljava/lang/Character$UnicodeBlock;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "CJK_COMPATIBILITY_IDEOGRAPHS",
+            "Ljava/lang/Character$UnicodeBlock;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "CJK_RADICALS_SUPPLEMENT",
+            "Ljava/lang/Character$UnicodeBlock;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "CJK_SYMBOLS_AND_PUNCTUATION",
+            "Ljava/lang/Character$UnicodeBlock;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "ENCLOSED_CJK_LETTERS_AND_MONTHS",
+            "Ljava/lang/Character$UnicodeBlock;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "HALFWIDTH_AND_FULLWIDTH_FORMS",
+            "Ljava/lang/Character$UnicodeBlock;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+    ],
+    &UNICODE_BLOCK_METHODS,
+    Some(unicode_block_clinit),
 );
 
 const FLOAT_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [

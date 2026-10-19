@@ -781,47 +781,47 @@ impl<'a> Vm<'a> {
 
     /// Print a throwable's `toString` line and stack trace.
     pub fn print_throwable(&mut self, stream: Stream, exception: Ref) {
-        let text = self.throwable_to_string(exception);
+        let text = self.throwable_text(exception);
         let _ = self.host.write(stream, text.as_bytes());
-        let _ = self.host.write(stream, b"\n");
+    }
+
+    /// The full text `printStackTrace` would print: the `toString` line, frames, and causes.
+    pub fn throwable_text(&mut self, exception: Ref) -> String {
+        let mut text = self.throwable_to_string(exception);
+        text.push('\n');
         let mut frames = self.backtraces.get(&exception).cloned().unwrap_or_default();
         // Fall back to the live frames only when no backtrace was recorded;
         // otherwise the frames would be printed twice.
         if frames.is_empty() {
             frames.extend(self.capture_frames());
         }
-        for frame in frames {
-            let location = match (&frame.file_name, frame.line_number) {
-                (Some(file), Some(line)) => alloc::format!("({file}:{line})"),
-                (Some(file), None) => alloc::format!("({file})"),
-                (None, _) => "(Unknown Source)".into(),
-            };
-            let line = alloc::format!(
-                "\tat {}.{}{}\n",
-                frame.class_name.replace('/', "."),
-                frame.method_name,
-                location
-            );
-            let _ = self.host.write(stream, line.as_bytes());
+        for frame in &frames {
+            text.push_str(&self.frame_line(frame));
         }
         for cause in self.throwable_causes(exception) {
-            let line = alloc::format!("Caused by: {}\n", self.throwable_to_string(cause));
-            let _ = self.host.write(stream, line.as_bytes());
+            text.push_str(&alloc::format!(
+                "Caused by: {}\n",
+                self.throwable_to_string(cause)
+            ));
             for frame in self.backtraces.get(&cause).cloned().unwrap_or_default() {
-                let location = match (&frame.file_name, frame.line_number) {
-                    (Some(file), Some(line)) => alloc::format!("({file}:{line})"),
-                    (Some(file), None) => alloc::format!("({file})"),
-                    (None, _) => "(Unknown Source)".into(),
-                };
-                let line = alloc::format!(
-                    "\tat {}.{}{}\n",
-                    frame.class_name.replace('/', "."),
-                    frame.method_name,
-                    location
-                );
-                let _ = self.host.write(stream, line.as_bytes());
+                text.push_str(&self.frame_line(&frame));
             }
         }
+        text
+    }
+
+    fn frame_line(&self, frame: &BacktraceFrame) -> String {
+        let location = match (&frame.file_name, frame.line_number) {
+            (Some(file), Some(line)) => alloc::format!("({file}:{line})"),
+            (Some(file), None) => alloc::format!("({file})"),
+            (None, _) => "(Unknown Source)".into(),
+        };
+        alloc::format!(
+            "\tat {}.{}{}\n",
+            frame.class_name.replace('/', "."),
+            frame.method_name,
+            location
+        )
     }
 
     /// `Throwable.toString()` without invoking Java code.

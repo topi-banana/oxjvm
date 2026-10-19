@@ -127,9 +127,14 @@ pub(crate) fn for_name(vm: &mut Vm<'_>, name: &str) -> Result<Option<ObjectRef>,
     };
     let charset_class = vm.resolve_class("java/nio/charset/Charset")?;
     let map_class = vm.resolve_class("java/util/HashMap")?;
-    let cache = vm
-        .read_static_ref_if_set(charset_class, "cache", "Ljava/util/HashMap;")
-        .ok_or_else(|| VmError::internal("Charset cache not initialized"))?;
+    let cache = match vm.read_static_ref_if_set(charset_class, "cache", "Ljava/util/HashMap;") {
+        Some(cache) => cache,
+        None => {
+            charset_clinit(vm)?;
+            vm.read_static_ref_if_set(charset_class, "cache", "Ljava/util/HashMap;")
+                .ok_or_else(|| VmError::internal("Charset cache not initialized"))?
+        }
+    };
     let key = vm.make_string(canonical)?;
     let (get_class, get) = vm
         .find_method(map_class, "get", "(Ljava/lang/Object;)Ljava/lang/Object;")

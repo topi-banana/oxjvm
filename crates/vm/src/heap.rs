@@ -179,6 +179,10 @@ pub enum MethodHandleValue {
     New {
         /// The class to instantiate.
         class: ClassId,
+        /// The class declaring the constructor (a superclass for native classes).
+        declaring: ClassId,
+        /// The constructor method index on `declaring`.
+        method: u32,
     },
     /// A static field getter.
     StaticGetter {

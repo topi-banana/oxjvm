@@ -848,3 +848,258 @@ pub(crate) fn new_url(vm: &mut Vm<'_>, text: &str) -> Result<ObjectRef, VmError>
     )?;
     Ok(instance)
 }
+
+// -------------------------------------------------------------------------------------------
+// NetworkInterface
+// -------------------------------------------------------------------------------------------
+
+const NETWORK_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+    method(
+        "getByName",
+        "(Ljava/lang/String;)Ljava/net/NetworkInterface;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            // Validate the argument like the JDK, but no interface is ever found.
+            string_arg(vm, args[0])?;
+            object(ObjectRef::NULL)
+        },
+    ),
+    method(
+        "getByInetAddress",
+        "(Ljava/net/InetAddress;)Ljava/net/NetworkInterface;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(ObjectRef::NULL)
+        },
+    ),
+    method(
+        "getNetworkInterfaces",
+        "()Ljava/util/Enumeration;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(crate::util::new_enumeration(vm, &[])?),
+    ),
+    method(
+        "getName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = vm
+                .read_string_field(receiver(args), vm.class_of(receiver(args)), "name")
+                .unwrap_or_default();
+            object(vm.make_string(&name)?)
+        },
+    ),
+    method(
+        "getDisplayName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = vm
+                .read_string_field(receiver(args), vm.class_of(receiver(args)), "name")
+                .unwrap_or_default();
+            object(vm.make_string(&name)?)
+        },
+    ),
+    method("getIndex", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method("getMTU", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method("getHardwareAddress", "()[B", ACC_PUBLIC, |_, _, _| {
+        object(ObjectRef::NULL)
+    }),
+    method("isUp", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method("isLoopback", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method("isPointToPoint", "()Z", ACC_PUBLIC, |_, _, _| {
+        boolean(false)
+    }),
+    method("isVirtual", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method("supportsMulticast", "()Z", ACC_PUBLIC, |_, _, _| {
+        boolean(false)
+    }),
+    method(
+        "getInetAddresses",
+        "()Ljava/util/Enumeration;",
+        ACC_PUBLIC,
+        |vm, _, _| object(crate::util::new_enumeration(vm, &[])?),
+    ),
+    method(
+        "getInterfaceAddresses",
+        "()Ljava/util/List;",
+        ACC_PUBLIC,
+        |vm, _, _| object(crate::util::new_array_list(vm)?),
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = vm
+                .read_string_field(receiver(args), vm.class_of(receiver(args)), "name")
+                .unwrap_or_default();
+            object(vm.make_string(&name)?)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let name = vm
+            .read_string_field(this, class, "name")
+            .unwrap_or_default();
+        let hash = name.chars().fold(0_i32, |hash, ch| {
+            hash.wrapping_mul(31).wrapping_add(ch as i32)
+        });
+        int(hash)
+    }),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = ref_arg(args, 1);
+            if other.is_null() {
+                return boolean(false);
+            }
+            let class = vm.resolve_class("java/net/NetworkInterface")?;
+            if !vm.is_instance(other, class) {
+                return boolean(false);
+            }
+            let this_name = vm
+                .read_string_field(receiver(args), vm.class_of(receiver(args)), "name")
+                .unwrap_or_default();
+            let other_name = vm
+                .read_string_field(other, vm.class_of(other), "name")
+                .unwrap_or_default();
+            boolean(this_name == other_name)
+        },
+    ),
+];
+
+/// `java.net.NetworkInterface` with no host interfaces; enough for reflective registration.
+pub(crate) const NETWORK_INTERFACE: oxjvm_vm::NativeClass = class(
+    "java/net/NetworkInterface",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[field("name", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &NETWORK_INTERFACE_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// URLEncoder / URLDecoder
+// -------------------------------------------------------------------------------------------
+
+/// `application/x-www-form-urlencoded` encoding: unreserved ASCII stays as-is, spaces become
+/// `+`, and every other character is percent-encoded from its UTF-8 bytes.
+fn url_encode(text: &str) -> String {
+    let mut out = String::new();
+    for ch in text.chars() {
+        match ch {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '-' | '*' | '_' => out.push(ch),
+            ' ' => out.push('+'),
+            _ => {
+                let mut buffer = [0u8; 4];
+                for byte in ch.encode_utf8(&mut buffer).as_bytes() {
+                    out.push('%');
+                    out.push(nibble_hex(byte >> 4));
+                    out.push(nibble_hex(byte & 0x0F));
+                }
+            }
+        }
+    }
+    out
+}
+
+fn nibble_hex(value: u8) -> char {
+    char::from_digit(u32::from(value), 16)
+        .unwrap_or('0')
+        .to_ascii_uppercase()
+}
+
+fn url_decode(vm: &mut Vm<'_>, text: &str) -> Result<Option<String>, VmError> {
+    let bytes = text.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => {
+                out.push(b' ');
+                index += 1;
+            }
+            b'%' => {
+                if index + 2 >= bytes.len() {
+                    return Ok(None);
+                }
+                let Some(high) = char::from(bytes[index + 1]).to_digit(16) else {
+                    return Ok(None);
+                };
+                let Some(low) = char::from(bytes[index + 2]).to_digit(16) else {
+                    return Ok(None);
+                };
+                out.push(((high << 4) | low) as u8);
+                index += 3;
+            }
+            byte => {
+                out.push(byte);
+                index += 1;
+            }
+        }
+    }
+    match core::str::from_utf8(&out) {
+        Ok(decoded) => Ok(Some(String::from(decoded))),
+        Err(_) => {
+            let _ = vm;
+            Ok(None)
+        }
+    }
+}
+
+const URL_ENCODER_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "encode",
+    "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+    ACC_PUBLIC | ACC_STATIC,
+    |vm, _, args| {
+        let text = string_arg(vm, args[0])
+            .map_err(|_| vm.throw_new("java/lang/NullPointerException", Some("charsetName")))?;
+        let text = if text.is_empty() { String::new() } else { text };
+        object(vm.make_string(&url_encode(&text))?)
+    },
+)];
+
+pub(crate) const URL_ENCODER: oxjvm_vm::NativeClass = class(
+    "java/net/URLEncoder",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &URL_ENCODER_METHODS,
+    None,
+);
+
+const URL_DECODER_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "decode",
+    "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+    ACC_PUBLIC | ACC_STATIC,
+    |vm, _, args| {
+        let text = string_arg(vm, args[0])
+            .map_err(|_| vm.throw_new("java/lang/NullPointerException", None))?;
+        match url_decode(vm, &text)? {
+            Some(decoded) => object(vm.make_string(&decoded)?),
+            None => Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("URLDecoder: Illegal hex characters in escape (%) pattern"),
+            )),
+        }
+    },
+)];
+
+pub(crate) const URL_DECODER: oxjvm_vm::NativeClass = class(
+    "java/net/URLDecoder",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &URL_DECODER_METHODS,
+    None,
+);

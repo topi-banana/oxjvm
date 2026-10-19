@@ -221,7 +221,7 @@ pub(crate) const FILTER_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PRINT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
+const PRINT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
     method(
         "<init>",
         "(Ljava/io/OutputStream;)V",
@@ -229,6 +229,10 @@ const PRINT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
         print_stream_init,
     ),
     method("<init>", "(I)V", ACC_PUBLIC, print_stream_init_kind),
+    method("write", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let byte = (int_arg(args, 1) & 0xFF) as u8;
+        print_stream_write(vm, receiver(args), &[byte])
+    }),
     method(
         "<init>",
         "(Ljava/io/OutputStream;Z)V",
@@ -864,7 +868,7 @@ pub(crate) const READER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+const WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method(
         "write",
         "(I)V",
@@ -905,6 +909,24 @@ const WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     ),
     method("flush", "()V", ACC_PUBLIC, |_, _, _| void()),
     method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "append",
+        "(Ljava/lang/CharSequence;)Ljava/io/Writer;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "append",
+        "(Ljava/lang/CharSequence;II)Ljava/io/Writer;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "append",
+        "(C)Ljava/io/Writer;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
 ];
 
 /// `Writer.write(String)`: the units of the string through the abstract `write(int)`.
@@ -944,7 +966,7 @@ pub(crate) const WRITER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PRINT_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const PRINT_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
     method(
         "<init>",
         "(Ljava/io/Writer;)V",
@@ -1011,6 +1033,87 @@ const PRINT_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
             print_writer_text(vm, receiver(args), &text)
         },
     ),
+    method("write", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let text =
+            char::from_u32(int_arg(args, 1) as u32).map_or_else(String::new, |ch| ch.to_string());
+        print_writer_text(vm, receiver(args), &text)
+    }),
+    method("write", "([C)V", ACC_PUBLIC, |vm, _, args| {
+        let text = print_writer_char_array(vm, ref_arg(args, 1), 0, -1)?;
+        print_writer_text(vm, receiver(args), &text)
+    }),
+    method("write", "([CII)V", ACC_PUBLIC, |vm, _, args| {
+        let text =
+            print_writer_char_array(vm, ref_arg(args, 1), int_arg(args, 2), int_arg(args, 3))?;
+        print_writer_text(vm, receiver(args), &text)
+    }),
+    method("print", "(C)V", ACC_PUBLIC, |vm, _, args| {
+        let text =
+            char::from_u32(int_arg(args, 1) as u32).map_or_else(String::new, |ch| ch.to_string());
+        print_writer_text(vm, receiver(args), &text)
+    }),
+    method("print", "(Z)V", ACC_PUBLIC, |vm, _, args| {
+        let text = if crate::bool_arg(args, 1) {
+            "true"
+        } else {
+            "false"
+        };
+        print_writer_text(vm, receiver(args), text)
+    }),
+    method("print", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let text = format::int_to_string(int_arg(args, 1));
+        print_writer_text(vm, receiver(args), &text)
+    }),
+    method("print", "(J)V", ACC_PUBLIC, |vm, _, args| {
+        let text = format::long_to_string(crate::long_arg(args, 1));
+        print_writer_text(vm, receiver(args), &text)
+    }),
+    method("print", "(D)V", ACC_PUBLIC, |vm, _, args| {
+        let text = format::double_to_string(crate::double_arg(args, 1));
+        print_writer_text(vm, receiver(args), &text)
+    }),
+    method(
+        "print",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = vm.display_value(
+                &oxjvm_classfile::FieldType::Object("java/lang/Object".into()),
+                args[1],
+            )?;
+            print_writer_text(vm, receiver(args), &text)
+        },
+    ),
+    method("println", "(Z)V", ACC_PUBLIC, |vm, _, args| {
+        let text = alloc::format!(
+            "{}\n",
+            if crate::bool_arg(args, 1) {
+                "true"
+            } else {
+                "false"
+            }
+        );
+        print_writer_text(vm, receiver(args), &text)
+    }),
+    method("println", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let text = alloc::format!("{}\n", format::int_to_string(int_arg(args, 1)));
+        print_writer_text(vm, receiver(args), &text)
+    }),
+    method(
+        "println",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = vm.display_value(
+                &oxjvm_classfile::FieldType::Object("java/lang/Object".into()),
+                args[1],
+            )?;
+            print_writer_text(vm, receiver(args), &alloc::format!("{text}\n"))
+        },
+    ),
+    method("checkError", "()Z", ACC_PUBLIC, |_, _, _| {
+        crate::boolean(false)
+    }),
     method(
         "println",
         "(Ljava/lang/String;)V",
@@ -1073,6 +1176,54 @@ const PRINT_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         ACC_PUBLIC,
         print_writer_formatted,
     ),
+    method(
+        "append",
+        "(Ljava/lang/CharSequence;)Ljava/io/PrintWriter;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = vm.string_or_empty(ref_arg(args, 1));
+            print_writer_text(vm, this, &text)?;
+            object(this)
+        },
+    ),
+    method(
+        "append",
+        "(Ljava/lang/CharSequence;II)Ljava/io/PrintWriter;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let sequence = ref_arg(args, 1);
+            let start = int_arg(args, 2).max(0) as usize;
+            let end = int_arg(args, 3).max(0) as usize;
+            let mut text = String::new();
+            if !sequence.is_null() {
+                if let Some(units) = vm.string_utf16(sequence) {
+                    let units = units.to_vec();
+                    for unit in units.iter().take(end).skip(start) {
+                        if let Some(ch) = char::from_u32(u32::from(*unit)) {
+                            text.push(ch);
+                        }
+                    }
+                }
+            }
+            print_writer_text(vm, this, &text)?;
+            object(this)
+        },
+    ),
+    method(
+        "append",
+        "(C)Ljava/io/PrintWriter;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let ch = char::from_u32(int_arg(args, 1) as u32 & 0xFFFF).unwrap_or('\u{FFFD}');
+            let mut text = String::new();
+            text.push(ch);
+            print_writer_text(vm, this, &text)?;
+            object(this)
+        },
+    ),
 ];
 
 /// `PrintWriter.printf`/`format`.
@@ -1108,6 +1259,33 @@ fn print_writer_text(vm: &mut Vm<'_>, this: ObjectRef, text: &str) -> Result<Val
         )?;
     }
     void()
+}
+
+/// The characters of a `char[]` slice (the whole array when `length` is negative).
+fn print_writer_char_array(
+    vm: &mut Vm<'_>,
+    array: ObjectRef,
+    offset: i32,
+    length: i32,
+) -> Result<String, VmError> {
+    if array.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let total = vm.array_length(array)?;
+    let start = offset.max(0) as usize;
+    let count = if length < 0 {
+        total.saturating_sub(start)
+    } else {
+        (length as usize).min(total.saturating_sub(start))
+    };
+    let mut text = String::new();
+    for index in 0..count {
+        let unit = vm.array_get(array, (start + index) as i32)?.as_int() as u32 & 0xFFFF;
+        if let Some(ch) = char::from_u32(unit) {
+            text.push(ch);
+        }
+    }
+    Ok(text)
 }
 
 pub(crate) const PRINT_WRITER: oxjvm_vm::NativeClass = class(
@@ -1283,7 +1461,7 @@ fn file_writer_write_text(vm: &mut Vm<'_>, this: ObjectRef, text: &str) -> Resul
     void()
 }
 
-const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -1356,6 +1534,46 @@ const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     }),
     method("flush", "()V", ACC_PUBLIC, |_, _, _| void()),
     method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "append",
+        "(Ljava/lang/CharSequence;)Ljava/io/Writer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = vm.string_or_empty(ref_arg(args, 1));
+            file_writer_write_text(vm, this, &text)?;
+            object(this)
+        },
+    ),
+    method(
+        "append",
+        "(Ljava/lang/CharSequence;II)Ljava/io/Writer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let sequence = vm.string_or_empty(ref_arg(args, 1));
+            let start = int_arg(args, 2).max(0) as usize;
+            let end = int_arg(args, 3).max(0) as usize;
+            let units: Vec<u16> = sequence.encode_utf16().collect();
+            let text =
+                String::from_utf16_lossy(&units[start.min(units.len())..end.min(units.len())]);
+            file_writer_write_text(vm, this, &text)?;
+            object(this)
+        },
+    ),
+    method(
+        "append",
+        "(C)Ljava/io/Writer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let ch = char::from_u32(int_arg(args, 1) as u32 & 0xFFFF).unwrap_or('\u{FFFD}');
+            let mut text = String::new();
+            text.push(ch);
+            file_writer_write_text(vm, this, &text)?;
+            object(this)
+        },
+    ),
 ];
 
 pub(crate) const FILE_WRITER: oxjvm_vm::NativeClass = class(
@@ -1446,7 +1664,7 @@ fn output_stream_writer_write_text(
     void()
 }
 
-const OUTPUT_STREAM_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+const OUTPUT_STREAM_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method(
         "<init>",
         "(Ljava/io/OutputStream;)V",
@@ -1471,19 +1689,24 @@ const OUTPUT_STREAM_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
             void()
         },
     ),
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;Ljava/nio/charset/Charset;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "out", "Ljava/io/OutputStream;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
     method("write", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        let this = receiver(args);
-        let out = output_stream_writer_out(vm, this);
-        if out.is_null() {
-            return void();
-        }
-        let (class, method) = vm.resolve_virtual_method(out, "write", "(I)V")?;
-        vm.invoke_method(
-            class,
-            method,
-            vec![Value::Ref(out), Value::Int(int_arg(args, 1) & 0xFF)],
-        )?;
-        void()
+        let unit = int_arg(args, 1) as u32 & 0xFFFF;
+        let ch = char::from_u32(unit).unwrap_or('\u{FFFD}');
+        let mut text = String::new();
+        text.push(ch);
+        output_stream_writer_write_text(vm, receiver(args), &text)
     }),
     method(
         "write",
@@ -1809,7 +2032,7 @@ fn buffered_writer_call(
     vm.invoke_method(class, method, full)
 }
 
-const BUFFERED_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const BUFFERED_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method(
         "<init>",
         "(Ljava/io/Writer;)V",
@@ -1890,6 +2113,67 @@ const BUFFERED_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         let this = receiver(args);
         buffered_writer_call(vm, this, "close", "()V", Vec::new())
     }),
+    method(
+        "append",
+        "(Ljava/lang/CharSequence;)Ljava/io/Writer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = vm.string_or_empty(ref_arg(args, 1));
+            let text = vm.make_string(&text)?;
+            buffered_writer_call(
+                vm,
+                this,
+                "write",
+                "(Ljava/lang/String;)V",
+                vec![Value::Ref(text)],
+            )?;
+            object(this)
+        },
+    ),
+    method(
+        "append",
+        "(Ljava/lang/CharSequence;II)Ljava/io/Writer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let sequence = vm.string_or_empty(ref_arg(args, 1));
+            let start = int_arg(args, 2).max(0) as usize;
+            let end = int_arg(args, 3).max(0) as usize;
+            let units: Vec<u16> = sequence.encode_utf16().collect();
+            let text: String =
+                String::from_utf16_lossy(&units[start.min(units.len())..end.min(units.len())]);
+            let text = vm.make_string(&text)?;
+            buffered_writer_call(
+                vm,
+                this,
+                "write",
+                "(Ljava/lang/String;)V",
+                vec![Value::Ref(text)],
+            )?;
+            object(this)
+        },
+    ),
+    method(
+        "append",
+        "(C)Ljava/io/Writer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let ch = char::from_u32(int_arg(args, 1) as u32 & 0xFFFF).unwrap_or('\u{FFFD}');
+            let mut text = String::new();
+            text.push(ch);
+            let text = vm.make_string(&text)?;
+            buffered_writer_call(
+                vm,
+                this,
+                "write",
+                "(Ljava/lang/String;)V",
+                vec![Value::Ref(text)],
+            )?;
+            object(this)
+        },
+    ),
 ];
 
 pub(crate) const BUFFERED_WRITER: oxjvm_vm::NativeClass = class(
@@ -1899,5 +2183,165 @@ pub(crate) const BUFFERED_WRITER: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC,
     &[field("out", "Ljava/io/Writer;", ACC_PRIVATE, None)],
     &BUFFERED_WRITER_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// Serialization metadata (reflection-only stubs)
+// -------------------------------------------------------------------------------------------
+
+const OBJECT_STREAM_CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "lookup",
+        "(Ljava/lang/Class;)Ljava/io/ObjectStreamClass;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let class = vm.resolve_class("java/io/ObjectStreamClass")?;
+            let instance = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "compat", "Ljava/lang/Class;")?;
+            vm.set_instance_ref(instance, declaring, field, ref_arg(args, 0));
+            object(instance)
+        },
+    ),
+    method(
+        "getFields",
+        "()[Ljava/io/ObjectStreamField;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let field = vm.resolve_class("java/io/ObjectStreamField")?;
+            let array = vm.allocate_object_array(field, 0)?;
+            object(array)
+        },
+    ),
+    method("getSerialVersionUID", "()J", ACC_PUBLIC, |_, _, _| {
+        Ok(Value::Long(0))
+    }),
+    method(
+        "getName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = vm
+                .read_ref_field(
+                    receiver(args),
+                    vm.class_of(receiver(args)),
+                    "compat",
+                    "Ljava/lang/Class;",
+                )
+                .unwrap_or(ObjectRef::NULL);
+            let text = name.is_null().then(String::new).unwrap_or_default();
+            object(vm.make_string(&text)?)
+        },
+    ),
+];
+
+/// `java.io.ObjectStreamClass`: only what reflective serialization metadata needs.
+pub(crate) const OBJECT_STREAM_CLASS: oxjvm_vm::NativeClass = class(
+    "java/io/ObjectStreamClass",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[field("compat", "Ljava/lang/Class;", ACC_PRIVATE, None)],
+    &OBJECT_STREAM_CLASS_METHODS,
+    None,
+);
+
+const OBJECT_STREAM_FIELD_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method("getName", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, _| {
+        object(vm.make_string("")?)
+    }),
+    method("getOffset", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method("isPrimitive", "()Z", ACC_PUBLIC, |_, _, _| {
+        crate::boolean(false)
+    }),
+];
+
+/// `java.io.ObjectStreamField`: a placeholder field descriptor.
+pub(crate) const OBJECT_STREAM_FIELD: oxjvm_vm::NativeClass = class(
+    "java/io/ObjectStreamField",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &OBJECT_STREAM_FIELD_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// StringReader
+// -------------------------------------------------------------------------------------------
+
+const STRING_READER_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "str", "Ljava/lang/String;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method("read", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let next = crate::lang::read_int_field(vm, this, "next");
+        let text = vm
+            .read_ref_field(this, class, "str", "Ljava/lang/String;")
+            .unwrap_or(ObjectRef::NULL);
+        let Some(units) = vm.string_utf16(text) else {
+            return int(-1);
+        };
+        if next < 0 || next as usize >= units.len() {
+            return int(-1);
+        }
+        let unit = units[next as usize];
+        crate::lang::write_int_field(vm, this, "next", next + 1);
+        int(i32::from(unit))
+    }),
+    method("read", "([CII)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let array = ref_arg(args, 1);
+        let offset = int_arg(args, 2);
+        let length = int_arg(args, 3);
+        if length == 0 {
+            return int(0);
+        }
+        let next = crate::lang::read_int_field(vm, this, "next");
+        let text = vm
+            .read_ref_field(this, class, "str", "Ljava/lang/String;")
+            .unwrap_or(ObjectRef::NULL);
+        let Some(units) = vm.string_utf16(text).map(<[u16]>::to_vec) else {
+            return int(-1);
+        };
+        if next < 0 || next as usize >= units.len() {
+            return int(-1);
+        }
+        let available = units.len() - next as usize;
+        let count = available.min(length as usize);
+        for index in 0..count {
+            let value = Value::Int(i32::from(units[next as usize + index]));
+            vm.array_set(array, offset + index as i32, value, false)?;
+        }
+        crate::lang::write_int_field(vm, this, "next", next + count as i32);
+        int(count as i32)
+    }),
+    method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+];
+
+/// `java.io.StringReader`: reads UTF-16 units from a string.
+pub(crate) const STRING_READER: oxjvm_vm::NativeClass = class(
+    "java/io/StringReader",
+    Some("java/io/Reader"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("str", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("next", "I", ACC_PRIVATE, None),
+    ],
+    &STRING_READER_METHODS,
     None,
 );

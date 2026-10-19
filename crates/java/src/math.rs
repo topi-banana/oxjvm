@@ -952,6 +952,529 @@ pub(crate) const STRICT_MATH: oxjvm_vm::NativeClass = class(
     None,
 );
 
+// java.math.BigInteger / BigDecimal
+// -------------------------------------------------------------------------------------------
+
+use alloc::string::{String, ToString};
+use oxjvm_vm::ObjectRef;
+
+use crate::{boolean, object, receiver, ref_arg, string_arg, void};
+
+/// The decimal text stored in a big-number instance (`0` when unset).
+fn big_text(vm: &Vm<'_>, this: ObjectRef) -> String {
+    let class = vm.class_of(this);
+    vm.read_ref_field(this, class, "value", "Ljava/lang/String;")
+        .map(|text| vm.string_or_empty(text))
+        .unwrap_or_else(|| String::from("0"))
+}
+
+/// Create an instance of a big-number class carrying `text`.
+fn create_big_number(vm: &mut Vm<'_>, class_name: &str, text: &str) -> Result<Value, VmError> {
+    let class = vm.resolve_class(class_name)?;
+    let instance = vm.new_instance(class)?;
+    let string = vm.make_string(text)?;
+    let (declaring, field) = vm.find_field(class, "value", "Ljava/lang/String;")?;
+    vm.set_instance_ref(instance, declaring, field, string);
+    object(instance)
+}
+
+/// Java's `String.hashCode`, used here as the big-number hash.
+fn java_hash(text: &str) -> i32 {
+    text.chars().fold(0_i32, |hash, ch| {
+        hash.wrapping_mul(31).wrapping_add(ch as i32)
+    })
+}
+
+fn parse_i128(text: &str) -> Option<i128> {
+    text.parse::<i128>().ok()
+}
+
+/// Validate and canonicalise a decimal integer string like `new BigInteger(String)`.
+fn big_integer_parse(text: &str) -> Option<String> {
+    let (negative, digits) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text.strip_prefix('+').unwrap_or(text)),
+    };
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let trimmed = digits.trim_start_matches('0');
+    if trimmed.is_empty() {
+        return Some(String::from("0"));
+    }
+    Some(if negative {
+        alloc::format!("-{trimmed}")
+    } else {
+        String::from(trimmed)
+    })
+}
+
+/// Numeric comparison of two canonical integer strings.
+fn big_integer_compare(a: &str, b: &str) -> i32 {
+    let a_negative = a.starts_with('-');
+    let b_negative = b.starts_with('-');
+    if a_negative != b_negative {
+        return if a_negative { -1 } else { 1 };
+    }
+    let a_digits = a.trim_start_matches('-');
+    let b_digits = b.trim_start_matches('-');
+    let magnitude = a_digits
+        .len()
+        .cmp(&b_digits.len())
+        .then_with(|| a_digits.cmp(b_digits));
+    let result = match magnitude {
+        Ordering::Less => -1,
+        Ordering::Equal => 0,
+        Ordering::Greater => 1,
+    };
+    if a_negative { -result } else { result }
+}
+
+/// Validate and canonicalise a decimal string like `new BigDecimal(String)`.
+fn big_decimal_parse(text: &str) -> Option<String> {
+    let (negative, digits) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text.strip_prefix('+').unwrap_or(text)),
+    };
+    let (integer, fraction) = match digits.split_once('.') {
+        Some((integer, fraction)) => (integer, Some(fraction)),
+        None => (digits, None),
+    };
+    if integer.is_empty() && fraction.is_none_or(|part: &str| part.is_empty()) {
+        return None;
+    }
+    if !integer.bytes().all(|byte| byte.is_ascii_digit())
+        || fraction.is_some_and(|part| !part.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return None;
+    }
+    let trimmed = integer.trim_start_matches('0');
+    let mut canonical = String::new();
+    if negative {
+        canonical.push('-');
+    }
+    if trimmed.is_empty() {
+        canonical.push('0');
+    } else {
+        canonical.push_str(trimmed);
+    }
+    if let Some(fraction) = fraction {
+        canonical.push('.');
+        canonical.push_str(fraction);
+    }
+    Some(canonical)
+}
+
+fn big_number_narrow(text: &str, bits: u32) -> i64 {
+    let value = text.parse::<f64>().unwrap_or_else(|_| {
+        if text.starts_with('-') {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        }
+    });
+    // Narrowing casts truncate toward zero and saturate, matching a Java cast for the ranges
+    // the drivers exercise.
+    let narrowed = if value.is_nan() { 0 } else { value as i64 };
+    if bits == 32 {
+        i64::from((narrowed as u32) as i32)
+    } else {
+        narrowed
+    }
+}
+
+// -------------------------------------------------------------------------------------------
+// BigInteger
+// -------------------------------------------------------------------------------------------
+
+fn big_integer_init(
+    vm: &mut Vm<'_>,
+    context: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let descriptor = vm.classes.get(context.class).methods[context.method as usize]
+        .descriptor
+        .clone();
+    let text = if descriptor == "(J)V" {
+        long_arg(args, 1).to_string()
+    } else {
+        string_arg(vm, args[1])?
+    };
+    let Some(canonical) = big_integer_parse(&text) else {
+        return Err(vm.throw_new("java/lang/NumberFormatException", None));
+    };
+    let string = vm.make_string(&canonical)?;
+    let (declaring, field) = vm.find_field(context.class, "value", "Ljava/lang/String;")?;
+    vm.set_instance_ref(this, declaring, field, string);
+    void()
+}
+
+fn big_integer_binary(
+    vm: &mut Vm<'_>,
+    args: &[Value],
+    operation: fn(i128, i128) -> i128,
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let a = parse_i128(&big_text(vm, this));
+    let b = parse_i128(&big_text(vm, ref_arg(args, 1)));
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            create_big_number(vm, "java/math/BigInteger", &operation(a, b).to_string())
+        }
+        _ => Err(vm.throw_new("java/lang/ArithmeticException", None)),
+    }
+}
+
+const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        big_integer_init,
+    ),
+    method("<init>", "(J)V", ACC_PUBLIC, big_integer_init),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = big_text(vm, receiver(args));
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method("intValue", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(big_number_narrow(&big_text(vm, receiver(args)), 32) as i32)
+    }),
+    method("longValue", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(big_number_narrow(&big_text(vm, receiver(args)), 64))
+    }),
+    method("doubleValue", "()D", ACC_PUBLIC, |vm, _, args| {
+        let text = big_text(vm, receiver(args));
+        double(text.parse::<f64>().unwrap_or(f64::NAN))
+    }),
+    method("signum", "()I", ACC_PUBLIC, |vm, _, args| {
+        let text = big_text(vm, receiver(args));
+        int(if text == "0" {
+            0
+        } else if text.starts_with('-') {
+            -1
+        } else {
+            1
+        })
+    }),
+    method(
+        "abs",
+        "()Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = big_text(vm, receiver(args))
+                .trim_start_matches('-')
+                .to_string();
+            create_big_number(vm, "java/math/BigInteger", &text)
+        },
+    ),
+    method(
+        "negate",
+        "()Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = big_text(vm, receiver(args));
+            let negated = match text.strip_prefix('-') {
+                Some(rest) => String::from(rest),
+                None if text == "0" => String::from("0"),
+                None => alloc::format!("-{text}"),
+            };
+            create_big_number(vm, "java/math/BigInteger", &negated)
+        },
+    ),
+    method(
+        "compareTo",
+        "(Ljava/math/BigInteger;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let a = big_text(vm, receiver(args));
+            let b = big_text(vm, ref_arg(args, 1));
+            int(big_integer_compare(&a, &b))
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = ref_arg(args, 1);
+            if other.is_null() || vm.class_of(other) != vm.class_of(receiver(args)) {
+                return boolean(false);
+            }
+            boolean(big_text(vm, other) == big_text(vm, receiver(args)))
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(java_hash(&big_text(vm, receiver(args))))
+    }),
+    method(
+        "add",
+        "(Ljava/math/BigInteger;)Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| big_integer_binary(vm, args, i128::wrapping_add),
+    ),
+    method(
+        "subtract",
+        "(Ljava/math/BigInteger;)Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| big_integer_binary(vm, args, i128::wrapping_sub),
+    ),
+    method(
+        "multiply",
+        "(Ljava/math/BigInteger;)Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| big_integer_binary(vm, args, i128::wrapping_mul),
+    ),
+    method(
+        "valueOf",
+        "(J)Ljava/math/BigInteger;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = long_arg(args, 0).to_string();
+            create_big_number(vm, "java/math/BigInteger", &text)
+        },
+    ),
+];
+
+fn big_integer_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/math/BigInteger")?;
+    for (name, text) in [("ZERO", "0"), ("ONE", "1"), ("TEN", "10")] {
+        let value = create_big_number(vm, "java/math/BigInteger", text)?;
+        vm.set_static_value(class, name, "Ljava/math/BigInteger;", value);
+    }
+    Ok(())
+}
+
+/// `java.math.BigInteger`; values are carried as canonical decimal text.
+pub(crate) const BIG_INTEGER: oxjvm_vm::NativeClass = class(
+    "java/math/BigInteger",
+    Some("java/lang/Number"),
+    &["java/lang/Comparable"],
+    ACC_PUBLIC,
+    &[
+        field("value", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field(
+            "ZERO",
+            "Ljava/math/BigInteger;",
+            ACC_PUBLIC | ACC_STATIC,
+            None,
+        ),
+        field(
+            "ONE",
+            "Ljava/math/BigInteger;",
+            ACC_PUBLIC | ACC_STATIC,
+            None,
+        ),
+        field(
+            "TEN",
+            "Ljava/math/BigInteger;",
+            ACC_PUBLIC | ACC_STATIC,
+            None,
+        ),
+    ],
+    &BIG_INTEGER_METHODS,
+    Some(big_integer_clinit),
+);
+
+// -------------------------------------------------------------------------------------------
+// BigDecimal
+// -------------------------------------------------------------------------------------------
+
+fn big_decimal_init(
+    vm: &mut Vm<'_>,
+    context: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let descriptor = vm.classes.get(context.class).methods[context.method as usize]
+        .descriptor
+        .clone();
+    let text = match descriptor.as_str() {
+        "(J)V" => long_arg(args, 1).to_string(),
+        "(I)V" => int_arg(args, 1).to_string(),
+        "(D)V" => {
+            let value = double_arg(args, 1);
+            if value.is_nan() || value.is_infinite() {
+                return Err(vm.throw_new("java/lang/NumberFormatException", None));
+            }
+            alloc::format!("{value}")
+        }
+        "(Ljava/math/BigInteger;)V" => big_text(vm, ref_arg(args, 1)),
+        _ => string_arg(vm, args[1])?,
+    };
+    let Some(canonical) = big_decimal_parse(&text) else {
+        return Err(vm.throw_new("java/lang/NumberFormatException", None));
+    };
+    let string = vm.make_string(&canonical)?;
+    let (declaring, field) = vm.find_field(context.class, "value", "Ljava/lang/String;")?;
+    vm.set_instance_ref(this, declaring, field, string);
+    void()
+}
+
+fn big_decimal_binary(
+    vm: &mut Vm<'_>,
+    args: &[Value],
+    operation: fn(f64, f64) -> f64,
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let a = big_text(vm, this).parse::<f64>().unwrap_or(f64::NAN);
+    let b = big_text(vm, ref_arg(args, 1))
+        .parse::<f64>()
+        .unwrap_or(f64::NAN);
+    create_big_number(
+        vm,
+        "java/math/BigDecimal",
+        &alloc::format!("{}", operation(a, b)),
+    )
+}
+
+const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        big_decimal_init,
+    ),
+    method("<init>", "(J)V", ACC_PUBLIC, big_decimal_init),
+    method("<init>", "(I)V", ACC_PUBLIC, big_decimal_init),
+    method("<init>", "(D)V", ACC_PUBLIC, big_decimal_init),
+    method(
+        "<init>",
+        "(Ljava/math/BigInteger;)V",
+        ACC_PUBLIC,
+        big_decimal_init,
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = big_text(vm, receiver(args));
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method("intValue", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(big_number_narrow(&big_text(vm, receiver(args)), 32) as i32)
+    }),
+    method("longValue", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(big_number_narrow(&big_text(vm, receiver(args)), 64))
+    }),
+    method("doubleValue", "()D", ACC_PUBLIC, |vm, _, args| {
+        let text = big_text(vm, receiver(args));
+        double(text.parse::<f64>().unwrap_or(f64::NAN))
+    }),
+    method("floatValue", "()F", ACC_PUBLIC, |vm, _, args| {
+        let text = big_text(vm, receiver(args));
+        float(text.parse::<f32>().unwrap_or(f32::NAN))
+    }),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = ref_arg(args, 1);
+            if other.is_null() || vm.class_of(other) != vm.class_of(receiver(args)) {
+                return boolean(false);
+            }
+            boolean(big_text(vm, other) == big_text(vm, receiver(args)))
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(java_hash(&big_text(vm, receiver(args))))
+    }),
+    method(
+        "compareTo",
+        "(Ljava/math/BigDecimal;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let a = big_text(vm, receiver(args))
+                .parse::<f64>()
+                .unwrap_or(f64::NAN);
+            let b = big_text(vm, ref_arg(args, 1))
+                .parse::<f64>()
+                .unwrap_or(f64::NAN);
+            let ordering = a.partial_cmp(&b).unwrap_or(Ordering::Equal);
+            int(match ordering {
+                Ordering::Less => -1,
+                Ordering::Equal => 0,
+                Ordering::Greater => 1,
+            })
+        },
+    ),
+    method(
+        "add",
+        "(Ljava/math/BigDecimal;)Ljava/math/BigDecimal;",
+        ACC_PUBLIC,
+        |vm, _, args| big_decimal_binary(vm, args, |a, b| a + b),
+    ),
+    method(
+        "subtract",
+        "(Ljava/math/BigDecimal;)Ljava/math/BigDecimal;",
+        ACC_PUBLIC,
+        |vm, _, args| big_decimal_binary(vm, args, |a, b| a - b),
+    ),
+    method(
+        "multiply",
+        "(Ljava/math/BigDecimal;)Ljava/math/BigDecimal;",
+        ACC_PUBLIC,
+        |vm, _, args| big_decimal_binary(vm, args, |a, b| a * b),
+    ),
+    method(
+        "valueOf",
+        "(J)Ljava/math/BigDecimal;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = long_arg(args, 0).to_string();
+            create_big_number(vm, "java/math/BigDecimal", &text)
+        },
+    ),
+];
+
+fn big_decimal_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/math/BigDecimal")?;
+    for (name, text) in [("ZERO", "0"), ("ONE", "1"), ("TEN", "10")] {
+        let value = create_big_number(vm, "java/math/BigDecimal", text)?;
+        vm.set_static_value(class, name, "Ljava/math/BigDecimal;", value);
+    }
+    Ok(())
+}
+
+/// `java.math.BigDecimal`; values are carried as canonical decimal text.
+pub(crate) const BIG_DECIMAL: oxjvm_vm::NativeClass = class(
+    "java/math/BigDecimal",
+    Some("java/lang/Number"),
+    &["java/lang/Comparable"],
+    ACC_PUBLIC,
+    &[
+        field("value", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field(
+            "ZERO",
+            "Ljava/math/BigDecimal;",
+            ACC_PUBLIC | ACC_STATIC,
+            None,
+        ),
+        field(
+            "ONE",
+            "Ljava/math/BigDecimal;",
+            ACC_PUBLIC | ACC_STATIC,
+            None,
+        ),
+        field(
+            "TEN",
+            "Ljava/math/BigDecimal;",
+            ACC_PUBLIC | ACC_STATIC,
+            None,
+        ),
+    ],
+    &BIG_DECIMAL_METHODS,
+    Some(big_decimal_clinit),
+);
 #[cfg(test)]
 mod tests {
     use super::sqrt;
@@ -1024,3 +1547,5 @@ mod tests {
         }
     }
 }
+
+// -------------------------------------------------------------------------------------------

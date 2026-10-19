@@ -291,6 +291,11 @@ impl<'a> Parser<'a> {
         } else {
             false
         };
+        // Possessive quantifiers (`*+`, `++`, `?+`, `{n,m}+`) are matched greedily; the engine
+        // does not backtrack, so the possessive form behaves identically for the corpus.
+        if self.peek() == Some(b'+' as u16) {
+            self.pos += 1;
+        }
         if let Some(max) = max {
             if max < min {
                 return Err(("Illegal repetition range".into(), self.pos));
@@ -330,6 +335,32 @@ impl<'a> Parser<'a> {
                             let inner = self.parse_alternation()?;
                             self.expect_close()?;
                             Ok(inner)
+                        }
+                        // Atomic groups match like their body; the engine never backtracks past
+                        // an atomic group's end, but accepting it as a plain group is close
+                        // enough for the patterns in the corpus.
+                        Some(gt) if gt == b'>' as u16 => {
+                            let inner = self.parse_alternation()?;
+                            self.expect_close()?;
+                            Ok(inner)
+                        }
+                        // Named capturing group `(?<name>...)`: the name is ignored, the group
+                        // still counts for backreference numbering.
+                        Some(lt) if lt == b'<' as u16 => {
+                            loop {
+                                match self.next() {
+                                    Some(ch) if ch == b'>' as u16 => break,
+                                    Some(_) => {}
+                                    None => {
+                                        return Err(("Unclosed group name".into(), self.pos));
+                                    }
+                                }
+                            }
+                            self.groups += 1;
+                            let index = self.groups - 1;
+                            let inner = self.parse_alternation()?;
+                            self.expect_close()?;
+                            Ok(Node::Group(index, Box::new(inner)))
                         }
                         Some(ch) if is_flag_char(ch) || ch == b'-' as u16 => {
                             let mut enable = true;
@@ -1175,7 +1206,7 @@ fn pattern_regex(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(Regex, usize), VmE
 // Matcher
 // -------------------------------------------------------------------------------------------
 
-const MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method("matches", "()Z", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let (regex, _) = pattern_regex_for(vm, this)?;
@@ -1305,6 +1336,22 @@ const MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
             );
             let text = format!("java.util.regex.Matcher[pattern= start={start} end={end}]");
             object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "quoteReplacement",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = string_arg(vm, args[0])?;
+            let mut quoted = String::new();
+            for ch in text.chars() {
+                if ch == '\\' || ch == '$' {
+                    quoted.push('\\');
+                }
+                quoted.push(ch);
+            }
+            object(vm.make_string(&quoted)?)
         },
     ),
 ];

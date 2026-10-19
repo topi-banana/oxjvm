@@ -6,8 +6,10 @@
 //! materialised by [`crate::annotation`]; `setAccessible` is a no-op
 //! (everything is accessible).
 
+use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 
+use alloc::vec;
 use alloc::vec::Vec;
 
 use oxjvm_classfile::flags::*;
@@ -37,6 +39,50 @@ fn field_type_class(vm: &mut Vm<'_>, field_type: &FieldType) -> Result<ClassId, 
         FieldType::Object(name) => vm.resolve_class(name),
         FieldType::Array(_) => vm.resolve_class(&field_type_descriptor(field_type)),
     }
+}
+
+/// The declared type of a field table entry, as a `Class`.
+fn field_declared_type(vm: &mut Vm<'_>, class: ClassId, slot: u32) -> Result<ClassId, VmError> {
+    let descriptor = vm.classes.get(class).fields[slot as usize]
+        .descriptor
+        .clone();
+    let field_type =
+        FieldType::parse(&descriptor).map_err(|_| VmError::internal("bad field descriptor"))?;
+    field_type_class(vm, &field_type)
+}
+
+/// The parameter classes of an executable descriptor.
+fn executable_parameter_types(vm: &mut Vm<'_>, descriptor: &str) -> Result<Vec<ClassId>, VmError> {
+    let parsed = MethodDescriptor::parse(descriptor)
+        .map_err(|_| VmError::internal("bad executable descriptor"))?;
+    let mut classes = Vec::new();
+    for parameter in &parsed.parameters {
+        classes.push(field_type_class(vm, parameter)?);
+    }
+    Ok(classes)
+}
+
+/// The return class of a method descriptor (`void` when there is none).
+fn executable_return_type(vm: &mut Vm<'_>, descriptor: &str) -> Result<ClassId, VmError> {
+    let parsed = MethodDescriptor::parse(descriptor)
+        .map_err(|_| VmError::internal("bad method descriptor"))?;
+    match parsed.returns {
+        Some(returns) => field_type_class(vm, &returns),
+        None => vm.primitive_class(oxjvm_classfile::BaseType::Void),
+    }
+}
+
+/// A `Type[]` holding the given classes.  Raw classes stand in for generic types until generic
+/// signatures are modelled.
+fn type_array_of(vm: &mut Vm<'_>, classes: &[ClassId]) -> Result<Value, VmError> {
+    let type_class = vm.resolve_class("java/lang/reflect/Type")?;
+    let array = vm.allocate_object_array(type_class, classes.len())?;
+    vm.protect(array);
+    for (index, class) in classes.iter().enumerate() {
+        let class_object = vm.class_object(*class)?;
+        vm.array_set_ref(array, index, class_object)?;
+    }
+    object(array)
 }
 
 fn primitive_descriptor(descriptor: &str) -> bool {
@@ -134,7 +180,7 @@ fn set_instance_value(
 // Method
 // -------------------------------------------------------------------------------------------
 
-const METHOD_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
+const METHOD_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -199,6 +245,33 @@ const METHOD_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
             object(vm.class_object(class_id)?)
         },
     ),
+    method(
+        "getGenericReturnType",
+        "()Ljava/lang/reflect/Type;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (class, slot) = method_parts(vm, receiver(args));
+            generic_return_type(vm, class, slot)
+        },
+    ),
+    method(
+        "getGenericParameterTypes",
+        "()[Ljava/lang/reflect/Type;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (class, slot) = method_parts(vm, receiver(args));
+            generic_parameter_types(vm, class, slot)
+        },
+    ),
+    method(
+        "getGenericExceptionTypes",
+        "()[Ljava/lang/reflect/Type;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let _ = method_parts(vm, receiver(args));
+            type_array_of(vm, &[])
+        },
+    ),
     method("getParameterCount", "()I", ACC_PUBLIC, |vm, _, args| {
         let (class, slot) = method_parts(vm, receiver(args));
         let (_, descriptor, _) = method_entry(vm, class, slot);
@@ -239,46 +312,22 @@ const METHOD_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let (class, slot) = method_parts(vm, receiver(args));
-            let (name, descriptor, flags) = method_entry(vm, class, slot);
-            let parsed = MethodDescriptor::parse(&descriptor)
-                .map_err(|_| VmError::internal("bad method descriptor"))?;
-            let mask = ACC_PUBLIC
-                | ACC_PROTECTED
-                | ACC_PRIVATE
-                | ACC_ABSTRACT
-                | ACC_STATIC
-                | ACC_FINAL
-                | ACC_SYNCHRONIZED
-                | ACC_NATIVE
-                | ACC_STRICT;
-            let mut modifiers = modifiers_text(flags & mask);
-            if vm.classes.get(class).is_interface()
-                && flags & (ACC_ABSTRACT | ACC_STATIC | ACC_PRIVATE) == 0
             {
-                if !modifiers.is_empty() {
-                    modifiers.push(' ');
-                }
-                modifiers.push_str("default");
+                let text = method_signature_text(vm, class, slot)?;
+                object(vm.make_string(&text)?)
             }
-            let mut parameters = Vec::new();
-            for parameter in &parsed.parameters {
-                parameters.push(binary_name_for_field_type(vm, parameter)?);
+        },
+    ),
+    method(
+        "toGenericString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (class, slot) = method_parts(vm, receiver(args));
+            {
+                let text = method_signature_text(vm, class, slot)?;
+                object(vm.make_string(&text)?)
             }
-            let return_type = match &parsed.returns {
-                Some(returns) => binary_name_for_field_type(vm, returns)?,
-                None => String::from("void"),
-            };
-            let declaring = crate::binary_name(vm, class);
-            let mut text = String::new();
-            if !modifiers.is_empty() {
-                text.push_str(&modifiers);
-                text.push(' ');
-            }
-            text.push_str(&alloc::format!(
-                "{return_type} {declaring}.{name}({})",
-                parameters.join(",")
-            ));
-            object(vm.make_string(&text)?)
         },
     ),
     method(
@@ -387,6 +436,21 @@ const METHOD_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
                 && flags & (ACC_ABSTRACT | ACC_STATIC | ACC_PRIVATE) == 0,
         )
     }),
+    method("isSynthetic", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let (class, slot) = method_parts(vm, receiver(args));
+        let flags = vm.classes.get(class).methods[slot as usize].access_flags;
+        boolean(flags & ACC_SYNTHETIC != 0)
+    }),
+    method("isBridge", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let (class, slot) = method_parts(vm, receiver(args));
+        let flags = vm.classes.get(class).methods[slot as usize].access_flags;
+        boolean(flags & ACC_BRIDGE != 0)
+    }),
+    method("isVarArgs", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let (class, slot) = method_parts(vm, receiver(args));
+        let flags = vm.classes.get(class).methods[slot as usize].access_flags;
+        boolean(flags & ACC_VARARGS != 0)
+    }),
 ];
 
 fn reflect_invoke(
@@ -452,9 +516,19 @@ fn new_invocation_target(vm: &mut Vm<'_>, target: ObjectRef) -> VmError {
     }
 }
 
+pub(crate) const EXECUTABLE: oxjvm_vm::NativeClass = class(
+    "java/lang/reflect/Executable",
+    Some("java/lang/reflect/AccessibleObject"),
+    &[],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[],
+    &METHOD_METHODS,
+    None,
+);
+
 pub(crate) const METHOD: oxjvm_vm::NativeClass = class(
     "java/lang/reflect/Method",
-    Some("java/lang/Object"),
+    Some("java/lang/reflect/Executable"),
     &[
         "java/lang/reflect/Member",
         "java/lang/reflect/AnnotatedElement",
@@ -592,7 +666,7 @@ fn reflect_field_set_primitive(
     void()
 }
 
-const FIELD_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
+const FIELD_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -618,11 +692,47 @@ const FIELD_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let (class, slot) = field_parts(vm, receiver(args));
-            let (_, descriptor, _) = field_entry(vm, class, slot);
+            let class_id = field_declared_type(vm, class, slot)?;
+            object(vm.class_object(class_id)?)
+        },
+    ),
+    method(
+        "getGenericType",
+        "()Ljava/lang/reflect/Type;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (class, slot) = field_parts(vm, receiver(args));
+            generic_field_type(vm, class, slot)
+        },
+    ),
+    method(
+        "toGenericString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (class, slot) = field_parts(vm, receiver(args));
+            let (name, descriptor, flags) = field_entry(vm, class, slot);
             let field_type = FieldType::parse(&descriptor)
                 .map_err(|_| VmError::internal("bad field descriptor"))?;
-            let class_id = field_type_class(vm, &field_type)?;
-            object(vm.class_object(class_id)?)
+            let mask = ACC_PUBLIC
+                | ACC_PROTECTED
+                | ACC_PRIVATE
+                | ACC_STATIC
+                | ACC_FINAL
+                | ACC_TRANSIENT
+                | ACC_VOLATILE;
+            let modifiers = modifiers_text(flags & mask);
+            let mut text = String::new();
+            if !modifiers.is_empty() {
+                text.push_str(&modifiers);
+                text.push(' ');
+            }
+            text.push_str(&binary_name_for_field_type(vm, &field_type)?);
+            text.push(' ');
+            text.push_str(&crate::binary_name(vm, class));
+            text.push('.');
+            text.push_str(&name);
+            object(vm.make_string(&text)?)
         },
     ),
     method("getModifiers", "()I", ACC_PUBLIC, |vm, _, args| {
@@ -841,11 +951,21 @@ const FIELD_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
             boolean(!instance.is_null())
         },
     ),
+    method("isSynthetic", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let (class, slot) = field_parts(vm, receiver(args));
+        let flags = vm.classes.get(class).fields[slot as usize].access_flags;
+        boolean(flags & ACC_SYNTHETIC != 0)
+    }),
+    method("isEnumConstant", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let (class, slot) = field_parts(vm, receiver(args));
+        let flags = vm.classes.get(class).fields[slot as usize].access_flags;
+        boolean(flags & ACC_ENUM != 0)
+    }),
 ];
 
 pub(crate) const FIELD: oxjvm_vm::NativeClass = class(
     "java/lang/reflect/Field",
-    Some("java/lang/Object"),
+    Some("java/lang/reflect/AccessibleObject"),
     &[
         "java/lang/reflect/Member",
         "java/lang/reflect/AnnotatedElement",
@@ -887,6 +1007,1161 @@ pub(crate) const MEMBER: oxjvm_vm::NativeClass = class(
             crate::lang::abstract_method_pub,
         ),
     ],
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// Generic signatures
+// -------------------------------------------------------------------------------------------
+
+/// A type parsed from a generic `Signature` attribute.
+#[derive(Debug, Clone)]
+enum ParsedType {
+    Primitive(oxjvm_classfile::BaseType),
+    Class {
+        name: String,
+        arguments: Vec<ParsedType>,
+    },
+    Variable(String),
+    Array(Box<ParsedType>),
+    Wildcard {
+        upper: Vec<ParsedType>,
+        lower: Vec<ParsedType>,
+    },
+}
+
+/// A recursive-descent parser for the JVMS 4.7.9.1 signature grammar, limited to the
+/// structures reflection exposes.
+struct SignatureParser<'a> {
+    bytes: &'a [u8],
+    position: usize,
+}
+
+impl<'a> SignatureParser<'a> {
+    fn new(text: &'a str) -> Self {
+        Self {
+            bytes: text.as_bytes(),
+            position: 0,
+        }
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.bytes.get(self.position).copied()
+    }
+
+    fn advance(&mut self) {
+        self.position += 1;
+    }
+
+    fn expect(&mut self, byte: u8) -> Result<(), VmError> {
+        if self.peek() == Some(byte) {
+            self.advance();
+            Ok(())
+        } else {
+            Err(VmError::internal("bad generic signature"))
+        }
+    }
+
+    fn read_until(&mut self, terminator: u8) -> Result<String, VmError> {
+        let mut text = String::new();
+        while let Some(byte) = self.peek() {
+            if byte == terminator {
+                return Ok(text);
+            }
+            text.push(byte as char);
+            self.advance();
+        }
+        Err(VmError::internal("bad generic signature"))
+    }
+
+    fn parse_field_type(&mut self) -> Result<ParsedType, VmError> {
+        match self.peek() {
+            Some(b'L') => {
+                self.advance();
+                self.parse_class()
+            }
+            Some(b'T') => {
+                self.advance();
+                let name = self.read_until(b';')?;
+                self.expect(b';')?;
+                Ok(ParsedType::Variable(name))
+            }
+            Some(b'[') => {
+                self.advance();
+                let component = self.parse_field_type()?;
+                Ok(ParsedType::Array(Box::new(component)))
+            }
+            Some(byte) => {
+                let base = match byte {
+                    b'B' => oxjvm_classfile::BaseType::Byte,
+                    b'C' => oxjvm_classfile::BaseType::Char,
+                    b'D' => oxjvm_classfile::BaseType::Double,
+                    b'F' => oxjvm_classfile::BaseType::Float,
+                    b'I' => oxjvm_classfile::BaseType::Int,
+                    b'J' => oxjvm_classfile::BaseType::Long,
+                    b'S' => oxjvm_classfile::BaseType::Short,
+                    b'Z' => oxjvm_classfile::BaseType::Boolean,
+                    _ => return Err(VmError::internal("bad generic signature")),
+                };
+                self.advance();
+                Ok(ParsedType::Primitive(base))
+            }
+            None => Err(VmError::internal("bad generic signature")),
+        }
+    }
+
+    fn parse_class(&mut self) -> Result<ParsedType, VmError> {
+        let mut name = String::new();
+        let mut arguments = Vec::new();
+        loop {
+            while let Some(byte) = self.peek() {
+                if byte == b'<' || byte == b';' || byte == b'.' {
+                    break;
+                }
+                name.push(byte as char);
+                self.advance();
+            }
+            if self.peek() == Some(b'<') {
+                let parsed = self.parse_arguments()?;
+                if arguments.is_empty() {
+                    arguments = parsed;
+                }
+            }
+            match self.peek() {
+                Some(b'.') => {
+                    self.advance();
+                    name.push('$');
+                }
+                Some(b';') => {
+                    self.advance();
+                    return Ok(ParsedType::Class { name, arguments });
+                }
+                _ => return Err(VmError::internal("bad generic signature")),
+            }
+        }
+    }
+
+    fn parse_arguments(&mut self) -> Result<Vec<ParsedType>, VmError> {
+        self.expect(b'<')?;
+        let mut arguments = Vec::new();
+        while self.peek() != Some(b'>') {
+            arguments.push(self.parse_type_argument()?);
+        }
+        self.expect(b'>')?;
+        Ok(arguments)
+    }
+
+    fn parse_type_argument(&mut self) -> Result<ParsedType, VmError> {
+        match self.peek() {
+            Some(b'*') => {
+                self.advance();
+                Ok(ParsedType::Wildcard {
+                    upper: Vec::new(),
+                    lower: Vec::new(),
+                })
+            }
+            Some(b'+') => {
+                self.advance();
+                let bound = self.parse_field_type()?;
+                Ok(ParsedType::Wildcard {
+                    upper: vec![bound],
+                    lower: Vec::new(),
+                })
+            }
+            Some(b'-') => {
+                self.advance();
+                let bound = self.parse_field_type()?;
+                Ok(ParsedType::Wildcard {
+                    upper: Vec::new(),
+                    lower: vec![bound],
+                })
+            }
+            _ => self.parse_field_type(),
+        }
+    }
+
+    /// Skip a balanced `<...>` block of formal type parameters.
+    fn skip_balanced(&mut self) -> Result<(), VmError> {
+        self.expect(b'<')?;
+        let mut depth = 1;
+        while depth > 0 {
+            match self.peek() {
+                Some(b'<') => {
+                    depth += 1;
+                    self.advance();
+                }
+                Some(b'>') => {
+                    depth -= 1;
+                    self.advance();
+                }
+                Some(_) => self.advance(),
+                None => return Err(VmError::internal("bad generic signature")),
+            }
+        }
+        Ok(())
+    }
+}
+
+fn parse_field_signature(text: &str) -> Result<ParsedType, VmError> {
+    let mut parser = SignatureParser::new(text);
+    parser.parse_field_type()
+}
+
+fn parse_method_signature(text: &str) -> Result<(Vec<ParsedType>, ParsedType), VmError> {
+    let mut parser = SignatureParser::new(text);
+    if parser.peek() == Some(b'<') {
+        parser.skip_balanced()?;
+    }
+    parser.expect(b'(')?;
+    let mut parameters = Vec::new();
+    while parser.peek() != Some(b')') {
+        parameters.push(parser.parse_field_type()?);
+    }
+    parser.expect(b')')?;
+    let returns = match parser.peek() {
+        Some(b'V') => {
+            parser.advance();
+            ParsedType::Primitive(oxjvm_classfile::BaseType::Void)
+        }
+        _ => parser.parse_field_type()?,
+    };
+    Ok((parameters, returns))
+}
+
+/// The source-style display name of a parsed type.
+fn parsed_type_name(parsed: &ParsedType) -> String {
+    match parsed {
+        ParsedType::Primitive(base) => base_type_name(*base).to_string(),
+        ParsedType::Class { name, arguments } => {
+            let dotted = name.replace('/', ".");
+            if arguments.is_empty() {
+                dotted
+            } else {
+                let inner: Vec<String> = arguments.iter().map(parsed_type_name).collect();
+                alloc::format!("{dotted}<{}>", inner.join(", "))
+            }
+        }
+        ParsedType::Variable(name) => name.clone(),
+        ParsedType::Array(component) => alloc::format!("{}[]", parsed_type_name(component)),
+        ParsedType::Wildcard { upper, lower } => {
+            if let Some(bound) = lower.first() {
+                alloc::format!("? super {}", parsed_type_name(bound))
+            } else if let Some(bound) = upper.first() {
+                alloc::format!("? extends {}", parsed_type_name(bound))
+            } else {
+                String::from("?")
+            }
+        }
+    }
+}
+
+const PARAMETERIZED_TYPE_IMPL: &str =
+    "sun/reflect/generics/reflectiveObjects/ParameterizedTypeImpl";
+const TYPE_VARIABLE_IMPL: &str = "sun/reflect/generics/reflectiveObjects/TypeVariableImpl";
+const GENERIC_ARRAY_TYPE_IMPL: &str = "sun/reflect/generics/reflectiveObjects/GenericArrayTypeImpl";
+const WILDCARD_TYPE_IMPL: &str = "sun/reflect/generics/reflectiveObjects/WildcardTypeImpl";
+
+fn impl_instance(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class(name)?;
+    vm.new_instance(class)
+}
+
+fn set_member_field(
+    vm: &mut Vm<'_>,
+    instance: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    value: ObjectRef,
+) -> Result<(), VmError> {
+    let class = vm.class_of(instance);
+    let (declaring, field) = vm.find_field(class, name, descriptor)?;
+    vm.set_instance_ref(instance, declaring, field, value);
+    Ok(())
+}
+
+fn type_name_of_object(vm: &mut Vm<'_>, object: ObjectRef) -> Result<String, VmError> {
+    let (class, method) =
+        vm.resolve_virtual_method(object, "getTypeName", "()Ljava/lang/String;")?;
+    let text = vm.invoke_method(class, method, vec![Value::Ref(object)])?;
+    Ok(vm.string_or_empty(text.as_ref()))
+}
+
+/// A `Type` array with the given component type.
+fn type_array(vm: &mut Vm<'_>, length: usize) -> Result<ObjectRef, VmError> {
+    let type_class = vm.resolve_class("java/lang/reflect/Type")?;
+    vm.allocate_object_array(type_class, length)
+}
+
+fn new_type_variable(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
+    let instance = impl_instance(vm, TYPE_VARIABLE_IMPL)?;
+    vm.protect(instance);
+    let text = vm.make_string(name)?;
+    set_member_field(vm, instance, "name", "Ljava/lang/String;", text)?;
+    set_member_field(vm, instance, "typeName", "Ljava/lang/String;", text)?;
+    Ok(instance)
+}
+
+fn new_generic_array_type(vm: &mut Vm<'_>, component: ObjectRef) -> Result<ObjectRef, VmError> {
+    let instance = impl_instance(vm, GENERIC_ARRAY_TYPE_IMPL)?;
+    vm.protect(instance);
+    let name = alloc::format!("{}[]", type_name_of_object(vm, component)?);
+    let text = vm.make_string(&name)?;
+    set_member_field(
+        vm,
+        instance,
+        "componentType",
+        "Ljava/lang/reflect/Type;",
+        component,
+    )?;
+    set_member_field(vm, instance, "typeName", "Ljava/lang/String;", text)?;
+    Ok(instance)
+}
+
+fn new_wildcard_type(
+    vm: &mut Vm<'_>,
+    upper: &[ObjectRef],
+    lower: &[ObjectRef],
+) -> Result<ObjectRef, VmError> {
+    let instance = impl_instance(vm, WILDCARD_TYPE_IMPL)?;
+    vm.protect(instance);
+    let upper_array = type_array(vm, upper.len())?;
+    vm.protect(upper_array);
+    for (index, bound) in upper.iter().enumerate() {
+        vm.array_set_ref(upper_array, index, *bound)?;
+    }
+    let lower_array = type_array(vm, lower.len())?;
+    vm.protect(lower_array);
+    for (index, bound) in lower.iter().enumerate() {
+        vm.array_set_ref(lower_array, index, *bound)?;
+    }
+    let name = if let Some(bound) = lower.first() {
+        alloc::format!("? super {}", type_name_of_object(vm, *bound)?)
+    } else if let Some(bound) = upper.first() {
+        alloc::format!("? extends {}", type_name_of_object(vm, *bound)?)
+    } else {
+        String::from("?")
+    };
+    let text = vm.make_string(&name)?;
+    set_member_field(
+        vm,
+        instance,
+        "upperBounds",
+        "[Ljava/lang/reflect/Type;",
+        upper_array,
+    )?;
+    set_member_field(
+        vm,
+        instance,
+        "lowerBounds",
+        "[Ljava/lang/reflect/Type;",
+        lower_array,
+    )?;
+    set_member_field(vm, instance, "typeName", "Ljava/lang/String;", text)?;
+    Ok(instance)
+}
+
+/// Materialise a parsed type as a reflective `Type` object.
+fn type_object(vm: &mut Vm<'_>, parsed: &ParsedType) -> Result<ObjectRef, VmError> {
+    match parsed {
+        ParsedType::Primitive(base) => {
+            let class = vm.primitive_class(*base)?;
+            vm.class_object(class)
+        }
+        ParsedType::Class { name, arguments } => {
+            let raw = vm.resolve_class(name)?;
+            let raw_object = vm.class_object(raw)?;
+            if arguments.is_empty() {
+                return Ok(raw_object);
+            }
+            // A parameterized type: raw class plus its actual type arguments.
+            let mut converted = Vec::new();
+            for argument in arguments {
+                converted.push(type_object(vm, argument)?);
+            }
+            let instance = impl_instance(vm, PARAMETERIZED_TYPE_IMPL)?;
+            vm.protect(instance);
+            let arguments = type_array(vm, converted.len())?;
+            vm.protect(arguments);
+            for (index, argument) in converted.iter().enumerate() {
+                vm.array_set_ref(arguments, index, *argument)?;
+            }
+            let text = vm.make_string(&parsed_type_name(parsed))?;
+            set_member_field(
+                vm,
+                instance,
+                "rawType",
+                "Ljava/lang/reflect/Type;",
+                raw_object,
+            )?;
+            set_member_field(
+                vm,
+                instance,
+                "actualTypeArguments",
+                "[Ljava/lang/reflect/Type;",
+                arguments,
+            )?;
+            set_member_field(
+                vm,
+                instance,
+                "ownerType",
+                "Ljava/lang/reflect/Type;",
+                ObjectRef::NULL,
+            )?;
+            set_member_field(vm, instance, "typeName", "Ljava/lang/String;", text)?;
+            Ok(instance)
+        }
+        ParsedType::Variable(name) => new_type_variable(vm, name),
+        ParsedType::Array(component) => match component.as_ref() {
+            ParsedType::Primitive(base) => {
+                let descriptor = alloc::format!("[{}", primitive_descriptor_of(*base));
+                let class = vm.resolve_class(&descriptor)?;
+                vm.class_object(class)
+            }
+            ParsedType::Class { name, arguments } if arguments.is_empty() => {
+                let descriptor = alloc::format!("[L{name};");
+                let class = vm.resolve_class(&descriptor)?;
+                vm.class_object(class)
+            }
+            other => {
+                let component = type_object(vm, other)?;
+                new_generic_array_type(vm, component)
+            }
+        },
+        ParsedType::Wildcard { upper, lower } => {
+            let mut converted_lower = Vec::new();
+            for bound in lower {
+                converted_lower.push(type_object(vm, bound)?);
+            }
+            let mut converted_upper = Vec::new();
+            if upper.is_empty() && lower.is_empty() {
+                let object_class = vm.resolve_class("java/lang/Object")?;
+                converted_upper.push(vm.class_object(object_class)?);
+            } else {
+                for bound in upper {
+                    converted_upper.push(type_object(vm, bound)?);
+                }
+            }
+            new_wildcard_type(vm, &converted_upper, &converted_lower)
+        }
+    }
+}
+
+fn primitive_descriptor_of(base: oxjvm_classfile::BaseType) -> &'static str {
+    match base {
+        oxjvm_classfile::BaseType::Boolean => "Z",
+        oxjvm_classfile::BaseType::Byte => "B",
+        oxjvm_classfile::BaseType::Char => "C",
+        oxjvm_classfile::BaseType::Short => "S",
+        oxjvm_classfile::BaseType::Int => "I",
+        oxjvm_classfile::BaseType::Long => "J",
+        oxjvm_classfile::BaseType::Float => "F",
+        oxjvm_classfile::BaseType::Double => "D",
+        oxjvm_classfile::BaseType::Void => "V",
+    }
+}
+
+/// The generic type of a field, from its `Signature` when present.
+fn generic_field_type(vm: &mut Vm<'_>, class: ClassId, slot: u32) -> Result<Value, VmError> {
+    let signature = vm.classes.get(class).fields[slot as usize]
+        .signature
+        .clone();
+    let object = match signature {
+        Some(text) => match parse_field_signature(&text) {
+            Ok(parsed) => type_object(vm, &parsed)?,
+            Err(_) => {
+                let class_id = field_declared_type(vm, class, slot)?;
+                vm.class_object(class_id)?
+            }
+        },
+        None => {
+            let class_id = field_declared_type(vm, class, slot)?;
+            vm.class_object(class_id)?
+        }
+    };
+    Ok(Value::Ref(object))
+}
+
+/// The generic return type of a method, from its `Signature` when present.
+fn generic_return_type(vm: &mut Vm<'_>, class: ClassId, slot: u32) -> Result<Value, VmError> {
+    let signature = vm.classes.get(class).methods[slot as usize]
+        .signature
+        .clone();
+    let object = match signature {
+        Some(text) => match parse_method_signature(&text) {
+            Ok((_, returns)) => type_object(vm, &returns)?,
+            Err(_) => {
+                let descriptor = vm.classes.get(class).methods[slot as usize]
+                    .descriptor
+                    .clone();
+                let class_id = executable_return_type(vm, &descriptor)?;
+                vm.class_object(class_id)?
+            }
+        },
+        None => {
+            let descriptor = vm.classes.get(class).methods[slot as usize]
+                .descriptor
+                .clone();
+            let class_id = executable_return_type(vm, &descriptor)?;
+            vm.class_object(class_id)?
+        }
+    };
+    Ok(Value::Ref(object))
+}
+
+/// The generic parameter types of a method or constructor, from its `Signature` when present.
+fn generic_parameter_types(vm: &mut Vm<'_>, class: ClassId, slot: u32) -> Result<Value, VmError> {
+    let signature = vm.classes.get(class).methods[slot as usize]
+        .signature
+        .clone();
+    let parsed = signature.and_then(|text| parse_method_signature(&text).ok());
+    let objects = match parsed {
+        Some((parameters, _)) => {
+            let mut objects = Vec::new();
+            for parameter in &parameters {
+                objects.push(type_object(vm, parameter)?);
+            }
+            objects
+        }
+        None => {
+            let descriptor = vm.classes.get(class).methods[slot as usize]
+                .descriptor
+                .clone();
+            let mut objects = Vec::new();
+            for class_id in executable_parameter_types(vm, &descriptor)? {
+                objects.push(vm.class_object(class_id)?);
+            }
+            objects
+        }
+    };
+    let array = type_array(vm, objects.len())?;
+    vm.protect(array);
+    for (index, object) in objects.iter().enumerate() {
+        vm.array_set_ref(array, index, *object)?;
+    }
+    Ok(Value::Ref(array))
+}
+
+const PARAMETERIZED_TYPE_IMPL_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method(
+        "getRawType",
+        "()Ljava/lang/reflect/Type;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let value = vm.read_ref_field(
+                this,
+                vm.class_of(this),
+                "rawType",
+                "Ljava/lang/reflect/Type;",
+            );
+            object(value.unwrap_or(ObjectRef::NULL))
+        },
+    ),
+    method(
+        "getActualTypeArguments",
+        "()[Ljava/lang/reflect/Type;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let value = vm.read_ref_field(
+                this,
+                vm.class_of(this),
+                "actualTypeArguments",
+                "[Ljava/lang/reflect/Type;",
+            );
+            object(value.unwrap_or(ObjectRef::NULL))
+        },
+    ),
+    method(
+        "getOwnerType",
+        "()Ljava/lang/reflect/Type;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let value = vm.read_ref_field(
+                this,
+                vm.class_of(this),
+                "ownerType",
+                "Ljava/lang/reflect/Type;",
+            );
+            object(value.unwrap_or(ObjectRef::NULL))
+        },
+    ),
+    method(
+        "getTypeName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = vm
+                .read_string_field(this, vm.class_of(this), "typeName")
+                .unwrap_or_default();
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = vm
+                .read_string_field(this, vm.class_of(this), "typeName")
+                .unwrap_or_default();
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = ref_arg(args, 1);
+            if other.is_null() {
+                return boolean(false);
+            }
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            if vm.class_of(other) != class {
+                return boolean(false);
+            }
+            let this_name = vm
+                .read_string_field(this, class, "typeName")
+                .unwrap_or_default();
+            let other_name = vm
+                .read_string_field(other, vm.class_of(other), "typeName")
+                .unwrap_or_default();
+            boolean(this_name == other_name)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let text = vm
+            .read_string_field(this, vm.class_of(this), "typeName")
+            .unwrap_or_default();
+        int(text.chars().fold(0_i32, |hash, ch| {
+            hash.wrapping_mul(31).wrapping_add(ch as i32)
+        }))
+    }),
+];
+
+pub(crate) const PARAMETERIZED_TYPE_IMPL_CLASS: oxjvm_vm::NativeClass = class(
+    PARAMETERIZED_TYPE_IMPL,
+    Some("java/lang/Object"),
+    &["java/lang/reflect/ParameterizedType"],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("rawType", "Ljava/lang/reflect/Type;", ACC_PRIVATE, None),
+        field(
+            "actualTypeArguments",
+            "[Ljava/lang/reflect/Type;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field("ownerType", "Ljava/lang/reflect/Type;", ACC_PRIVATE, None),
+        field("typeName", "Ljava/lang/String;", ACC_PRIVATE, None),
+    ],
+    &PARAMETERIZED_TYPE_IMPL_METHODS,
+    None,
+);
+
+const TYPE_VARIABLE_IMPL_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method(
+        "getName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = vm
+                .read_string_field(this, vm.class_of(this), "name")
+                .unwrap_or_default();
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "getBounds",
+        "()[Ljava/lang/reflect/Type;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let array = type_array(vm, 1)?;
+            vm.protect(array);
+            let object_class = vm.resolve_class("java/lang/Object")?;
+            let bound = vm.class_object(object_class)?;
+            vm.array_set_ref(array, 0, bound)?;
+            object(array)
+        },
+    ),
+    method(
+        "getGenericDeclaration",
+        "()Ljava/lang/reflect/GenericDeclaration;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "getTypeName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = vm
+                .read_string_field(this, vm.class_of(this), "typeName")
+                .unwrap_or_default();
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = vm
+                .read_string_field(this, vm.class_of(this), "typeName")
+                .unwrap_or_default();
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = ref_arg(args, 1);
+            if other.is_null() {
+                return boolean(false);
+            }
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            if vm.class_of(other) != class {
+                return boolean(false);
+            }
+            let this_name = vm
+                .read_string_field(this, class, "typeName")
+                .unwrap_or_default();
+            let other_name = vm
+                .read_string_field(other, vm.class_of(other), "typeName")
+                .unwrap_or_default();
+            boolean(this_name == other_name)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let text = vm
+            .read_string_field(this, vm.class_of(this), "typeName")
+            .unwrap_or_default();
+        int(text.chars().fold(0_i32, |hash, ch| {
+            hash.wrapping_mul(31).wrapping_add(ch as i32)
+        }))
+    }),
+];
+
+pub(crate) const TYPE_VARIABLE_IMPL_CLASS: oxjvm_vm::NativeClass = class(
+    TYPE_VARIABLE_IMPL,
+    Some("java/lang/Object"),
+    &["java/lang/reflect/TypeVariable"],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("typeName", "Ljava/lang/String;", ACC_PRIVATE, None),
+    ],
+    &TYPE_VARIABLE_IMPL_METHODS,
+    None,
+);
+
+const GENERIC_ARRAY_TYPE_IMPL_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method(
+        "getGenericComponentType",
+        "()Ljava/lang/reflect/Type;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let value = vm.read_ref_field(
+                this,
+                vm.class_of(this),
+                "componentType",
+                "Ljava/lang/reflect/Type;",
+            );
+            object(value.unwrap_or(ObjectRef::NULL))
+        },
+    ),
+    method(
+        "getTypeName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = vm
+                .read_string_field(this, vm.class_of(this), "typeName")
+                .unwrap_or_default();
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = vm
+                .read_string_field(this, vm.class_of(this), "typeName")
+                .unwrap_or_default();
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = ref_arg(args, 1);
+            if other.is_null() {
+                return boolean(false);
+            }
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            if vm.class_of(other) != class {
+                return boolean(false);
+            }
+            let this_name = vm
+                .read_string_field(this, class, "typeName")
+                .unwrap_or_default();
+            let other_name = vm
+                .read_string_field(other, vm.class_of(other), "typeName")
+                .unwrap_or_default();
+            boolean(this_name == other_name)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let text = vm
+            .read_string_field(this, vm.class_of(this), "typeName")
+            .unwrap_or_default();
+        int(text.chars().fold(0_i32, |hash, ch| {
+            hash.wrapping_mul(31).wrapping_add(ch as i32)
+        }))
+    }),
+];
+
+pub(crate) const GENERIC_ARRAY_TYPE_IMPL_CLASS: oxjvm_vm::NativeClass = class(
+    GENERIC_ARRAY_TYPE_IMPL,
+    Some("java/lang/Object"),
+    &["java/lang/reflect/GenericArrayType"],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field(
+            "componentType",
+            "Ljava/lang/reflect/Type;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field("typeName", "Ljava/lang/String;", ACC_PRIVATE, None),
+    ],
+    &GENERIC_ARRAY_TYPE_IMPL_METHODS,
+    None,
+);
+
+const WILDCARD_TYPE_IMPL_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method(
+        "getUpperBounds",
+        "()[Ljava/lang/reflect/Type;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let value = vm.read_ref_field(
+                this,
+                vm.class_of(this),
+                "upperBounds",
+                "[Ljava/lang/reflect/Type;",
+            );
+            object(value.unwrap_or(ObjectRef::NULL))
+        },
+    ),
+    method(
+        "getLowerBounds",
+        "()[Ljava/lang/reflect/Type;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let value = vm.read_ref_field(
+                this,
+                vm.class_of(this),
+                "lowerBounds",
+                "[Ljava/lang/reflect/Type;",
+            );
+            object(value.unwrap_or(ObjectRef::NULL))
+        },
+    ),
+    method(
+        "getTypeName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = vm
+                .read_string_field(this, vm.class_of(this), "typeName")
+                .unwrap_or_default();
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = vm
+                .read_string_field(this, vm.class_of(this), "typeName")
+                .unwrap_or_default();
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = ref_arg(args, 1);
+            if other.is_null() {
+                return boolean(false);
+            }
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            if vm.class_of(other) != class {
+                return boolean(false);
+            }
+            let this_name = vm
+                .read_string_field(this, class, "typeName")
+                .unwrap_or_default();
+            let other_name = vm
+                .read_string_field(other, vm.class_of(other), "typeName")
+                .unwrap_or_default();
+            boolean(this_name == other_name)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let text = vm
+            .read_string_field(this, vm.class_of(this), "typeName")
+            .unwrap_or_default();
+        int(text.chars().fold(0_i32, |hash, ch| {
+            hash.wrapping_mul(31).wrapping_add(ch as i32)
+        }))
+    }),
+];
+
+pub(crate) const WILDCARD_TYPE_IMPL_CLASS: oxjvm_vm::NativeClass = class(
+    WILDCARD_TYPE_IMPL,
+    Some("java/lang/Object"),
+    &["java/lang/reflect/WildcardType"],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field(
+            "upperBounds",
+            "[Ljava/lang/reflect/Type;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field(
+            "lowerBounds",
+            "[Ljava/lang/reflect/Type;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field("typeName", "Ljava/lang/String;", ACC_PRIVATE, None),
+    ],
+    &WILDCARD_TYPE_IMPL_METHODS,
+    None,
+);
+
+/// `java.lang.reflect.InvocationHandler`, for proxy call sites.
+pub(crate) const INVOCATION_HANDLER: oxjvm_vm::NativeClass = class(
+    "java/lang/reflect/InvocationHandler",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[method(
+        "invoke",
+        "(Ljava/lang/Object;Ljava/lang/reflect/Method;[Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    )],
+    None,
+);
+
+/// `java.lang.reflect.Proxy`: dynamic proxies are not generated, so every query answers
+/// "not a proxy" and generation throws.
+pub(crate) const PROXY: oxjvm_vm::NativeClass = class(
+    "java/lang/reflect/Proxy",
+    Some("java/lang/Object"),
+    &["java/io/Serializable"],
+    ACC_PUBLIC,
+    &[],
+    &[
+        method(
+            "isProxyClass",
+            "(Ljava/lang/Class;)Z",
+            ACC_PUBLIC | ACC_STATIC,
+            |_, _, _| boolean(false),
+        ),
+        method(
+            "getInvocationHandler",
+            "(Ljava/lang/Object;)Ljava/lang/reflect/InvocationHandler;",
+            ACC_PUBLIC | ACC_STATIC,
+            |vm, _, _| {
+                Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("not a proxy instance"),
+                ))
+            },
+        ),
+        method(
+            "getProxyClass",
+            "(Ljava/lang/ClassLoader;[Ljava/lang/Class;)Ljava/lang/Class;",
+            ACC_PUBLIC | ACC_STATIC,
+            |vm, _, _| {
+                Err(vm.throw_new(
+                    "java/lang/UnsupportedOperationException",
+                    Some("dynamic proxy classes are not supported"),
+                ))
+            },
+        ),
+        method(
+            "newProxyInstance",
+            "(Ljava/lang/ClassLoader;[Ljava/lang/Class;Ljava/lang/reflect/InvocationHandler;)Ljava/lang/Object;",
+            ACC_PUBLIC | ACC_STATIC,
+            |vm, _, _| {
+                Err(vm.throw_new(
+                    "java/lang/UnsupportedOperationException",
+                    Some("dynamic proxy classes are not supported"),
+                ))
+            },
+        ),
+    ],
+    None,
+);
+
+/// `java.lang.reflect.Type`: here raw `Class` objects stand in for generic types.
+pub(crate) const TYPE: oxjvm_vm::NativeClass = class(
+    "java/lang/reflect/Type",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[],
+    None,
+);
+
+/// The remaining `java.lang.reflect` type interfaces, present so `instanceof` checks resolve.
+pub(crate) const PARAMETERIZED_TYPE: oxjvm_vm::NativeClass = class(
+    "java/lang/reflect/ParameterizedType",
+    Some("java/lang/Object"),
+    &["java/lang/reflect/Type"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[
+        method(
+            "getActualTypeArguments",
+            "()[Ljava/lang/reflect/Type;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+        method(
+            "getRawType",
+            "()Ljava/lang/reflect/Type;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+        method(
+            "getOwnerType",
+            "()Ljava/lang/reflect/Type;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+    ],
+    None,
+);
+
+pub(crate) const GENERIC_ARRAY_TYPE: oxjvm_vm::NativeClass = class(
+    "java/lang/reflect/GenericArrayType",
+    Some("java/lang/Object"),
+    &["java/lang/reflect/Type"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[method(
+        "getGenericComponentType",
+        "()Ljava/lang/reflect/Type;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    )],
+    None,
+);
+
+pub(crate) const TYPE_VARIABLE: oxjvm_vm::NativeClass = class(
+    "java/lang/reflect/TypeVariable",
+    Some("java/lang/Object"),
+    &["java/lang/reflect/Type"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[
+        method(
+            "getName",
+            "()Ljava/lang/String;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+        method(
+            "getBounds",
+            "()[Ljava/lang/reflect/Type;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+        method(
+            "getGenericDeclaration",
+            "()Ljava/lang/reflect/GenericDeclaration;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+    ],
+    None,
+);
+
+pub(crate) const WILDCARD_TYPE: oxjvm_vm::NativeClass = class(
+    "java/lang/reflect/WildcardType",
+    Some("java/lang/Object"),
+    &["java/lang/reflect/Type"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[
+        method(
+            "getUpperBounds",
+            "()[Ljava/lang/reflect/Type;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+        method(
+            "getLowerBounds",
+            "()[Ljava/lang/reflect/Type;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+    ],
+    None,
+);
+
+/// `java.lang.reflect.GenericDeclaration`, the super-interface of the reflective type owners.
+pub(crate) const GENERIC_DECLARATION: oxjvm_vm::NativeClass = class(
+    "java/lang/reflect/GenericDeclaration",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[method(
+        "getTypeParameters",
+        "()[Ljava/lang/reflect/TypeVariable;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    )],
     None,
 );
 
@@ -1361,6 +2636,75 @@ fn binary_name_for_field_type(_vm: &Vm<'_>, field_type: &FieldType) -> Result<St
     })
 }
 
+/// The JDK-style signature text of a method (`Method.toString` and `toGenericString`).
+fn method_signature_text(vm: &mut Vm<'_>, class: ClassId, slot: u32) -> Result<String, VmError> {
+    let (name, descriptor, flags) = method_entry(vm, class, slot);
+    let parsed = MethodDescriptor::parse(&descriptor)
+        .map_err(|_| VmError::internal("bad method descriptor"))?;
+    let mask = ACC_PUBLIC
+        | ACC_PROTECTED
+        | ACC_PRIVATE
+        | ACC_ABSTRACT
+        | ACC_STATIC
+        | ACC_FINAL
+        | ACC_SYNCHRONIZED
+        | ACC_NATIVE
+        | ACC_STRICT;
+    let mut modifiers = modifiers_text(flags & mask);
+    if vm.classes.get(class).is_interface()
+        && flags & (ACC_ABSTRACT | ACC_STATIC | ACC_PRIVATE) == 0
+    {
+        if !modifiers.is_empty() {
+            modifiers.push(' ');
+        }
+        modifiers.push_str("default");
+    }
+    let mut parameters = Vec::new();
+    for parameter in &parsed.parameters {
+        parameters.push(binary_name_for_field_type(vm, parameter)?);
+    }
+    let return_type = match &parsed.returns {
+        Some(returns) => binary_name_for_field_type(vm, returns)?,
+        None => String::from("void"),
+    };
+    let declaring = crate::binary_name(vm, class);
+    let mut text = String::new();
+    if !modifiers.is_empty() {
+        text.push_str(&modifiers);
+        text.push(' ');
+    }
+    text.push_str(&alloc::format!(
+        "{return_type} {declaring}.{name}({})",
+        parameters.join(",")
+    ));
+    Ok(text)
+}
+
+/// The JDK-style signature text of a constructor (`Constructor.toGenericString`).
+fn constructor_signature_text(
+    vm: &mut Vm<'_>,
+    class: ClassId,
+    slot: u32,
+) -> Result<String, VmError> {
+    let (_, descriptor, flags) = method_entry(vm, class, slot);
+    let parsed = MethodDescriptor::parse(&descriptor)
+        .map_err(|_| VmError::internal("bad constructor descriptor"))?;
+    let mask = ACC_PUBLIC | ACC_PROTECTED | ACC_PRIVATE | ACC_FINAL;
+    let modifiers = modifiers_text(flags & mask);
+    let mut parameters = Vec::new();
+    for parameter in &parsed.parameters {
+        parameters.push(binary_name_for_field_type(vm, parameter)?);
+    }
+    let declaring = crate::binary_name(vm, class);
+    let mut text = String::new();
+    if !modifiers.is_empty() {
+        text.push_str(&modifiers);
+        text.push(' ');
+    }
+    text.push_str(&alloc::format!("{declaring}({})", parameters.join(",")));
+    Ok(text)
+}
+
 fn modifiers_text(flags: u16) -> String {
     let mut parts = Vec::new();
     if flags & ACC_PUBLIC != 0 {
@@ -1438,7 +2782,7 @@ fn constructor_new_instance(
     object(instance)
 }
 
-const CONSTRUCTOR_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
+const CONSTRUCTOR_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -1492,6 +2836,36 @@ const CONSTRUCTOR_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
             .map_err(|_| VmError::internal("bad constructor descriptor"))?;
         int(parsed.parameters.len() as i32)
     }),
+    method(
+        "getGenericParameterTypes",
+        "()[Ljava/lang/reflect/Type;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (class, slot) = constructor_parts(vm, receiver(args));
+            generic_parameter_types(vm, class, slot)
+        },
+    ),
+    method(
+        "getGenericExceptionTypes",
+        "()[Ljava/lang/reflect/Type;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let _ = constructor_parts(vm, receiver(args));
+            type_array_of(vm, &[])
+        },
+    ),
+    method(
+        "toGenericString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (class, slot) = constructor_parts(vm, receiver(args));
+            {
+                let text = constructor_signature_text(vm, class, slot)?;
+                object(vm.make_string(&text)?)
+            }
+        },
+    ),
     method(
         "getExceptionTypes",
         "()[Ljava/lang/Class;",
@@ -1606,6 +2980,16 @@ const CONSTRUCTOR_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
             executable_parameters(vm, this, &descriptor)
         },
     ),
+    method("isSynthetic", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let (class, slot) = constructor_parts(vm, receiver(args));
+        let flags = vm.classes.get(class).methods[slot as usize].access_flags;
+        boolean(flags & ACC_SYNTHETIC != 0)
+    }),
+    method("isVarArgs", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let (class, slot) = constructor_parts(vm, receiver(args));
+        let flags = vm.classes.get(class).methods[slot as usize].access_flags;
+        boolean(flags & ACC_VARARGS != 0)
+    }),
     method(
         "equals",
         "(Ljava/lang/Object;)Z",
@@ -1647,7 +3031,7 @@ const CONSTRUCTOR_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
 
 pub(crate) const CONSTRUCTOR: oxjvm_vm::NativeClass = class(
     "java/lang/reflect/Constructor",
-    Some("java/lang/Object"),
+    Some("java/lang/reflect/Executable"),
     &[
         "java/lang/reflect/Member",
         "java/lang/reflect/AnnotatedElement",
@@ -1656,8 +3040,72 @@ pub(crate) const CONSTRUCTOR: oxjvm_vm::NativeClass = class(
     &[
         field("clazz", "Ljava/lang/Class;", ACC_PRIVATE, None),
         field("slot", "I", ACC_PRIVATE, None),
+        field("override", "Z", ACC_PRIVATE, None),
     ],
     &CONSTRUCTOR_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// AccessibleObject
+// -------------------------------------------------------------------------------------------
+
+const ACCESSIBLE_OBJECT_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method("setAccessible", "(Z)V", ACC_PUBLIC, set_accessible),
+    method(
+        "trySetAccessible",
+        "()Z",
+        ACC_PUBLIC,
+        |vm, context, args| {
+            set_accessible(vm, context, &[args[0], Value::Int(1)])?;
+            boolean(true)
+        },
+    ),
+    method("isAccessible", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let value = vm
+            .read_instance_int_named(this, class, "override", "Z")
+            .unwrap_or(0);
+        boolean(value != 0)
+    }),
+    method(
+        "canAccess",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |_, _, _| boolean(true),
+    ),
+    method(
+        "setAccessible",
+        "([Ljava/lang/reflect/AccessibleObject;Z)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let members = ref_arg(args, 0);
+            let flag = crate::int_arg(args, 1) != 0;
+            let length = vm.array_length(members)?;
+            for index in 0..length {
+                let member = vm.array_get(members, index as i32)?.as_ref();
+                if member.is_null() {
+                    return Err(vm.throw_new("java/lang/NullPointerException", None));
+                }
+                let class = vm.class_of(member);
+                if let Some((declaring, field)) = vm.find_field_opt(class, "override", "Z") {
+                    vm.set_instance_int(member, declaring, field, i32::from(flag));
+                }
+            }
+            void()
+        },
+    ),
+];
+
+/// `java.lang.reflect.AccessibleObject`: the shared accessible-flag holder for members.
+pub(crate) const ACCESSIBLE_OBJECT: oxjvm_vm::NativeClass = class(
+    "java/lang/reflect/AccessibleObject",
+    Some("java/lang/Object"),
+    &["java/lang/reflect/AnnotatedElement"],
+    ACC_PUBLIC,
+    &[],
+    &ACCESSIBLE_OBJECT_METHODS,
     None,
 );
 
@@ -1767,7 +3215,7 @@ fn parameter_annotations_by_type(
     crate::annotation::typed_annotation_array(vm, requested, &found)
 }
 
-const PARAMETER_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+const PARAMETER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -1781,6 +3229,25 @@ const PARAMETER_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method("getModifiers", "()I", ACC_PUBLIC, |_, _, _| int(0)),
     method(
         "getParameterType",
+        "()Ljava/lang/Class;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (executable, slot) = parameter_parts(vm, receiver(args));
+            let descriptor = executable_descriptor(vm, executable)?;
+            let parsed = MethodDescriptor::parse(&descriptor)
+                .map_err(|_| VmError::internal("bad executable descriptor"))?;
+            let parameter = parsed
+                .parameters
+                .get(slot)
+                .ok_or_else(|| VmError::internal("parameter index out of range"))?;
+            let descriptor = field_type_descriptor(parameter);
+            let class = crate::annotation::class_for_descriptor(vm, &descriptor)?;
+            let class_object = vm.class_object(class)?;
+            object(class_object)
+        },
+    ),
+    method(
+        "getType",
         "()Ljava/lang/Class;",
         ACC_PUBLIC,
         |vm, _, args| {
@@ -2005,17 +3472,62 @@ fn class_methods(vm: &mut Vm<'_>, class: ClassId) -> Result<Vec<(ClassId, u32)>,
     Ok(found)
 }
 
-fn class_fields(vm: &mut Vm<'_>, class: ClassId) -> Result<Vec<(ClassId, u32)>, VmError> {
+/// Fields declared directly by `class` (`Class.getDeclaredFields`): inherited fields are not
+/// included.
+fn declared_fields(vm: &Vm<'_>, class: ClassId) -> Vec<(ClassId, u32)> {
+    let count = vm.classes.get(class).fields.len();
+    (0..count).map(|index| (class, index as u32)).collect()
+}
+
+/// Public fields of a class, its superclasses, and its superinterfaces (`Class.getFields`).
+///
+/// Later occurrences of a signature (from superclasses or interfaces) are dropped so that the
+/// most specific declaration wins.
+fn class_public_fields(vm: &Vm<'_>, class: ClassId) -> Vec<(ClassId, u32)> {
     let mut found = Vec::new();
+    let mut seen: Vec<(String, String)> = Vec::new();
+    let mut interface_roots = Vec::new();
     let mut current = Some(class);
     while let Some(id) = current {
-        let count = vm.classes.get(id).fields.len();
-        for index in 0..count {
-            found.push((id, index as u32));
+        for (declaring, slot) in declared_fields(vm, id) {
+            let (name, descriptor, flags) = field_entry(vm, declaring, slot);
+            if flags & ACC_PUBLIC == 0 {
+                continue;
+            }
+            let key = (name, descriptor);
+            if !seen.contains(&key) {
+                seen.push(key);
+                found.push((declaring, slot));
+            }
+        }
+        for interface in &vm.classes.get(id).interfaces {
+            interface_roots.push(*interface);
         }
         current = vm.classes.get(id).super_class;
     }
-    Ok(found)
+    let mut stack: Vec<ClassId> = interface_roots.into_iter().rev().collect();
+    let mut visited: Vec<ClassId> = Vec::new();
+    while let Some(id) = stack.pop() {
+        if visited.contains(&id) {
+            continue;
+        }
+        visited.push(id);
+        for (declaring, slot) in declared_fields(vm, id) {
+            let (name, descriptor, flags) = field_entry(vm, declaring, slot);
+            if flags & ACC_PUBLIC == 0 {
+                continue;
+            }
+            let key = (name, descriptor);
+            if !seen.contains(&key) {
+                seen.push(key);
+                found.push((declaring, slot));
+            }
+        }
+        for interface in vm.classes.get(id).interfaces.iter().rev() {
+            stack.push(*interface);
+        }
+    }
+    found
 }
 
 /// `Class.getDeclaredMethods()` / `getMethods()`.
@@ -2057,7 +3569,7 @@ pub(crate) fn class_reflect_fields(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let class = class_argument(vm, receiver(args))?;
-    let entries = class_fields(vm, class)?;
+    let entries = declared_fields(vm, class);
     let field_class = vm.resolve_class("java/lang/reflect/Field")?;
     let array = vm.allocate_object_array(field_class, entries.len())?;
     for (index, (declaring, slot)) in entries.iter().enumerate() {
@@ -2067,7 +3579,24 @@ pub(crate) fn class_reflect_fields(
     object(array)
 }
 
-/// `Class.getDeclaredField(String)` / `getField(String)`.
+/// `Class.getFields()`: public fields, including inherited ones.
+pub(crate) fn class_reflect_all_fields(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let class = class_argument(vm, receiver(args))?;
+    let entries = class_public_fields(vm, class);
+    let field_class = vm.resolve_class("java/lang/reflect/Field")?;
+    let array = vm.allocate_object_array(field_class, entries.len())?;
+    for (index, (declaring, slot)) in entries.iter().enumerate() {
+        let entry = new_field(vm, *declaring, *slot)?;
+        vm.array_set_ref(array, index, entry)?;
+    }
+    object(array)
+}
+
+/// `Class.getDeclaredField(String)`.
 pub(crate) fn class_reflect_field(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
@@ -2075,7 +3604,26 @@ pub(crate) fn class_reflect_field(
 ) -> Result<Value, VmError> {
     let class = class_argument(vm, receiver(args))?;
     let name = string_arg(vm, args[1])?;
-    let entries = class_fields(vm, class)?;
+    let entries = declared_fields(vm, class);
+    for (declaring, slot) in entries {
+        let (candidate, _, _) = field_entry(vm, declaring, slot);
+        if candidate == name {
+            let entry = new_field(vm, declaring, slot)?;
+            return object(entry);
+        }
+    }
+    Err(vm.throw_new("java/lang/NoSuchFieldException", Some(&name)))
+}
+
+/// `Class.getField(String)`: public fields, including inherited ones.
+pub(crate) fn class_reflect_all_field(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let class = class_argument(vm, receiver(args))?;
+    let name = string_arg(vm, args[1])?;
+    let entries = class_public_fields(vm, class);
     for (declaring, slot) in entries {
         let (candidate, _, _) = field_entry(vm, declaring, slot);
         if candidate == name {
