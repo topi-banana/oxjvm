@@ -29,7 +29,14 @@ const OBJECT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "equals",
         "(Ljava/lang/Object;)Z",
         ACC_PUBLIC,
-        |vm, _, args| boolean(same(vm, receiver(args), ref_arg(args, 1))),
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if crate::annotation::is_annotation_instance(vm, this) {
+                return boolean(crate::annotation::annotation_equals(vm, this, other)?);
+            }
+            boolean(same(vm, this, other))
+        },
     ),
     method(
         "toString",
@@ -83,7 +90,11 @@ fn object_hash_code(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let hash = vm.heap.get(receiver(args)).map_or(0, |object| object.hash);
+    let reference = receiver(args);
+    if crate::annotation::is_annotation_instance(vm, reference) {
+        return int(crate::annotation::annotation_hash_code(vm, reference)?);
+    }
+    let hash = vm.heap.get(reference).map_or(0, |object| object.hash);
     int(hash)
 }
 
@@ -93,7 +104,11 @@ fn object_to_string(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let reference = receiver(args);
-    let text = describe_object(vm, reference);
+    let text = if crate::annotation::is_annotation_instance(vm, reference) {
+        crate::annotation::annotation_to_string(vm, reference)?
+    } else {
+        describe_object(vm, reference)
+    };
     let string = vm.make_string(&text)?;
     object(string)
 }
@@ -224,7 +239,7 @@ pub(crate) const OBJECT: oxjvm_vm::NativeClass = class(
 // Class
 // -------------------------------------------------------------------------------------------
 
-const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
+const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -354,6 +369,10 @@ const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let class = class_argument(vm, receiver(args))?;
+            if vm.classes.get(class).kind == oxjvm_vm::ClassKind::Primitive {
+                let name = vm.classes.get(class).name.clone();
+                return object(vm.make_string(&name)?);
+            }
             let kind = if vm.classes.get(class).is_interface() {
                 "interface"
             } else {
@@ -419,13 +438,152 @@ const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
         "getDeclaredMethod",
         "(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;",
         ACC_PUBLIC,
-        crate::reflect::class_reflect_method,
+        crate::reflect::class_reflect_declared_method,
     ),
     method(
         "getMethod",
         "(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;",
         ACC_PUBLIC,
         crate::reflect::class_reflect_method,
+    ),
+    method(
+        "getAnnotation",
+        "(Ljava/lang/Class;)Ljava/lang/annotation/Annotation;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = class_argument(vm, receiver(args))?;
+            let annotation = class_argument(vm, ref_arg(args, 1))?;
+            object(crate::annotation::class_annotation(vm, class, annotation)?)
+        },
+    ),
+    method(
+        "getDeclaredAnnotation",
+        "(Ljava/lang/Class;)Ljava/lang/annotation/Annotation;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = class_argument(vm, receiver(args))?;
+            let annotation = class_argument(vm, ref_arg(args, 1))?;
+            object(crate::annotation::class_declared_annotation(
+                vm, class, annotation,
+            )?)
+        },
+    ),
+    method(
+        "getAnnotations",
+        "()[Ljava/lang/annotation/Annotation;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = class_argument(vm, receiver(args))?;
+            let annotations = crate::annotation::class_annotations(vm, class)?;
+            object(crate::annotation::annotation_array(vm, &annotations)?)
+        },
+    ),
+    method(
+        "getDeclaredAnnotations",
+        "()[Ljava/lang/annotation/Annotation;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = class_argument(vm, receiver(args))?;
+            let annotations = crate::annotation::class_declared_annotations(vm, class)?;
+            object(crate::annotation::annotation_array(vm, &annotations)?)
+        },
+    ),
+    method(
+        "getAnnotationsByType",
+        "(Ljava/lang/Class;)[Ljava/lang/annotation/Annotation;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = class_argument(vm, receiver(args))?;
+            let annotation = class_argument(vm, ref_arg(args, 1))?;
+            object(crate::annotation::class_annotations_by_type(
+                vm, class, annotation,
+            )?)
+        },
+    ),
+    method(
+        "getDeclaredAnnotationsByType",
+        "(Ljava/lang/Class;)[Ljava/lang/annotation/Annotation;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = class_argument(vm, receiver(args))?;
+            let annotation = class_argument(vm, ref_arg(args, 1))?;
+            object(crate::annotation::class_declared_annotations_by_type(
+                vm, class, annotation,
+            )?)
+        },
+    ),
+    method(
+        "isAnnotationPresent",
+        "(Ljava/lang/Class;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = class_argument(vm, receiver(args))?;
+            let annotation = class_argument(vm, ref_arg(args, 1))?;
+            let instance = crate::annotation::class_annotation(vm, class, annotation)?;
+            boolean(!instance.is_null())
+        },
+    ),
+    method(
+        "getDeclaredConstructors",
+        "()[Ljava/lang/reflect/Constructor;",
+        ACC_PUBLIC,
+        crate::reflect::class_reflect_constructors,
+    ),
+    method(
+        "getConstructors",
+        "()[Ljava/lang/reflect/Constructor;",
+        ACC_PUBLIC,
+        crate::reflect::class_reflect_public_constructors,
+    ),
+    method(
+        "getDeclaredConstructor",
+        "([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;",
+        ACC_PUBLIC,
+        crate::reflect::class_reflect_constructor,
+    ),
+    method(
+        "getConstructor",
+        "([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;",
+        ACC_PUBLIC,
+        crate::reflect::class_reflect_public_constructor,
+    ),
+    method(
+        "getPackage",
+        "()Ljava/lang/Package;",
+        ACC_PUBLIC,
+        class_get_package,
+    ),
+    method(
+        "getEnclosingClass",
+        "()Ljava/lang/Class;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = class_argument(vm, receiver(args))?;
+            let name = vm.classes.get(class).enclosing_class_name.clone();
+            match name.and_then(|name| vm.resolve_class_lenient(&name)) {
+                Some(enclosing) => {
+                    let class_object = vm.class_object(enclosing)?;
+                    object(class_object)
+                }
+                None => object(ObjectRef::NULL),
+            }
+        },
+    ),
+    method(
+        "getDeclaringClass",
+        "()Ljava/lang/Class;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = class_argument(vm, receiver(args))?;
+            let name = vm.classes.get(class).declaring_class_name.clone();
+            match name.and_then(|name| vm.resolve_class_lenient(&name)) {
+                Some(declaring) => {
+                    let class_object = vm.class_object(declaring)?;
+                    object(class_object)
+                }
+                None => object(ObjectRef::NULL),
+            }
+        },
     ),
 ];
 
@@ -479,12 +637,21 @@ fn class_get_canonical_name(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let class = class_argument(vm, receiver(args))?;
-    let name = vm.class_name(class).to_string();
-    let text = if vm.classes.get(class).kind == oxjvm_vm::ClassKind::Primitive {
-        name
-    } else if name.starts_with('[') {
+    match canonical_name(vm, class) {
+        Some(text) => object(vm.make_string(&text)?),
+        None => object(ObjectRef::NULL),
+    }
+}
+
+/// The canonical name of a class, or `None` for a lambda/anonymous/local class.
+pub(crate) fn canonical_name(vm: &Vm<'_>, class: ClassId) -> Option<String> {
+    let name = vm.class_name(class);
+    if vm.classes.get(class).kind == oxjvm_vm::ClassKind::Primitive {
+        return Some(name.to_string());
+    }
+    if name.starts_with('[') {
         let mut dimensions = 0;
-        let mut rest = name.as_str();
+        let mut rest = name;
         while let Some(next) = rest.strip_prefix('[') {
             dimensions += 1;
             rest = next;
@@ -497,14 +664,12 @@ fn class_get_canonical_name(
         for _ in 0..dimensions {
             component.push_str("[]");
         }
-        component
-    } else {
-        if is_anonymous(name.as_str()) {
-            return object(ObjectRef::NULL);
-        }
-        name.replace(['/', '$'], ".")
-    };
-    object(vm.make_string(&text)?)
+        return Some(component);
+    }
+    if is_anonymous(name) {
+        return None;
+    }
+    Some(name.replace(['/', '$'], "."))
 }
 
 /// Whether a binary name belongs to a lambda, anonymous, or local class, whose canonical
@@ -707,25 +872,245 @@ fn class_is_record(
     boolean(vm.class_is_subtype(class, record))
 }
 
+/// The internal package name of a class, following arrays to their component.
+fn package_name_of(vm: &Vm<'_>, class: ClassId) -> String {
+    let mut class = class;
+    while vm.classes.get(class).kind == oxjvm_vm::ClassKind::Array {
+        match vm.classes.get(class).component_class {
+            Some(component) => class = component,
+            None => break,
+        }
+    }
+    let entry = vm.classes.get(class);
+    if entry.kind == oxjvm_vm::ClassKind::Primitive {
+        return String::new();
+    }
+    match entry.name.rfind('/') {
+        Some(index) => entry.name[..index].to_string(),
+        None => String::new(),
+    }
+}
+
 fn class_get_package_name(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
     let class = class_argument(vm, receiver(args))?;
-    let name = vm.class_name(class);
-    let package = match name.rfind('/') {
-        Some(index) => &name[..index],
-        None => "",
-    };
-    let text = package.replace('/', ".");
+    let text = package_name_of(vm, class).replace('/', ".");
     object(vm.make_string(&text)?)
 }
+
+fn class_get_package(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let class = class_argument(vm, receiver(args))?;
+    let name = package_name_of(vm, class);
+    if name.is_empty() {
+        return object(ObjectRef::NULL);
+    }
+    let package_class = vm.resolve_class("java/lang/Package")?;
+    let instance = vm.new_instance(package_class)?;
+    let text = name.replace('/', ".");
+    let string = vm.make_string(&text)?;
+    let (declaring, field) = vm.find_field(package_class, "packageName", "Ljava/lang/String;")?;
+    vm.set_instance_ref(instance, declaring, field, string);
+    object(instance)
+}
+
+/// The `package-info` class backing a `Package` object, when present.
+fn package_info(vm: &mut Vm<'_>, package: ObjectRef) -> Option<ClassId> {
+    let class = vm.class_of(package);
+    let name = vm.read_ref_field(package, class, "packageName", "Ljava/lang/String;")?;
+    let text = vm.string_value(name)?;
+    let internal = if text.is_empty() {
+        String::from("package-info")
+    } else {
+        alloc::format!("{}/package-info", text.replace('.', "/"))
+    };
+    vm.resolve_class_lenient(&internal)
+}
+
+fn package_get_name(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let package = receiver(args);
+    let class = vm.class_of(package);
+    let name = vm
+        .read_ref_field(package, class, "packageName", "Ljava/lang/String;")
+        .unwrap_or(ObjectRef::NULL);
+    object(name)
+}
+
+fn package_declared_annotations(
+    vm: &mut Vm<'_>,
+    package: ObjectRef,
+) -> Result<Vec<ObjectRef>, VmError> {
+    match package_info(vm, package) {
+        Some(info) => crate::annotation::class_declared_annotations(vm, info),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn package_annotation(
+    vm: &mut Vm<'_>,
+    package: ObjectRef,
+    annotation: ClassId,
+) -> Result<ObjectRef, VmError> {
+    match package_info(vm, package) {
+        Some(info) => crate::annotation::class_declared_annotation(vm, info, annotation),
+        None => Ok(ObjectRef::NULL),
+    }
+}
+
+const PACKAGE_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+    method(
+        "getName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        package_get_name,
+    ),
+    method(
+        "getAnnotation",
+        "(Ljava/lang/Class;)Ljava/lang/annotation/Annotation;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let annotation = class_argument(vm, ref_arg(args, 1))?;
+            object(package_annotation(vm, receiver(args), annotation)?)
+        },
+    ),
+    method(
+        "getDeclaredAnnotation",
+        "(Ljava/lang/Class;)Ljava/lang/annotation/Annotation;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let annotation = class_argument(vm, ref_arg(args, 1))?;
+            object(package_annotation(vm, receiver(args), annotation)?)
+        },
+    ),
+    method(
+        "getAnnotations",
+        "()[Ljava/lang/annotation/Annotation;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let annotations = package_declared_annotations(vm, receiver(args))?;
+            object(crate::annotation::annotation_array(vm, &annotations)?)
+        },
+    ),
+    method(
+        "getDeclaredAnnotations",
+        "()[Ljava/lang/annotation/Annotation;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let annotations = package_declared_annotations(vm, receiver(args))?;
+            object(crate::annotation::annotation_array(vm, &annotations)?)
+        },
+    ),
+    method(
+        "getAnnotationsByType",
+        "(Ljava/lang/Class;)[Ljava/lang/annotation/Annotation;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let annotation = class_argument(vm, ref_arg(args, 1))?;
+            match package_info(vm, receiver(args)) {
+                Some(info) => object(crate::annotation::class_declared_annotations_by_type(
+                    vm, info, annotation,
+                )?),
+                None => object(crate::annotation::typed_annotation_array(
+                    vm,
+                    annotation,
+                    &[],
+                )?),
+            }
+        },
+    ),
+    method(
+        "getDeclaredAnnotationsByType",
+        "(Ljava/lang/Class;)[Ljava/lang/annotation/Annotation;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let annotation = class_argument(vm, ref_arg(args, 1))?;
+            match package_info(vm, receiver(args)) {
+                Some(info) => object(crate::annotation::class_declared_annotations_by_type(
+                    vm, info, annotation,
+                )?),
+                None => object(crate::annotation::typed_annotation_array(
+                    vm,
+                    annotation,
+                    &[],
+                )?),
+            }
+        },
+    ),
+    method(
+        "isAnnotationPresent",
+        "(Ljava/lang/Class;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let annotation = class_argument(vm, ref_arg(args, 1))?;
+            let instance = package_annotation(vm, receiver(args), annotation)?;
+            boolean(!instance.is_null())
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let package = receiver(args);
+            let class = vm.class_of(package);
+            let name = vm
+                .read_ref_field(package, class, "packageName", "Ljava/lang/String;")
+                .unwrap_or(ObjectRef::NULL);
+            let text = vm.string_or_empty(name);
+            let text = alloc::format!("package {text}");
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "getPackage",
+        "(Ljava/lang/String;)Ljava/lang/Package;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = string_arg(vm, args[0])?;
+            if name.is_empty() {
+                return object(ObjectRef::NULL);
+            }
+            let package_class = vm.resolve_class("java/lang/Package")?;
+            let instance = vm.new_instance(package_class)?;
+            let string = vm.make_string(&name)?;
+            let (declaring, field) =
+                vm.find_field(package_class, "packageName", "Ljava/lang/String;")?;
+            vm.set_instance_ref(instance, declaring, field, string);
+            object(instance)
+        },
+    ),
+];
+
+/// `java.lang.Package`: only names and package annotations are modelled.
+pub(crate) const PACKAGE: oxjvm_vm::NativeClass = class(
+    "java/lang/Package",
+    Some("java/lang/Object"),
+    &["java/lang/reflect/AnnotatedElement"],
+    ACC_PUBLIC,
+    &[field(
+        "packageName",
+        "Ljava/lang/String;",
+        ACC_PRIVATE | ACC_FINAL,
+        None,
+    )],
+    &PACKAGE_METHODS,
+    None,
+);
 
 pub(crate) const CLASS: oxjvm_vm::NativeClass = class(
     "java/lang/Class",
     Some("java/lang/Object"),
-    &["java/io/Serializable"],
+    &["java/io/Serializable", "java/lang/reflect/AnnotatedElement"],
     ACC_PUBLIC | ACC_FINAL,
     &[],
     &CLASS_METHODS,
@@ -5204,8 +5589,12 @@ const ANNOTATION_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
     method(
         "annotationType",
         "()Ljava/lang/Class;",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        abstract_method_pub,
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let instance = receiver(args);
+            let class = vm.class_of(instance);
+            object(vm.class_object(class)?)
+        },
     ),
     method(
         "equals",

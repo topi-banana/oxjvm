@@ -213,6 +213,9 @@ pub struct Vm<'a> {
     pub(crate) properties: BTreeMap<String, String>,
     /// Whether the boot sequence has completed.
     pub(crate) booted: bool,
+    /// Cached boxed primitives, keyed by wrapper tag and value, so the wrapper classes can keep
+    /// their identity guarantees.
+    pub(crate) boxed_cache: BTreeMap<(u8, i64), Ref>,
 }
 
 impl<'a> Vm<'a> {
@@ -252,6 +255,7 @@ impl<'a> Vm<'a> {
             primitive_classes: BTreeMap::new(),
             properties: BTreeMap::new(),
             booted: false,
+            boxed_cache: BTreeMap::new(),
         };
         vm.boot();
         vm
@@ -319,8 +323,11 @@ impl<'a> Vm<'a> {
                 native_definition: None,
                 initialization_error: None,
                 nest_host: None,
+                enclosing_class_name: None,
+                declaring_class_name: None,
                 permitted_subclasses: Vec::new(),
                 is_enum: false,
+                annotations: Vec::new(),
                 verified: true,
             });
             self.classes.get_mut(id).id = id;
@@ -450,6 +457,17 @@ impl<'a> Vm<'a> {
         let reference = self.heap.allocate(string_class, ObjectData::String(units));
         self.interned.insert(text.into(), reference);
         reference
+    }
+
+    /// Look up a cached boxed primitive (tag is the wrapper's primitive descriptor byte).
+    #[must_use]
+    pub fn cached_boxed(&self, tag: u8, value: i64) -> Option<Ref> {
+        self.boxed_cache.get(&(tag, value)).copied()
+    }
+
+    /// Remember a boxed primitive so later boxes of the same value reuse the instance.
+    pub fn cache_boxed(&mut self, tag: u8, value: i64, reference: Ref) {
+        self.boxed_cache.insert((tag, value), reference);
     }
 
     /// Create a non-interned `java.lang.String` from UTF-16 code units.
@@ -883,6 +901,7 @@ impl<'a> Vm<'a> {
         roots.push(self.out);
         roots.push(self.err);
         roots.extend(self.interned.values().copied());
+        roots.extend(self.boxed_cache.values().copied());
         roots.extend(self.temp_roots.iter().copied());
         roots.extend(self.backtraces.keys().copied());
         for thread in &self.threads {

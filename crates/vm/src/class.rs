@@ -69,6 +69,8 @@ pub struct Field {
     pub slot: u16,
     /// The `ConstantValue` attribute value, resolved at preparation time.
     pub constant: Option<Value>,
+    /// `RuntimeVisibleAnnotations`, kept unresolved against the declaring class's pool.
+    pub annotations: Vec<oxjvm_classfile::Annotation>,
 }
 
 /// A method of a runtime class.
@@ -90,6 +92,12 @@ pub struct Method {
     pub exceptions: Vec<ClassId>,
     /// Parameter names from `MethodParameters`/`LocalVariableTable`, when present.
     pub parameter_names: Vec<Option<String>>,
+    /// `RuntimeVisibleAnnotations`, kept unresolved against the declaring class's pool.
+    pub annotations: Vec<oxjvm_classfile::Annotation>,
+    /// `RuntimeVisibleParameterAnnotations`, one entry per parameter.
+    pub parameter_annotations: Vec<Vec<oxjvm_classfile::Annotation>>,
+    /// `AnnotationDefault`, for annotation interface elements.
+    pub annotation_default: Option<oxjvm_classfile::ElementValue>,
 }
 
 impl Method {
@@ -366,10 +374,16 @@ pub struct Class {
     pub initialization_error: Option<ObjectRef>,
     /// Nest host, from the `NestHost` attribute.
     pub nest_host: Option<ClassId>,
+    /// The enclosing class name from `EnclosingMethod`, when nested in a member or initializer.
+    pub enclosing_class_name: Option<String>,
+    /// The declaring (outer) class name from `InnerClasses`, for member classes.
+    pub declaring_class_name: Option<String>,
     /// Permitted subclasses, from `PermittedSubclasses`.
     pub permitted_subclasses: Vec<ClassId>,
     /// Whether the class has an `ACC_ENUM` flag.
     pub is_enum: bool,
+    /// `RuntimeVisibleAnnotations`, kept unresolved against this class's pool.
+    pub annotations: Vec<oxjvm_classfile::Annotation>,
     /// Whether verification has run.
     pub verified: bool,
 }

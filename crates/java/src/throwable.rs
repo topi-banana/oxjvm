@@ -464,6 +464,102 @@ exception!(
     "java/lang/ReflectiveOperationException",
     "java/lang/Exception"
 );
+
+const INVOCATION_TARGET_EXCEPTION_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method("<init>", "()V", ACC_PUBLIC, invocation_target_ctor),
+    method(
+        "<init>",
+        "(Ljava/lang/Throwable;)V",
+        ACC_PUBLIC,
+        invocation_target_ctor,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/Throwable;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        invocation_target_ctor,
+    ),
+    method(
+        "getTargetException",
+        "()Ljava/lang/Throwable;",
+        ACC_PUBLIC,
+        invocation_target_target,
+    ),
+    method(
+        "getCause",
+        "()Ljava/lang/Throwable;",
+        ACC_PUBLIC,
+        invocation_target_target,
+    ),
+];
+
+fn invocation_target_target(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let class = vm.class_of(this);
+    let target = vm
+        .read_ref_field(this, class, "target", "Ljava/lang/Throwable;")
+        .unwrap_or(ObjectRef::NULL);
+    object(target)
+}
+
+fn invocation_target_ctor(
+    vm: &mut Vm<'_>,
+    context: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let class = context.class;
+    let descriptor = vm.classes.get(class).methods[context.method as usize]
+        .descriptor
+        .clone();
+    let (target, message) = match descriptor.as_str() {
+        "()V" => (ObjectRef::NULL, ObjectRef::NULL),
+        "(Ljava/lang/Throwable;)V" => {
+            let cause = ref_arg(args, 1);
+            let text = if cause.is_null() {
+                ObjectRef::NULL
+            } else {
+                let (method_class, method) =
+                    vm.resolve_virtual_method(cause, "toString", "()Ljava/lang/String;")?;
+                vm.invoke_method(method_class, method, vec![Value::Ref(cause)])?
+                    .as_ref()
+            };
+            (cause, text)
+        }
+        _ => (ref_arg(args, 1), ref_arg(args, 2)),
+    };
+    let (declaring, field) = vm.find_field(class, "target", "Ljava/lang/Throwable;")?;
+    vm.set_instance_ref(this, declaring, field, target);
+    let super_class = vm
+        .classes
+        .get(class)
+        .super_class
+        .ok_or_else(|| VmError::internal("exception without a superclass"))?;
+    let (declaring, method) = vm
+        .find_method(super_class, "<init>", "(Ljava/lang/String;)V")
+        .ok_or_else(|| vm.throw_new("java/lang/NoSuchMethodError", Some("<init>")))?;
+    vm.invoke_method(
+        declaring,
+        method,
+        vec![Value::Ref(this), Value::Ref(message)],
+    )?;
+    void()
+}
+
+/// `java.lang.reflect.InvocationTargetException`.
+pub(crate) const INVOCATION_TARGET_EXCEPTION: oxjvm_vm::NativeClass = class(
+    "java/lang/reflect/InvocationTargetException",
+    Some("java/lang/ReflectiveOperationException"),
+    &[],
+    ACC_PUBLIC,
+    &[field("target", "Ljava/lang/Throwable;", ACC_PRIVATE, None)],
+    &INVOCATION_TARGET_EXCEPTION_METHODS,
+    None,
+);
 exception!(
     RUNTIME_EXCEPTION,
     "java/lang/RuntimeException",
@@ -487,6 +583,11 @@ exception!(
 exception!(
     ILLEGAL_ARGUMENT_EXCEPTION,
     "java/lang/IllegalArgumentException",
+    "java/lang/RuntimeException"
+);
+exception!(
+    SECURITY_EXCEPTION,
+    "java/lang/SecurityException",
     "java/lang/RuntimeException"
 );
 exception!(
@@ -586,6 +687,139 @@ exception!(
     "java/lang/Exception"
 );
 
+fn type_not_present_ctor(
+    vm: &mut Vm<'_>,
+    context: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let type_name = ref_arg(args, 1);
+    let (declaring, field) = vm.find_field(context.class, "typeName", "Ljava/lang/String;")?;
+    vm.set_instance_ref(this, declaring, field, type_name);
+    exception_ctor(vm, context, args)?;
+    void()
+}
+
+fn enum_constant_not_present_ctor(
+    vm: &mut Vm<'_>,
+    context: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let enum_type = ref_arg(args, 1);
+    let constant_name = ref_arg(args, 2);
+    if enum_type.is_null() || constant_name.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let (declaring, field) = vm.find_field(context.class, "enumType", "Ljava/lang/Class;")?;
+    vm.set_instance_ref(this, declaring, field, enum_type);
+    let (declaring, field) = vm.find_field(context.class, "constantName", "Ljava/lang/String;")?;
+    vm.set_instance_ref(this, declaring, field, constant_name);
+    let enum_class = crate::lang::class_argument(vm, enum_type)?;
+    let type_name = crate::binary_name(vm, enum_class);
+    let constant = vm.string_or_empty(constant_name);
+    let message = alloc::format!("{type_name}.{constant}");
+    let message = vm.make_string(&message)?;
+    let (declaring, field) = vm.find_field(context.class, "detailMessage", "Ljava/lang/String;")?;
+    vm.set_instance_ref(this, declaring, field, message);
+    vm.capture_backtrace(this);
+    void()
+}
+
+/// `java.lang.EnumConstantNotPresentException`.
+pub(crate) const ENUM_CONSTANT_NOT_PRESENT_EXCEPTION: oxjvm_vm::NativeClass = class(
+    "java/lang/EnumConstantNotPresentException",
+    Some("java/lang/RuntimeException"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field(
+            "enumType",
+            "Ljava/lang/Class;",
+            ACC_PRIVATE | ACC_FINAL,
+            None,
+        ),
+        field(
+            "constantName",
+            "Ljava/lang/String;",
+            ACC_PRIVATE | ACC_FINAL,
+            None,
+        ),
+    ],
+    &[
+        method(
+            "<init>",
+            "(Ljava/lang/Class;Ljava/lang/String;)V",
+            ACC_PUBLIC,
+            enum_constant_not_present_ctor,
+        ),
+        method(
+            "enumType",
+            "()Ljava/lang/Class;",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let this = receiver(args);
+                let class = vm.class_of(this);
+                let value = vm
+                    .read_ref_field(this, class, "enumType", "Ljava/lang/Class;")
+                    .unwrap_or(ObjectRef::NULL);
+                object(value)
+            },
+        ),
+        method(
+            "constantName",
+            "()Ljava/lang/String;",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let this = receiver(args);
+                let class = vm.class_of(this);
+                let value = vm
+                    .read_ref_field(this, class, "constantName", "Ljava/lang/String;")
+                    .unwrap_or(ObjectRef::NULL);
+                object(value)
+            },
+        ),
+    ],
+    None,
+);
+
+/// `java.lang.TypeNotPresentException`.
+pub(crate) const TYPE_NOT_PRESENT_EXCEPTION: oxjvm_vm::NativeClass = class(
+    "java/lang/TypeNotPresentException",
+    Some("java/lang/RuntimeException"),
+    &[],
+    ACC_PUBLIC,
+    &[field("typeName", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &[
+        method(
+            "<init>",
+            "(Ljava/lang/String;)V",
+            ACC_PUBLIC,
+            type_not_present_ctor,
+        ),
+        method(
+            "<init>",
+            "(Ljava/lang/String;Ljava/lang/Throwable;)V",
+            ACC_PUBLIC,
+            type_not_present_ctor,
+        ),
+        method(
+            "typeName",
+            "()Ljava/lang/String;",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let this = receiver(args);
+                let class = vm.class_of(this);
+                let value = vm
+                    .read_ref_field(this, class, "typeName", "Ljava/lang/String;")
+                    .unwrap_or(ObjectRef::NULL);
+                object(value)
+            },
+        ),
+    ],
+    None,
+);
+
 /// `java.util.zip.ZipConstants`: a marker interface.
 pub(crate) const ZIP_CONSTANTS: oxjvm_vm::NativeClass = class(
     "java/util/zip/ZipConstants",
@@ -620,6 +854,11 @@ exception!(
     DIRECTORY_NOT_EMPTY_EXCEPTION,
     "java/nio/file/DirectoryNotEmptyException",
     "java/nio/file/FileSystemException"
+);
+exception!(
+    ILLEGAL_ACCESS_EXCEPTION,
+    "java/lang/IllegalAccessException",
+    "java/lang/ReflectiveOperationException"
 );
 exception!(
     NO_SUCH_FIELD_EXCEPTION,

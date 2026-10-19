@@ -274,11 +274,68 @@ pub(crate) fn box_value(vm: &mut Vm<'_>, value: Value, descriptor: &str) -> Resu
         "D" => "java/lang/Double",
         _ => return Ok(value),
     };
+    if descriptor == "Z" {
+        let class = vm.resolve_class(class_name)?;
+        vm.ensure_initialized(class)?;
+        let name = if value.as_int() != 0 { "TRUE" } else { "FALSE" };
+        if let Some(existing) = vm.read_static_ref_if_set(class, name, "Ljava/lang/Boolean;") {
+            return object(existing);
+        }
+        let instance = vm.new_instance(class)?;
+        write_value_int(vm, instance, value.as_int());
+        vm.set_static_value(class, name, "Ljava/lang/Boolean;", Value::Ref(instance));
+        return object(instance);
+    }
+    let tag = descriptor.as_bytes()[0];
+    let key = match descriptor {
+        "J" | "D" => value.as_long(),
+        _ => i64::from(value.as_int()),
+    };
+    if cacheable(tag, key) {
+        if let Some(cached) = vm.cached_boxed(tag, key) {
+            return object(cached);
+        }
+    }
     let class = vm.resolve_class(class_name)?;
     let instance = vm.new_instance(class)?;
     match descriptor {
         "J" | "D" => write_value_long(vm, instance, value.as_long()),
         _ => write_value_int(vm, instance, value.as_int()),
+    }
+    if cacheable(tag, key) {
+        vm.cache_boxed(tag, key, instance);
+    }
+    object(instance)
+}
+
+/// Whether the wrapper class for `tag` caches `key` (the JDK's identity guarantees).
+fn cacheable(tag: u8, key: i64) -> bool {
+    match tag {
+        b'B' => (-128..=127).contains(&key),
+        b'C' => (0..=127).contains(&key),
+        b'S' | b'I' | b'J' => (-128..=127).contains(&key),
+        _ => false,
+    }
+}
+
+/// Box an `int`-sized primitive, reusing the cached instance where the JDK does.
+fn box_integer_like(
+    vm: &mut Vm<'_>,
+    class_name: &str,
+    tag: u8,
+    value: i32,
+) -> Result<Value, VmError> {
+    let key = i64::from(value);
+    if cacheable(tag, key) {
+        if let Some(cached) = vm.cached_boxed(tag, key) {
+            return object(cached);
+        }
+    }
+    let class = vm.resolve_class(class_name)?;
+    let instance = vm.new_instance(class)?;
+    write_value_int(vm, instance, value);
+    if cacheable(tag, key) {
+        vm.cache_boxed(tag, key, instance);
     }
     object(instance)
 }
@@ -293,10 +350,7 @@ pub(crate) fn unbox_value(vm: &Vm<'_>, reference: ObjectRef, descriptor: &str) -
 }
 
 pub(crate) fn boxed_int(vm: &mut Vm<'_>, value: i32) -> Result<Value, VmError> {
-    let class = vm.resolve_class("java/lang/Integer")?;
-    let instance = vm.new_instance(class)?;
-    write_value_int(vm, instance, value);
-    object(instance)
+    box_integer_like(vm, "java/lang/Integer", b'I', value)
 }
 
 fn boxed_int_init(
@@ -440,10 +494,7 @@ fn boxed_int_value_of(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let class = vm.resolve_class("java/lang/Integer")?;
-    let instance = vm.new_instance(class)?;
-    write_value_int(vm, instance, int_arg(args, 0));
-    object(instance)
+    boxed_int(vm, int_arg(args, 0))
 }
 
 fn boxed_int_value_of_string(
@@ -788,11 +839,19 @@ fn parse_long_arg(vm: &mut Vm<'_>, value: Value) -> Result<i64, VmError> {
     }
 }
 
-/// Boxes a `long` into a fresh `java/lang/Long`.
+/// Boxes a `long`, reusing the cached instance for the `-128..=127` range.
 pub(crate) fn boxed_long(vm: &mut Vm<'_>, value: i64) -> Result<Value, VmError> {
+    if cacheable(b'J', value) {
+        if let Some(cached) = vm.cached_boxed(b'J', value) {
+            return object(cached);
+        }
+    }
     let class = vm.resolve_class("java/lang/Long")?;
     let instance = vm.new_instance(class)?;
     write_value_long(vm, instance, value);
+    if cacheable(b'J', value) {
+        vm.cache_boxed(b'J', value, instance);
+    }
     object(instance)
 }
 
@@ -902,12 +961,7 @@ const SHORT_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         "valueOf",
         "(S)Ljava/lang/Short;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| {
-            let class = vm.resolve_class("java/lang/Short")?;
-            let instance = vm.new_instance(class)?;
-            write_value_int(vm, instance, int_arg(args, 0));
-            object(instance)
-        },
+        |vm, _, args| box_integer_like(vm, "java/lang/Short", b'S', int_arg(args, 0)),
     ),
     method(
         "compareTo",
@@ -998,12 +1052,7 @@ const BYTE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         "valueOf",
         "(B)Ljava/lang/Byte;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| {
-            let class = vm.resolve_class("java/lang/Byte")?;
-            let instance = vm.new_instance(class)?;
-            write_value_int(vm, instance, int_arg(args, 0));
-            object(instance)
-        },
+        |vm, _, args| box_integer_like(vm, "java/lang/Byte", b'B', int_arg(args, 0)),
     ),
     method(
         "compareTo",
@@ -1327,12 +1376,7 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
         "valueOf",
         "(C)Ljava/lang/Character;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| {
-            let class = vm.resolve_class("java/lang/Character")?;
-            let instance = vm.new_instance(class)?;
-            write_value_int(vm, instance, int_arg(args, 0));
-            object(instance)
-        },
+        |vm, _, args| box_integer_like(vm, "java/lang/Character", b'C', int_arg(args, 0)),
     ),
     method("hashCode", "(C)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
         int(int_arg(args, 0))

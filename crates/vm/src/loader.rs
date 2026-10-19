@@ -15,7 +15,9 @@ use alloc::vec::Vec;
 use oxjvm_classfile::attribute::AttributeData;
 use oxjvm_classfile::descriptor::MethodDescriptor;
 use oxjvm_classfile::flags::*;
-use oxjvm_classfile::{BaseType, ClassFile, ConstantPool, CpInfo, FieldType};
+use oxjvm_classfile::{
+    Annotation, Attribute, BaseType, ClassFile, ConstantPool, CpInfo, ElementValue, FieldType,
+};
 
 use crate::class::{
     ArrayComponent, Class, ClassId, ClassKind, ClassState, Code, Field, Handler, Method,
@@ -25,6 +27,40 @@ use crate::error::VmError;
 use crate::heap::{MethodHandleValue, ObjectData};
 use crate::value::{ObjectRef, Value};
 use crate::{CallSite, ConcatConstant, LambdaDef, Vm};
+
+/// The `RuntimeVisibleAnnotations` of an attributed structure.
+fn visible_annotations(attributes: &[Attribute]) -> Vec<Annotation> {
+    attributes
+        .iter()
+        .find_map(|attribute| match &attribute.data {
+            AttributeData::RuntimeVisibleAnnotations(annotations) => Some(annotations.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+/// The `RuntimeVisibleParameterAnnotations` of a method.
+fn visible_parameter_annotations(attributes: &[Attribute]) -> Vec<Vec<Annotation>> {
+    attributes
+        .iter()
+        .find_map(|attribute| match &attribute.data {
+            AttributeData::RuntimeVisibleParameterAnnotations(annotations) => {
+                Some(annotations.clone())
+            }
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+/// The `AnnotationDefault` of an annotation interface element.
+fn annotation_default(attributes: &[Attribute]) -> Option<ElementValue> {
+    attributes
+        .iter()
+        .find_map(|attribute| match &attribute.data {
+            AttributeData::AnnotationDefault(value) => Some(value.clone()),
+            _ => None,
+        })
+}
 
 /// A resolved method reference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,7 +121,7 @@ impl<'a> Vm<'a> {
     }
 
     /// Resolve a class and never fail: `None` when it cannot be loaded.
-    pub(crate) fn resolve_class_lenient(&mut self, name: &str) -> Option<ClassId> {
+    pub fn resolve_class_lenient(&mut self, name: &str) -> Option<ClassId> {
         self.resolve_class(name).ok()
     }
 
@@ -193,6 +229,7 @@ impl<'a> Vm<'a> {
                 is_static,
                 slot,
                 constant,
+                annotations: visible_annotations(&field.attributes),
             });
         }
 
@@ -250,6 +287,9 @@ impl<'a> Vm<'a> {
                 native: None,
                 exceptions,
                 parameter_names,
+                annotations: visible_annotations(&method.attributes),
+                parameter_annotations: visible_parameter_annotations(&method.attributes),
+                annotation_default: annotation_default(&method.attributes),
             });
         }
 
@@ -300,6 +340,41 @@ impl<'a> Vm<'a> {
             })
             .unwrap_or_default();
 
+        let mut enclosing_class_name = None;
+        let mut declaring_class_name = None;
+        for attribute in &parsed.attributes {
+            match &attribute.data {
+                AttributeData::EnclosingMethod(enclosing) => {
+                    if let Ok(inner) = parsed.constant_pool.class_name(enclosing.class_index) {
+                        enclosing_class_name = Some(inner.to_string());
+                    }
+                }
+                AttributeData::InnerClasses(entries) => {
+                    for entry in entries {
+                        let Ok(inner) = parsed
+                            .constant_pool
+                            .class_name(entry.inner_class_info_index)
+                        else {
+                            continue;
+                        };
+                        if inner != name || entry.outer_class_info_index == 0 {
+                            continue;
+                        }
+                        if let Ok(outer) = parsed
+                            .constant_pool
+                            .class_name(entry.outer_class_info_index)
+                        {
+                            declaring_class_name = Some(outer.to_string());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if enclosing_class_name.is_none() {
+            enclosing_class_name = declaring_class_name.clone();
+        }
+
         let id = self.classes.insert(Class {
             id: ClassId(0),
             name: name.into(),
@@ -323,8 +398,11 @@ impl<'a> Vm<'a> {
             native_definition: None,
             initialization_error: None,
             nest_host,
+            enclosing_class_name,
+            declaring_class_name,
             permitted_subclasses,
             is_enum: parsed.access_flags & ACC_ENUM != 0,
+            annotations: visible_annotations(&parsed.attributes),
             verified: true,
         });
         // Fix up back-pointers and default values now that the class has a stable id.
@@ -497,6 +575,7 @@ impl<'a> Vm<'a> {
                 is_static,
                 slot,
                 constant: None,
+                annotations: Vec::new(),
             });
         }
 
@@ -511,6 +590,9 @@ impl<'a> Vm<'a> {
                 native: Some(method.native),
                 exceptions: Vec::new(),
                 parameter_names: Vec::new(),
+                annotations: Vec::new(),
+                parameter_annotations: Vec::new(),
+                annotation_default: None,
             });
         }
 
@@ -541,8 +623,11 @@ impl<'a> Vm<'a> {
             native_definition: Some(definition),
             initialization_error: None,
             nest_host: None,
+            enclosing_class_name: None,
+            declaring_class_name: None,
             permitted_subclasses: Vec::new(),
             is_enum: definition.access_flags & ACC_ENUM != 0,
+            annotations: Vec::new(),
             verified: true,
         });
         let mut defaults = super_class.map_or_else(Vec::new, |super_class| {
@@ -629,8 +714,11 @@ impl<'a> Vm<'a> {
             native_definition: None,
             initialization_error: None,
             nest_host: None,
+            enclosing_class_name: None,
+            declaring_class_name: None,
             permitted_subclasses: Vec::new(),
             is_enum: false,
+            annotations: Vec::new(),
             verified: true,
         });
         self.classes.get_mut(id).id = id;
@@ -1529,6 +1617,7 @@ impl<'a> Vm<'a> {
                 is_static: false,
                 slot,
                 constant: None,
+                annotations: Vec::new(),
             });
         }
         let constructor_descriptor = alloc::format!("({})V", captured_descriptors.join(""));
@@ -1541,6 +1630,9 @@ impl<'a> Vm<'a> {
             native: Some(lambda_constructor_native),
             exceptions: Vec::new(),
             parameter_names: Vec::new(),
+            annotations: Vec::new(),
+            parameter_annotations: Vec::new(),
+            annotation_default: None,
         };
         let sam = Method {
             name: name.into(),
@@ -1551,6 +1643,9 @@ impl<'a> Vm<'a> {
             native: Some(lambda_invoke_native),
             exceptions: Vec::new(),
             parameter_names: Vec::new(),
+            annotations: Vec::new(),
+            parameter_annotations: Vec::new(),
+            annotation_default: None,
         };
         let mut methods = vec![constructor, sam];
         // Bridge methods for erased generics would normally be generated by javac; the SAM
@@ -1583,8 +1678,11 @@ impl<'a> Vm<'a> {
             native_definition: None,
             initialization_error: None,
             nest_host: None,
+            enclosing_class_name: None,
+            declaring_class_name: None,
             permitted_subclasses: Vec::new(),
             is_enum: false,
+            annotations: Vec::new(),
             verified: true,
         });
         {

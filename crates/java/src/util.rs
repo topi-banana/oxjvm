@@ -155,10 +155,16 @@ pub(crate) const COLLECTION: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
+const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
     method(
         "size",
         "()I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "removeAll",
+        "(Ljava/util/Collection;)Z",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
@@ -699,7 +705,7 @@ pub(crate) const NAVIGABLE_SET: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method(
         "put",
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
@@ -766,6 +772,12 @@ const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
+    method(
+        "values",
+        "()Ljava/util/Collection;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
 ];
 
 pub(crate) const MAP: oxjvm_vm::NativeClass = class(
@@ -782,7 +794,7 @@ pub(crate) const MAP: oxjvm_vm::NativeClass = class(
 // Objects
 // -------------------------------------------------------------------------------------------
 
-const OBJECTS_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const OBJECTS_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     method(
         "equals",
         "(Ljava/lang/Object;Ljava/lang/Object;)Z",
@@ -935,7 +947,132 @@ const OBJECTS_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
             long(index)
         },
     ),
+    method(
+        "deepEquals",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| boolean(objects_deep_equals(vm, ref_arg(args, 0), ref_arg(args, 1))?),
+    ),
+    method(
+        "deepHashCode",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| int(objects_deep_hash_code(vm, ref_arg(args, 0))?),
+    ),
 ];
+
+fn objects_deep_equals(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmError> {
+    if a == b {
+        return Ok(true);
+    }
+    if a.is_null() || b.is_null() {
+        return Ok(false);
+    }
+    let data_a = vm.heap.get(a).map(|object| object.data.clone());
+    let data_b = vm.heap.get(b).map(|object| object.data.clone());
+    match (data_a, data_b) {
+        (Some(ObjectData::Array(array_a)), Some(ObjectData::Array(array_b))) => {
+            if array_a.len() != array_b.len() {
+                return Ok(false);
+            }
+            match (array_a, array_b) {
+                (ArrayData::Boolean(x), ArrayData::Boolean(y)) => Ok(x == y),
+                (ArrayData::Byte(x), ArrayData::Byte(y)) => Ok(x == y),
+                (ArrayData::Char(x), ArrayData::Char(y)) => Ok(x == y),
+                (ArrayData::Short(x), ArrayData::Short(y)) => Ok(x == y),
+                (ArrayData::Int(x), ArrayData::Int(y)) => Ok(x == y),
+                (ArrayData::Long(x), ArrayData::Long(y)) => Ok(x == y),
+                (ArrayData::Float(x), ArrayData::Float(y)) => {
+                    Ok(x.iter().zip(&y).all(|(a, b)| a.to_bits() == b.to_bits()))
+                }
+                (ArrayData::Double(x), ArrayData::Double(y)) => {
+                    Ok(x.iter().zip(&y).all(|(a, b)| a.to_bits() == b.to_bits()))
+                }
+                (ArrayData::Reference(x), ArrayData::Reference(y)) => {
+                    for (left, right) in x.iter().zip(&y) {
+                        if !objects_deep_equals(vm, *left, *right)? {
+                            return Ok(false);
+                        }
+                    }
+                    Ok(true)
+                }
+                _ => Ok(false),
+            }
+        }
+        _ => objects_equals(vm, a, b),
+    }
+}
+
+fn objects_deep_hash_code(vm: &mut Vm<'_>, reference: ObjectRef) -> Result<i32, VmError> {
+    if reference.is_null() {
+        return Ok(0);
+    }
+    let data = vm.heap.get(reference).map(|object| object.data.clone());
+    let Some(ObjectData::Array(array)) = data else {
+        let (class, method) = vm.resolve_virtual_method(reference, "hashCode", "()I")?;
+        return Ok(vm
+            .invoke_method(class, method, vec![Value::Ref(reference)])?
+            .as_int());
+    };
+    let mut result = 1i32;
+    match array {
+        ArrayData::Boolean(values) => {
+            for value in values {
+                result = result
+                    .wrapping_mul(31)
+                    .wrapping_add(if value != 0 { 1231 } else { 1237 });
+            }
+        }
+        ArrayData::Byte(values) => {
+            for value in values {
+                result = result.wrapping_mul(31).wrapping_add(i32::from(value));
+            }
+        }
+        ArrayData::Char(values) => {
+            for value in values {
+                result = result.wrapping_mul(31).wrapping_add(i32::from(value));
+            }
+        }
+        ArrayData::Short(values) => {
+            for value in values {
+                result = result.wrapping_mul(31).wrapping_add(i32::from(value));
+            }
+        }
+        ArrayData::Int(values) => {
+            for value in values {
+                result = result.wrapping_mul(31).wrapping_add(value);
+            }
+        }
+        ArrayData::Long(values) => {
+            for value in values {
+                result = result
+                    .wrapping_mul(31)
+                    .wrapping_add((value ^ (value >> 32)) as i32);
+            }
+        }
+        ArrayData::Float(values) => {
+            for value in values {
+                result = result.wrapping_mul(31).wrapping_add(value.to_bits() as i32);
+            }
+        }
+        ArrayData::Double(values) => {
+            for value in values {
+                let bits = value.to_bits();
+                result = result
+                    .wrapping_mul(31)
+                    .wrapping_add((bits ^ (bits >> 32)) as i32);
+            }
+        }
+        ArrayData::Reference(values) => {
+            for value in values {
+                result = result
+                    .wrapping_mul(31)
+                    .wrapping_add(objects_deep_hash_code(vm, value)?);
+            }
+        }
+    }
+    Ok(result)
+}
 
 fn objects_equals(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmError> {
     if a == b {
@@ -963,7 +1100,7 @@ pub(crate) const OBJECTS: oxjvm_vm::NativeClass = class(
 // Arrays
 // -------------------------------------------------------------------------------------------
 
-const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
+const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
     method(
         "toString",
         "([I)Ljava/lang/String;",
@@ -1040,6 +1177,16 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
     method(
         "equals",
         "([I[I)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let a = ref_arg(args, 0);
+            let b = ref_arg(args, 1);
+            boolean(a == b || arrays_equal(vm, a, b)?)
+        },
+    ),
+    method(
+        "equals",
+        "([Ljava/lang/Object;[Ljava/lang/Object;)Z",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let a = ref_arg(args, 0);
@@ -1166,7 +1313,70 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| arrays_sort_objects(vm, args, true),
     ),
+    method(
+        "deepToString",
+        "([Ljava/lang/Object;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = deep_array_text(vm, ref_arg(args, 0))?;
+            object(vm.make_string(&text)?)
+        },
+    ),
 ];
+
+/// The recursive rendering used by `Arrays.deepToString`.
+fn deep_array_text(vm: &mut Vm<'_>, array: ObjectRef) -> Result<String, VmError> {
+    if array.is_null() {
+        return Ok("null".into());
+    }
+    let data = vm.heap.get(array).map(|object| object.data.clone());
+    let Some(ObjectData::Array(data)) = data else {
+        let (class, method) =
+            vm.resolve_virtual_method(array, "toString", "()Ljava/lang/String;")?;
+        let string = vm.invoke_method(class, method, vec![Value::Ref(array)])?;
+        return Ok(vm.string_or_empty(string.as_ref()));
+    };
+    let component = match &data {
+        ArrayData::Boolean(_) => ArrayComponent::Boolean,
+        ArrayData::Byte(_) => ArrayComponent::Byte,
+        ArrayData::Char(_) => ArrayComponent::Char,
+        ArrayData::Short(_) => ArrayComponent::Short,
+        ArrayData::Int(_) => ArrayComponent::Int,
+        ArrayData::Long(_) => ArrayComponent::Long,
+        ArrayData::Float(_) => ArrayComponent::Float,
+        ArrayData::Double(_) => ArrayComponent::Double,
+        ArrayData::Reference(_) => ArrayComponent::Reference,
+    };
+    let length = vm.array_length(array)?;
+    let mut text = String::from("[");
+    for index in 0..length {
+        if index > 0 {
+            text.push_str(", ");
+        }
+        let value = vm.array_get(array, index as i32)?;
+        match component {
+            ArrayComponent::Reference => {
+                let reference = value.as_ref();
+                if reference.is_null() {
+                    text.push_str("null");
+                } else if matches!(
+                    vm.heap.get(reference).map(|object| &object.data),
+                    Some(ObjectData::Array(_))
+                ) {
+                    text.push_str(&deep_array_text(vm, reference)?);
+                } else {
+                    let (class, method) =
+                        vm.resolve_virtual_method(reference, "toString", "()Ljava/lang/String;")?;
+                    let string = vm.invoke_method(class, method, vec![Value::Ref(reference)])?;
+                    text.push_str(&vm.string_or_empty(string.as_ref()));
+                }
+            }
+            _ => text.push_str(&format_array_element(value, &component)),
+        }
+    }
+    text.push(']');
+    Ok(text)
+}
 
 /// Sort an integer array; `Values` are read and written in the array's own component width.
 fn arrays_sort_int(vm: &mut Vm<'_>, array: ObjectRef) -> Result<Value, VmError> {
@@ -1503,7 +1713,17 @@ fn arrays_equal(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmE
         (
             ObjectData::Array(ArrayData::Reference(x)),
             ObjectData::Array(ArrayData::Reference(y)),
-        ) => Ok(x == y),
+        ) => {
+            if x.len() != y.len() {
+                return Ok(false);
+            }
+            for (left, right) in x.iter().zip(y.iter()) {
+                if !objects_equals(vm, *left, *right)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
         _ => Ok(false),
     }
 }
@@ -1749,6 +1969,17 @@ fn next_random_int(
     write_random_seed(vm, this, seed);
     Ok(Value::Int((seed >> (48 - bits)) as i32))
 }
+
+/// `java.util.RandomAccess`: a marker interface.
+pub(crate) const RANDOM_ACCESS: oxjvm_vm::NativeClass = class(
+    "java/util/RandomAccess",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[],
+    None,
+);
 
 pub(crate) const RANDOM: oxjvm_vm::NativeClass = class(
     "java/util/Random",
