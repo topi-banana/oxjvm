@@ -1969,7 +1969,7 @@ fn class_methods(vm: &mut Vm<'_>, class: ClassId) -> Result<Vec<(ClassId, u32)>,
             if flags & ACC_PUBLIC == 0 {
                 continue;
             }
-            let key = (name, signature_of(&descriptor));
+            let key = (name, descriptor.clone());
             if !seen.contains(&key) {
                 seen.push(key);
                 found.push(entry);
@@ -1992,7 +1992,7 @@ fn class_methods(vm: &mut Vm<'_>, class: ClassId) -> Result<Vec<(ClassId, u32)>,
             if flags & ACC_PUBLIC == 0 {
                 continue;
             }
-            let key = (name, signature_of(&descriptor));
+            let key = (name, descriptor.clone());
             if !seen.contains(&key) {
                 seen.push(key);
                 found.push(entry);
@@ -2003,14 +2003,6 @@ fn class_methods(vm: &mut Vm<'_>, class: ClassId) -> Result<Vec<(ClassId, u32)>,
         }
     }
     Ok(found)
-}
-
-/// The name-and-parameters key used to deduplicate overridden methods.
-fn signature_of(descriptor: &str) -> String {
-    match descriptor.find(')') {
-        Some(index) => descriptor[..=index].to_string(),
-        None => descriptor.to_string(),
-    }
 }
 
 fn class_fields(vm: &mut Vm<'_>, class: ClassId) -> Result<Vec<(ClassId, u32)>, VmError> {

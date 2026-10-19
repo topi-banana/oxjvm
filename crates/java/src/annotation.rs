@@ -1210,6 +1210,28 @@ pub(crate) fn typed_annotation_array(
     Ok(array)
 }
 
+/// Arrange directly present and container-expanded annotations the way the JDK's
+/// `getDirectlyAndIndirectlyPresent` does.
+fn order_direct_and_indirect(
+    direct: Option<ObjectRef>,
+    indirect: Vec<ObjectRef>,
+    container_before_containee: bool,
+) -> Vec<ObjectRef> {
+    let mut result = Vec::with_capacity(indirect.len() + 1);
+    if direct.is_none() || container_before_containee {
+        result.extend(indirect);
+        if let Some(direct) = direct {
+            result.push(direct);
+        }
+    } else {
+        if let Some(direct) = direct {
+            result.push(direct);
+        }
+        result.extend(indirect);
+    }
+    result
+}
+
 /// Expand the directly and indirectly (container) present annotations of one level.
 fn declared_annotations_by_type(
     vm: &mut Vm<'_>,
@@ -1218,29 +1240,54 @@ fn declared_annotations_by_type(
     annotation_class: ClassId,
 ) -> Result<Vec<ObjectRef>, VmError> {
     let container = repeatable_container(vm, annotation_class);
-    let mut result = Vec::new();
+    let mut direct = None;
+    let mut container_instance = None;
+    let mut container_before_containee = false;
     for annotation in annotations {
         let Some(raw_type) = annotation_class_of(vm, owner, annotation) else {
             continue;
         };
         if raw_type == annotation_class {
+            if direct.is_none() {
+                let instance = materialize(vm, owner, annotation)?;
+                if !instance.is_null() {
+                    direct = Some(instance);
+                }
+            }
+        } else if Some(raw_type) == container && container_instance.is_none() {
             let instance = materialize(vm, owner, annotation)?;
             if !instance.is_null() {
-                result.push(instance);
-            }
-        } else if Some(raw_type) == container {
-            let instance = materialize(vm, owner, annotation)?;
-            if instance.is_null() {
-                continue;
-            }
-            let expanded = container_array(vm, annotation_class, instance)?;
-            let length = vm.array_length(expanded)?;
-            for index in 0..length {
-                result.push(vm.array_get(expanded, index as i32)?.as_ref());
+                container_instance = Some(instance);
             }
         }
     }
-    Ok(result)
+    if let Some(container) = container {
+        for annotation in annotations {
+            let Some(raw_type) = annotation_class_of(vm, owner, annotation) else {
+                continue;
+            };
+            if raw_type == container {
+                container_before_containee = true;
+                break;
+            }
+            if raw_type == annotation_class {
+                break;
+            }
+        }
+    }
+    let mut indirect = Vec::new();
+    if let Some(instance) = container_instance {
+        let expanded = container_array(vm, annotation_class, instance)?;
+        let length = vm.array_length(expanded)?;
+        for index in 0..length {
+            indirect.push(vm.array_get(expanded, index as i32)?.as_ref());
+        }
+    }
+    Ok(order_direct_and_indirect(
+        direct,
+        indirect,
+        container_before_containee,
+    ))
 }
 
 fn declared_annotations_by_type_array(
@@ -1600,21 +1647,39 @@ fn scan_by_type(
     annotations: &[ObjectRef],
     annotation_class: ClassId,
 ) -> Result<ObjectRef, VmError> {
-    if let Some(direct) = annotations
+    let direct = annotations
         .iter()
         .find(|annotation| vm.class_of(**annotation) == annotation_class)
-    {
-        return typed_annotation_array(vm, annotation_class, &[*direct]);
-    }
-    if let Some(container) = repeatable_container(vm, annotation_class) {
-        if let Some(instance) = annotations
+        .copied();
+    let container = repeatable_container(vm, annotation_class);
+    let mut container_instance = None;
+    let mut container_before_containee = false;
+    if let Some(container_class) = container {
+        container_instance = annotations
             .iter()
-            .find(|annotation| vm.class_of(**annotation) == container)
-        {
-            return container_array(vm, annotation_class, *instance);
+            .find(|annotation| vm.class_of(**annotation) == container_class)
+            .copied();
+        for annotation in annotations {
+            let class = vm.class_of(*annotation);
+            if class == container_class {
+                container_before_containee = true;
+                break;
+            }
+            if class == annotation_class {
+                break;
+            }
         }
     }
-    typed_annotation_array(vm, annotation_class, &[])
+    let mut indirect = Vec::new();
+    if let Some(instance) = container_instance {
+        let expanded = container_array(vm, annotation_class, instance)?;
+        let length = vm.array_length(expanded)?;
+        for index in 0..length {
+            indirect.push(vm.array_get(expanded, index as i32)?.as_ref());
+        }
+    }
+    let instances = order_direct_and_indirect(direct, indirect, container_before_containee);
+    typed_annotation_array(vm, annotation_class, &instances)
 }
 
 /// The default `AnnotatedElement.getDeclaredAnnotation`.
@@ -1653,8 +1718,40 @@ pub(crate) fn default_get_annotations_by_type(
 ) -> Result<Value, VmError> {
     let this = receiver(args);
     let annotation_class = crate::lang::class_argument(vm, ref_arg(args, 1))?;
-    let annotations = collect_annotations(vm, this, "getAnnotations")?;
-    object(scan_by_type(vm, &annotations, annotation_class)?)
+    let (class, method) = vm.resolve_virtual_method(
+        this,
+        "getDeclaredAnnotationsByType",
+        "(Ljava/lang/Class;)[Ljava/lang/annotation/Annotation;",
+    )?;
+    let declared = vm
+        .invoke_method(class, method, alloc::vec![Value::Ref(this), args[1]])?
+        .as_ref();
+    let length = if declared.is_null() {
+        0
+    } else {
+        vm.array_length(declared)?
+    };
+    if length > 0 {
+        return object(declared);
+    }
+    // Inheritance applies to class elements carrying an `@Inherited` annotation type.
+    let class_class = vm.resolve_class("java/lang/Class")?;
+    if vm.class_of(this) == class_class && annotation_is_inherited(vm, annotation_class) {
+        let (class, method) =
+            vm.resolve_virtual_method(this, "getSuperclass", "()Ljava/lang/Class;")?;
+        let superclass = vm
+            .invoke_method(class, method, alloc::vec![Value::Ref(this)])?
+            .as_ref();
+        if !superclass.is_null() {
+            let (class, method) = vm.resolve_virtual_method(
+                superclass,
+                "getAnnotationsByType",
+                "(Ljava/lang/Class;)[Ljava/lang/annotation/Annotation;",
+            )?;
+            return vm.invoke_method(class, method, alloc::vec![Value::Ref(superclass), args[1]]);
+        }
+    }
+    object(typed_annotation_array(vm, annotation_class, &[])?)
 }
 
 /// The default `AnnotatedElement.isAnnotationPresent`.
