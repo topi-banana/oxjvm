@@ -940,6 +940,14 @@ macro_rules! math_methods {
             method("nextDown", "(D)D", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
                 double(next_after(double_arg(args, 0), f64::NEG_INFINITY))
             }),
+            method("ulp", "(D)D", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+                let value = double_arg(args, 0).abs();
+                double(next_after(value, f64::INFINITY) - value)
+            }),
+            method("ulp", "(F)F", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+                let value = float_arg(args, 0).abs();
+                float(next_up_float(value) - value)
+            }),
             method(
                 "getExponent",
                 "(F)I",
@@ -988,8 +996,8 @@ macro_rules! math_methods {
     }};
 }
 
-const MATH_METHODS: [oxjvm_vm::NativeMethodDef; 59] = math_methods!();
-const STRICT_MATH_METHODS: [oxjvm_vm::NativeMethodDef; 59] = math_methods!();
+const MATH_METHODS: [oxjvm_vm::NativeMethodDef; 61] = math_methods!();
+const STRICT_MATH_METHODS: [oxjvm_vm::NativeMethodDef; 61] = math_methods!();
 
 pub(crate) const MATH: oxjvm_vm::NativeClass = class(
     "java/lang/Math",
