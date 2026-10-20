@@ -1344,6 +1344,30 @@ fn p1_ten() {
 }
 
 #[test]
+fn nestmate_reflection_access() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/P0Nest").expect("P0Nest");
+    for (method, expected) in [
+        ("invokeOuter", "secret"),
+        ("invokeInner", "hidden"),
+        ("denied", "denied"),
+    ] {
+        let (declaring, index) = vm
+            .find_method(class, method, "()Ljava/lang/String;")
+            .expect(method);
+        let value = vm
+            .invoke_method(declaring, index, Vec::new())
+            .expect(method);
+        assert_eq!(
+            vm.string_value(value.as_ref()).as_deref(),
+            Some(expected),
+            "{method}"
+        );
+    }
+}
+
+#[test]
 fn inherited_interface_methods() {
     let mut host = fixture_host();
     let mut vm = Vm::new(&mut host, oxjvm_java::natives());

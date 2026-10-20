@@ -460,7 +460,8 @@ fn reflect_invoke(
 ) -> Result<Value, VmError> {
     let (class, slot) = method_parts(vm, receiver(args));
     let (_name, descriptor, flags) = method_entry(vm, class, slot);
-    if flags & ACC_PRIVATE != 0 && !reflection_override(vm, receiver(args)) {
+    if flags & ACC_PRIVATE != 0 && !reflection_override(vm, receiver(args)) && !same_nest(vm, class)
+    {
         return Err(vm.throw_new("java/lang/IllegalAccessException", None));
     }
     let parsed = MethodDescriptor::parse(&descriptor)
@@ -590,6 +591,12 @@ fn reflection_override(vm: &Vm<'_>, this: ObjectRef) -> bool {
     vm.read_instance_int_named(this, class, "override", "Z")
         .unwrap_or(0)
         != 0
+}
+
+/// Whether the current Java caller and `declaring` belong to the same nest.
+fn same_nest(vm: &Vm<'_>, declaring: ClassId) -> bool {
+    vm.caller_class()
+        .is_some_and(|caller| vm.nest_host(caller) == vm.nest_host(declaring))
 }
 
 /// Reject writes to final fields, mirroring the JDK's reflection rules.

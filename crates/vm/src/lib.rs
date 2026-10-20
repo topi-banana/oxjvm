@@ -532,6 +532,23 @@ impl<'a> Vm<'a> {
         &self.classes.get(class).name
     }
 
+    /// The nest host of a class: its `NestHost` attribute, or the class itself.
+    ///
+    /// JVMS 5.4.4: a class with no `NestHost` attribute is its own nest host.
+    #[must_use]
+    pub fn nest_host(&self, class: ClassId) -> ClassId {
+        self.classes.get(class).nest_host.unwrap_or(class)
+    }
+
+    /// The class of the innermost Java frame on the current thread.
+    ///
+    /// Native methods do not push a frame, so during a native call this is the
+    /// Java caller that invoked it.
+    #[must_use]
+    pub fn caller_class(&self) -> Option<ClassId> {
+        self.current_thread().frames.last().map(|frame| frame.class)
+    }
+
     /// Whether `reference` is an instance of `class` (null is never an instance).
     #[must_use]
     pub fn is_instance(&self, reference: Ref, class: ClassId) -> bool {
