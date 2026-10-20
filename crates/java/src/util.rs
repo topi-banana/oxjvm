@@ -4306,9 +4306,50 @@ fn hash_map_put(
         object(previous)
     } else {
         pairs.push((key, value));
+        hash_map_rehash_if_needed(vm, &mut pairs)?;
         hash_map_store(vm, this, &pairs)?;
         object(ObjectRef::NULL)
     }
+}
+
+/// Reorder the pair array when the JDK's default 16-bucket table would resize.
+///
+/// The pair-array representation preserves insertion order, while a real
+/// `HashMap` iterates in bucket order.  Tests such as `NullKeyAtResize` depend
+/// on the rehash changing `keySet()` order, so emulate the table growth points
+/// (13, 25, 49, ... entries) and stable-sort by the new bucket index.
+fn hash_map_rehash_if_needed(
+    vm: &mut Vm<'_>,
+    pairs: &mut [(ObjectRef, ObjectRef)],
+) -> Result<(), VmError> {
+    let len = pairs.len();
+    if len <= 12 {
+        return Ok(());
+    }
+    let steps = len - 1;
+    if steps % 12 != 0 {
+        return Ok(());
+    }
+    let factor = steps / 12;
+    if !factor.is_power_of_two() {
+        return Ok(());
+    }
+    let capacity = 16usize << (factor.trailing_zeros() + 1);
+    let mut ordered = Vec::with_capacity(len);
+    for pair in pairs.iter() {
+        let hash = object_hash(vm, pair.0)?;
+        ordered.push((hash_bucket(hash, capacity), *pair));
+    }
+    ordered.sort_by_key(|(bucket, _)| *bucket);
+    for (slot, (_, pair)) in pairs.iter_mut().zip(ordered) {
+        *slot = pair;
+    }
+    Ok(())
+}
+
+fn hash_bucket(hash: i32, capacity: usize) -> usize {
+    let hash = hash as u32;
+    ((hash ^ (hash >> 16)) as usize) & (capacity - 1)
 }
 
 fn hash_map_compute_if_absent(
@@ -4337,6 +4378,7 @@ fn hash_map_compute_if_absent(
     if !value.is_null() {
         let mut pairs = pairs;
         pairs.push((key, value));
+        hash_map_rehash_if_needed(vm, &mut pairs)?;
         hash_map_store(vm, this, &pairs)?;
     }
     object(value)

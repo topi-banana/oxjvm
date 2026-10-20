@@ -1344,6 +1344,24 @@ fn p1_ten() {
 }
 
 #[test]
+fn hash_map_resizes_like_the_jdk() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/P0HashMap").expect("P0HashMap");
+    let (declaring, index) = vm
+        .find_method(class, "resize", "()Ljava/lang/String;")
+        .expect("resize");
+    let value = vm
+        .invoke_method(declaring, index, Vec::new())
+        .expect("resize");
+    assert_eq!(
+        vm.string_value(value.as_ref()).as_deref(),
+        Some("resized:13"),
+        "the 13th entry must trigger a rehash"
+    );
+}
+
+#[test]
 fn object_stream_lookup_of_uninitializable_class() {
     let mut host = fixture_host();
     let mut vm = Vm::new(&mut host, oxjvm_java::natives());
