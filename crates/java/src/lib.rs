@@ -28,6 +28,7 @@ pub(crate) mod file;
 pub(crate) mod intstream;
 pub(crate) mod invoke;
 pub(crate) mod io;
+pub(crate) mod jar;
 pub(crate) mod lang;
 pub(crate) mod locale;
 pub(crate) mod logging;
@@ -38,6 +39,7 @@ pub(crate) mod optional;
 pub(crate) mod primitive_stream;
 pub(crate) mod reflect;
 pub(crate) mod regex;
+pub(crate) mod serialization;
 pub(crate) mod service_loader;
 pub(crate) mod stack;
 pub(crate) mod stream;
@@ -118,7 +120,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 476] = [
+static REGISTRY: [NativeClass; 487] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -275,6 +277,12 @@ static REGISTRY: [NativeClass; 476] = [
     io::BUFFERED_READER,
     io::BUFFERED_WRITER,
     io::OBJECT_STREAM_CLASS,
+    serialization::OBJECT_OUTPUT_STREAM,
+    serialization::OBJECT_INPUT_STREAM,
+    serialization::PUT_FIELD,
+    serialization::OBJECT_INPUT_VALIDATION,
+    serialization::OBJECT_INPUT_FILTER,
+    serialization::OBJECT_INPUT_FILTER_STATUS,
     io::OBJECT_STREAM_FIELD,
     io::STRING_READER,
     io::OUTPUT_STREAM_WRITER,
@@ -474,6 +482,11 @@ static REGISTRY: [NativeClass; 476] = [
     file::FILE_INPUT_STREAM,
     file::FILE_OUTPUT_STREAM,
     zip::ZIP_ENTRY,
+    jar::ATTRIBUTES,
+    jar::ATTRIBUTES_NAME,
+    jar::MANIFEST,
+    jar::JAR_ENTRY,
+    jar::JAR_OUTPUT_STREAM,
     zip::ZIP_OUTPUT_STREAM,
     zip::CRC32,
     zip::CHECKSUM,

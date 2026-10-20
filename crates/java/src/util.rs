@@ -4453,7 +4453,7 @@ const HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
     ),
 ];
 
-fn hash_map_pairs(vm: &Vm<'_>, this: ObjectRef) -> Vec<(ObjectRef, ObjectRef)> {
+pub(crate) fn hash_map_pairs(vm: &Vm<'_>, this: ObjectRef) -> Vec<(ObjectRef, ObjectRef)> {
     // The backing arrays can be longer than `size` (e.g. after a removal), so
     // only the first `size` entries are live.
     let size = crate::lang::read_int_field(vm, this, "size").max(0) as usize;

@@ -2190,7 +2190,7 @@ pub(crate) const BUFFERED_WRITER: oxjvm_vm::NativeClass = class(
 // Serialization metadata (reflection-only stubs)
 // -------------------------------------------------------------------------------------------
 
-const OBJECT_STREAM_CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+const OBJECT_STREAM_CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     method(
         "lookup",
         "(Ljava/lang/Class;)Ljava/io/ObjectStreamClass;",
@@ -2222,6 +2222,42 @@ const OBJECT_STREAM_CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         Ok(Value::Long(0))
     }),
     method(
+        "lookupAny",
+        "(Ljava/lang/Class;)Ljava/io/ObjectStreamClass;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let target = crate::lang::class_argument(vm, ref_arg(args, 0))?;
+            vm.ensure_initialized(target)?;
+            let class = vm.resolve_class("java/io/ObjectStreamClass")?;
+            let instance = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "compat", "Ljava/lang/Class;")?;
+            vm.set_instance_ref(instance, declaring, field, ref_arg(args, 0));
+            object(instance)
+        },
+    ),
+    method(
+        "getField",
+        "(Ljava/lang/String;)Ljava/io/ObjectStreamField;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "forClass",
+        "()Ljava/lang/Class;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(
+                vm.read_ref_field(
+                    receiver(args),
+                    vm.class_of(receiver(args)),
+                    "compat",
+                    "Ljava/lang/Class;",
+                )
+                .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method(
         "getName",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
@@ -2251,14 +2287,83 @@ pub(crate) const OBJECT_STREAM_CLASS: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const OBJECT_STREAM_FIELD_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+const OBJECT_STREAM_FIELD_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method("getName", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, _| {
         object(vm.make_string("")?)
     }),
     method("getOffset", "()I", ACC_PUBLIC, |_, _, _| int(0)),
-    method("isPrimitive", "()Z", ACC_PUBLIC, |_, _, _| {
-        crate::boolean(false)
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/Class;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let name = crate::string_arg(vm, args[1])?;
+            vm.set_string_field(this, class, "name", &name)?;
+            let (declaring, field) = vm.find_field(class, "type", "Ljava/lang/Class;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 2));
+            crate::lang::write_int_field(vm, this, "primitive", 0);
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/Class;Z)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let name = crate::string_arg(vm, args[1])?;
+            vm.set_string_field(this, class, "name", &name)?;
+            let (declaring, field) = vm.find_field(class, "type", "Ljava/lang/Class;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 2));
+            crate::lang::write_int_field(vm, this, "primitive", int_arg(args, 3));
+            void()
+        },
+    ),
+    method(
+        "getType",
+        "()Ljava/lang/Class;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(
+                vm.read_ref_field(
+                    receiver(args),
+                    vm.class_of(receiver(args)),
+                    "type",
+                    "Ljava/lang/Class;",
+                )
+                .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method(
+        "getTypeString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| object(vm.make_string("")?),
+    ),
+    method(
+        "getName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = vm
+                .read_string_field(receiver(args), vm.class_of(receiver(args)), "name")
+                .unwrap_or_default();
+            object(vm.make_string(&name)?)
+        },
+    ),
+    method("isPrimitive", "()Z", ACC_PUBLIC, |vm, _, args| {
+        crate::boolean(crate::lang::read_int_field(vm, receiver(args), "primitive") != 0)
     }),
+    method(
+        "compareTo",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC,
+        |_, _, _| int(0),
+    ),
 ];
 
 /// `java.io.ObjectStreamField`: a placeholder field descriptor.
@@ -2267,7 +2372,11 @@ pub(crate) const OBJECT_STREAM_FIELD: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC,
-    &[],
+    &[
+        field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("type", "Ljava/lang/Class;", ACC_PRIVATE, None),
+        field("primitive", "I", ACC_PRIVATE, None),
+    ],
     &OBJECT_STREAM_FIELD_METHODS,
     None,
 );

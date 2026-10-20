@@ -1691,3 +1691,33 @@ fn p1_beans_introspection() {
         );
     }
 }
+
+#[test]
+fn p1_serialization_and_manifest() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm
+        .resolve_class("demo/P1Serialization")
+        .expect("P1Serialization");
+    for (method, expected) in [
+        ("objectStream", "hello:7:world"),
+        ("manifest", "1.0:demo.Main"),
+        ("jar", "true"),
+    ] {
+        let (declaring, index) = vm
+            .find_method(class, method, "()Ljava/lang/String;")
+            .expect(method);
+        let value = match vm.invoke_method(declaring, index, Vec::new()) {
+            Ok(value) => value,
+            Err(VmError::Thrown(exception)) => {
+                panic!("{method}: threw {}", vm.class_name(vm.class_of(exception)))
+            }
+            Err(error) => panic!("{method}: {error:?}"),
+        };
+        assert_eq!(
+            vm.string_value(value.as_ref()).as_deref(),
+            Some(expected),
+            "{method}"
+        );
+    }
+}
