@@ -1723,6 +1723,10 @@ impl<'a> Vm<'a> {
                         let _ = next;
                         return Ok(outcome);
                     }
+                    if let Some(outcome) = self.try_polymorphic_var_handle_invoke(class, index)? {
+                        let _ = next;
+                        return Ok(outcome);
+                    }
                 }
                 let resolved = self.resolved_method(class, index)?;
                 let name = self.classes.get(resolved.class).methods[resolved.method as usize]
@@ -2131,6 +2135,262 @@ impl<'a> Vm<'a> {
             self.push(value);
         }
         Ok(Some(Outcome::Continue))
+    }
+    /// Handle the signature-polymorphic `VarHandle.get`/`set` family.
+    fn try_polymorphic_var_handle_invoke(
+        &mut self,
+        class: ClassId,
+        cp_index: u16,
+    ) -> Result<Option<Outcome>, VmError> {
+        let (name, descriptor, owner_name) = {
+            let target = self.classes.get(class);
+            let pool = &target.constant_pool;
+            let Ok(CpInfo::Methodref {
+                class: class_index,
+                name_and_type,
+            }) = pool.get(cp_index)
+            else {
+                return Ok(None);
+            };
+            let (name, descriptor) = pool
+                .name_and_type(*name_and_type)
+                .map_err(|error| VmError::invalid_code(target.name.clone(), error.to_string()))?;
+            if !matches!(
+                name,
+                "get"
+                    | "getVolatile"
+                    | "getAcquire"
+                    | "getOpaque"
+                    | "set"
+                    | "setVolatile"
+                    | "setRelease"
+                    | "setOpaque"
+                    | "compareAndSet"
+                    | "weakCompareAndSet"
+                    | "compareAndExchange"
+                    | "getAndSet"
+            ) {
+                return Ok(None);
+            }
+            let owner = pool
+                .class_name(*class_index)
+                .map_err(|error| VmError::invalid_code(target.name.clone(), error.to_string()))?;
+            (name.to_string(), descriptor.to_string(), owner.to_string())
+        };
+        let var_handle_class = match self.resolve_class("java/lang/invoke/VarHandle") {
+            Ok(class) => class,
+            Err(_) => return Ok(None),
+        };
+        let owner = self.resolve_class(&owner_name)?;
+        if !self.class_is_subtype(owner, var_handle_class) {
+            return Ok(None);
+        }
+        let parsed = MethodDescriptor::parse(&descriptor).map_err(|message| {
+            VmError::invalid_code(self.classes.get(class).name.clone(), message)
+        })?;
+        let args = self.pop_arguments(&parsed);
+        let receiver = self.pop_ref();
+        if receiver.is_null() {
+            return Err(self.throw_new("java/lang/NullPointerException", None));
+        }
+        let handle_class = self.class_of(receiver);
+        let target_class_object = self
+            .read_ref_field(receiver, handle_class, "targetClass", "Ljava/lang/Class;")
+            .unwrap_or(ObjectRef::NULL);
+        let target_class = match self
+            .heap
+            .get(target_class_object)
+            .map(|object| &object.data)
+        {
+            Some(ObjectData::Class(class)) => *class,
+            _ => return Err(self.throw_new("java/lang/IllegalStateException", None)),
+        };
+        let field_name = self
+            .read_string_field(receiver, handle_class, "name")
+            .unwrap_or_default();
+        let field_descriptor = self
+            .read_string_field(receiver, handle_class, "descriptor")
+            .unwrap_or_else(|| "Ljava/lang/Object;".into());
+        let (declaring, field) = self.find_field(target_class, &field_name, &field_descriptor)?;
+        let slot = self.classes.get(declaring).fields[field as usize].slot as usize;
+        let target = args
+            .first()
+            .map(|value| value.as_ref())
+            .unwrap_or(ObjectRef::NULL);
+        let raw = self
+            .heap
+            .get(target)
+            .and_then(|object| match &object.data {
+                ObjectData::Instance(fields) => fields.get(slot).copied(),
+                _ => None,
+            })
+            .unwrap_or(Value::Int(0));
+        match name.as_str() {
+            "get" | "getVolatile" | "getAcquire" | "getOpaque" => {
+                let value = self.convert_var_value(raw, &field_descriptor, &parsed)?;
+                self.push(value);
+            }
+            "set" | "setVolatile" | "setRelease" | "setOpaque" => {
+                let value = args.get(1).copied().unwrap_or(Value::Int(0));
+                let stored = self.store_var_value(value, &field_descriptor)?;
+                if let Some(ObjectData::Instance(fields)) =
+                    self.heap.get_mut(target).map(|object| &mut object.data)
+                {
+                    fields[slot] = stored;
+                }
+            }
+            "getAndSet" => {
+                let value = args.get(1).copied().unwrap_or(Value::Int(0));
+                let stored = self.store_var_value(value, &field_descriptor)?;
+                if let Some(ObjectData::Instance(fields)) =
+                    self.heap.get_mut(target).map(|object| &mut object.data)
+                {
+                    fields[slot] = stored;
+                }
+                let value = self.convert_var_value(raw, &field_descriptor, &parsed)?;
+                self.push(value);
+            }
+            "compareAndSet" | "weakCompareAndSet" | "compareAndExchange" => {
+                let expected = args.get(1).copied().unwrap_or(Value::Int(0));
+                let expected = self.store_var_value(expected, &field_descriptor)?;
+                let replacement = args.get(2).copied().unwrap_or(Value::Int(0));
+                let replacement = self.store_var_value(replacement, &field_descriptor)?;
+                let equal = raw == expected;
+                if equal {
+                    if let Some(ObjectData::Instance(fields)) =
+                        self.heap.get_mut(target).map(|object| &mut object.data)
+                    {
+                        fields[slot] = replacement;
+                    }
+                }
+                if name == "compareAndExchange" {
+                    let value = self.convert_var_value(raw, &field_descriptor, &parsed)?;
+                    self.push(value);
+                } else {
+                    self.push(Value::Int(i32::from(equal)));
+                }
+            }
+            _ => {}
+        }
+        Ok(Some(Outcome::Continue))
+    }
+
+    fn convert_var_value(
+        &mut self,
+        raw: Value,
+        field_descriptor: &str,
+        call: &MethodDescriptor,
+    ) -> Result<Value, VmError> {
+        let return_descriptor = match &call.returns {
+            Some(return_type) => var_field_descriptor(return_type),
+            None => String::from("V"),
+        };
+        if return_descriptor.starts_with('L') || return_descriptor.starts_with('[') {
+            if field_descriptor.starts_with('L') || field_descriptor.starts_with('[') {
+                return Ok(raw);
+            }
+            return self.box_var_value(raw, field_descriptor);
+        }
+        if field_descriptor.starts_with('L') || field_descriptor.starts_with('[') {
+            return self.unbox_var_value(raw.as_ref(), &return_descriptor);
+        }
+        Ok(match field_descriptor {
+            "D" => Value::Double(f64::from_bits(raw.as_long() as u64)),
+            "F" => Value::Float(f32::from_bits(raw.as_int() as u32)),
+            "J" => Value::Long(raw.as_long()),
+            _ => Value::Int(raw.as_int()),
+        })
+    }
+
+    fn store_var_value(&mut self, value: Value, field_descriptor: &str) -> Result<Value, VmError> {
+        Ok(match field_descriptor {
+            d if d.starts_with('L') || d.starts_with('[') => value,
+            "D" => match value {
+                Value::Double(value) => Value::Long(value.to_bits() as i64),
+                Value::Long(bits) => Value::Long(bits),
+                Value::Ref(reference) => self
+                    .unbox_var_value(reference, "D")
+                    .unwrap_or(Value::Long(0)),
+                _ => Value::Long(0),
+            },
+            "F" => match value {
+                Value::Float(value) => Value::Int(value.to_bits() as i32),
+                Value::Int(bits) => Value::Int(bits),
+                Value::Ref(reference) => self
+                    .unbox_var_value(reference, "F")
+                    .unwrap_or(Value::Int(0)),
+                _ => Value::Int(0),
+            },
+            "J" => match value {
+                Value::Long(value) => Value::Long(value),
+                Value::Ref(reference) => self
+                    .unbox_var_value(reference, "J")
+                    .unwrap_or(Value::Long(0)),
+                Value::Int(value) => Value::Long(i64::from(value)),
+                _ => Value::Long(0),
+            },
+            _ => match value {
+                Value::Int(value) => Value::Int(value),
+                Value::Ref(reference) => self
+                    .unbox_var_value(reference, field_descriptor)
+                    .unwrap_or(Value::Int(0)),
+                Value::Long(value) => Value::Int(value as i32),
+                _ => Value::Int(0),
+            },
+        })
+    }
+
+    fn box_var_value(&mut self, raw: Value, descriptor: &str) -> Result<Value, VmError> {
+        let class_name = match descriptor {
+            "Z" => "java/lang/Boolean",
+            "B" => "java/lang/Byte",
+            "C" => "java/lang/Character",
+            "S" => "java/lang/Short",
+            "I" => "java/lang/Integer",
+            "J" => "java/lang/Long",
+            "F" => "java/lang/Float",
+            "D" => "java/lang/Double",
+            _ => return Ok(raw),
+        };
+        let class = self.resolve_class(class_name)?;
+        self.ensure_initialized(class)?;
+        let instance = self.new_instance(class)?;
+        let (declaring, field) = self.find_field(class, "value", descriptor)?;
+        match descriptor {
+            "J" | "D" => self.set_instance_long(instance, declaring, field, raw.as_long()),
+            _ => self.set_instance_int(instance, declaring, field, raw.as_int()),
+        }
+        Ok(Value::Ref(instance))
+    }
+
+    fn unbox_var_value(
+        &mut self,
+        reference: ObjectRef,
+        descriptor: &str,
+    ) -> Result<Value, VmError> {
+        if reference.is_null() {
+            return Ok(Value::Int(0));
+        }
+        let class = self.class_of(reference);
+        let (declaring, field) = self.find_field(class, "value", descriptor)?;
+        let slot = self.classes.get(declaring).fields[field as usize].slot as usize;
+        let raw = self
+            .heap
+            .get(reference)
+            .and_then(|object| match &object.data {
+                ObjectData::Instance(fields) => fields.get(slot).copied(),
+                _ => None,
+            })
+            .unwrap_or(Value::Int(0));
+        Ok(raw)
+    }
+}
+
+fn var_field_descriptor(field: &FieldType) -> String {
+    match field {
+        FieldType::Base(base) => String::from(base.as_char()),
+        FieldType::Object(name) => alloc::format!("L{name};"),
+        FieldType::Array(inner) => alloc::format!("[{}", var_field_descriptor(inner)),
     }
 }
 

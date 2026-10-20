@@ -1721,3 +1721,27 @@ fn p1_serialization_and_manifest() {
         );
     }
 }
+
+#[test]
+fn p1_method_handles_and_var_handles() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/P1Invoke").expect("P1Invoke");
+    for (method, expected) in [("methodHandle", "5:ab:true"), ("varHandle", "41:42")] {
+        let (declaring, index) = vm
+            .find_method(class, method, "()Ljava/lang/String;")
+            .expect(method);
+        let value = match vm.invoke_method(declaring, index, Vec::new()) {
+            Ok(value) => value,
+            Err(VmError::Thrown(exception)) => {
+                panic!("{method}: threw {}", vm.class_name(vm.class_of(exception)))
+            }
+            Err(error) => panic!("{method}: {error:?}"),
+        };
+        assert_eq!(
+            vm.string_value(value.as_ref()).as_deref(),
+            Some(expected),
+            "{method}"
+        );
+    }
+}

@@ -12,13 +12,15 @@ use alloc::vec::Vec;
 use oxjvm_classfile::flags::*;
 use oxjvm_vm::{MethodHandleValue, ObjectRef, Value, Vm, VmError};
 
-use crate::{class, field, method, object, receiver, ref_arg, string_arg};
+use crate::{
+    boolean, class, field, int, long, method, object, receiver, ref_arg, string_arg, void,
+};
 
 // -------------------------------------------------------------------------------------------
 // MethodType
 // -------------------------------------------------------------------------------------------
 
-const METHOD_TYPE_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const METHOD_TYPE_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method(
         "descriptorString",
         "()Ljava/lang/String;",
@@ -160,6 +162,71 @@ const METHOD_TYPE_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
             method_type_from(vm, return_type, &parameters)
         },
     ),
+    method(
+        "parameterList",
+        "()Ljava/util/List;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let descriptor = vm.method_type_of(receiver(args)).unwrap_or_default();
+            let types = descriptor_types(&descriptor);
+            let mut classes = Vec::new();
+            for descriptor in types {
+                let class = class_object_for_descriptor(vm, &descriptor)?.as_ref();
+                classes.push(class);
+            }
+            object(crate::util::array_list_from(vm, &classes)?)
+        },
+    ),
+    method(
+        "genericMethodType",
+        "(I)Ljava/lang/invoke/MethodType;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let count = crate::int_arg(args, 0).max(0) as usize;
+            let mut descriptor = String::from("(");
+            for _ in 0..count {
+                descriptor.push_str("Ljava/lang/Object;");
+            }
+            descriptor.push_str(")Ljava/lang/Object;");
+            object(vm.make_method_type(&descriptor)?)
+        },
+    ),
+    method(
+        "changeReturnType",
+        "(Ljava/lang/Class;)Ljava/lang/invoke/MethodType;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let descriptor = vm.method_type_of(receiver(args)).unwrap_or_default();
+            let params = descriptor_params(&descriptor);
+            let class = class_argument(vm, ref_arg(args, 1))?;
+            let result = alloc::format!("{params}{}", class_field_descriptor(vm, class));
+            object(vm.make_method_type(&result)?)
+        },
+    ),
+    method(
+        "appendParameterTypes",
+        "(Ljava/util/List;)Ljava/lang/invoke/MethodType;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let descriptor = vm.method_type_of(receiver(args)).unwrap_or_default();
+            let mut params = descriptor_params(&descriptor);
+            for element in crate::util::collection_elements(vm, ref_arg(args, 1))? {
+                let class = class_argument(vm, element)?;
+                params.push_str(&class_field_descriptor(vm, class));
+            }
+            let result = alloc::format!(
+                "{params}{}",
+                descriptor.split_once(')').map_or("V", |(_, r)| r)
+            );
+            object(vm.make_method_type(&result)?)
+        },
+    ),
+    method(
+        "describeConstable",
+        "()Ljava/util/Optional;",
+        ACC_PUBLIC,
+        |vm, _, args| crate::optional::optional_new(vm, receiver(args)),
+    ),
 ];
 
 /// The parameter part (including parentheses) of a method descriptor.
@@ -251,7 +318,7 @@ pub(crate) const METHOD_TYPE: oxjvm_vm::NativeClass = class(
 // MethodHandle
 // -------------------------------------------------------------------------------------------
 
-const METHOD_HANDLE_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+const METHOD_HANDLE_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     method(
         "toString",
         "()Ljava/lang/String;",
@@ -280,6 +347,44 @@ const METHOD_HANDLE_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
         ACC_PUBLIC,
         |_, _, args| object(receiver(args)),
     ),
+    method(
+        "type",
+        "()Ljava/lang/invoke/MethodType;",
+        ACC_PUBLIC,
+        |vm, _, _| object(vm.make_method_type("(Ljava/lang/Object;)Ljava/lang/Object;")?),
+    ),
+    method(
+        "bindTo",
+        "(Ljava/lang/Object;)Ljava/lang/invoke/MethodHandle;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let target = vm
+                .method_handle_of(receiver(args))
+                .ok_or_else(|| VmError::internal("not a handle"))?;
+            let bound = MethodHandleValue::Bound {
+                receiver: ref_arg(args, 1),
+                target: alloc::boxed::Box::new(target),
+            };
+            object(vm.make_method_handle(bound)?)
+        },
+    ),
+    method(
+        "invokeWithArguments",
+        "([Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_VARARGS,
+        |vm, _, args| {
+            let handle = vm
+                .method_handle_of(receiver(args))
+                .ok_or_else(|| VmError::internal("not a handle"))?;
+            let array = ref_arg(args, 1);
+            let length = vm.array_length(array)?;
+            let mut values = Vec::new();
+            for index in 0..length {
+                values.push(vm.array_get(array, index as i32)?);
+            }
+            vm.invoke_handle(&handle, &values)
+        },
+    ),
 ];
 
 pub(crate) const METHOD_HANDLE: oxjvm_vm::NativeClass = class(
@@ -296,7 +401,7 @@ pub(crate) const METHOD_HANDLE: oxjvm_vm::NativeClass = class(
 // MethodHandles + Lookup
 // -------------------------------------------------------------------------------------------
 
-const METHOD_HANDLES_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+const METHOD_HANDLES_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method(
         "lookup",
         "()Ljava/lang/invoke/MethodHandles$Lookup;",
@@ -319,6 +424,90 @@ const METHOD_HANDLES_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
             object(handle)
         },
     ),
+    method(
+        "privateLookupIn",
+        "(Ljava/lang/Class;Ljava/lang/invoke/MethodHandles$Lookup;)Ljava/lang/invoke/MethodHandles$Lookup;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| lookup_with_class(vm, ref_arg(args, 0)),
+    ),
+    method(
+        "constant",
+        "(Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/invoke/MethodHandle;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let class = class_argument(vm, ref_arg(args, 0))?;
+            object(vm.make_method_handle(MethodHandleValue::Identity { class })?)
+        },
+    ),
+    method(
+        "arrayElementVarHandle",
+        "(Ljava/lang/Class;)Ljava/lang/invoke/VarHandle;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| new_var_handle(vm, ref_arg(args, 0), ObjectRef::NULL, ObjectRef::NULL, 1),
+    ),
+    method(
+        "byteArrayViewVarHandle",
+        "(Ljava/lang/Class;Ljava/nio/ByteOrder;)Ljava/lang/invoke/VarHandle;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| new_var_handle(vm, ref_arg(args, 0), ObjectRef::NULL, ObjectRef::NULL, 2),
+    ),
+    method(
+        "arrayLength",
+        "(Ljava/lang/Class;)Ljava/lang/invoke/MethodHandle;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _args| {
+            let array_class = vm.resolve_class("java/lang/reflect/Array")?;
+            let handle = vm.find_method_handle_target(
+                array_class,
+                "getLength",
+                "(Ljava/lang/Object;)I",
+                true,
+                false,
+                false,
+            )?;
+            object(vm.make_method_handle(handle)?)
+        },
+    ),
+    method(
+        "tryFinally",
+        "(Ljava/lang/invoke/MethodHandle;Ljava/lang/invoke/MethodHandle;)Ljava/lang/invoke/MethodHandle;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "spreadInvoker",
+        "(Ljava/lang/invoke/MethodType;I)Ljava/lang/invoke/MethodHandle;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            object(vm.make_method_handle(MethodHandleValue::Identity {
+                class: oxjvm_vm::ClassId::OBJECT,
+            })?)
+        },
+    ),
+    method(
+        "foldArguments",
+        "(Ljava/lang/invoke/MethodHandle;Ljava/lang/invoke/MethodHandle;)Ljava/lang/invoke/MethodHandle;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "filterArguments",
+        "(Ljava/lang/invoke/MethodHandle;I[Ljava/lang/invoke/MethodHandle;)Ljava/lang/invoke/MethodHandle;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "explicitCastArguments",
+        "(Ljava/lang/invoke/MethodHandle;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/MethodHandle;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "dropArguments",
+        "(Ljava/lang/invoke/MethodHandle;I[Ljava/lang/Class;)Ljava/lang/invoke/MethodHandle;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
 ];
 
 fn lookup_singleton(
@@ -336,6 +525,12 @@ fn lookup_singleton(
         return object(existing);
     }
     let lookup = vm.new_instance(class)?;
+    if let (Ok(object_class), Some((declaring, field))) = (
+        vm.class_object(oxjvm_vm::ClassId::OBJECT),
+        vm.find_field_opt(class, "lookupClass", "Ljava/lang/Class;"),
+    ) {
+        vm.set_instance_ref(lookup, declaring, field, object_class);
+    }
     vm.set_static_value(
         class,
         "IMPL_LOOKUP",
@@ -355,7 +550,7 @@ pub(crate) const METHOD_HANDLES: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const LOOKUP_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const LOOKUP_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method(
         "findStatic",
         "(Ljava/lang/Class;Ljava/lang/String;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/MethodHandle;",
@@ -391,6 +586,94 @@ const LOOKUP_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         "(Ljava/lang/Class;Ljava/lang/String;Ljava/lang/Class;)Ljava/lang/invoke/MethodHandle;",
         ACC_PUBLIC,
         lookup_find_setter,
+    ),
+    method(
+        "lookupClass",
+        "()Ljava/lang/Class;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(
+                vm.read_ref_field(
+                    receiver(args),
+                    vm.class_of(receiver(args)),
+                    "lookupClass",
+                    "Ljava/lang/Class;",
+                )
+                .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method(
+        "in",
+        "(Ljava/lang/Class;)Ljava/lang/invoke/MethodHandles$Lookup;",
+        ACC_PUBLIC,
+        |vm, _, args| lookup_with_class(vm, ref_arg(args, 1)),
+    ),
+    method(
+        "dropLookupMode",
+        "(I)Ljava/lang/invoke/MethodHandles$Lookup;",
+        ACC_PUBLIC,
+        |_, _, args| object(receiver(args)),
+    ),
+    method(
+        "findStaticGetter",
+        "(Ljava/lang/Class;Ljava/lang/String;Ljava/lang/Class;)Ljava/lang/invoke/MethodHandle;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = class_argument(vm, ref_arg(args, 1))?;
+            let name = string_arg(vm, args[2])?;
+            let field_type = class_argument(vm, ref_arg(args, 3))?;
+            let descriptor = class_field_descriptor(vm, field_type);
+            let (declaring, field) = vm.find_field(class, &name, &descriptor)?;
+            object(vm.make_method_handle(MethodHandleValue::StaticGetter {
+                class: declaring,
+                field,
+            })?)
+        },
+    ),
+    method(
+        "unreflect",
+        "(Ljava/lang/reflect/Method;)Ljava/lang/invoke/MethodHandle;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let method = ref_arg(args, 1);
+            let class_object = vm
+                .read_ref_field(method, vm.class_of(method), "clazz", "Ljava/lang/Class;")
+                .unwrap_or(ObjectRef::NULL);
+            let class = class_argument(vm, class_object)?;
+            let slot = crate::lang::read_int_field(vm, method, "slot").max(0) as u32;
+            let definition = &vm.classes.get(class).methods[slot as usize];
+            let value = if definition.is_static() {
+                MethodHandleValue::Static {
+                    class,
+                    method: slot,
+                }
+            } else {
+                MethodHandleValue::Virtual {
+                    class,
+                    method: slot,
+                }
+            };
+            object(vm.make_method_handle(value)?)
+        },
+    ),
+    method(
+        "findVarHandle",
+        "(Ljava/lang/Class;Ljava/lang/String;Ljava/lang/Class;)Ljava/lang/invoke/VarHandle;",
+        ACC_PUBLIC,
+        |vm, _, args| new_var_handle(vm, ref_arg(args, 1), ref_arg(args, 2), ref_arg(args, 3), 0),
+    ),
+    method(
+        "findStaticVarHandle",
+        "(Ljava/lang/Class;Ljava/lang/String;Ljava/lang/Class;)Ljava/lang/invoke/VarHandle;",
+        ACC_PUBLIC,
+        |vm, _, args| new_var_handle(vm, ref_arg(args, 1), ref_arg(args, 2), ref_arg(args, 3), 3),
+    ),
+    method(
+        "revealDirect",
+        "(Ljava/lang/invoke/MethodHandle;)Ljava/lang/invoke/MethodHandleInfo;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
     ),
 ];
 
@@ -539,13 +822,512 @@ pub(crate) const LOOKUP: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_FINAL,
-    &[field(
-        "IMPL_LOOKUP",
-        "Ljava/lang/invoke/MethodHandles$Lookup;",
-        ACC_PRIVATE | ACC_STATIC | ACC_SYNTHETIC,
-        None,
-    )],
+    &[
+        field(
+            "IMPL_LOOKUP",
+            "Ljava/lang/invoke/MethodHandles$Lookup;",
+            ACC_PRIVATE | ACC_STATIC | ACC_SYNTHETIC,
+            None,
+        ),
+        field("lookupClass", "Ljava/lang/Class;", ACC_PRIVATE, None),
+    ],
     &LOOKUP_METHODS,
+    None,
+);
+
+fn lookup_with_class(vm: &mut Vm<'_>, class_object: ObjectRef) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/lang/invoke/MethodHandles$Lookup")?;
+    let lookup = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "lookupClass", "Ljava/lang/Class;")?;
+    vm.set_instance_ref(lookup, declaring, field, class_object);
+    object(lookup)
+}
+
+fn new_var_handle(
+    vm: &mut Vm<'_>,
+    class_object: ObjectRef,
+    name_object: ObjectRef,
+    field_type: ObjectRef,
+    kind: i32,
+) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/lang/invoke/VarHandle")?;
+    let handle = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "targetClass", "Ljava/lang/Class;")?;
+    vm.set_instance_ref(handle, declaring, field, class_object);
+    let name = vm.string_or_empty(name_object);
+    vm.set_string_field(handle, class, "name", &name)?;
+    let (declaring, field) = vm.find_field(class, "kind", "I")?;
+    vm.set_instance_int(handle, declaring, field, kind);
+    if !field_type.is_null() {
+        let type_class = class_argument(vm, field_type)?;
+        let descriptor = class_field_descriptor(vm, type_class);
+        vm.set_string_field(handle, class, "descriptor", &descriptor)?;
+        let type_object = vm.class_object(type_class)?;
+        let (declaring, field) = vm.find_field(class, "fieldType", "Ljava/lang/Class;")?;
+        vm.set_instance_ref(handle, declaring, field, type_object);
+    }
+    object(handle)
+}
+
+fn var_handle_parts(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+) -> Result<(oxjvm_vm::ClassId, u32, String, String), VmError> {
+    let class_object = vm
+        .read_ref_field(this, vm.class_of(this), "targetClass", "Ljava/lang/Class;")
+        .unwrap_or(ObjectRef::NULL);
+    let class = class_argument(vm, class_object)?;
+    let name = vm
+        .read_string_field(this, vm.class_of(this), "name")
+        .unwrap_or_default();
+    let descriptor = vm
+        .read_string_field(this, vm.class_of(this), "descriptor")
+        .unwrap_or_else(|| "Ljava/lang/Object;".into());
+    let (declaring, field) = vm.find_field(class, &name, &descriptor)?;
+    Ok((declaring, field, name, descriptor))
+}
+
+fn var_handle_get(vm: &mut Vm<'_>, this: ObjectRef, target: ObjectRef) -> Result<Value, VmError> {
+    let (declaring, field, name, descriptor) = var_handle_parts(vm, this)?;
+    match descriptor.as_str() {
+        d if d.starts_with('L') || d.starts_with('[') => Ok(Value::Ref(
+            vm.read_ref_field(target, declaring, &name, d)
+                .unwrap_or(ObjectRef::NULL),
+        )),
+        "J" => crate::boxed::box_value(
+            vm,
+            Value::Long(
+                vm.read_instance_long_named(target, declaring, &name, &descriptor)
+                    .unwrap_or(0),
+            ),
+            "J",
+        ),
+        "D" => crate::boxed::box_value(
+            vm,
+            Value::Long(
+                vm.read_instance_long_named(target, declaring, &name, &descriptor)
+                    .unwrap_or(0),
+            ),
+            "D",
+        ),
+        "F" => crate::boxed::box_value(
+            vm,
+            Value::Int(vm.read_instance_int(target, declaring, field).unwrap_or(0)),
+            "F",
+        ),
+        _ => crate::boxed::box_value(
+            vm,
+            Value::Int(vm.read_instance_int(target, declaring, field).unwrap_or(0)),
+            &descriptor,
+        ),
+    }
+}
+
+fn var_handle_set(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    target: ObjectRef,
+    value: Value,
+) -> Result<(), VmError> {
+    let (declaring, field, _name, descriptor) = var_handle_parts(vm, this)?;
+    let value = match value {
+        Value::Ref(reference) if !(descriptor.starts_with('L') || descriptor.starts_with('[')) => {
+            crate::boxed::unbox_value(vm, reference, &descriptor)
+        }
+        other => other,
+    };
+    match descriptor.as_str() {
+        d if d.starts_with('L') || d.starts_with('[') => {
+            vm.set_instance_ref(target, declaring, field, value.as_ref());
+        }
+        "J" | "D" => vm.set_instance_long(target, declaring, field, value.as_long()),
+        _ => vm.set_instance_int(target, declaring, field, value.as_int()),
+    }
+    Ok(())
+}
+
+const VAR_HANDLE_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
+    method(
+        "get",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| var_handle_get(vm, receiver(args), ref_arg(args, 1)),
+    ),
+    method(
+        "getVolatile",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| var_handle_get(vm, receiver(args), ref_arg(args, 1)),
+    ),
+    method(
+        "getAcquire",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| var_handle_get(vm, receiver(args), ref_arg(args, 1)),
+    ),
+    method(
+        "getOpaque",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| var_handle_get(vm, receiver(args), ref_arg(args, 1)),
+    ),
+    method(
+        "set",
+        "(Ljava/lang/Object;Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            var_handle_set(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                Value::Ref(ref_arg(args, 2)),
+            )?;
+            void()
+        },
+    ),
+    method(
+        "setVolatile",
+        "(Ljava/lang/Object;Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            var_handle_set(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                Value::Ref(ref_arg(args, 2)),
+            )?;
+            void()
+        },
+    ),
+    method(
+        "setRelease",
+        "(Ljava/lang/Object;Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            var_handle_set(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                Value::Ref(ref_arg(args, 2)),
+            )?;
+            void()
+        },
+    ),
+    method(
+        "setOpaque",
+        "(Ljava/lang/Object;Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            var_handle_set(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                Value::Ref(ref_arg(args, 2)),
+            )?;
+            void()
+        },
+    ),
+    method(
+        "getAndSet",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let old = var_handle_get(vm, receiver(args), ref_arg(args, 1))?;
+            var_handle_set(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                Value::Ref(ref_arg(args, 2)),
+            )?;
+            object(old.as_ref())
+        },
+    ),
+    method(
+        "compareAndSet",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let old = var_handle_get(vm, receiver(args), ref_arg(args, 1))?;
+            if old == Value::Ref(ref_arg(args, 3)) {
+                var_handle_set(
+                    vm,
+                    receiver(args),
+                    ref_arg(args, 1),
+                    Value::Ref(ref_arg(args, 2)),
+                )?;
+                boolean(true)
+            } else {
+                boolean(false)
+            }
+        },
+    ),
+    method(
+        "weakCompareAndSet",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let old = var_handle_get(vm, receiver(args), ref_arg(args, 1))?;
+            if old == Value::Ref(ref_arg(args, 3)) {
+                var_handle_set(
+                    vm,
+                    receiver(args),
+                    ref_arg(args, 1),
+                    Value::Ref(ref_arg(args, 2)),
+                )?;
+                boolean(true)
+            } else {
+                boolean(false)
+            }
+        },
+    ),
+    method(
+        "compareAndExchange",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let old = var_handle_get(vm, receiver(args), ref_arg(args, 1))?;
+            if old == Value::Ref(ref_arg(args, 3)) {
+                var_handle_set(
+                    vm,
+                    receiver(args),
+                    ref_arg(args, 1),
+                    Value::Ref(ref_arg(args, 2)),
+                )?;
+            }
+            object(old.as_ref())
+        },
+    ),
+    method(
+        "getAndAdd",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let old = var_handle_get(vm, receiver(args), ref_arg(args, 1))?;
+            if let Value::Int(old) = old {
+                let addition = crate::boxed::unbox_value(vm, ref_arg(args, 2), "I").as_int();
+                var_handle_set(
+                    vm,
+                    receiver(args),
+                    ref_arg(args, 1),
+                    Value::Int(old.wrapping_add(addition)),
+                )?;
+                crate::boxed::box_value(vm, Value::Int(old), "I")
+            } else {
+                object(old.as_ref())
+            }
+        },
+    ),
+    method("get", "(Ljava/lang/Object;)I", ACC_PUBLIC, |vm, _, args| {
+        let value = var_handle_get(vm, receiver(args), ref_arg(args, 1))?;
+        int(crate::boxed::unbox_value(vm, value.as_ref(), "I").as_int())
+    }),
+    method("get", "(Ljava/lang/Object;)J", ACC_PUBLIC, |vm, _, args| {
+        let value = var_handle_get(vm, receiver(args), ref_arg(args, 1))?;
+        long(crate::boxed::unbox_value(vm, value.as_ref(), "J").as_long())
+    }),
+    method("get", "(Ljava/lang/Object;)Z", ACC_PUBLIC, |vm, _, args| {
+        let value = var_handle_get(vm, receiver(args), ref_arg(args, 1))?;
+        boolean(crate::boxed::unbox_value(vm, value.as_ref(), "Z").as_int() != 0)
+    }),
+    method("get", "(Ljava/lang/Object;)F", ACC_PUBLIC, |vm, _, args| {
+        let value = var_handle_get(vm, receiver(args), ref_arg(args, 1))?;
+        Ok(Value::Float(f32::from_bits(
+            crate::boxed::unbox_value(vm, value.as_ref(), "F").as_int() as u32,
+        )))
+    }),
+    method("get", "(Ljava/lang/Object;)D", ACC_PUBLIC, |vm, _, args| {
+        let value = var_handle_get(vm, receiver(args), ref_arg(args, 1))?;
+        Ok(Value::Double(f64::from_bits(
+            crate::boxed::unbox_value(vm, value.as_ref(), "D").as_long() as u64,
+        )))
+    }),
+    method(
+        "set",
+        "(Ljava/lang/Object;I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            var_handle_set(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                Value::Int(crate::int_arg(args, 2)),
+            )?;
+            void()
+        },
+    ),
+    method(
+        "set",
+        "(Ljava/lang/Object;J)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            var_handle_set(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                Value::Long(crate::long_arg(args, 2)),
+            )?;
+            void()
+        },
+    ),
+    method(
+        "set",
+        "(Ljava/lang/Object;Z)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            var_handle_set(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                Value::Int(crate::int_arg(args, 2)),
+            )?;
+            void()
+        },
+    ),
+    method(
+        "set",
+        "(Ljava/lang/Object;B)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            var_handle_set(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                Value::Int(crate::int_arg(args, 2)),
+            )?;
+            void()
+        },
+    ),
+    method(
+        "set",
+        "(Ljava/lang/Object;C)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            var_handle_set(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                Value::Int(crate::int_arg(args, 2)),
+            )?;
+            void()
+        },
+    ),
+    method(
+        "set",
+        "(Ljava/lang/Object;S)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            var_handle_set(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                Value::Int(crate::int_arg(args, 2)),
+            )?;
+            void()
+        },
+    ),
+    method(
+        "set",
+        "(Ljava/lang/Object;F)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            var_handle_set(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                Value::Float(crate::float_arg(args, 2)),
+            )?;
+            void()
+        },
+    ),
+    method(
+        "set",
+        "(Ljava/lang/Object;D)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            var_handle_set(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                Value::Double(crate::double_arg(args, 2)),
+            )?;
+            void()
+        },
+    ),
+    method(
+        "compareAndSet",
+        "(Ljava/lang/Object;II)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let old = var_handle_get(vm, receiver(args), ref_arg(args, 1))?;
+            let expected = Value::Int(crate::int_arg(args, 2));
+            if old == expected {
+                var_handle_set(
+                    vm,
+                    receiver(args),
+                    ref_arg(args, 1),
+                    Value::Int(crate::int_arg(args, 3)),
+                )?;
+                boolean(true)
+            } else {
+                boolean(false)
+            }
+        },
+    ),
+    method(
+        "isAccessModeSupported",
+        "(Ljava/lang/invoke/VarHandle$AccessMode;)Z",
+        ACC_PUBLIC,
+        |_, _, _| boolean(true),
+    ),
+    method("hasInvokeExactBehavior", "()Z", ACC_PUBLIC, |_, _, _| {
+        boolean(false)
+    }),
+    method(
+        "varType",
+        "()Ljava/lang/Class;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(
+                vm.read_ref_field(
+                    receiver(args),
+                    vm.class_of(receiver(args)),
+                    "fieldType",
+                    "Ljava/lang/Class;",
+                )
+                .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method(
+        "coordinateTypes",
+        "()Ljava/util/List;",
+        ACC_PUBLIC,
+        |vm, _, _args| {
+            let object_class = vm.class_object(oxjvm_vm::ClassId::OBJECT)?;
+            object(crate::util::array_list_from(vm, &[object_class])?)
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| object(vm.make_string("VarHandle")?),
+    ),
+];
+
+pub(crate) const VAR_HANDLE: oxjvm_vm::NativeClass = class(
+    "java/lang/invoke/VarHandle",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[
+        field("targetClass", "Ljava/lang/Class;", ACC_PRIVATE, None),
+        field("fieldType", "Ljava/lang/Class;", ACC_PRIVATE, None),
+        field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("descriptor", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("kind", "I", ACC_PRIVATE, None),
+    ],
+    &VAR_HANDLE_METHODS,
     None,
 );
 
@@ -950,7 +1732,7 @@ const PREDICATE_COMBINER_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
             1 => predicate_test(vm, left, value)? || predicate_test(vm, right, value)?,
             _ => !predicate_test(vm, left, value)?,
         };
-        crate::boolean(result)
+        boolean(result)
     },
 )];
 
@@ -1145,4 +1927,173 @@ pub(crate) const APPENDABLE: oxjvm_vm::NativeClass = class(
         ),
     ],
     None,
+);
+
+// -------------------------------------------------------------------------------------------
+// VarHandle.AccessMode
+// -------------------------------------------------------------------------------------------
+
+const ACCESS_MODE_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method("name", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
+        let name = vm
+            .read_string_field(receiver(args), vm.class_of(receiver(args)), "name")
+            .unwrap_or_default();
+        object(vm.make_string(&name)?)
+    }),
+    method("ordinal", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "ordinal"))
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = vm
+                .read_string_field(receiver(args), vm.class_of(receiver(args)), "name")
+                .unwrap_or_default();
+            object(vm.make_string(&name)?)
+        },
+    ),
+    method(
+        "values",
+        "()[Ljava/lang/invoke/VarHandle$AccessMode;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/lang/invoke/VarHandle$AccessMode")?;
+            let names = [
+                "GET",
+                "SET",
+                "GET_VOLATILE",
+                "SET_VOLATILE",
+                "GET_ACQUIRE",
+                "SET_RELEASE",
+                "COMPARE_AND_SET",
+                "COMPARE_AND_EXCHANGE",
+                "GET_AND_SET",
+            ];
+            let array = vm.allocate_object_array(class, names.len())?;
+            for (index, name) in names.iter().enumerate() {
+                if let Some(value) = vm.read_static_ref_if_set(
+                    class,
+                    name,
+                    "Ljava/lang/invoke/VarHandle$AccessMode;",
+                ) {
+                    vm.array_set_ref(array, index, value)?;
+                }
+            }
+            object(array)
+        },
+    ),
+    method(
+        "valueOf",
+        "(Ljava/lang/String;)Ljava/lang/invoke/VarHandle$AccessMode;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = vm.string_or_empty(ref_arg(args, 0));
+            let class = vm.resolve_class("java/lang/invoke/VarHandle$AccessMode")?;
+            vm.ensure_initialized(class)?;
+            if let Some(value) =
+                vm.read_static_ref_if_set(class, &name, "Ljava/lang/invoke/VarHandle$AccessMode;")
+            {
+                return object(value);
+            }
+            Err(vm.throw_new("java/lang/IllegalArgumentException", Some(&name)))
+        },
+    ),
+];
+
+fn access_mode_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/lang/invoke/VarHandle$AccessMode")?;
+    for (ordinal, name) in [
+        "GET",
+        "SET",
+        "GET_VOLATILE",
+        "SET_VOLATILE",
+        "GET_ACQUIRE",
+        "SET_RELEASE",
+        "COMPARE_AND_SET",
+        "COMPARE_AND_EXCHANGE",
+        "GET_AND_SET",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let instance = vm.new_instance(class)?;
+        vm.set_string_field(instance, class, "name", name)?;
+        crate::lang::write_int_field(vm, instance, "ordinal", ordinal as i32);
+        vm.set_static_value(
+            class,
+            name,
+            "Ljava/lang/invoke/VarHandle$AccessMode;",
+            Value::Ref(instance),
+        );
+    }
+    Ok(())
+}
+
+pub(crate) const ACCESS_MODE: oxjvm_vm::NativeClass = class(
+    "java/lang/invoke/VarHandle$AccessMode",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("ordinal", "I", ACC_PRIVATE, None),
+        field(
+            "GET",
+            "Ljava/lang/invoke/VarHandle$AccessMode;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "SET",
+            "Ljava/lang/invoke/VarHandle$AccessMode;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "GET_VOLATILE",
+            "Ljava/lang/invoke/VarHandle$AccessMode;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "SET_VOLATILE",
+            "Ljava/lang/invoke/VarHandle$AccessMode;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "GET_ACQUIRE",
+            "Ljava/lang/invoke/VarHandle$AccessMode;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "SET_RELEASE",
+            "Ljava/lang/invoke/VarHandle$AccessMode;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "COMPARE_AND_SET",
+            "Ljava/lang/invoke/VarHandle$AccessMode;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "COMPARE_AND_EXCHANGE",
+            "Ljava/lang/invoke/VarHandle$AccessMode;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "GET_AND_SET",
+            "Ljava/lang/invoke/VarHandle$AccessMode;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+    ],
+    &ACCESS_MODE_METHODS,
+    Some(access_mode_clinit),
 );
