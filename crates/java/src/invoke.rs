@@ -1444,7 +1444,7 @@ macro_rules! functional_interface {
 // Each interface carries the same shape; the dispatcher selects by descriptor, so a shared array
 // with one abstract method of each common descriptor is sufficient and lets a single class serve
 // every functional interface users link against.
-const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
+const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
     method(
         "apply",
         "(Ljava/lang/Object;)Ljava/lang/Object;",
@@ -1616,6 +1616,30 @@ const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
     method(
         "applyAsDouble",
         "(I)D",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getAsBoolean",
+        "()Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getAsInt",
+        "()I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getAsLong",
+        "()J",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getAsDouble",
+        "()D",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
@@ -1899,6 +1923,10 @@ functional_interface!(
     INT_TO_DOUBLE_FUNCTION,
     "java/util/function/IntToDoubleFunction"
 );
+functional_interface!(BOOLEAN_SUPPLIER, "java/util/function/BooleanSupplier");
+functional_interface!(INT_SUPPLIER, "java/util/function/IntSupplier");
+functional_interface!(LONG_SUPPLIER, "java/util/function/LongSupplier");
+functional_interface!(DOUBLE_SUPPLIER, "java/util/function/DoubleSupplier");
 
 pub(crate) const APPENDABLE: oxjvm_vm::NativeClass = class(
     "java/lang/Appendable",

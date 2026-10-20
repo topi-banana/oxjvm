@@ -121,7 +121,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 500] = [
+static REGISTRY: [NativeClass; 510] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -229,6 +229,12 @@ static REGISTRY: [NativeClass; 500] = [
     throwable::REJECTED_EXECUTION_EXCEPTION,
     throwable::TIMEOUT_EXCEPTION,
     throwable::EXECUTION_EXCEPTION,
+    throwable::FILE_SYSTEM_NOT_FOUND_EXCEPTION,
+    throwable::PROVIDER_NOT_FOUND_EXCEPTION,
+    throwable::FILE_SYSTEM_ALREADY_EXISTS_EXCEPTION,
+    throwable::MALFORMED_INPUT_EXCEPTION,
+    throwable::UNMAPPABLE_CHARACTER_EXCEPTION,
+    throwable::CODER_MALFUNCTION_ERROR,
     throwable::BUFFER_OVERFLOW_EXCEPTION,
     throwable::BUFFER_UNDERFLOW_EXCEPTION,
     throwable::INVALID_MARK_EXCEPTION,
@@ -392,6 +398,10 @@ static REGISTRY: [NativeClass; 500] = [
     invoke::LONG_TO_DOUBLE_FUNCTION,
     invoke::INT_TO_LONG_FUNCTION,
     invoke::INT_TO_DOUBLE_FUNCTION,
+    invoke::BOOLEAN_SUPPLIER,
+    invoke::INT_SUPPLIER,
+    invoke::LONG_SUPPLIER,
+    invoke::DOUBLE_SUPPLIER,
     invoke::OJVM_IDENTITY,
     invoke::OJVM_FUNCTION,
     invoke::PREDICATE_COMBINER,
