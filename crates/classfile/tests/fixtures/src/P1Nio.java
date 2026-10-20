@@ -13,7 +13,7 @@ import java.nio.file.StandardOpenOption;
 // added in P1-b. Compiled with `-parameters -g --release 25` (major 69).
 public class P1Nio {
     public static void main(String[] args) throws Exception {
-        Path file = Files.createTempFile("p1nio", ".txt");
+        Path file = Path.of("p1nio-test.txt");
         Files.writeString(file, "hello");
         FileChannel channel = FileChannel.open(file, StandardOpenOption.READ);
         ByteBuffer buffer = ByteBuffer.allocate(5);
@@ -25,7 +25,7 @@ public class P1Nio {
         }
         channel.close();
         int entries = 0;
-        try (DirectoryStream<Path> stream = Files.newDirectoryStream(file.getParent(), "p1nio*")) {
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(file.toAbsolutePath().getParent(), "p1nio*")) {
             for (Path ignored : stream) {
                 entries++;
             }
