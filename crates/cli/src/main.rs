@@ -189,9 +189,14 @@ impl StdHost {
         properties.insert("os.name".into(), std::env::consts::OS.into());
         properties.insert("os.arch".into(), std::env::consts::ARCH.into());
         properties.insert("line.separator".into(), "\n".into());
+        // The VM's path helpers only understand "/", so `file.separator` stays the VM default
+        // rather than the platform's own separator.
+        //
+        // The temporary directory, on the other hand, has to be the platform's: the VM's default
+        // is "/tmp", which does not exist on Windows, and `Files.createTempFile` would fail there.
         properties.insert(
-            "file.separator".into(),
-            std::path::MAIN_SEPARATOR.to_string(),
+            "java.io.tmpdir".into(),
+            std::env::temp_dir().display().to_string(),
         );
         properties.insert(
             "user.dir".into(),

@@ -4127,27 +4127,36 @@ pub(crate) const SYSTEM_PROPERTY_DEFAULTS: [(&str, &str); 27] = [
     ("java.awt.headless", "true"),
 ];
 
-/// Looks up a system property: guest overrides first, then the VM defaults, then the host.
+/// Looks up a system property: guest overrides first, then the host's own properties, then the
+/// VM defaults.
+///
+/// The host comes before the defaults on purpose: a `-D` override on the command line has to win
+/// over the built-in value, or a platform-specific property such as `java.io.tmpdir` would be
+/// shadowed by the hard-coded one.
 pub(crate) fn system_property(vm: &mut Vm<'_>, key: &str) -> Option<String> {
     if let Some(value) = vm.get_property(key) {
         return Some(value);
     }
-    if let Some((_, value)) = SYSTEM_PROPERTY_DEFAULTS
-        .iter()
-        .find(|(name, _)| *name == key)
-    {
-        return Some((*value).to_string());
-    }
     match key {
         // Virtual defaults that depend on runtime state rather than a constant.
         "java.class.path" => Some(String::new()),
-        "java.io.tmpdir" => Some("/tmp".to_string()),
         // `user.dir` is the process working directory, which only the host knows.  It used to be
         // pinned to "/" in the defaults above, which shadowed the host's real value (jtreg runs
         // each test in its own scratch directory, so `Paths.get("genSrc").toAbsolutePath()`
         // resolved to `/genSrc` instead of `<scratch>/genSrc`).
         "user.dir" => vm.host_property(key).or_else(|| Some(String::from("/"))),
-        _ => vm.host_property(key),
+        _ => {
+            if let Some(value) = vm.host_property(key) {
+                return Some(value);
+            }
+            if let Some((_, value)) = SYSTEM_PROPERTY_DEFAULTS
+                .iter()
+                .find(|(name, _)| *name == key)
+            {
+                return Some((*value).to_string());
+            }
+            None
+        }
     }
 }
 
