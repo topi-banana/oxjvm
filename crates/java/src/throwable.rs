@@ -201,8 +201,8 @@ pub(crate) fn exception_ctor(
         };
         let cause = match descriptor.as_str() {
             "(Ljava/lang/String;Ljava/lang/Throwable;)V"
-            | "(Ljava/lang/String;Ljava/lang/Throwable;ZZ)V"
-            | "(Ljava/lang/Throwable;)V" => ref_arg(args, 2),
+            | "(Ljava/lang/String;Ljava/lang/Throwable;ZZ)V" => ref_arg(args, 2),
+            "(Ljava/lang/Throwable;)V" => ref_arg(args, 1),
             _ => ObjectRef::NULL,
         };
         let (declaring, field) = vm.find_field(class, "detailMessage", "Ljava/lang/String;")?;
