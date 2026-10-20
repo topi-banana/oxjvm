@@ -37,6 +37,7 @@ pub(crate) mod net;
 pub(crate) mod nio;
 pub(crate) mod optional;
 pub(crate) mod primitive_stream;
+pub(crate) mod reference;
 pub(crate) mod reflect;
 pub(crate) mod regex;
 pub(crate) mod serialization;
@@ -120,7 +121,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 495] = [
+static REGISTRY: [NativeClass; 500] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -554,6 +555,11 @@ static REGISTRY: [NativeClass; 495] = [
     reflect::ACCESS_FLAG,
     reflect::ACCESS_FLAG_LOCATION,
     reflect::REFLECT_PERMISSION,
+    reference::REFERENCE,
+    reference::WEAK_REFERENCE,
+    reference::SOFT_REFERENCE,
+    reference::PHANTOM_REFERENCE,
+    reference::REFERENCE_QUEUE,
     beans::PROPERTY_DESCRIPTOR,
     beans::PROPERTY_EDITOR,
     beans::PROPERTY_EDITOR_SUPPORT,

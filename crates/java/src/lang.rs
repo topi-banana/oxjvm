@@ -6101,7 +6101,7 @@ fn thread_local_with_initial(
 // ClassLoader
 // -------------------------------------------------------------------------------------------
 
-const CLASS_LOADER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const CLASS_LOADER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method(
         "getSystemClassLoader",
         "()Ljava/lang/ClassLoader;",
@@ -6156,6 +6156,20 @@ const CLASS_LOADER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         "(Ljava/lang/String;Ljava/lang/ClassLoader;)V",
         ACC_PUBLIC,
         |_, _, _| void(),
+    ),
+    method(
+        "defineClass",
+        "(Ljava/lang/String;[BII)Ljava/lang/Class;",
+        ACC_PROTECTED | ACC_FINAL,
+        |vm, _, args| {
+            let name = string_arg(vm, args[1])?.replace('.', "/");
+            let bytes = array_bytes(vm, ref_arg(args, 2))?;
+            let offset = int_arg(args, 3).max(0) as usize;
+            let length = int_arg(args, 4).max(0) as usize;
+            let end = (offset + length).min(bytes.len());
+            let class = vm.define_class(&name, &bytes[offset..end])?;
+            object(vm.class_object(class)?)
+        },
     ),
     method(
         "toString",
