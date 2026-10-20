@@ -496,10 +496,88 @@ exception!(
     "java/lang/InternalError",
     "java/lang/VirtualMachineError"
 );
-exception!(
-    ASSERTION_ERROR,
+const ASSERTION_ERROR_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method("<init>", "()V", ACC_PUBLIC, exception_ctor),
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        exception_ctor,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/Throwable;)V",
+        ACC_PUBLIC,
+        exception_ctor,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/Throwable;ZZ)V",
+        ACC_PUBLIC,
+        exception_ctor,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/Throwable;)V",
+        ACC_PUBLIC,
+        exception_ctor,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        assertion_error_object_ctor,
+    ),
+];
+
+/// `AssertionError(Object)`: a `Throwable` argument becomes the cause, and other
+/// values are rendered by `String.valueOf`.
+fn assertion_error_object_ctor(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let detail = ref_arg(args, 1);
+    let throwable = vm.resolve_class("java/lang/Throwable")?;
+    let cause = if !detail.is_null() && vm.is_instance(detail, throwable) {
+        detail
+    } else {
+        ObjectRef::NULL
+    };
+    let message = if detail.is_null() {
+        ObjectRef::NULL
+    } else if vm.string_value(detail).is_some() {
+        detail
+    } else {
+        let string_class = vm.resolve_class("java/lang/String")?;
+        let (_, value_of) = vm
+            .find_method(
+                string_class,
+                "valueOf",
+                "(Ljava/lang/Object;)Ljava/lang/String;",
+            )
+            .ok_or_else(|| VmError::internal("String.valueOf(Object) missing"))?;
+        vm.invoke_method(string_class, value_of, vec![Value::Ref(detail)])?
+            .as_ref()
+    };
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, "detailMessage", "Ljava/lang/String;")?;
+    vm.set_instance_ref(this, declaring, field, message);
+    let (declaring, field) = vm.find_field(class, "cause", "Ljava/lang/Throwable;")?;
+    vm.set_instance_ref(this, declaring, field, cause);
+    vm.capture_backtrace(this);
+    void()
+}
+
+pub(crate) const ASSERTION_ERROR: oxjvm_vm::NativeClass = class(
     "java/lang/AssertionError",
-    "java/lang/Error"
+    Some("java/lang/Error"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &ASSERTION_ERROR_METHODS,
+    None,
 );
 exception!(LINKAGE_ERROR, "java/lang/LinkageError", "java/lang/Error");
 exception!(

@@ -378,7 +378,7 @@ const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
     ),
 ];
 
-const BASE_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const BASE_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     method(
         "iterator",
         "()Ljava/util/Iterator;",
@@ -410,6 +410,12 @@ const BASE_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         abstract_method_pub,
     ),
     method(
+        "onClose",
+        "(Ljava/lang/Runnable;)Ljava/util/stream/BaseStream;",
+        ACC_PUBLIC,
+        abstract_method_pub,
+    ),
+    method(
         "close",
         "()V",
         ACC_PUBLIC | ACC_ABSTRACT,
@@ -437,7 +443,7 @@ pub(crate) const STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const OXJVM_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
+const OXJVM_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
     method(
         "filter",
         "(Ljava/util/function/Predicate;)Ljava/util/stream/Stream;",
@@ -761,7 +767,51 @@ const OXJVM_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
         ACC_PUBLIC,
         |_vm, _, args| object(receiver(args)),
     ),
-    method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "onClose",
+        "(Ljava/lang/Runnable;)Ljava/util/stream/BaseStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let action = ref_arg(args, 1);
+            if action.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let class = vm.class_of(this);
+            let existing = vm
+                .read_ref_field(this, class, "onClose", "Ljava/util/ArrayList;")
+                .unwrap_or(ObjectRef::NULL);
+            if existing.is_null() {
+                let list = crate::util::array_list_from(vm, &[action])?;
+                let (declaring, field) =
+                    vm.find_field(class, "onClose", "Ljava/util/ArrayList;")?;
+                vm.set_instance_ref(this, declaring, field, list);
+            } else {
+                let (add_class, add) =
+                    vm.resolve_virtual_method(existing, "add", "(Ljava/lang/Object;)Z")?;
+                vm.invoke_method(
+                    add_class,
+                    add,
+                    vec![Value::Ref(existing), Value::Ref(action)],
+                )?;
+            }
+            object(this)
+        },
+    ),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let list = vm
+            .read_ref_field(this, class, "onClose", "Ljava/util/ArrayList;")
+            .unwrap_or(ObjectRef::NULL);
+        if !list.is_null() {
+            for action in crate::util::array_list_elements(vm, list) {
+                let (action_class, run) = vm.resolve_virtual_method(action, "run", "()V")?;
+                vm.invoke_method(action_class, run, vec![Value::Ref(action)])?;
+            }
+        }
+        void()
+    }),
     // Bridge: `Stream` declares the covariant Stream-returning overloads, so the
     // concrete class exposes them with `Stream` return types too.
     method(
@@ -873,6 +923,7 @@ pub(crate) const OXJVM_STREAM: oxjvm_vm::NativeClass = class(
     &[
         field("elements", "[Ljava/lang/Object;", ACC_PRIVATE, None),
         field("parallel", "I", ACC_PRIVATE, None),
+        field("onClose", "Ljava/util/ArrayList;", ACC_PRIVATE, None),
     ],
     &OXJVM_STREAM_METHODS,
     None,

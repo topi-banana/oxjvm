@@ -200,18 +200,22 @@ fn hex_delimiter(vm: &Vm<'_>, this: ObjectRef) -> String {
         .unwrap_or_default()
 }
 
-fn hex_format_text(delimiter: &str, bytes: &[u8]) -> String {
+fn hex_format_text(delimiter: &str, bytes: &[u8], uppercase: bool) -> String {
     let mut out = String::new();
     for (index, byte) in bytes.iter().enumerate() {
         if index > 0 {
             out.push_str(delimiter);
         }
-        out.push_str(&alloc::format!("{byte:02x}"));
+        if uppercase {
+            out.push_str(&alloc::format!("{byte:02X}"));
+        } else {
+            out.push_str(&alloc::format!("{byte:02x}"));
+        }
     }
     out
 }
 
-const HEX_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+const HEX_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     method(
         "of",
         "()Ljava/util/HexFormat;",
@@ -239,9 +243,20 @@ const HEX_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let delimiter = hex_delimiter(vm, receiver(args));
+            let uppercase = crate::lang::read_int_field(vm, receiver(args), "upperCase") != 0;
             let bytes = byte_array_of(vm, ref_arg(args, 1))?;
-            let text = hex_format_text(&delimiter, &bytes);
+            let text = hex_format_text(&delimiter, &bytes, uppercase);
             object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "withUpperCase",
+        "()Ljava/util/HexFormat;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            crate::lang::write_int_field(vm, this, "upperCase", 1);
+            object(this)
         },
     ),
     method(
@@ -277,7 +292,10 @@ pub(crate) const HEX_FORMAT: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_FINAL,
-    &[field("delimiter", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &[
+        field("delimiter", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("upperCase", "I", ACC_PRIVATE, None),
+    ],
     &HEX_FORMAT_METHODS,
     None,
 );

@@ -8,7 +8,7 @@
 use core::cmp::Ordering;
 
 use oxjvm_classfile::flags::*;
-use oxjvm_vm::{Value, Vm, VmError};
+use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
 use crate::{
     class, double, double_arg, field, float, float_arg, int, int_arg, long, long_arg, method,
@@ -956,7 +956,8 @@ pub(crate) const STRICT_MATH: oxjvm_vm::NativeClass = class(
 // -------------------------------------------------------------------------------------------
 
 use alloc::string::{String, ToString};
-use oxjvm_vm::ObjectRef;
+use alloc::vec;
+use alloc::vec::Vec;
 
 use crate::{boolean, object, receiver, ref_arg, string_arg, void};
 
@@ -987,6 +988,148 @@ fn java_hash(text: &str) -> i32 {
 
 fn parse_i128(text: &str) -> Option<i128> {
     text.parse::<i128>().ok()
+}
+
+fn write_big_text(vm: &mut Vm<'_>, this: ObjectRef, text: &str) -> Result<Value, VmError> {
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, "value", "Ljava/lang/String;")?;
+    let string = vm.make_string(text)?;
+    vm.set_instance_ref(this, declaring, field, string);
+    Ok(Value::Int(0))
+}
+
+fn twos_complement_to_i128(bytes: &[u8]) -> i128 {
+    if bytes.is_empty() {
+        return 0;
+    }
+    let mut value: i128 = 0;
+    for byte in bytes {
+        value = (value << 8) | i128::from(*byte);
+    }
+    if bytes[0] & 0x80 != 0 {
+        value -= 1i128 << (bytes.len() * 8);
+    }
+    value
+}
+
+fn bytes_array(vm: &mut Vm<'_>, bytes: &[u8]) -> Result<ObjectRef, VmError> {
+    let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, bytes.len())?;
+    for (index, byte) in bytes.iter().enumerate() {
+        vm.array_set(
+            array,
+            index as i32,
+            Value::Int(i32::from(*byte as i8)),
+            false,
+        )?;
+    }
+    Ok(array)
+}
+
+fn i128_to_twos_complement(value: i128) -> Vec<u8> {
+    if value == 0 {
+        return vec![0];
+    }
+    if value > 0 {
+        let mut bytes = value.to_be_bytes().to_vec();
+        while bytes.len() > 1 && bytes[0] == 0 {
+            bytes.remove(0);
+        }
+        if bytes[0] & 0x80 != 0 {
+            bytes.insert(0, 0);
+        }
+        return bytes;
+    }
+    let magnitude = value.unsigned_abs();
+    let mut bytes = magnitude.to_be_bytes().to_vec();
+    while bytes.len() > 1 && bytes[0] == 0 {
+        bytes.remove(0);
+    }
+    for byte in &mut bytes {
+        *byte = !*byte;
+    }
+    let mut carry = 1u16;
+    for byte in bytes.iter_mut().rev() {
+        let sum = u16::from(*byte) + carry;
+        *byte = (sum & 0xFF) as u8;
+        carry = sum >> 8;
+    }
+    while bytes.len() > 1 && bytes[0] == 0xFF && bytes[1] & 0x80 != 0 {
+        bytes.remove(0);
+    }
+    bytes
+}
+
+fn scale_decimal(text: &str, power: i32) -> String {
+    if power == 0 {
+        return String::from(text);
+    }
+    if let Some(value) = parse_i128(text) {
+        if power > 0 {
+            if let Some(factor) = 10i128.checked_pow(power as u32) {
+                if let Some(scaled) = value.checked_mul(factor) {
+                    return scaled.to_string();
+                }
+            }
+        } else if let Some(formatted) = format_scaled(value, (-power) as usize) {
+            return formatted;
+        }
+    }
+    let value = text.parse::<f64>().unwrap_or(0.0);
+    let mut factor = 1.0f64;
+    for _ in 0..power.unsigned_abs() {
+        factor *= 10.0;
+    }
+    if power >= 0 {
+        alloc::format!("{}", value * factor)
+    } else {
+        alloc::format!("{}", value / factor)
+    }
+}
+
+fn format_scaled(value: i128, scale: usize) -> Option<String> {
+    let negative = value < 0;
+    let digits = value.unsigned_abs().to_string();
+    let mut text = String::new();
+    if negative {
+        text.push('-');
+    }
+    if scale == 0 {
+        text.push_str(&digits);
+        return Some(text);
+    }
+    if digits.len() <= scale {
+        text.push_str("0.");
+        for _ in 0..(scale - digits.len()) {
+            text.push('0');
+        }
+        text.push_str(&digits);
+    } else {
+        let point = digits.len() - scale;
+        text.push_str(&digits[..point]);
+        text.push('.');
+        text.push_str(&digits[point..]);
+    }
+    Some(text)
+}
+
+fn is_probable_prime(value: i128) -> bool {
+    if value < 2 {
+        return false;
+    }
+    if value < 4 {
+        return true;
+    }
+    if value % 2 == 0 {
+        return false;
+    }
+    let mut divisor = 3i128;
+    while divisor.saturating_mul(divisor) <= value && divisor < 1_000_000 {
+        if value % divisor == 0 {
+            return false;
+        }
+        divisor += 2;
+    }
+    true
 }
 
 /// Validate and canonicalise a decimal integer string like `new BigInteger(String)`.
@@ -1126,7 +1269,7 @@ fn big_integer_binary(
     }
 }
 
-const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -1240,6 +1383,138 @@ const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
             create_big_number(vm, "java/math/BigInteger", &text)
         },
     ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = string_arg(vm, args[1])?;
+            let radix = int_arg(args, 2);
+            let value = i128::from_str_radix(&text, radix as u32)
+                .map_err(|_| vm.throw_new("java/lang/NumberFormatException", Some(&text)))?;
+            write_big_text(vm, receiver(args), &value.to_string())
+        },
+    ),
+    method(
+        "<init>",
+        "(ILjava/util/Random;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let bits = int_arg(args, 1).max(0) as u32;
+            let random = ref_arg(args, 2);
+            let (class, method) = vm.resolve_virtual_method(random, "nextLong", "()J")?;
+            let value = vm
+                .invoke_method(class, method, vec![Value::Ref(random)])?
+                .as_long();
+            let mask = if bits == 0 {
+                0
+            } else if bits >= 63 {
+                i64::MAX
+            } else {
+                (1i64 << bits) - 1
+            };
+            write_big_text(vm, receiver(args), &(value & mask).to_string())
+        },
+    ),
+    method("<init>", "([B)V", ACC_PUBLIC, |vm, _, args| {
+        let bytes = crate::lang::array_bytes(vm, ref_arg(args, 1))?;
+        let value = twos_complement_to_i128(&bytes);
+        write_big_text(vm, receiver(args), &value.to_string())
+    }),
+    method("<init>", "(I[B)V", ACC_PUBLIC, |vm, _, args| {
+        let signum = int_arg(args, 1);
+        let bytes = crate::lang::array_bytes(vm, ref_arg(args, 2))?;
+        let mut value = twos_complement_to_i128(&bytes).unsigned_abs() as i128;
+        if signum < 0 {
+            value = -value;
+        }
+        write_big_text(vm, receiver(args), &value.to_string())
+    }),
+    method("toByteArray", "()[B", ACC_PUBLIC, |vm, _, args| {
+        let value = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
+        let bytes = i128_to_twos_complement(value);
+        object(bytes_array(vm, &bytes)?)
+    }),
+    method(
+        "shiftLeft",
+        "(I)Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let value = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
+            let shift = int_arg(args, 1);
+            let shifted = if shift >= 0 {
+                value.checked_shl(shift as u32).unwrap_or(0)
+            } else {
+                value.checked_shr((-shift) as u32).unwrap_or(0)
+            };
+            create_big_number(vm, "java/math/BigInteger", &shifted.to_string())
+        },
+    ),
+    method(
+        "shiftRight",
+        "(I)Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let value = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
+            let shift = int_arg(args, 1);
+            let shifted = if shift >= 0 {
+                value.checked_shr(shift as u32).unwrap_or(0)
+            } else {
+                value.checked_shl((-shift) as u32).unwrap_or(0)
+            };
+            create_big_number(vm, "java/math/BigInteger", &shifted.to_string())
+        },
+    ),
+    method(
+        "pow",
+        "(I)Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let value = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
+            let exponent = int_arg(args, 1);
+            if exponent < 0 {
+                return Err(
+                    vm.throw_new("java/lang/ArithmeticException", Some("negative exponent"))
+                );
+            }
+            let powered = value.checked_pow(exponent as u32).unwrap_or(0);
+            create_big_number(vm, "java/math/BigInteger", &powered.to_string())
+        },
+    ),
+    method(
+        "divide",
+        "(Ljava/math/BigInteger;)Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let a = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
+            let b = parse_i128(&big_text(vm, ref_arg(args, 1))).unwrap_or(0);
+            if b == 0 {
+                return Err(vm.throw_new("java/lang/ArithmeticException", Some("/ by zero")));
+            }
+            create_big_number(vm, "java/math/BigInteger", &(a / b).to_string())
+        },
+    ),
+    method("bitLength", "()I", ACC_PUBLIC, |vm, _, args| {
+        let value = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
+        let magnitude = if value < 0 { !value } else { value } as u128;
+        int(if magnitude == 0 {
+            0
+        } else {
+            (128 - magnitude.leading_zeros()) as i32
+        })
+    }),
+    method("longValueExact", "()J", ACC_PUBLIC, |vm, _, args| {
+        let value = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
+        if let Ok(value) = i64::try_from(value) {
+            long(value)
+        } else {
+            Err(vm.throw_new("java/lang/ArithmeticException", Some("overflow")))
+        }
+    }),
+    method("isProbablePrime", "(I)Z", ACC_PUBLIC, |vm, _, args| {
+        let value = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
+        boolean(is_probable_prime(value))
+    }),
 ];
 
 fn big_integer_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
@@ -1334,7 +1609,7 @@ fn big_decimal_binary(
     )
 }
 
-const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -1432,6 +1707,95 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         |vm, _, args| {
             let text = long_arg(args, 0).to_string();
             create_big_number(vm, "java/math/BigDecimal", &text)
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/math/BigInteger;I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = big_text(vm, ref_arg(args, 1));
+            let scale = int_arg(args, 2);
+            let scaled = scale_decimal(&text, -scale);
+            write_big_text(vm, receiver(args), &scaled)
+        },
+    ),
+    method(
+        "valueOf",
+        "(JI)Ljava/math/BigDecimal;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = long_arg(args, 0).to_string();
+            let scale = int_arg(args, 1);
+            let scaled = scale_decimal(&text, -scale);
+            create_big_number(vm, "java/math/BigDecimal", &scaled)
+        },
+    ),
+    method(
+        "valueOf",
+        "(D)Ljava/math/BigDecimal;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = alloc::format!("{}", double_arg(args, 0));
+            create_big_number(vm, "java/math/BigDecimal", &text)
+        },
+    ),
+    method(
+        "toPlainString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = big_text(vm, receiver(args));
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "scaleByPowerOfTen",
+        "(I)Ljava/math/BigDecimal;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = big_text(vm, receiver(args));
+            let scaled = scale_decimal(&text, int_arg(args, 1));
+            create_big_number(vm, "java/math/BigDecimal", &scaled)
+        },
+    ),
+    method("precision", "()I", ACC_PUBLIC, |vm, _, args| {
+        let text = big_text(vm, receiver(args));
+        int(text
+            .bytes()
+            .filter(|byte| byte.is_ascii_digit())
+            .count()
+            .max(1) as i32)
+    }),
+    method(
+        "negate",
+        "()Ljava/math/BigDecimal;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = big_text(vm, receiver(args));
+            let negated = match text.strip_prefix('-') {
+                Some(rest) => String::from(rest),
+                None if text == "0" => String::from("0"),
+                None => alloc::format!("-{text}"),
+            };
+            create_big_number(vm, "java/math/BigDecimal", &negated)
+        },
+    ),
+    method(
+        "divide",
+        "(Ljava/math/BigDecimal;)Ljava/math/BigDecimal;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let a = big_text(vm, receiver(args))
+                .parse::<f64>()
+                .unwrap_or(f64::NAN);
+            let b = big_text(vm, ref_arg(args, 1))
+                .parse::<f64>()
+                .unwrap_or(f64::NAN);
+            if b == 0.0 {
+                return Err(vm.throw_new("java/lang/ArithmeticException", Some("/ by zero")));
+            }
+            create_big_number(vm, "java/math/BigDecimal", &alloc::format!("{}", a / b))
         },
     ),
 ];

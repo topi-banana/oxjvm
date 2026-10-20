@@ -1344,6 +1344,46 @@ fn p1_ten() {
 }
 
 #[test]
+fn p1_small_apis() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/P1SmallApis").expect("P1SmallApis");
+    for (method, expected) in [
+        ("arraysStream", "10"),
+        ("mapOf", "3:2:7"),
+        ("streamClose", "closed"),
+        ("random", "true"),
+        ("hexUpper", "0AFF"),
+        ("assertionError", "msg:true"),
+        ("stringBufferLength", "abc"),
+        ("date", "0"),
+        ("numbers", "3:2147483647:2:true"),
+        ("arraysCopies", "5:3:false:1:2:3"),
+        (
+            "bigNumbers",
+            "255:-1:100:40:5:123.45:12345:5:-123.45:true:false",
+        ),
+        ("tokenizer", "3:a:b:c:3:a:[ ]"),
+    ] {
+        let (declaring, index) = vm
+            .find_method(class, method, "()Ljava/lang/String;")
+            .expect(method);
+        let value = match vm.invoke_method(declaring, index, Vec::new()) {
+            Ok(value) => value,
+            Err(VmError::Thrown(exception)) => {
+                panic!("{method}: threw {}", vm.class_name(vm.class_of(exception)))
+            }
+            Err(error) => panic!("{method}: {error:?}"),
+        };
+        assert_eq!(
+            vm.string_value(value.as_ref()).as_deref(),
+            Some(expected),
+            "{method}"
+        );
+    }
+}
+
+#[test]
 fn hash_map_resizes_like_the_jdk() {
     let mut host = fixture_host();
     let mut vm = Vm::new(&mut host, oxjvm_java::natives());

@@ -923,7 +923,26 @@ pub(crate) const NAVIGABLE_SET: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+macro_rules! map_of {
+    (0, $descriptor:literal) => {
+        method("of", $descriptor, ACC_PUBLIC | ACC_STATIC, |vm, _, _| {
+            map_of_pairs(vm, &[])
+        })
+    };
+    ($arg_count:expr, $descriptor:literal) => {
+        method("of", $descriptor, ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+            let mut pairs = Vec::with_capacity($arg_count / 2);
+            let mut index = 0;
+            while index < $arg_count {
+                pairs.push((ref_arg(args, index), ref_arg(args, index + 1)));
+                index += 2;
+            }
+            map_of_pairs(vm, &pairs)
+        })
+    };
+}
+
+const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
     method(
         "put",
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
@@ -1032,6 +1051,44 @@ const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
             }
             void()
         },
+    ),
+    map_of!(0, "()Ljava/util/Map;"),
+    map_of!(2, "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map;"),
+    map_of!(
+        4,
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map;"
+    ),
+    map_of!(
+        6,
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map;"
+    ),
+    map_of!(
+        8,
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map;"
+    ),
+    map_of!(
+        10,
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map;"
+    ),
+    map_of!(
+        12,
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map;"
+    ),
+    map_of!(
+        14,
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map;"
+    ),
+    map_of!(
+        16,
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map;"
+    ),
+    map_of!(
+        18,
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map;"
+    ),
+    map_of!(
+        20,
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map;"
     ),
 ];
 
@@ -1355,7 +1412,55 @@ pub(crate) const OBJECTS: oxjvm_vm::NativeClass = class(
 // Arrays
 // -------------------------------------------------------------------------------------------
 
-const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
+macro_rules! array_equals {
+    ($descriptor:literal) => {
+        method(
+            "equals",
+            $descriptor,
+            ACC_PUBLIC | ACC_STATIC,
+            |vm, _, args| {
+                let a = ref_arg(args, 0);
+                let b = ref_arg(args, 1);
+                boolean(a == b || arrays_equal(vm, a, b)?)
+            },
+        )
+    };
+}
+
+macro_rules! array_copy_of {
+    ($descriptor:literal) => {
+        method(
+            "copyOf",
+            $descriptor,
+            ACC_PUBLIC | ACC_STATIC,
+            arrays_copy_of_objects,
+        )
+    };
+}
+
+macro_rules! array_copy_of_range {
+    ($descriptor:literal) => {
+        method(
+            "copyOfRange",
+            $descriptor,
+            ACC_PUBLIC | ACC_STATIC,
+            arrays_copy_of_range_objects,
+        )
+    };
+}
+
+macro_rules! array_mismatch {
+    ($descriptor:literal) => {
+        method(
+            "mismatch",
+            $descriptor,
+            ACC_PUBLIC | ACC_STATIC,
+            |vm, _, args| int(arrays_mismatch(vm, ref_arg(args, 0), ref_arg(args, 1))?),
+        )
+    };
+}
+
+const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 70] = [
     method(
         "toString",
         "([I)Ljava/lang/String;",
@@ -1562,6 +1667,78 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
         "([Ljava/lang/Object;Ljava/util/Comparator;)V",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| arrays_sort_objects(vm, args, true),
+    ),
+    method(
+        "stream",
+        "([I)Ljava/util/stream/IntStream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            let length = vm.array_length(array)?;
+            let mut values = Vec::with_capacity(length);
+            for index in 0..length {
+                values.push(vm.array_get(array, index as i32)?.as_int());
+            }
+            crate::intstream::int_stream_of(vm, values)
+        },
+    ),
+    array_equals!("([B[B)Z"),
+    array_equals!("([C[C)Z"),
+    array_equals!("([S[S)Z"),
+    array_equals!("([J[J)Z"),
+    array_equals!("([F[F)Z"),
+    array_equals!("([D[D)Z"),
+    array_equals!("([Z[Z)Z"),
+    array_copy_of!("([BI)[B"),
+    array_copy_of!("([CI)[C"),
+    array_copy_of!("([SI)[S"),
+    array_copy_of!("([JI)[J"),
+    array_copy_of!("([FI)[F"),
+    array_copy_of!("([DI)[D"),
+    array_copy_of!("([ZI)[Z"),
+    method(
+        "copyOf",
+        "([Ljava/lang/Object;ILjava/lang/Class;)[Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_STATIC,
+        arrays_copy_of_objects,
+    ),
+    array_copy_of_range!("([BII)[B"),
+    array_copy_of_range!("([CII)[C"),
+    array_copy_of_range!("([SII)[S"),
+    array_copy_of_range!("([III)[I"),
+    array_copy_of_range!("([JII)[J"),
+    array_copy_of_range!("([FII)[F"),
+    array_copy_of_range!("([DII)[D"),
+    array_copy_of_range!("([ZII)[Z"),
+    method(
+        "copyOfRange",
+        "([Ljava/lang/Object;IILjava/lang/Class;)[Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_STATIC,
+        arrays_copy_of_range_objects,
+    ),
+    array_mismatch!("([B[B)I"),
+    array_mismatch!("([C[C)I"),
+    array_mismatch!("([S[S)I"),
+    array_mismatch!("([I[I)I"),
+    array_mismatch!("([J[J)I"),
+    array_mismatch!("([F[F)I"),
+    array_mismatch!("([D[D)I"),
+    array_mismatch!("([Z[Z)I"),
+    array_mismatch!("([Ljava/lang/Object;[Ljava/lang/Object;)I"),
+    method(
+        "mismatch",
+        "([III[III)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            int(arrays_mismatch_range(
+                vm,
+                ref_arg(args, 0),
+                crate::int_arg(args, 1),
+                ref_arg(args, 2),
+                crate::int_arg(args, 3),
+                crate::int_arg(args, 4),
+            )?)
+        },
     ),
     method(
         "deepToString",
@@ -1978,6 +2155,58 @@ fn arrays_equal(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmE
     }
 }
 
+fn arrays_mismatch(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<i32, VmError> {
+    let a_len = vm.array_length(a)?;
+    let b_len = vm.array_length(b)?;
+    let common = a_len.min(b_len);
+    for index in 0..common {
+        let left = vm.array_get(a, index as i32)?;
+        let right = vm.array_get(b, index as i32)?;
+        if !array_values_equal(vm, left, right)? {
+            return Ok(index as i32);
+        }
+    }
+    Ok(if a_len == b_len { -1 } else { common as i32 })
+}
+
+fn arrays_mismatch_range(
+    vm: &mut Vm<'_>,
+    a: ObjectRef,
+    a_from: i32,
+    b: ObjectRef,
+    b_from: i32,
+    length: i32,
+) -> Result<i32, VmError> {
+    if length < 0 {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("length must be non-negative"),
+        ));
+    }
+    let a_len = vm.array_length(a)? as i32;
+    let b_len = vm.array_length(b)? as i32;
+    if a_from < 0 || b_from < 0 || a_from + length > a_len || b_from + length > b_len {
+        return Err(vm.throw_new("java/lang/ArrayIndexOutOfBoundsException", None));
+    }
+    for offset in 0..length {
+        let left = vm.array_get(a, a_from + offset)?;
+        let right = vm.array_get(b, b_from + offset)?;
+        if !array_values_equal(vm, left, right)? {
+            return Ok(offset);
+        }
+    }
+    Ok(-1)
+}
+
+fn array_values_equal(vm: &mut Vm<'_>, a: Value, b: Value) -> Result<bool, VmError> {
+    match (a, b) {
+        (Value::Ref(left), Value::Ref(right)) => objects_equals(vm, left, right),
+        (Value::Float(left), Value::Float(right)) => Ok(left.to_bits() == right.to_bits()),
+        (Value::Double(left), Value::Double(right)) => Ok(left.to_bits() == right.to_bits()),
+        _ => Ok(a == b),
+    }
+}
+
 fn arrays_to_string(
     vm: &mut Vm<'_>,
     array: ObjectRef,
@@ -2080,7 +2309,7 @@ pub(crate) const ARRAYS: oxjvm_vm::NativeClass = class(
 // Random (exactly the java.util.Random LCG)
 // -------------------------------------------------------------------------------------------
 
-const RANDOM_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const RANDOM_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method("<init>", "()V", ACC_PUBLIC, random_init),
     method("<init>", "(J)V", ACC_PUBLIC, random_init_seed),
     method("setSeed", "(J)V", ACC_PUBLIC, |vm, _, args| {
@@ -2141,6 +2370,10 @@ const RANDOM_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         let low = next_random_int(vm, receiver(args), 27, &[])?;
         let value = ((high.as_int() as i64) << 27).wrapping_add(i64::from(low.as_int()));
         Ok(Value::Double(value as f64 / (1i64 << 53) as f64))
+    }),
+    method("nextFloat", "()F", ACC_PUBLIC, |vm, _, args| {
+        let bits = next_random_int(vm, receiver(args), 24, &[])?.as_int();
+        Ok(Value::Float(bits as f32 / (1i32 << 24) as f32))
     }),
     method("nextBytes", "([B)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
@@ -5945,6 +6178,181 @@ const OJVM_ENUMERATION_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
     ),
 ];
 
+// -------------------------------------------------------------------------------------------
+// StringTokenizer
+// -------------------------------------------------------------------------------------------
+
+fn tokenizer_text(vm: &Vm<'_>, this: ObjectRef) -> String {
+    vm.read_string_field(this, vm.class_of(this), "text")
+        .unwrap_or_default()
+}
+
+fn tokenizer_delimiters(vm: &Vm<'_>, this: ObjectRef) -> String {
+    vm.read_string_field(this, vm.class_of(this), "delimiters")
+        .unwrap_or_default()
+}
+
+fn tokenizer_init(
+    vm: &mut Vm<'_>,
+    context: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let descriptor = vm.classes.get(context.class).methods[context.method as usize]
+        .descriptor
+        .clone();
+    let text = string_arg(vm, args[1])?;
+    let (delimiters, return_delims) = match descriptor.as_str() {
+        "(Ljava/lang/String;Ljava/lang/String;Z)V" => {
+            (string_arg(vm, args[2])?, crate::int_arg(args, 3) != 0)
+        }
+        "(Ljava/lang/String;Ljava/lang/String;)V" => (string_arg(vm, args[2])?, false),
+        _ => (String::from(" \t\n\r\u{000C}"), false),
+    };
+    let class = vm.class_of(this);
+    vm.set_string_field(this, class, "text", &text)?;
+    vm.set_string_field(this, class, "delimiters", &delimiters)?;
+    crate::lang::write_int_field(vm, this, "position", 0);
+    crate::lang::write_int_field(vm, this, "returnDelims", i32::from(return_delims));
+    void()
+}
+
+/// Take the next token at the current position, optionally advancing it.
+fn tokenizer_token(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    delimiters: &str,
+    advance: bool,
+) -> Result<Option<String>, VmError> {
+    let text = tokenizer_text(vm, this);
+    let chars: Vec<char> = text.chars().collect();
+    let return_delims = crate::lang::read_int_field(vm, this, "returnDelims") != 0;
+    let mut position = crate::lang::read_int_field(vm, this, "position").max(0) as usize;
+    while position < chars.len() && !return_delims && delimiters.contains(chars[position]) {
+        position += 1;
+    }
+    if position >= chars.len() {
+        if advance {
+            crate::lang::write_int_field(vm, this, "position", position as i32);
+        }
+        return Ok(None);
+    }
+    let start = position;
+    if return_delims && delimiters.contains(chars[position]) {
+        position += 1;
+    } else {
+        while position < chars.len() && !delimiters.contains(chars[position]) {
+            position += 1;
+        }
+    }
+    if advance {
+        crate::lang::write_int_field(vm, this, "position", position as i32);
+    }
+    Ok(Some(chars[start..position].iter().collect()))
+}
+
+fn tokenizer_has_more(vm: &mut Vm<'_>, this: ObjectRef, delimiters: &str) -> Result<bool, VmError> {
+    Ok(tokenizer_token(vm, this, delimiters, false)?.is_some())
+}
+
+fn tokenizer_next(vm: &mut Vm<'_>, this: ObjectRef, delimiters: &str) -> Result<Value, VmError> {
+    match tokenizer_token(vm, this, delimiters, true)? {
+        Some(token) => object(vm.make_string(&token)?),
+        None => Err(vm.throw_new("java/util/NoSuchElementException", None)),
+    }
+}
+
+const STRING_TOKENIZER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        tokenizer_init,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        tokenizer_init,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;Z)V",
+        ACC_PUBLIC,
+        tokenizer_init,
+    ),
+    method("hasMoreTokens", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let delimiters = tokenizer_delimiters(vm, receiver(args));
+        boolean(tokenizer_has_more(vm, receiver(args), &delimiters)?)
+    }),
+    method(
+        "nextToken",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let delimiters = tokenizer_delimiters(vm, receiver(args));
+            tokenizer_next(vm, receiver(args), &delimiters)
+        },
+    ),
+    method(
+        "nextToken",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let delimiters = string_arg(vm, args[1])?;
+            tokenizer_next(vm, receiver(args), &delimiters)
+        },
+    ),
+    method("countTokens", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let delimiters = tokenizer_delimiters(vm, this);
+        let saved = crate::lang::read_int_field(vm, this, "position");
+        let mut count = 0;
+        while tokenizer_token(vm, this, &delimiters, true)?.is_some() {
+            count += 1;
+        }
+        crate::lang::write_int_field(vm, this, "position", saved);
+        int(count)
+    }),
+    method("hasMoreElements", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let delimiters = tokenizer_delimiters(vm, receiver(args));
+        boolean(tokenizer_has_more(vm, receiver(args), &delimiters)?)
+    }),
+    method(
+        "nextElement",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let delimiters = tokenizer_delimiters(vm, receiver(args));
+            tokenizer_next(vm, receiver(args), &delimiters)
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = tokenizer_text(vm, receiver(args));
+            object(vm.make_string(&text)?)
+        },
+    ),
+];
+
+pub(crate) const STRING_TOKENIZER: oxjvm_vm::NativeClass = class(
+    "java/util/StringTokenizer",
+    Some("java/lang/Object"),
+    &["java/util/Enumeration"],
+    ACC_PUBLIC,
+    &[
+        field("text", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("delimiters", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("position", "I", ACC_PRIVATE, None),
+        field("returnDelims", "I", ACC_PRIVATE, None),
+    ],
+    &STRING_TOKENIZER_METHODS,
+    None,
+);
+
 pub(crate) const OJVM_ENUMERATION: oxjvm_vm::NativeClass = class(
     "java/util/OjvmEnumeration",
     Some("java/lang/Object"),
@@ -5994,6 +6402,20 @@ pub(crate) fn enumeration_elements(
         let value = vm.invoke_method(next_class, next, vec![Value::Ref(enumeration)])?;
         elements.push(value.as_ref());
     }
+}
+
+/// `Map.of(...)` and the empty map share the same backing `HashMap`.
+fn map_of_pairs(vm: &mut Vm<'_>, pairs: &[(ObjectRef, ObjectRef)]) -> Result<Value, VmError> {
+    for (key, value) in pairs {
+        if key.is_null() || value.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+    }
+    let map = new_hash_map(vm)?;
+    for (key, value) in pairs {
+        hash_map_insert(vm, map, *key, *value)?;
+    }
+    object(map)
 }
 
 fn map_keys(vm: &Vm<'_>, map: ObjectRef) -> Vec<ObjectRef> {
@@ -8736,9 +9158,34 @@ fn date_init(
     void()
 }
 
-const DATE_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+fn date_init_fields(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let year = crate::int_arg(args, 1) as i64 + 1900;
+    let month = crate::int_arg(args, 2) as i64 + 1;
+    let day = crate::int_arg(args, 3) as i64;
+    let millis = days_from_civil(year, month, day).saturating_mul(86_400_000);
+    crate::lang::write_long_field(vm, receiver(args), "time", millis);
+    void()
+}
+
+/// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's algorithm).
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let month_prime = (month + 9) % 12;
+    let day_of_year = (153 * month_prime + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+
+const DATE_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method("<init>", "()V", ACC_PUBLIC, date_init),
     method("<init>", "(J)V", ACC_PUBLIC, date_init),
+    method("<init>", "(III)V", ACC_PUBLIC, date_init_fields),
     method("getTime", "()J", ACC_PUBLIC, |vm, _, args| {
         long(crate::lang::read_long_field(vm, receiver(args), "time"))
     }),

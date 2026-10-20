@@ -2,6 +2,7 @@
 
 use alloc::string::{String, ToString};
 use alloc::vec;
+use alloc::vec::Vec;
 
 use oxjvm_classfile::flags::*;
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError, format};
@@ -78,7 +79,7 @@ pub(crate) const NUMBER: oxjvm_vm::NativeClass = class(
 // Integer
 // -------------------------------------------------------------------------------------------
 
-const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
+const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
     method("<init>", "(I)V", ACC_PUBLIC, boxed_int_init),
     method("intValue", "()I", ACC_PUBLIC, |vm, _, args| {
         int(read_value_int(vm, receiver(args)))
@@ -257,6 +258,21 @@ const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
     method("sum", "(II)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
         int(int_arg(args, 0).wrapping_add(int_arg(args, 1)))
     }),
+    method("bitCount", "(I)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        int(int_arg(args, 0).count_ones() as i32)
+    }),
+    method(
+        "divideUnsigned",
+        "(II)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let divisor = int_arg(args, 1) as u32;
+            if divisor == 0 {
+                return Err(vm.throw_new("java/lang/ArithmeticException", Some("/ by zero")));
+            }
+            int(((int_arg(args, 0) as u32) / divisor) as i32)
+        },
+    ),
 ];
 
 /// `Integer.getInteger`: the system property parsed as an int, or the default.
@@ -1336,7 +1352,7 @@ fn boolean_get_boolean(
     ))
 }
 
-const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
+const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
     method("<init>", "(C)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), int_arg(args, 1));
         void()
@@ -1714,6 +1730,34 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
         |_, _, args| {
             let code_point = int_arg(args, 0) as u32;
             boolean((0x00..=0x1F).contains(&code_point) || (0x7F..=0x9F).contains(&code_point))
+        },
+    ),
+    method(
+        "toChars",
+        "(I)[C",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let code_point = int_arg(args, 0) as u32;
+            if code_point > 0x10FFFF {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("Not a valid Unicode code point"),
+                ));
+            }
+            let units: Vec<u16> = if code_point <= 0xFFFF {
+                vec![code_point as u16]
+            } else {
+                let value = code_point - 0x10000;
+                vec![
+                    0xD800 | ((value >> 10) as u16),
+                    0xDC00 | ((value & 0x3FF) as u16),
+                ]
+            };
+            let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Char, units.len())?;
+            for (index, unit) in units.iter().enumerate() {
+                vm.array_set(array, index as i32, Value::Int(i32::from(*unit)), false)?;
+            }
+            object(array)
         },
     ),
 ];
@@ -2096,7 +2140,7 @@ pub(crate) const FLOAT: oxjvm_vm::NativeClass = class(
     Some(float_clinit),
 );
 
-const DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+const DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
     method("<init>", "(D)V", ACC_PUBLIC, |vm, _, args| {
         write_value_long(
             vm,
@@ -2222,6 +2266,9 @@ const DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
             object(instance)
         },
     ),
+    method("isNaN", "(D)Z", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        boolean(crate::double_arg(args, 0).is_nan())
+    }),
 ];
 
 pub(crate) const DOUBLE: oxjvm_vm::NativeClass = class(

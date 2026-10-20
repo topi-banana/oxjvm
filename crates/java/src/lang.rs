@@ -3250,7 +3250,7 @@ const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
     ),
 ];
 
-const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method("<init>", "()V", ACC_PUBLIC, builder_init),
     method("<init>", "(I)V", ACC_PUBLIC, builder_init),
     method(
@@ -3267,6 +3267,7 @@ const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     ),
     method("length", "()I", ACC_PUBLIC, builder_length),
     method("charAt", "(I)C", ACC_PUBLIC, builder_char_at),
+    method("setLength", "(I)V", ACC_PUBLIC, builder_set_length),
     method(
         "append",
         "(Ljava/lang/String;)Ljava/lang/StringBuffer;",
