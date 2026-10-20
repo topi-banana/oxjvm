@@ -1344,6 +1344,26 @@ fn p1_ten() {
 }
 
 #[test]
+fn object_stream_lookup_of_uninitializable_class() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm
+        .resolve_class("demo/P0Serialization")
+        .expect("P0Serialization");
+    let (declaring, index) = vm
+        .find_method(class, "lookup", "()Ljava/lang/String;")
+        .expect("lookup");
+    let value = vm
+        .invoke_method(declaring, index, Vec::new())
+        .expect("lookup");
+    assert_eq!(
+        vm.string_value(value.as_ref()).as_deref(),
+        Some("null"),
+        "lookup must not return a descriptor for an uninitializable class"
+    );
+}
+
+#[test]
 fn nestmate_reflection_access() {
     let mut host = fixture_host();
     let mut vm = Vm::new(&mut host, oxjvm_java::natives());

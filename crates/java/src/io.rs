@@ -2196,6 +2196,11 @@ const OBJECT_STREAM_CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         "(Ljava/lang/Class;)Ljava/io/ObjectStreamClass;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
+            // `lookup` initializes the target class while building the
+            // descriptor.  A class whose initializer fails must propagate the
+            // initialization error instead of producing a partial descriptor.
+            let target = crate::lang::class_argument(vm, ref_arg(args, 0))?;
+            vm.ensure_initialized(target)?;
             let class = vm.resolve_class("java/io/ObjectStreamClass")?;
             let instance = vm.new_instance(class)?;
             let (declaring, field) = vm.find_field(class, "compat", "Ljava/lang/Class;")?;
