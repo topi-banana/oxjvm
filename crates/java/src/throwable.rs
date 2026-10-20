@@ -1109,6 +1109,26 @@ exception!(
     "java/lang/RuntimeException"
 );
 exception!(
+    BUFFER_OVERFLOW_EXCEPTION,
+    "java/nio/BufferOverflowException",
+    "java/lang/RuntimeException"
+);
+exception!(
+    BUFFER_UNDERFLOW_EXCEPTION,
+    "java/nio/BufferUnderflowException",
+    "java/lang/RuntimeException"
+);
+exception!(
+    INVALID_MARK_EXCEPTION,
+    "java/nio/InvalidMarkException",
+    "java/lang/RuntimeException"
+);
+exception!(
+    READ_ONLY_BUFFER_EXCEPTION,
+    "java/nio/ReadOnlyBufferException",
+    "java/lang/UnsupportedOperationException"
+);
+exception!(
     NUMBER_FORMAT_EXCEPTION,
     "java/lang/NumberFormatException",
     "java/lang/IllegalArgumentException"

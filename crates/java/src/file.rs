@@ -722,7 +722,7 @@ fn fs_set_modified(vm: &mut Vm<'_>, path: &str, millis: i64) -> bool {
 // java.io.FileInputStream
 // -------------------------------------------------------------------------------------------
 
-const FILE_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const FILE_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -762,6 +762,24 @@ const FILE_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         write_file_position(vm, this, next);
         long((next - position) as i64)
     }),
+    method(
+        "getChannel",
+        "()Ljava/nio/channels/FileChannel;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let path = vm
+                .read_string_field(this, vm.class_of(this), "path")
+                .unwrap_or_default();
+            let (_, position) = file_input_state(vm, this)?;
+            object(crate::nio::new_file_channel(
+                vm,
+                &path,
+                position as i64,
+                false,
+            )?)
+        },
+    ),
 ];
 
 pub(crate) const FILE_INPUT_STREAM: oxjvm_vm::NativeClass = class(
@@ -900,7 +918,7 @@ fn file_input_read_into(
 // java.io.FileOutputStream
 // -------------------------------------------------------------------------------------------
 
-const FILE_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const FILE_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -949,6 +967,19 @@ const FILE_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     }),
     method("flush", "()V", ACC_PUBLIC, |_, _, _| void()),
     method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "getChannel",
+        "()Ljava/nio/channels/FileChannel;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let path = vm
+                .read_string_field(this, vm.class_of(this), "path")
+                .unwrap_or_default();
+            let position = fs_metadata(vm, &path).map_or(0, |metadata| metadata.len as i64);
+            object(crate::nio::new_file_channel(vm, &path, position, true)?)
+        },
+    ),
 ];
 
 pub(crate) const FILE_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(

@@ -145,6 +145,33 @@ impl oxjvm_platform::FileSystem for PassthroughFileSystem {
             .and_then(|file| file.set_modified(time))
             .is_ok()
     }
+
+    fn symlink(&mut self, link: &str, target: &str) -> bool {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(Self::path(target), Self::path(link)).is_ok()
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_file(Self::path(target), Self::path(link)).is_ok()
+                || std::os::windows::fs::symlink_dir(Self::path(target), Self::path(link)).is_ok()
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (link, target);
+            false
+        }
+    }
+
+    fn read_link(&mut self, path: &str) -> Option<String> {
+        fs::read_link(Self::path(path))
+            .ok()
+            .map(|path| path.display().to_string())
+    }
+
+    fn hard_link(&mut self, link: &str, target: &str) -> bool {
+        fs::hard_link(Self::path(target), Self::path(link)).is_ok()
+    }
 }
 
 struct StdHost {

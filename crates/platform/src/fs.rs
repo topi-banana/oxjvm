@@ -88,6 +88,21 @@ pub trait FileSystem {
     fn set_modified(&mut self, _path: &str, _millis: i64) -> bool {
         false
     }
+
+    /// Create a symbolic link at `link` pointing at `target`.
+    fn symlink(&mut self, _link: &str, _target: &str) -> bool {
+        false
+    }
+
+    /// Read the target of a symbolic link.
+    fn read_link(&mut self, _path: &str) -> Option<String> {
+        None
+    }
+
+    /// Create a hard link at `link` for `target`.
+    fn hard_link(&mut self, _link: &str, _target: &str) -> bool {
+        false
+    }
 }
 
 /// A [`FileSystem`] with every operation denied.

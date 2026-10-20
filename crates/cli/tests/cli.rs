@@ -173,6 +173,31 @@ fn runs_p1_reflection_fixture_with_files_and_urls() {
 }
 
 #[test]
+fn runs_p1_nio_fixture_with_file_systems_and_channels() {
+    let fixtures =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../classfile/tests/fixtures");
+    let tmp = std::env::temp_dir();
+    let output = Command::new(env!("CARGO_BIN_EXE_oxjvm"))
+        .args(["run", "-cp"])
+        .arg(&fixtures)
+        .arg(format!("-Djava.io.tmpdir={}", tmp.display()))
+        .arg("demo.P1Nio")
+        .output()
+        .expect("spawn oxjvm");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(":true:5:hello:5:text/plain:true:"),
+        "{stdout}"
+    );
+    assert!(stdout.trim_end().ends_with(":true"), "{stdout}");
+}
+
+#[test]
 fn reports_a_missing_main_class_with_status_one() {
     let output = Command::new(env!("CARGO_BIN_EXE_oxjvm"))
         .args(["run", "-cp", "/nonexistent", "Nope"])

@@ -19,6 +19,7 @@ pub(crate) mod annotation;
 pub(crate) mod atomic;
 pub(crate) mod beans;
 pub(crate) mod boxed;
+pub(crate) mod buffer;
 pub(crate) mod charset;
 pub(crate) mod concurrent;
 pub(crate) mod encoding;
@@ -115,7 +116,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 386] = [
+static REGISTRY: [NativeClass; 415] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -218,10 +219,20 @@ static REGISTRY: [NativeClass; 386] = [
     throwable::NEGATIVE_ARRAY_SIZE_EXCEPTION,
     throwable::NULL_POINTER_EXCEPTION,
     throwable::UNSUPPORTED_OPERATION_EXCEPTION,
+    throwable::BUFFER_OVERFLOW_EXCEPTION,
+    throwable::BUFFER_UNDERFLOW_EXCEPTION,
+    throwable::INVALID_MARK_EXCEPTION,
+    throwable::READ_ONLY_BUFFER_EXCEPTION,
     throwable::NUMBER_FORMAT_EXCEPTION,
     throwable::CLASS_NOT_FOUND_EXCEPTION,
     throwable::CLONE_NOT_SUPPORTED_EXCEPTION,
     throwable::INTERRUPTED_EXCEPTION,
+    buffer::BUFFER,
+    buffer::BYTE_BUFFER,
+    buffer::OJVM_BYTE_BUFFER,
+    buffer::BYTE_ORDER,
+    buffer::CHAR_BUFFER,
+    buffer::OJVM_CHAR_BUFFER,
     math::MATH,
     math::STRICT_MATH,
     math::BIG_INTEGER,
@@ -344,7 +355,6 @@ static REGISTRY: [NativeClass; 386] = [
     util::SCANNER,
     util::DATE,
     util::CURRENCY,
-    nio::BYTE_ORDER,
     file::FILE_FILTER,
     invoke::THREAD_FACTORY,
     invoke::OJVM_IDENTITY,
@@ -441,6 +451,21 @@ static REGISTRY: [NativeClass; 386] = [
     nio::OXJVM_PATH,
     nio::PATHS,
     nio::FILES,
+    nio::FILE_SYSTEM,
+    nio::OJVM_FILE_SYSTEM,
+    nio::FILE_SYSTEMS,
+    nio::FILE_STORE,
+    nio::OJVM_FILE_STORE,
+    nio::FILE_SYSTEM_PROVIDER,
+    nio::OJVM_FILE_SYSTEM_PROVIDER,
+    nio::OJVM_DIRECTORY_STREAM,
+    nio::OJVM_PATH_ITERATOR,
+    nio::FILE_CHANNEL,
+    nio::OJVM_FILE_CHANNEL,
+    nio::BYTE_CHANNEL,
+    nio::READABLE_BYTE_CHANNEL,
+    nio::WRITABLE_BYTE_CHANNEL,
+    nio::CHANNEL,
     nio::COPY_OPTION,
     nio::OPEN_OPTION,
     nio::LINK_OPTION,
@@ -482,6 +507,11 @@ static REGISTRY: [NativeClass; 386] = [
     unsafe_api::SUN_MISC_UNSAFE,
     unsafe_api::JDK_INTERNAL_UNSAFE,
     charset::CHARSET,
+    charset::CODER_RESULT,
+    charset::CHARSET_ENCODER,
+    charset::OJVM_CHARSET_ENCODER,
+    charset::CHARSET_DECODER,
+    charset::OJVM_CHARSET_DECODER,
     charset::STANDARD_CHARSETS,
     nio::FILE_ATTRIBUTE,
     atomic::ATOMIC_INTEGER,

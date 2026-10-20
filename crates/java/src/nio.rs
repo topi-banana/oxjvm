@@ -68,7 +68,7 @@ fn join_path(base: &str, child: &str) -> String {
 // Path (concrete implementation) + Paths
 // -------------------------------------------------------------------------------------------
 
-const PATH_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
+const PATH_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -299,6 +299,61 @@ const PATH_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
             new_path(vm, &result.join("/"))
         },
     ),
+    method(
+        "getFileSystem",
+        "()Ljava/nio/file/FileSystem;",
+        ACC_PUBLIC,
+        |vm, _, _| object(new_file_system(vm)?),
+    ),
+    method(
+        "resolve",
+        "(Ljava/lang/String;[Ljava/lang/String;)Ljava/nio/file/Path;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let base = path_string(vm, receiver(args));
+            let first = string_arg(vm, args[1])?;
+            let mut path = join_path(&base, &first);
+            if let Some(oxjvm_vm::ObjectData::Array(oxjvm_vm::ArrayData::Reference(elements))) = vm
+                .heap
+                .get(ref_arg(args, 2))
+                .map(|object| object.data.clone())
+            {
+                for element in elements {
+                    if !element.is_null() {
+                        path = join_path(&path, &vm.string_or_empty(element));
+                    }
+                }
+            }
+            new_path(vm, &path)
+        },
+    ),
+    method(
+        "endsWith",
+        "(Ljava/lang/String;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let path = path_string(vm, receiver(args));
+            let suffix = string_arg(vm, args[1])?;
+            boolean(
+                path.trim_end_matches('/')
+                    .ends_with(suffix.trim_end_matches('/')),
+            )
+        },
+    ),
+    method(
+        "toRealPath",
+        "([Ljava/nio/file/LinkOption;)Ljava/nio/file/Path;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let path = path_string(vm, receiver(args));
+            let real = vm
+                .host
+                .filesystem()
+                .and_then(|fs| fs.canonicalize(&path))
+                .unwrap_or_else(|| crate::file::absolute_of_path(vm, &path));
+            new_path(vm, &real)
+        },
+    ),
 ];
 
 pub(crate) const OXJVM_PATH: oxjvm_vm::NativeClass = class(
@@ -315,7 +370,7 @@ pub(crate) const OXJVM_PATH: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PATH_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
+const PATH_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
     method(
         "of",
         "(Ljava/lang/String;[Ljava/lang/String;)Ljava/nio/file/Path;",
@@ -430,6 +485,30 @@ const PATH_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
+    method(
+        "getFileSystem",
+        "()Ljava/nio/file/FileSystem;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "resolve",
+        "(Ljava/lang/String;[Ljava/lang/String;)Ljava/nio/file/Path;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "endsWith",
+        "(Ljava/lang/String;)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "toRealPath",
+        "([Ljava/nio/file/LinkOption;)Ljava/nio/file/Path;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
 ];
 
 pub(crate) const PATH: oxjvm_vm::NativeClass = class(
@@ -442,12 +521,32 @@ pub(crate) const PATH: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PATHS_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
-    "get",
-    "(Ljava/lang/String;[Ljava/lang/String;)Ljava/nio/file/Path;",
-    ACC_PUBLIC | ACC_STATIC,
-    |vm, _, args| path_of(vm, args),
-)];
+const PATHS_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "get",
+        "(Ljava/lang/String;[Ljava/lang/String;)Ljava/nio/file/Path;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| path_of(vm, args),
+    ),
+    method(
+        "get",
+        "(Ljava/net/URI;)Ljava/nio/file/Path;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let uri = ref_arg(args, 0);
+            let (class, method) =
+                vm.resolve_virtual_method(uri, "toString", "()Ljava/lang/String;")?;
+            let text = vm.invoke_method(class, method, vec![Value::Ref(uri)])?;
+            let text = vm.string_or_empty(text.as_ref());
+            let path = text
+                .strip_prefix("file:")
+                .unwrap_or(&text)
+                .trim_start_matches("//")
+                .to_string();
+            new_path(vm, &path)
+        },
+    ),
+];
 
 /// `Paths.get(first, more...)` / `Path.of(first, more...)`.
 fn path_of(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
@@ -514,7 +613,7 @@ pub(crate) fn new_path(vm: &mut Vm<'_>, path: &str) -> Result<Value, VmError> {
 // Files
 // -------------------------------------------------------------------------------------------
 
-const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
+const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 48] = [
     method(
         "createDirectories",
         "(Ljava/nio/file/Path;[Ljava/nio/file/attribute/FileAttribute;)Ljava/nio/file/Path;",
@@ -997,6 +1096,239 @@ const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
                 lines.push(vm.make_string(line)?);
             }
             object(crate::stream::stream_from(vm, lines)?)
+        },
+    ),
+    method(
+        "createSymbolicLink",
+        "(Ljava/nio/file/Path;Ljava/nio/file/Path;[Ljava/nio/file/attribute/FileAttribute;)Ljava/nio/file/Path;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let link = path_string(vm, ref_arg(args, 0));
+            let target = path_string(vm, ref_arg(args, 1));
+            if !vm
+                .host
+                .filesystem()
+                .map(|fs| fs.symlink(&link, &target))
+                .unwrap_or(false)
+            {
+                return Err(vm.throw_new("java/io/IOException", Some(&link)));
+            }
+            object(ref_arg(args, 0))
+        },
+    ),
+    method(
+        "readSymbolicLink",
+        "(Ljava/nio/file/Path;)Ljava/nio/file/Path;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let link = path_string(vm, ref_arg(args, 0));
+            let Some(target) = vm.host.filesystem().and_then(|fs| fs.read_link(&link)) else {
+                return Err(vm.throw_new("java/io/IOException", Some(&link)));
+            };
+            new_path(vm, &target)
+        },
+    ),
+    method(
+        "createLink",
+        "(Ljava/nio/file/Path;Ljava/nio/file/Path;)Ljava/nio/file/Path;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let link = path_string(vm, ref_arg(args, 0));
+            let target = path_string(vm, ref_arg(args, 1));
+            if !vm
+                .host
+                .filesystem()
+                .map(|fs| fs.hard_link(&link, &target))
+                .unwrap_or(false)
+            {
+                return Err(vm.throw_new("java/io/IOException", Some(&link)));
+            }
+            object(ref_arg(args, 0))
+        },
+    ),
+    method(
+        "isSymbolicLink",
+        "(Ljava/nio/file/Path;)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            boolean(
+                vm.host
+                    .filesystem()
+                    .and_then(|fs| fs.read_link(&path))
+                    .is_some(),
+            )
+        },
+    ),
+    method(
+        "isWritable",
+        "(Ljava/nio/file/Path;)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            boolean(fs_metadata(vm, &path).is_some_and(|metadata| !metadata.readonly))
+        },
+    ),
+    method(
+        "isReadable",
+        "(Ljava/nio/file/Path;)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            boolean(fs_metadata(vm, &path).is_some())
+        },
+    ),
+    method(
+        "isExecutable",
+        "(Ljava/nio/file/Path;)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            boolean(
+                fs_metadata(vm, &path)
+                    .is_some_and(|metadata| metadata.kind == FileKind::File && !metadata.readonly),
+            )
+        },
+    ),
+    method(
+        "size",
+        "(Ljava/nio/file/Path;)J",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            let Some(metadata) = fs_metadata(vm, &path) else {
+                return Err(vm.throw_new("java/io/IOException", Some(&path)));
+            };
+            long(metadata.len as i64)
+        },
+    ),
+    method(
+        "probeContentType",
+        "(Ljava/nio/file/Path;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            let content = match path.rsplit('.').next().unwrap_or("") {
+                "txt" | "java" | "properties" => "text/plain",
+                "html" | "htm" => "text/html",
+                "xml" => "application/xml",
+                "json" => "application/json",
+                "class" => "application/java-vm",
+                "jar" | "zip" => "application/zip",
+                "png" => "image/png",
+                "jpg" | "jpeg" => "image/jpeg",
+                "gif" => "image/gif",
+                "pdf" => "application/pdf",
+                _ => return object(ObjectRef::NULL),
+            };
+            object(vm.make_string(content)?)
+        },
+    ),
+    method(
+        "getFileStore",
+        "(Ljava/nio/file/Path;)Ljava/nio/file/FileStore;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(new_file_store(vm)?),
+    ),
+    method(
+        "newDirectoryStream",
+        "(Ljava/nio/file/Path;)Ljava/nio/file/DirectoryStream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            new_directory_stream(vm, &path, None)
+        },
+    ),
+    method(
+        "newDirectoryStream",
+        "(Ljava/nio/file/Path;Ljava/lang/String;)Ljava/nio/file/DirectoryStream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            let glob = string_arg(vm, args[1])?;
+            new_directory_stream(vm, &path, Some(&glob))
+        },
+    ),
+    method(
+        "newBufferedWriter",
+        "(Ljava/nio/file/Path;Ljava/nio/charset/Charset;[Ljava/nio/file/OpenOption;)Ljava/io/BufferedWriter;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            let writer_class = vm.resolve_class("java/io/FileWriter")?;
+            let writer = vm.new_instance(writer_class)?;
+            let (declaring, ctor) = vm
+                .find_method(writer_class, "<init>", "(Ljava/lang/String;)V")
+                .ok_or_else(|| VmError::internal("FileWriter(String) missing"))?;
+            let path_text = vm.make_string(&path)?;
+            vm.invoke_method(
+                declaring,
+                ctor,
+                vec![Value::Ref(writer), Value::Ref(path_text)],
+            )?;
+            let buffered_class = vm.resolve_class("java/io/BufferedWriter")?;
+            let buffered = vm.new_instance(buffered_class)?;
+            let (declaring, ctor) = vm
+                .find_method(buffered_class, "<init>", "(Ljava/io/Writer;)V")
+                .ok_or_else(|| VmError::internal("BufferedWriter(Writer) missing"))?;
+            vm.invoke_method(
+                declaring,
+                ctor,
+                vec![Value::Ref(buffered), Value::Ref(writer)],
+            )?;
+            object(buffered)
+        },
+    ),
+    method(
+        "write",
+        "(Ljava/nio/file/Path;Ljava/lang/Iterable;Ljava/nio/charset/Charset;[Ljava/nio/file/OpenOption;)Ljava/nio/file/Path;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let mut text = String::new();
+            for element in crate::util::collection_elements(vm, ref_arg(args, 1))? {
+                text.push_str(&text_of(vm, element)?);
+                text.push('\n');
+            }
+            let charset = crate::charset::name_of(vm, ref_arg(args, 2));
+            let bytes = crate::charset::encode(&text, &charset);
+            let path = path_string(vm, ref_arg(args, 0));
+            if !fs_write(vm, &path, &bytes, false) {
+                return Err(vm.throw_new("java/io/IOException", Some(&path)));
+            }
+            object(ref_arg(args, 0))
+        },
+    ),
+    method(
+        "getLastModifiedTime",
+        "(Ljava/nio/file/Path;[Ljava/nio/file/LinkOption;)Ljava/nio/file/attribute/FileTime;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            let Some(metadata) = fs_metadata(vm, &path) else {
+                return Err(vm.throw_new("java/io/IOException", Some(&path)));
+            };
+            file_time_of(vm, metadata.modified_millis)
+        },
+    ),
+    method(
+        "setLastModifiedTime",
+        "(Ljava/nio/file/Path;Ljava/nio/file/attribute/FileTime;)Ljava/nio/file/Path;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            let time = ref_arg(args, 1);
+            let millis = vm
+                .read_instance_long_named(time, vm.class_of(time), "millis", "J")
+                .unwrap_or(0);
+            if !vm
+                .host
+                .filesystem()
+                .map(|fs| fs.set_modified(&path, millis))
+                .unwrap_or(false)
+            {
+                return Err(vm.throw_new("java/io/IOException", Some(&path)));
+            }
+            object(ref_arg(args, 0))
         },
     ),
 ];
@@ -1783,79 +2115,664 @@ pub(crate) const FILENAME_FILTER: oxjvm_vm::NativeClass = class(
 );
 
 // -------------------------------------------------------------------------------------------
-// ByteOrder
+// FileSystem / FileSystems / FileStore / FileSystemProvider
 // -------------------------------------------------------------------------------------------
 
-fn byte_order_instance(
-    vm: &mut Vm<'_>,
-    class: oxjvm_vm::ClassId,
-    name: &str,
-) -> Result<Value, VmError> {
-    let instance = vm.new_instance(class)?;
-    let (declaring, field) = vm.find_field(class, "name", "Ljava/lang/String;")?;
-    let text = vm.make_string(name)?;
-    vm.set_instance_ref(instance, declaring, field, text);
-    Ok(Value::Ref(instance))
+fn new_file_system(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/nio/file/OjvmFileSystem")?;
+    vm.new_instance(class)
 }
 
-fn byte_order_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
-    let class = vm.resolve_class("java/nio/ByteOrder")?;
-    for name in ["BIG_ENDIAN", "LITTLE_ENDIAN"] {
-        let value = byte_order_instance(vm, class, name)?;
-        vm.set_static_value(class, name, "Ljava/nio/ByteOrder;", value);
-    }
-    Ok(())
+fn new_file_store(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/nio/file/OjvmFileStore")?;
+    vm.new_instance(class)
 }
 
-const BYTE_ORDER_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+fn new_file_system_provider(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/nio/file/OjvmFileSystemProvider")?;
+    vm.new_instance(class)
+}
+
+const FILE_SYSTEM_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method(
-        "toString",
+        "getPath",
+        "(Ljava/lang/String;[Ljava/lang/String;)Ljava/nio/file/Path;",
+        ACC_PUBLIC,
+        |vm, _, args| path_of(vm, args),
+    ),
+    method(
+        "getSeparator",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
-        |vm, _, args| {
-            let this = receiver(args);
-            let name = vm
-                .read_string_field(this, vm.class_of(this), "name")
-                .unwrap_or_default();
-            object(vm.make_string(&name)?)
+        |vm, _, _| object(vm.make_string("/")?),
+    ),
+    method(
+        "getRootDirectories",
+        "()Ljava/lang/Iterable;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let root = new_path(vm, "/")?.as_ref();
+            object(crate::util::array_list_from(vm, &[root])?)
         },
     ),
     method(
-        "nativeOrder",
-        "()Ljava/nio/ByteOrder;",
-        ACC_PUBLIC | ACC_STATIC,
+        "getFileStores",
+        "()Ljava/lang/Iterable;",
+        ACC_PUBLIC,
         |vm, _, _| {
-            let class = vm.resolve_class("java/nio/ByteOrder")?;
-            vm.ensure_initialized(class)?;
-            let value = vm
-                .read_static_ref_if_set(class, "LITTLE_ENDIAN", "Ljava/nio/ByteOrder;")
-                .unwrap_or(ObjectRef::NULL);
-            object(value)
+            let store = new_file_store(vm)?;
+            object(crate::util::array_list_from(vm, &[store])?)
+        },
+    ),
+    method("isOpen", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
+    method("isReadOnly", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "provider",
+        "()Ljava/nio/file/spi/FileSystemProvider;",
+        ACC_PUBLIC,
+        |vm, _, _| object(new_file_system_provider(vm)?),
+    ),
+];
+
+pub(crate) const FILE_SYSTEM: oxjvm_vm::NativeClass = class(
+    "java/nio/file/FileSystem",
+    Some("java/lang/Object"),
+    &["java/io/Closeable"],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[],
+    &FILE_SYSTEM_METHODS,
+    None,
+);
+
+pub(crate) const OJVM_FILE_SYSTEM: oxjvm_vm::NativeClass = class(
+    "java/nio/file/OjvmFileSystem",
+    Some("java/nio/file/FileSystem"),
+    &["java/io/Closeable"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[],
+    &[],
+    None,
+);
+
+const FILE_SYSTEMS_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "getDefault",
+        "()Ljava/nio/file/FileSystem;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(new_file_system(vm)?),
+    ),
+    method(
+        "getFileSystem",
+        "(Ljava/net/URI;)Ljava/nio/file/FileSystem;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let uri = ref_arg(args, 0);
+            let (class, method) =
+                vm.resolve_virtual_method(uri, "toString", "()Ljava/lang/String;")?;
+            let text = vm.invoke_method(class, method, vec![Value::Ref(uri)])?;
+            let text = vm.string_or_empty(text.as_ref());
+            if text.starts_with("file:") {
+                object(new_file_system(vm)?)
+            } else {
+                Err(vm.throw_new("java/nio/file/FileSystemNotFoundException", Some(&text)))
+            }
         },
     ),
 ];
 
-/// `java.nio.ByteOrder`: one of the two singleton constants.
-pub(crate) const BYTE_ORDER: oxjvm_vm::NativeClass = class(
-    "java/nio/ByteOrder",
+pub(crate) const FILE_SYSTEMS: oxjvm_vm::NativeClass = class(
+    "java/nio/file/FileSystems",
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_FINAL,
+    &[],
+    &FILE_SYSTEMS_METHODS,
+    None,
+);
+
+const FILE_STORE_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+    method("name", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, _| {
+        object(vm.make_string("oxjvm")?)
+    }),
+    method("type", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, _| {
+        object(vm.make_string("basic")?)
+    }),
+    method("isReadOnly", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method("getTotalSpace", "()J", ACC_PUBLIC, |_, _, _| long(1 << 40)),
+    method("getUsableSpace", "()J", ACC_PUBLIC, |_, _, _| long(1 << 30)),
+    method("getUnallocatedSpace", "()J", ACC_PUBLIC, |_, _, _| {
+        long(1 << 30)
+    }),
+    method("getBlockSize", "()J", ACC_PUBLIC, |_, _, _| long(4096)),
+    method(
+        "supportsFileAttributeView",
+        "(Ljava/lang/String;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = vm.string_or_empty(ref_arg(args, 1));
+            boolean(matches!(name.as_str(), "basic" | "posix" | "owner" | "dos"))
+        },
+    ),
+    method(
+        "supportsFileAttributeView",
+        "(Ljava/lang/Class;)Z",
+        ACC_PUBLIC,
+        |_, _, _| boolean(true),
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| object(vm.make_string("oxjvm")?),
+    ),
+];
+
+pub(crate) const FILE_STORE: oxjvm_vm::NativeClass = class(
+    "java/nio/file/FileStore",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[],
+    &FILE_STORE_METHODS,
+    None,
+);
+
+pub(crate) const OJVM_FILE_STORE: oxjvm_vm::NativeClass = class(
+    "java/nio/file/OjvmFileStore",
+    Some("java/nio/file/FileStore"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[],
+    &[],
+    None,
+);
+
+const FILE_SYSTEM_PROVIDER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method(
+        "getScheme",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| object(vm.make_string("file")?),
+    ),
+    method(
+        "getFileSystem",
+        "(Ljava/net/URI;)Ljava/nio/file/FileSystem;",
+        ACC_PUBLIC,
+        |vm, _, _| object(new_file_system(vm)?),
+    ),
+    method(
+        "getPath",
+        "(Ljava/net/URI;)Ljava/nio/file/Path;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let uri = ref_arg(args, 1);
+            let (class, method) =
+                vm.resolve_virtual_method(uri, "toString", "()Ljava/lang/String;")?;
+            let text = vm.invoke_method(class, method, vec![Value::Ref(uri)])?;
+            let text = vm.string_or_empty(text.as_ref());
+            let path = text
+                .strip_prefix("file:")
+                .unwrap_or(&text)
+                .trim_start_matches("//")
+                .to_string();
+            new_path(vm, &path)
+        },
+    ),
+];
+
+pub(crate) const FILE_SYSTEM_PROVIDER: oxjvm_vm::NativeClass = class(
+    "java/nio/file/spi/FileSystemProvider",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[],
+    &FILE_SYSTEM_PROVIDER_METHODS,
+    None,
+);
+
+pub(crate) const OJVM_FILE_SYSTEM_PROVIDER: oxjvm_vm::NativeClass = class(
+    "java/nio/file/OjvmFileSystemProvider",
+    Some("java/nio/file/spi/FileSystemProvider"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[],
+    &[],
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// DirectoryStream implementation
+// -------------------------------------------------------------------------------------------
+
+fn glob_matches(pattern: &str, name: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let name: Vec<char> = name.chars().collect();
+    let mut pi = 0;
+    let mut ni = 0;
+    let mut star = None;
+    let mut mark = 0;
+    while ni < name.len() {
+        if pi < pattern.len() && (pattern[pi] == '?' || pattern[pi] == name[ni]) {
+            pi += 1;
+            ni += 1;
+        } else if pi < pattern.len() && pattern[pi] == '*' {
+            star = Some(pi);
+            mark = ni;
+            pi += 1;
+        } else if let Some(index) = star {
+            pi = index + 1;
+            mark += 1;
+            ni = mark;
+        } else {
+            return false;
+        }
+    }
+    while pi < pattern.len() && pattern[pi] == '*' {
+        pi += 1;
+    }
+    pi == pattern.len()
+}
+
+fn new_directory_stream(vm: &mut Vm<'_>, path: &str, glob: Option<&str>) -> Result<Value, VmError> {
+    let names = fs_list(vm, path).unwrap_or_default();
+    let mut elements = Vec::new();
+    for name in names {
+        if glob.is_none_or(|pattern| glob_matches(pattern, &name)) {
+            elements.push(new_path(vm, &join_path(path, &name))?.as_ref());
+        }
+    }
+    let class = vm.resolve_class("java/nio/file/OjvmDirectoryStream")?;
+    let stream = vm.new_instance(class)?;
+    let object_class = vm.resolve_class("java/lang/Object")?;
+    let array = vm.allocate_object_array(object_class, elements.len())?;
+    for (index, element) in elements.iter().enumerate() {
+        vm.array_set_ref(array, index, *element)?;
+    }
+    let (declaring, field) = vm.find_field(class, "elements", "[Ljava/lang/Object;")?;
+    vm.set_instance_ref(stream, declaring, field, array);
+    crate::lang::write_int_field(vm, stream, "cursor", 0);
+    object(stream)
+}
+
+const OJVM_DIRECTORY_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "iterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let elements = vm
+                .read_ref_field(this, vm.class_of(this), "elements", "[Ljava/lang/Object;")
+                .unwrap_or(ObjectRef::NULL);
+            let class = vm.resolve_class("java/nio/file/OjvmPathIterator")?;
+            let iterator = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "elements", "[Ljava/lang/Object;")?;
+            vm.set_instance_ref(iterator, declaring, field, elements);
+            crate::lang::write_int_field(vm, iterator, "cursor", 0);
+            object(iterator)
+        },
+    ),
+    method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+];
+
+pub(crate) const OJVM_DIRECTORY_STREAM: oxjvm_vm::NativeClass = class(
+    "java/nio/file/OjvmDirectoryStream",
+    Some("java/lang/Object"),
+    &["java/nio/file/DirectoryStream", "java/io/Closeable"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[field("elements", "[Ljava/lang/Object;", ACC_PRIVATE, None)],
+    &OJVM_DIRECTORY_STREAM_METHODS,
+    None,
+);
+
+const OJVM_PATH_ITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method("hasNext", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let elements = vm
+            .read_ref_field(this, vm.class_of(this), "elements", "[Ljava/lang/Object;")
+            .unwrap_or(ObjectRef::NULL);
+        let length = vm.array_length(elements).unwrap_or(0);
+        boolean(crate::lang::read_int_field(vm, this, "cursor") < length as i32)
+    }),
+    method("next", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let elements = vm
+            .read_ref_field(this, vm.class_of(this), "elements", "[Ljava/lang/Object;")
+            .unwrap_or(ObjectRef::NULL);
+        let cursor = crate::lang::read_int_field(vm, this, "cursor");
+        let length = vm.array_length(elements).unwrap_or(0);
+        if cursor < 0 || cursor >= length as i32 {
+            return Err(vm.throw_new("java/util/NoSuchElementException", None));
+        }
+        crate::lang::write_int_field(vm, this, "cursor", cursor + 1);
+        vm.array_get(elements, cursor)
+    }),
+    method("remove", "()V", ACC_PUBLIC, |_, _, _| {
+        Err(VmError::internal("Iterator.remove is unsupported"))
+    }),
+];
+
+pub(crate) const OJVM_PATH_ITERATOR: oxjvm_vm::NativeClass = class(
+    "java/nio/file/OjvmPathIterator",
+    Some("java/lang/Object"),
+    &["java/util/Iterator"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
     &[
-        field("name", "Ljava/lang/String;", ACC_PRIVATE | ACC_FINAL, None),
-        field(
-            "BIG_ENDIAN",
-            "Ljava/nio/ByteOrder;",
-            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
-            None,
+        field("elements", "[Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("cursor", "I", ACC_PRIVATE, None),
+    ],
+    &OJVM_PATH_ITERATOR_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// FileChannel
+// -------------------------------------------------------------------------------------------
+
+pub(crate) fn new_file_channel(
+    vm: &mut Vm<'_>,
+    path: &str,
+    position: i64,
+    writable: bool,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/nio/channels/OjvmFileChannel")?;
+    let channel = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "path", "Ljava/lang/String;")?;
+    let text = vm.make_string(path)?;
+    vm.set_instance_ref(channel, declaring, field, text);
+    let (declaring, field) = vm.find_field(class, "position", "J")?;
+    vm.set_instance_long(channel, declaring, field, position);
+    crate::lang::write_int_field(vm, channel, "writable", i32::from(writable));
+    crate::lang::write_int_field(vm, channel, "open", 1);
+    Ok(channel)
+}
+
+fn file_channel_read(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    target: ObjectRef,
+    absolute: Option<i64>,
+) -> Result<i32, VmError> {
+    let path = vm
+        .read_string_field(this, vm.class_of(this), "path")
+        .unwrap_or_default();
+    let Some(bytes) = vm.host.filesystem().and_then(|fs| fs.read(&path)) else {
+        return Err(vm.throw_new("java/io/IOException", Some(&path)));
+    };
+    let position = absolute.unwrap_or_else(|| {
+        vm.read_instance_long_named(this, vm.class_of(this), "position", "J")
+            .unwrap_or(0)
+    });
+    if position >= bytes.len() as i64 {
+        return Ok(-1);
+    }
+    let start = position as usize;
+    let available = &bytes[start..];
+    let count = crate::buffer::byte_buffer_put_slice(vm, target, available)?;
+    if absolute.is_none() {
+        let (declaring, field) = vm.find_field(vm.class_of(this), "position", "J")?;
+        vm.set_instance_long(this, declaring, field, position + count as i64);
+    }
+    Ok(count as i32)
+}
+
+fn file_channel_write(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    source: ObjectRef,
+    absolute: Option<i64>,
+) -> Result<i32, VmError> {
+    let path = vm
+        .read_string_field(this, vm.class_of(this), "path")
+        .unwrap_or_default();
+    let bytes = crate::buffer::byte_buffer_remaining_bytes(vm, source)?;
+    let mut existing = vm
+        .host
+        .filesystem()
+        .and_then(|fs| fs.read(&path))
+        .unwrap_or_default();
+    let position = absolute
+        .unwrap_or_else(|| {
+            vm.read_instance_long_named(this, vm.class_of(this), "position", "J")
+                .unwrap_or(0)
+        })
+        .max(0) as usize;
+    if existing.len() < position + bytes.len() {
+        existing.resize(position + bytes.len(), 0);
+    }
+    existing[position..position + bytes.len()].copy_from_slice(&bytes);
+    if !vm
+        .host
+        .filesystem()
+        .map(|fs| fs.write(&path, &existing, false))
+        .unwrap_or(false)
+    {
+        return Err(vm.throw_new("java/io/IOException", Some(&path)));
+    }
+    let (declaring, field) = vm.find_field(vm.class_of(this), "position", "J")?;
+    vm.set_instance_long(this, declaring, field, (position + bytes.len()) as i64);
+    Ok(bytes.len() as i32)
+}
+
+const FILE_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+    method(
+        "open",
+        "(Ljava/nio/file/Path;[Ljava/nio/file/OpenOption;)Ljava/nio/channels/FileChannel;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            object(new_file_channel(vm, &path, 0, true)?)
+        },
+    ),
+    method(
+        "open",
+        "(Ljava/nio/file/Path;Ljava/util/Set;[Ljava/nio/file/attribute/FileAttribute;)Ljava/nio/channels/FileChannel;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            object(new_file_channel(vm, &path, 0, true)?)
+        },
+    ),
+    method(
+        "read",
+        "(Ljava/nio/ByteBuffer;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            int(file_channel_read(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                None,
+            )?)
+        },
+    ),
+    method(
+        "read",
+        "(Ljava/nio/ByteBuffer;J)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            int(file_channel_read(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                Some(crate::long_arg(args, 2)),
+            )?)
+        },
+    ),
+    method(
+        "write",
+        "(Ljava/nio/ByteBuffer;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            int(file_channel_write(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                None,
+            )?)
+        },
+    ),
+    method(
+        "write",
+        "(Ljava/nio/ByteBuffer;J)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            int(file_channel_write(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                Some(crate::long_arg(args, 2)),
+            )?)
+        },
+    ),
+    method("position", "()J", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        long(
+            vm.read_instance_long_named(this, vm.class_of(this), "position", "J")
+                .unwrap_or(0),
+        )
+    }),
+    method(
+        "position",
+        "(J)Ljava/nio/channels/FileChannel;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) = vm.find_field(vm.class_of(this), "position", "J")?;
+            vm.set_instance_long(this, declaring, field, crate::long_arg(args, 1));
+            object(this)
+        },
+    ),
+    method("size", "()J", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let path = vm
+            .read_string_field(this, vm.class_of(this), "path")
+            .unwrap_or_default();
+        long(fs_metadata(vm, &path).map_or(0, |metadata| metadata.len as i64))
+    }),
+    method(
+        "truncate",
+        "(J)Ljava/nio/channels/FileChannel;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let path = vm
+                .read_string_field(this, vm.class_of(this), "path")
+                .unwrap_or_default();
+            let size = crate::long_arg(args, 1).max(0) as usize;
+            let mut bytes = vm
+                .host
+                .filesystem()
+                .and_then(|fs| fs.read(&path))
+                .unwrap_or_default();
+            bytes.truncate(size);
+            if !vm
+                .host
+                .filesystem()
+                .map(|fs| fs.write(&path, &bytes, false))
+                .unwrap_or(false)
+            {
+                return Err(vm.throw_new("java/io/IOException", Some(&path)));
+            }
+            object(this)
+        },
+    ),
+    method("force", "(Z)V", ACC_PUBLIC, |_, _, _| void()),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        crate::lang::write_int_field(vm, this, "open", 0);
+        void()
+    }),
+];
+
+pub(crate) const FILE_CHANNEL: oxjvm_vm::NativeClass = class(
+    "java/nio/channels/FileChannel",
+    Some("java/lang/Object"),
+    &["java/nio/channels/ByteChannel"],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[],
+    &FILE_CHANNEL_METHODS,
+    None,
+);
+
+pub(crate) const OJVM_FILE_CHANNEL: oxjvm_vm::NativeClass = class(
+    "java/nio/channels/OjvmFileChannel",
+    Some("java/nio/channels/FileChannel"),
+    &["java/nio/channels/ByteChannel"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[
+        field("path", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("position", "J", ACC_PRIVATE, None),
+        field("writable", "I", ACC_PRIVATE, None),
+        field("open", "I", ACC_PRIVATE, None),
+    ],
+    &[],
+    None,
+);
+
+pub(crate) const BYTE_CHANNEL: oxjvm_vm::NativeClass = class(
+    "java/nio/channels/ByteChannel",
+    Some("java/lang/Object"),
+    &[
+        "java/nio/channels/ReadableByteChannel",
+        "java/nio/channels/WritableByteChannel",
+    ],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const READABLE_BYTE_CHANNEL: oxjvm_vm::NativeClass = class(
+    "java/nio/channels/ReadableByteChannel",
+    Some("java/lang/Object"),
+    &["java/nio/channels/Channel"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[method(
+        "read",
+        "(Ljava/nio/ByteBuffer;)I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    )],
+    None,
+);
+
+pub(crate) const WRITABLE_BYTE_CHANNEL: oxjvm_vm::NativeClass = class(
+    "java/nio/channels/WritableByteChannel",
+    Some("java/lang/Object"),
+    &["java/nio/channels/Channel"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[method(
+        "write",
+        "(Ljava/nio/ByteBuffer;)I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    )],
+    None,
+);
+
+pub(crate) const CHANNEL: oxjvm_vm::NativeClass = class(
+    "java/nio/channels/Channel",
+    Some("java/lang/Object"),
+    &["java/io/Closeable"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[
+        method(
+            "isOpen",
+            "()Z",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
         ),
-        field(
-            "LITTLE_ENDIAN",
-            "Ljava/nio/ByteOrder;",
-            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
-            None,
+        method(
+            "close",
+            "()V",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
         ),
     ],
-    &BYTE_ORDER_METHODS,
-    Some(byte_order_clinit),
+    None,
 );
