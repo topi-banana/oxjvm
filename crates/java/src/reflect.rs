@@ -27,7 +27,7 @@ use oxjvm_vm::{ClassId, ObjectRef, Value, Vm, VmError};
 // Shared helpers
 // -------------------------------------------------------------------------------------------
 
-fn field_type_descriptor(field_type: &FieldType) -> String {
+pub(crate) fn field_type_descriptor(field_type: &FieldType) -> String {
     match field_type {
         FieldType::Base(base) => String::from(base.as_char()),
         FieldType::Object(name) => alloc::format!("L{name};"),
@@ -116,7 +116,7 @@ fn field_storage_slot(vm: &Vm<'_>, class: ClassId, index: u32) -> u32 {
     u32::from(vm.classes.get(class).fields[index as usize].slot)
 }
 
-fn new_method(vm: &mut Vm<'_>, class: ClassId, slot: u32) -> Result<ObjectRef, VmError> {
+pub(crate) fn new_method(vm: &mut Vm<'_>, class: ClassId, slot: u32) -> Result<ObjectRef, VmError> {
     let method_class = vm.resolve_class("java/lang/reflect/Method")?;
     let instance = vm.new_instance(method_class)?;
     let class_object = vm.class_object(class)?;
@@ -147,7 +147,7 @@ fn method_parts(vm: &Vm<'_>, this: ObjectRef) -> (ClassId, u32) {
 }
 
 /// The class denoted by the `clazz` field of a Method/Field object.
-fn class_object_target(vm: &Vm<'_>, this: ObjectRef) -> ClassId {
+pub(crate) fn class_object_target(vm: &Vm<'_>, this: ObjectRef) -> ClassId {
     let reference = vm
         .read_ref_field(this, vm.class_of(this), "clazz", "Ljava/lang/Class;")
         .unwrap_or(ObjectRef::NULL);
