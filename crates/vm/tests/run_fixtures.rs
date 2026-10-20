@@ -1390,7 +1390,7 @@ fn p1_small_apis() {
         ("assertionError", "msg:true"),
         ("stringBufferLength", "abc"),
         ("date", "0"),
-        ("numbers", "3:2147483647:2:true"),
+        ("numbers", "3:2147483647:2:true:3c00:1.5"),
         ("arraysCopies", "5:3:false:1:2:3"),
         (
             "bigNumbers",

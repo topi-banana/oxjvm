@@ -71,7 +71,9 @@ public class P1SmallApis {
     public static String numbers() {
         return Integer.bitCount(7) + ":" + Integer.divideUnsigned(-1, 2)
                 + ":" + Character.toChars(0x1F600).length
-                + ":" + Double.isNaN(Double.NaN);
+                + ":" + Double.isNaN(Double.NaN)
+                + ":" + Integer.toHexString(Float.floatToFloat16(1.0f) & 0xffff)
+                + ":" + Float.float16ToFloat(Float.floatToFloat16(1.5f));
     }
 
     public static String arraysCopies() {

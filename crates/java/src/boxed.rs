@@ -1966,7 +1966,7 @@ pub(crate) const UNICODE_BLOCK: oxjvm_vm::NativeClass = class(
     Some(unicode_block_clinit),
 );
 
-const FLOAT_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+const FLOAT_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
     method("<init>", "(F)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(
             vm,
@@ -2051,6 +2051,24 @@ const FLOAT_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
         },
     ),
     method(
+        "floatToRawIntBits",
+        "(F)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| int(crate::float_arg(args, 0).to_bits() as i32),
+    ),
+    method(
+        "compare",
+        "(FF)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| int(compare_floats(crate::float_arg(args, 0), crate::float_arg(args, 1))),
+    ),
+    method("isFinite", "(F)Z", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        boolean(crate::float_arg(args, 0).is_finite())
+    }),
+    method("isInfinite", "(F)Z", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        boolean(crate::float_arg(args, 0).is_infinite())
+    }),
+    method(
         "intBitsToFloat",
         "(I)F",
         ACC_PUBLIC | ACC_STATIC,
@@ -2090,7 +2108,91 @@ const FLOAT_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
             int(compare_floats(a, b))
         },
     ),
+    method(
+        "floatToFloat16",
+        "(F)S",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| int(i32::from(float_to_float16(crate::float_arg(args, 0)) as i16)),
+    ),
+    method(
+        "float16ToFloat",
+        "(S)F",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| float(float16_to_float(int_arg(args, 0) as u16)),
+    ),
 ];
+
+fn float16_to_float(bits: u16) -> f32 {
+    let sign = if bits & 0x8000 != 0 { -1.0 } else { 1.0 };
+    let exponent = ((bits >> 10) & 0x1f) as i32;
+    let mantissa = f64::from(bits & 0x3ff);
+    let value = if exponent == 0 {
+        mantissa / 1024.0 * pow2(-14)
+    } else if exponent == 0x1f {
+        if mantissa == 0.0 {
+            f64::INFINITY
+        } else {
+            f64::NAN
+        }
+    } else {
+        (1.0 + mantissa / 1024.0) * pow2(exponent - 15)
+    };
+    (sign * value) as f32
+}
+
+fn pow2(exponent: i32) -> f64 {
+    let mut value = 1.0;
+    if exponent >= 0 {
+        for _ in 0..exponent {
+            value *= 2.0;
+        }
+    } else {
+        for _ in 0..(-exponent) {
+            value /= 2.0;
+        }
+    }
+    value
+}
+
+fn float_to_float16(value: f32) -> u16 {
+    let bits = value.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let mut exponent = ((bits >> 23) & 0xff) as i32;
+    let mantissa = bits & 0x7f_ffff;
+    if exponent == 0xff {
+        return sign | if mantissa != 0 { 0x7e00 } else { 0x7c00 };
+    }
+    if exponent == 0 {
+        return sign;
+    }
+    exponent = exponent - 127 + 15;
+    if exponent >= 0x1f {
+        return sign | 0x7c00;
+    }
+    if exponent <= 0 {
+        if exponent < -10 {
+            return sign;
+        }
+        let mantissa = mantissa | 0x80_0000;
+        let shift = (14 - exponent) as u32;
+        let mut half = mantissa >> shift;
+        let remainder = mantissa & ((1 << shift) - 1);
+        let halfway = 1 << (shift - 1);
+        if remainder > halfway || (remainder == halfway && (half & 1) != 0) {
+            half += 1;
+        }
+        return sign | half as u16;
+    }
+    let mut half = ((exponent as u32) << 10) | (mantissa >> 13);
+    let remainder = mantissa & 0x1fff;
+    if remainder > 0x1000 || (remainder == 0x1000 && (half & 1) != 0) {
+        half += 1;
+    }
+    if half >= 0x7c00 {
+        return sign | 0x7c00;
+    }
+    sign | half as u16
+}
 
 pub(crate) const FLOAT: oxjvm_vm::NativeClass = class(
     "java/lang/Float",

@@ -522,7 +522,36 @@ pub(crate) fn ieee_remainder(x: f64, y: f64) -> f64 {
     x - quotient * y
 }
 
-pub(crate) fn next_after(start: f64, direction: f64) -> f64 {
+pub(crate) fn pow2(exponent: i32) -> f64 {
+    let mut value = 1.0;
+    if exponent >= 0 {
+        for _ in 0..exponent {
+            value *= 2.0;
+        }
+    } else {
+        for _ in 0..(-exponent) {
+            value /= 2.0;
+        }
+    }
+    value
+}
+
+fn next_up_float(value: f32) -> f32 {
+    if value.is_nan() || value == f32::INFINITY {
+        return value;
+    }
+    if value == 0.0 {
+        return f32::from_bits(1);
+    }
+    let bits = value.to_bits();
+    if value > 0.0 {
+        f32::from_bits(bits + 1)
+    } else {
+        f32::from_bits(bits - 1)
+    }
+}
+
+fn next_after(start: f64, direction: f64) -> f64 {
     if start.is_nan() || direction.is_nan() {
         return f64::NAN;
     }
@@ -899,12 +928,54 @@ macro_rules! math_methods {
                 ACC_PUBLIC | ACC_STATIC,
                 |_, _, args| double(next_after(double_arg(args, 0), double_arg(args, 1))),
             ),
+            method("nextUp", "(F)F", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+                float(next_up_float(float_arg(args, 0)))
+            }),
+            method("nextDown", "(F)F", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+                float(-next_up_float(-float_arg(args, 0)))
+            }),
+            method("nextUp", "(D)D", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+                double(next_after(double_arg(args, 0), f64::INFINITY))
+            }),
+            method("nextDown", "(D)D", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+                double(next_after(double_arg(args, 0), f64::NEG_INFINITY))
+            }),
+            method("getExponent", "(F)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+                let value = float_arg(args, 0);
+                let bits = value.to_bits();
+                let exponent = ((bits >> 23) & 0xff) as i32;
+                int(if value.is_nan() || value.is_infinite() {
+                    0x80
+                } else if exponent == 0 {
+                    if bits & 0x7f_ffff == 0 { -127 } else { -126 }
+                } else {
+                    exponent - 127
+                })
+            }),
+            method("getExponent", "(D)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+                let value = double_arg(args, 0);
+                let bits = value.to_bits();
+                let exponent = ((bits >> 52) & 0x7ff) as i32;
+                int(if value.is_nan() || value.is_infinite() {
+                    0x400
+                } else if exponent == 0 {
+                    if bits & 0xf_ffff_ffff_ffff == 0 { -1023 } else { -1022 }
+                } else {
+                    exponent - 1023
+                })
+            }),
+            method("scalb", "(FI)F", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+                float((f64::from(float_arg(args, 0)) * pow2(int_arg(args, 1))) as f32)
+            }),
+            method("scalb", "(DI)D", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+                double(double_arg(args, 0) * pow2(int_arg(args, 1)))
+            }),
         ]
     }};
 }
 
-const MATH_METHODS: [oxjvm_vm::NativeMethodDef; 51] = math_methods!();
-const STRICT_MATH_METHODS: [oxjvm_vm::NativeMethodDef; 51] = math_methods!();
+const MATH_METHODS: [oxjvm_vm::NativeMethodDef; 59] = math_methods!();
+const STRICT_MATH_METHODS: [oxjvm_vm::NativeMethodDef; 59] = math_methods!();
 
 pub(crate) const MATH: oxjvm_vm::NativeClass = class(
     "java/lang/Math",
