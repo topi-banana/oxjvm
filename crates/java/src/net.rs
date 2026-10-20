@@ -6,7 +6,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 use oxjvm_classfile::flags::*;
 
-use crate::{boolean, class, field, int, method, object, receiver, ref_arg, string_arg, void};
+use crate::{
+    boolean, class, field, int, long, method, object, receiver, ref_arg, string_arg, void,
+};
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
 fn parse_ipv4(text: &str) -> Option<[u8; 4]> {
@@ -583,6 +585,34 @@ struct UrlParts<'a> {
     reference: Option<&'a str>,
 }
 
+/// Resolve a possibly relative URL against a base URL (RFC 3986 style, simplified).
+fn resolve_url(base: &str, relative: &str) -> String {
+    if url_has_protocol(relative) {
+        return String::from(relative);
+    }
+    let parts = url_parts(base);
+    if relative.starts_with("//") {
+        return alloc::format!("{}:{relative}", parts.protocol);
+    }
+    if relative.starts_with('/') {
+        return match parts.authority {
+            Some(authority) => alloc::format!("{}://{authority}{relative}", parts.protocol),
+            None => alloc::format!("{}:{relative}", parts.protocol),
+        };
+    }
+    let base_path = parts.path;
+    let directory = match base_path.rfind('/') {
+        Some(index) => &base_path[..=index],
+        None => "/",
+    };
+    match parts.authority {
+        Some(authority) => {
+            alloc::format!("{}://{authority}{}{relative}", parts.protocol, directory)
+        }
+        None => alloc::format!("{}:{}{relative}", parts.protocol, directory),
+    }
+}
+
 fn url_parts(text: &str) -> UrlParts<'_> {
     let (protocol, rest) = match text.find(':') {
         Some(index) => (&text[..index], &text[index + 1..]),
@@ -652,7 +682,7 @@ fn url_port(authority: &str) -> i32 {
     }
 }
 
-const URL_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+const URL_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -665,6 +695,19 @@ const URL_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
                     Some(&alloc::format!("no protocol: {text}")),
                 ));
             }
+            let this = receiver(args);
+            vm.set_string_field(this, vm.class_of(this), "spec", &text)?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/net/URL;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let base = url_text(vm, ref_arg(args, 1));
+            let relative = string_arg(vm, args[2])?;
+            let text = resolve_url(&base, &relative);
             let this = receiver(args);
             vm.set_string_field(this, vm.class_of(this), "spec", &text)?;
             void()
@@ -821,6 +864,64 @@ const URL_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
         let text = url_text(vm, receiver(args));
         crate::uri::new_uri(vm, &text)
     }),
+    method(
+        "sameFile",
+        "(Ljava/net/URL;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = ref_arg(args, 1);
+            if other.is_null() {
+                return boolean(false);
+            }
+            let left_text = url_text(vm, receiver(args));
+            let right_text = url_text(vm, other);
+            let left = url_parts(&left_text);
+            let right = url_parts(&right_text);
+            boolean(
+                left.protocol == right.protocol
+                    && left.authority == right.authority
+                    && left.path == right.path,
+            )
+        },
+    ),
+    method(
+        "openConnection",
+        "()Ljava/net/URLConnection;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = vm.resolve_class("java/net/URLConnection")?;
+            let connection = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "url", "Ljava/net/URL;")?;
+            vm.set_instance_ref(connection, declaring, field, receiver(args));
+            object(connection)
+        },
+    ),
+    method(
+        "openStream",
+        "()Ljava/io/InputStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = url_text(vm, receiver(args));
+            let parts = url_parts(&text);
+            if parts.protocol != "file" {
+                return Err(vm.throw_new(
+                    "java/io/IOException",
+                    Some(&alloc::format!(
+                        "protocol not supported: {}",
+                        parts.protocol
+                    )),
+                ));
+            }
+            let class = vm.resolve_class("java/io/FileInputStream")?;
+            let stream = vm.new_instance(class)?;
+            let (declaring, ctor) = vm
+                .find_method(class, "<init>", "(Ljava/lang/String;)V")
+                .ok_or_else(|| VmError::internal("FileInputStream(String) missing"))?;
+            let path = vm.make_string(parts.path)?;
+            vm.invoke_method(declaring, ctor, vec![Value::Ref(stream), Value::Ref(path)])?;
+            object(stream)
+        },
+    ),
 ];
 
 pub(crate) const URL: oxjvm_vm::NativeClass = class(
@@ -1101,5 +1202,89 @@ pub(crate) const URL_DECODER: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC,
     &[],
     &URL_DECODER_METHODS,
+    None,
+);
+
+const URL_CONNECTION_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+    method(
+        "getInputStream",
+        "()Ljava/io/InputStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let url = vm
+                .read_ref_field(this, vm.class_of(this), "url", "Ljava/net/URL;")
+                .unwrap_or(ObjectRef::NULL);
+            let (class, method) =
+                vm.resolve_virtual_method(url, "openStream", "()Ljava/io/InputStream;")?;
+            vm.invoke_method(class, method, vec![Value::Ref(url)])
+        },
+    ),
+    method("getContentLength", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(url_connection_length(vm, receiver(args)) as i32)
+    }),
+    method("getContentLengthLong", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(url_connection_length(vm, receiver(args)))
+    }),
+    method("getLastModified", "()J", ACC_PUBLIC, |vm, _, args| {
+        let path = url_connection_path(vm, receiver(args));
+        long(
+            vm.host
+                .filesystem()
+                .and_then(|fs| fs.metadata(&path))
+                .map_or(0, |metadata| metadata.modified_millis),
+        )
+    }),
+    method(
+        "getContentType",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "getHeaderFields",
+        "()Ljava/util/Map;",
+        ACC_PUBLIC,
+        |vm, _, _| object(crate::util::hash_map_new(vm)?),
+    ),
+    method("getURL", "()Ljava/net/URL;", ACC_PUBLIC, |vm, _, args| {
+        object(
+            vm.read_ref_field(
+                receiver(args),
+                vm.class_of(receiver(args)),
+                "url",
+                "Ljava/net/URL;",
+            )
+            .unwrap_or(ObjectRef::NULL),
+        )
+    }),
+    method("connect", "()V", ACC_PUBLIC, |_, _, _| void()),
+];
+
+fn url_connection_path(vm: &Vm<'_>, connection: ObjectRef) -> String {
+    let url = vm
+        .read_ref_field(connection, vm.class_of(connection), "url", "Ljava/net/URL;")
+        .unwrap_or(ObjectRef::NULL);
+    url_text(vm, url)
+        .split_once(':')
+        .map_or_else(String::new, |(_, path)| String::from(path))
+}
+
+fn url_connection_length(vm: &mut Vm<'_>, connection: ObjectRef) -> i64 {
+    let path = url_connection_path(vm, connection);
+    vm.host
+        .filesystem()
+        .and_then(|fs| fs.metadata(&path))
+        .map_or(-1, |metadata| metadata.len as i64)
+}
+
+/// `java.net.URLConnection`: file-backed metadata and streams for `file:` URLs.
+pub(crate) const URL_CONNECTION: oxjvm_vm::NativeClass = class(
+    "java/net/URLConnection",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[field("url", "Ljava/net/URL;", ACC_PRIVATE, None)],
+    &URL_CONNECTION_METHODS,
     None,
 );

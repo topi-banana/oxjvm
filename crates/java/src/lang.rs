@@ -239,7 +239,7 @@ pub(crate) const OBJECT: oxjvm_vm::NativeClass = class(
 // Class
 // -------------------------------------------------------------------------------------------
 
-const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 56] = [
+const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 60] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -666,6 +666,50 @@ const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 56] = [
             match name.and_then(|name| vm.resolve_class_lenient(&name)) {
                 Some(declaring) => {
                     let class_object = vm.class_object(declaring)?;
+                    object(class_object)
+                }
+                None => object(ObjectRef::NULL),
+            }
+        },
+    ),
+    method(
+        "describeConstable",
+        "()Ljava/util/Optional;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = class_argument(vm, receiver(args))?;
+            let class_object = vm.class_object(class)?;
+            crate::optional::optional_new(vm, class_object)
+        },
+    ),
+    method(
+        "getTypeParameters",
+        "()[Ljava/lang/reflect/TypeVariable;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let type_variable = vm.resolve_class("java/lang/reflect/TypeVariable")?;
+            let array = vm.allocate_object_array(type_variable, 0)?;
+            object(array)
+        },
+    ),
+    method(
+        "getProtectionDomain",
+        "()Ljava/security/ProtectionDomain;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/security/ProtectionDomain")?;
+            object(vm.new_instance(class)?)
+        },
+    ),
+    method(
+        "getGenericSuperclass",
+        "()Ljava/lang/reflect/Type;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = class_argument(vm, receiver(args))?;
+            match vm.classes.get(class).super_class {
+                Some(super_class) => {
+                    let class_object = vm.class_object(super_class)?;
                     object(class_object)
                 }
                 None => object(ObjectRef::NULL),
@@ -3796,7 +3840,7 @@ pub(crate) const STRING_BUFFER: oxjvm_vm::NativeClass = class(
 // System / Runtime
 // -------------------------------------------------------------------------------------------
 
-const SYSTEM_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
+const SYSTEM_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
     method(
         "currentTimeMillis",
         "()J",
@@ -3995,6 +4039,34 @@ const SYSTEM_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
                 }
             }
             object(ObjectRef::NULL)
+        },
+    ),
+    method(
+        "getLogger",
+        "(Ljava/lang/String;)Ljava/lang/System$Logger;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let class = vm.resolve_class("java/lang/System$OjvmLogger")?;
+            let logger = vm.new_instance(class)?;
+            let name = string_arg(vm, args[0])?;
+            vm.set_string_field(logger, class, "name", &name)?;
+            object(logger)
+        },
+    ),
+    method(
+        "mapLibraryName",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = string_arg(vm, args[0])?;
+            let mapped = if cfg!(target_os = "windows") {
+                alloc::format!("{name}.dll")
+            } else if cfg!(target_os = "macos") {
+                alloc::format!("lib{name}.dylib")
+            } else {
+                alloc::format!("lib{name}.so")
+            };
+            object(vm.make_string(&mapped)?)
         },
     ),
 ];
@@ -4517,6 +4589,209 @@ pub(crate) const MODULE: oxjvm_vm::NativeClass = class(
     &[],
     &MODULE_METHODS,
     None,
+);
+
+const MODULE_LAYER_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "boot",
+        "()Ljava/lang/ModuleLayer;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/lang/ModuleLayer")?;
+            object(vm.new_instance(class)?)
+        },
+    ),
+    method(
+        "findLoader",
+        "(Ljava/lang/String;)Ljava/lang/ClassLoader;",
+        ACC_PUBLIC,
+        |vm, _, _| object(system_class_loader(vm)?),
+    ),
+];
+
+/// `java.lang.ModuleLayer`: the boot layer only needs `boot()`/`findLoader()`.
+pub(crate) const MODULE_LAYER: oxjvm_vm::NativeClass = class(
+    "java/lang/ModuleLayer",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[],
+    &MODULE_LAYER_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// System.Logger
+// -------------------------------------------------------------------------------------------
+
+const SYSTEM_LOGGER_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+    method(
+        "getName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let name = vm
+                .read_string_field(this, vm.class_of(this), "name")
+                .unwrap_or_default();
+            object(vm.make_string(&name)?)
+        },
+    ),
+    method(
+        "isLoggable",
+        "(Ljava/lang/System$Logger$Level;)Z",
+        ACC_PUBLIC,
+        |_, _, _| boolean(true),
+    ),
+    method(
+        "log",
+        "(Ljava/lang/System$Logger$Level;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method(
+        "log",
+        "(Ljava/lang/System$Logger$Level;Ljava/util/function/Supplier;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method(
+        "log",
+        "(Ljava/lang/System$Logger$Level;Ljava/lang/String;Ljava/lang/Throwable;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method(
+        "log",
+        "(Ljava/lang/System$Logger$Level;Ljava/lang/String;[Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method("info", "(Ljava/lang/String;)V", ACC_PUBLIC, |_, _, _| {
+        void()
+    }),
+    method(
+        "info",
+        "(Ljava/util/function/Supplier;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method("warn", "(Ljava/lang/String;)V", ACC_PUBLIC, |_, _, _| {
+        void()
+    }),
+    method(
+        "warn",
+        "(Ljava/util/function/Supplier;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method("error", "(Ljava/lang/String;)V", ACC_PUBLIC, |_, _, _| {
+        void()
+    }),
+    method(
+        "error",
+        "(Ljava/util/function/Supplier;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method("debug", "(Ljava/lang/String;)V", ACC_PUBLIC, |_, _, _| {
+        void()
+    }),
+    method("trace", "(Ljava/lang/String;)V", ACC_PUBLIC, |_, _, _| {
+        void()
+    }),
+];
+
+/// `System.Logger`: the no-op logger interface.
+pub(crate) const SYSTEM_LOGGER: oxjvm_vm::NativeClass = class(
+    "java/lang/System$Logger",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &SYSTEM_LOGGER_METHODS,
+    None,
+);
+
+/// The concrete logger returned by `System.getLogger`.
+pub(crate) const SYSTEM_LOGGER_IMPL: oxjvm_vm::NativeClass = class(
+    "java/lang/System$OjvmLogger",
+    Some("java/lang/Object"),
+    &["java/lang/System$Logger"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[field("name", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &SYSTEM_LOGGER_METHODS,
+    None,
+);
+
+const SYSTEM_LOGGER_LEVEL_METHODS: [oxjvm_vm::NativeMethodDef; 0] = [];
+
+fn system_logger_level_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/lang/System$Logger$Level")?;
+    for name in ["ALL", "TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "OFF"] {
+        let value = vm.new_instance(class)?;
+        vm.set_static_value(
+            class,
+            name,
+            "Ljava/lang/System$Logger$Level;",
+            Value::Ref(value),
+        );
+    }
+    Ok(())
+}
+
+/// `System.Logger.Level`: the constants are objects with no additional state.
+pub(crate) const SYSTEM_LOGGER_LEVEL: oxjvm_vm::NativeClass = class(
+    "java/lang/System$Logger$Level",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field(
+            "ALL",
+            "Ljava/lang/System$Logger$Level;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "TRACE",
+            "Ljava/lang/System$Logger$Level;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "DEBUG",
+            "Ljava/lang/System$Logger$Level;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "INFO",
+            "Ljava/lang/System$Logger$Level;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "WARNING",
+            "Ljava/lang/System$Logger$Level;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "ERROR",
+            "Ljava/lang/System$Logger$Level;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "OFF",
+            "Ljava/lang/System$Logger$Level;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+    ],
+    &SYSTEM_LOGGER_LEVEL_METHODS,
+    Some(system_logger_level_clinit),
 );
 
 // -------------------------------------------------------------------------------------------

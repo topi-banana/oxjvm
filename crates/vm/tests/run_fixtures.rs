@@ -1344,6 +1344,39 @@ fn p1_ten() {
 }
 
 #[test]
+fn p1_classes_and_files() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/P1Classes").expect("P1Classes");
+    for (method, expected) in [
+        ("instantiation", "java.lang.ReflectiveOperationException"),
+        ("moduleLayer", "true"),
+        ("reflectArray", "3:7"),
+        ("system", "true:demo.logger"),
+        ("timeZone", "UTC:1"),
+        ("locale", "true"),
+        ("resourceBundle", "value"),
+        ("loggingMxBean", "0"),
+    ] {
+        let (declaring, index) = vm
+            .find_method(class, method, "()Ljava/lang/String;")
+            .expect(method);
+        let value = match vm.invoke_method(declaring, index, Vec::new()) {
+            Ok(value) => value,
+            Err(VmError::Thrown(exception)) => {
+                panic!("{method}: threw {}", vm.class_name(vm.class_of(exception)))
+            }
+            Err(error) => panic!("{method}: {error:?}"),
+        };
+        assert_eq!(
+            vm.string_value(value.as_ref()).as_deref(),
+            Some(expected),
+            "{method}"
+        );
+    }
+}
+
+#[test]
 fn p1_small_apis() {
     let mut host = fixture_host();
     let mut vm = Vm::new(&mut host, oxjvm_java::natives());
@@ -1517,5 +1550,32 @@ fn rejects_corrupted_bytecode() {
             );
         }
         other => panic!("expected InvalidCode, got {other:?}"),
+    }
+}
+
+#[test]
+fn p1_reflection_api() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/P1Reflection").expect("P1Reflection");
+    for (method, expected) in [
+        ("parameter", "sample"),
+        ("classApi", "true:0:true:java.lang.Number"),
+    ] {
+        let (declaring, index) = vm
+            .find_method(class, method, "()Ljava/lang/String;")
+            .expect(method);
+        let value = match vm.invoke_method(declaring, index, Vec::new()) {
+            Ok(value) => value,
+            Err(VmError::Thrown(exception)) => {
+                panic!("{method}: threw {}", vm.class_name(vm.class_of(exception)))
+            }
+            Err(error) => panic!("{method}: {error:?}"),
+        };
+        assert_eq!(
+            vm.string_value(value.as_ref()).as_deref(),
+            Some(expected),
+            "{method}"
+        );
     }
 }

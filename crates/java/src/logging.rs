@@ -9,6 +9,7 @@
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
+use alloc::vec::Vec;
 use oxjvm_classfile::flags::*;
 
 use crate::lang::abstract_method_pub;
@@ -566,13 +567,180 @@ pub(crate) const LOG_RECORD: oxjvm_vm::NativeClass = class(
 // ResourceBundle (minimal)
 // -------------------------------------------------------------------------------------------
 
+const RESOURCE_BUNDLE_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method(
+        "getBundle",
+        "(Ljava/lang/String;)Ljava/util/ResourceBundle;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| resource_bundle_get(vm, ref_arg(args, 0), ObjectRef::NULL),
+    ),
+    method(
+        "getBundle",
+        "(Ljava/lang/String;Ljava/util/Locale;)Ljava/util/ResourceBundle;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| resource_bundle_get(vm, ref_arg(args, 0), ref_arg(args, 1)),
+    ),
+    method(
+        "getBundle",
+        "(Ljava/lang/String;Ljava/util/Locale;Ljava/lang/Module;)Ljava/util/ResourceBundle;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| resource_bundle_get(vm, ref_arg(args, 0), ref_arg(args, 1)),
+    ),
+    method(
+        "getObject",
+        "(Ljava/lang/String;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| resource_bundle_object(vm, receiver(args), ref_arg(args, 1)),
+    ),
+    method(
+        "getString",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let value = resource_bundle_object(vm, receiver(args), ref_arg(args, 1))?;
+            object(value.as_ref())
+        },
+    ),
+    method(
+        "handleGetObject",
+        "(Ljava/lang/String;)Ljava/lang/Object;",
+        ACC_PROTECTED,
+        abstract_method_pub,
+    ),
+];
+
 pub(crate) const RESOURCE_BUNDLE: oxjvm_vm::NativeClass = class(
     "java/util/ResourceBundle",
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_ABSTRACT,
     &[],
+    &RESOURCE_BUNDLE_METHODS,
+    None,
+);
+
+fn resource_bundle_get(
+    vm: &mut Vm<'_>,
+    base_object: ObjectRef,
+    locale: ObjectRef,
+) -> Result<Value, VmError> {
+    let base = vm.string_or_empty(base_object);
+    let mut candidates = Vec::new();
+    if !locale.is_null() {
+        let language = vm
+            .read_string_field(locale, vm.class_of(locale), "language")
+            .unwrap_or_default();
+        let country = vm
+            .read_string_field(locale, vm.class_of(locale), "country")
+            .unwrap_or_default();
+        let variant = vm
+            .read_string_field(locale, vm.class_of(locale), "variant")
+            .unwrap_or_default();
+        if !variant.is_empty() {
+            candidates.push(format!("{base}_{language}_{country}_{variant}"));
+        }
+        if !country.is_empty() {
+            candidates.push(format!("{base}_{language}_{country}"));
+        }
+        if !language.is_empty() {
+            candidates.push(format!("{base}_{language}"));
+        }
+    }
+    candidates.push(base.clone());
+    for candidate in candidates {
+        let internal = candidate.replace('.', "/");
+        if let Some(class) = vm.resolve_class_lenient(&internal) {
+            let instance = vm.new_instance(class)?;
+            if let Some((declaring, ctor)) = vm.find_method(class, "<init>", "()V") {
+                vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
+            }
+            return object(instance);
+        }
+    }
+    let message = format!("Can't find bundle for base name {base}");
+    Err(vm.throw_new("java/util/MissingResourceException", Some(&message)))
+}
+
+fn resource_bundle_object(
+    vm: &mut Vm<'_>,
+    bundle: ObjectRef,
+    key: ObjectRef,
+) -> Result<Value, VmError> {
+    let (class, method) = vm.resolve_virtual_method(
+        bundle,
+        "handleGetObject",
+        "(Ljava/lang/String;)Ljava/lang/Object;",
+    )?;
+    let value = vm.invoke_method(class, method, vec![Value::Ref(bundle), Value::Ref(key)])?;
+    if value.as_ref().is_null() {
+        let message = vm.string_or_empty(key);
+        return Err(vm.throw_new("java/util/MissingResourceException", Some(&message)));
+    }
+    Ok(value)
+}
+
+// -------------------------------------------------------------------------------------------
+// ListResourceBundle
+// -------------------------------------------------------------------------------------------
+
+const LIST_RESOURCE_BUNDLE_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method(
+        "getContents",
+        "()[[Ljava/lang/Object;",
+        ACC_PROTECTED | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "handleGetObject",
+        "(Ljava/lang/String;)Ljava/lang/Object;",
+        ACC_PROTECTED,
+        |vm, _, args| {
+            let contents = resource_bundle_contents(vm, receiver(args))?;
+            let key = vm.string_or_empty(ref_arg(args, 1));
+            let rows = vm.array_length(contents)?;
+            for index in 0..rows {
+                let row = vm.array_get(contents, index as i32)?.as_ref();
+                if row.is_null() {
+                    continue;
+                }
+                let candidate = vm.array_get(row, 0)?.as_ref();
+                if vm.string_or_empty(candidate) == key {
+                    return vm.array_get(row, 1);
+                }
+            }
+            object(ObjectRef::NULL)
+        },
+    ),
+    method("keySet", "()Ljava/util/Set;", ACC_PUBLIC, |vm, _, args| {
+        let contents = resource_bundle_contents(vm, receiver(args))?;
+        let rows = vm.array_length(contents)?;
+        let mut keys = Vec::new();
+        for index in 0..rows {
+            let row = vm.array_get(contents, index as i32)?.as_ref();
+            if !row.is_null() {
+                keys.push(vm.array_get(row, 0)?.as_ref());
+            }
+        }
+        object(crate::util::hash_set_from(vm, &keys)?)
+    }),
+];
+
+fn resource_bundle_contents(vm: &mut Vm<'_>, bundle: ObjectRef) -> Result<ObjectRef, VmError> {
+    let (class, method) =
+        vm.resolve_virtual_method(bundle, "getContents", "()[[Ljava/lang/Object;")?;
+    Ok(vm
+        .invoke_method(class, method, vec![Value::Ref(bundle)])?
+        .as_ref())
+}
+
+/// `java.util.ListResourceBundle`: the array-backed bundle base class.
+pub(crate) const LIST_RESOURCE_BUNDLE: oxjvm_vm::NativeClass = class(
+    "java/util/ListResourceBundle",
+    Some("java/util/ResourceBundle"),
     &[],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[],
+    &LIST_RESOURCE_BUNDLE_METHODS,
     None,
 );
 
@@ -1643,7 +1811,7 @@ fn logger_from_registry_initializing(vm: &mut Vm<'_>) -> Result<ObjectRef, VmErr
     Ok(logger)
 }
 
-const LOG_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const LOG_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method("<init>", "()V", ACC_PROTECTED, |_, _, _| void()),
     method(
         "getLogManager",
@@ -1700,7 +1868,69 @@ const LOG_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         ACC_PUBLIC,
         |_, _, _| object(ObjectRef::NULL),
     ),
+    method(
+        "getLoggingMXBean",
+        "()Ljava/util/logging/LoggingMXBean;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/util/logging/OjvmLoggingMXBean")?;
+            object(vm.new_instance(class)?)
+        },
+    ),
 ];
+
+// -------------------------------------------------------------------------------------------
+// LoggingMXBean
+// -------------------------------------------------------------------------------------------
+
+const LOGGING_MXBEAN_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "getLoggerNames",
+        "()Ljava/util/List;",
+        ACC_PUBLIC,
+        |vm, _, _| object(crate::util::array_list_from(vm, &[])?),
+    ),
+    method(
+        "getLoggerLevel",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "setLoggerLevel",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method(
+        "getParentLoggerName",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+];
+
+/// `java.util.logging.LoggingMXBean`: a read-only stub over the logger registry.
+pub(crate) const LOGGING_MXBEAN: oxjvm_vm::NativeClass = class(
+    "java/util/logging/LoggingMXBean",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &LOGGING_MXBEAN_METHODS,
+    None,
+);
+
+/// The concrete MXBean returned by `LogManager.getLoggingMXBean`.
+pub(crate) const LOGGING_MXBEAN_IMPL: oxjvm_vm::NativeClass = class(
+    "java/util/logging/OjvmLoggingMXBean",
+    Some("java/lang/Object"),
+    &["java/util/logging/LoggingMXBean"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[],
+    &LOGGING_MXBEAN_METHODS,
+    None,
+);
 
 pub(crate) const LOG_MANAGER: oxjvm_vm::NativeClass = class(
     LOG_MANAGER_CLASS,

@@ -68,7 +68,7 @@ fn join_path(base: &str, child: &str) -> String {
 // Path (concrete implementation) + Paths
 // -------------------------------------------------------------------------------------------
 
-const PATH_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
+const PATH_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -172,6 +172,17 @@ const PATH_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
         |vm, _, args| {
             let path = path_string(vm, receiver(args));
             let other = path_string(vm, ref_arg(args, 1));
+            let base = crate::file::parent_of_path(&path).unwrap_or_default();
+            new_path(vm, &join_path(&base, &other))
+        },
+    ),
+    method(
+        "resolveSibling",
+        "(Ljava/lang/String;)Ljava/nio/file/Path;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let path = path_string(vm, receiver(args));
+            let other = string_arg(vm, args[1])?;
             let base = crate::file::parent_of_path(&path).unwrap_or_default();
             new_path(vm, &join_path(&base, &other))
         },
@@ -503,7 +514,7 @@ pub(crate) fn new_path(vm: &mut Vm<'_>, path: &str) -> Result<Value, VmError> {
 // Files
 // -------------------------------------------------------------------------------------------
 
-const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
+const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
     method(
         "createDirectories",
         "(Ljava/nio/file/Path;[Ljava/nio/file/attribute/FileAttribute;)Ljava/nio/file/Path;",
@@ -940,7 +951,62 @@ const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
             object(buffered)
         },
     ),
+    method(
+        "readString",
+        "(Ljava/nio/file/Path;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            let text = read_text_file(vm, &path)?;
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "readString",
+        "(Ljava/nio/file/Path;Ljava/nio/charset/Charset;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            let text = read_text_file(vm, &path)?;
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "readAllLines",
+        "(Ljava/nio/file/Path;Ljava/nio/charset/Charset;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            let text = read_text_file(vm, &path)?;
+            let mut lines = Vec::new();
+            for line in text.lines() {
+                lines.push(vm.make_string(line)?);
+            }
+            object(crate::util::array_list_from(vm, &lines)?)
+        },
+    ),
+    method(
+        "lines",
+        "(Ljava/nio/file/Path;)Ljava/util/stream/Stream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            let text = read_text_file(vm, &path)?;
+            let mut lines = Vec::new();
+            for line in text.lines() {
+                lines.push(vm.make_string(line)?);
+            }
+            object(crate::stream::stream_from(vm, lines)?)
+        },
+    ),
 ];
+
+fn read_text_file(vm: &mut Vm<'_>, path: &str) -> Result<String, VmError> {
+    let Some(bytes) = vm.host.filesystem().and_then(|fs| fs.read(path)) else {
+        return Err(vm.throw_new("java/io/IOException", Some(path)));
+    };
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
 
 pub(crate) const FILES: oxjvm_vm::NativeClass = class(
     "java/nio/file/Files",

@@ -8918,12 +8918,35 @@ fn new_time_zone(vm: &mut Vm<'_>, id: &str) -> Result<Value, VmError> {
     object(instance)
 }
 
-const TIME_ZONE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const TIME_ZONE_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method(
         "getDefault",
         "()Ljava/util/TimeZone;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| new_time_zone(vm, "GMT"),
+        |vm, _, _| {
+            let class = vm.resolve_class("java/util/TimeZone")?;
+            if let Some(default) =
+                vm.read_static_ref_if_set(class, "defaultZone", "Ljava/util/TimeZone;")
+            {
+                return object(default);
+            }
+            new_time_zone(vm, "GMT")
+        },
+    ),
+    method(
+        "setDefault",
+        "(Ljava/util/TimeZone;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let class = vm.resolve_class("java/util/TimeZone")?;
+            vm.set_static_value(
+                class,
+                "defaultZone",
+                "Ljava/util/TimeZone;",
+                Value::Ref(ref_arg(args, 0)),
+            );
+            void()
+        },
     ),
     method(
         "getTimeZone",
@@ -8977,6 +9000,33 @@ const TIME_ZONE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
             object(array)
         },
     ),
+    method(
+        "getDisplayName",
+        "(ZILjava/util/Locale;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let id = time_zone_id(vm, receiver(args));
+            object(vm.make_string(&id)?)
+        },
+    ),
+    method(
+        "getDisplayName",
+        "(ZI)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let id = time_zone_id(vm, receiver(args));
+            object(vm.make_string(&id)?)
+        },
+    ),
+    method(
+        "availableIDs",
+        "()Ljava/util/stream/Stream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let id = vm.make_string("GMT")?;
+            object(crate::stream::stream_from(vm, vec![id])?)
+        },
+    ),
 ];
 
 pub(crate) const TIME_ZONE: oxjvm_vm::NativeClass = class(
@@ -8984,7 +9034,15 @@ pub(crate) const TIME_ZONE: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &["java/io/Serializable"],
     ACC_PUBLIC | ACC_ABSTRACT,
-    &[field("id", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &[
+        field("id", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field(
+            "defaultZone",
+            "Ljava/util/TimeZone;",
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
+    ],
     &TIME_ZONE_METHODS,
     None,
 );

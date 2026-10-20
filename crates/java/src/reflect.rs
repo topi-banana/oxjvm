@@ -17,7 +17,10 @@ use oxjvm_classfile::{FieldType, MethodDescriptor};
 
 use crate::invoke::class_field_descriptor;
 use crate::lang::class_argument;
-use crate::{boolean, class, field, int, method, object, receiver, ref_arg, string_arg, void};
+use crate::{
+    boolean, class, double, field, float, int, long, method, object, receiver, ref_arg, string_arg,
+    void,
+};
 use oxjvm_vm::{ClassId, ObjectRef, Value, Vm, VmError};
 
 // -------------------------------------------------------------------------------------------
@@ -3222,7 +3225,7 @@ fn parameter_annotations_by_type(
     crate::annotation::typed_annotation_array(vm, requested, &found)
 }
 
-const PARAMETER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+const PARAMETER_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -3234,6 +3237,15 @@ const PARAMETER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
         },
     ),
     method("getModifiers", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method(
+        "getDeclaringExecutable",
+        "()Ljava/lang/reflect/Executable;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (executable, _) = parameter_parts(vm, receiver(args));
+            object(executable)
+        },
+    ),
     method(
         "getParameterType",
         "()Ljava/lang/Class;",
@@ -3411,6 +3423,374 @@ pub(crate) const PARAMETER: oxjvm_vm::NativeClass = class(
     None,
 );
 
+// -------------------------------------------------------------------------------------------
+// Array
+// -------------------------------------------------------------------------------------------
+
+fn primitive_array_component(base: oxjvm_classfile::BaseType) -> oxjvm_vm::ArrayComponent {
+    match base {
+        oxjvm_classfile::BaseType::Boolean => oxjvm_vm::ArrayComponent::Boolean,
+        oxjvm_classfile::BaseType::Byte => oxjvm_vm::ArrayComponent::Byte,
+        oxjvm_classfile::BaseType::Char => oxjvm_vm::ArrayComponent::Char,
+        oxjvm_classfile::BaseType::Short => oxjvm_vm::ArrayComponent::Short,
+        oxjvm_classfile::BaseType::Int => oxjvm_vm::ArrayComponent::Int,
+        oxjvm_classfile::BaseType::Long => oxjvm_vm::ArrayComponent::Long,
+        oxjvm_classfile::BaseType::Float => oxjvm_vm::ArrayComponent::Float,
+        oxjvm_classfile::BaseType::Double => oxjvm_vm::ArrayComponent::Double,
+        oxjvm_classfile::BaseType::Void => oxjvm_vm::ArrayComponent::Reference,
+    }
+}
+
+fn array_component_descriptor(vm: &Vm<'_>, array: ObjectRef) -> &'static str {
+    match vm.classes.get(vm.class_of(array)).component {
+        Some(oxjvm_vm::ArrayComponent::Boolean) => "Z",
+        Some(oxjvm_vm::ArrayComponent::Byte) => "B",
+        Some(oxjvm_vm::ArrayComponent::Char) => "C",
+        Some(oxjvm_vm::ArrayComponent::Short) => "S",
+        Some(oxjvm_vm::ArrayComponent::Int) => "I",
+        Some(oxjvm_vm::ArrayComponent::Long) => "J",
+        Some(oxjvm_vm::ArrayComponent::Float) => "F",
+        Some(oxjvm_vm::ArrayComponent::Double) => "D",
+        _ => "Ljava/lang/Object;",
+    }
+}
+
+fn array_new_instance(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let component = class_argument(vm, ref_arg(args, 0))?;
+    let length = crate::int_arg(args, 1);
+    if length < 0 {
+        return Err(vm.throw_new(
+            "java/lang/NegativeArraySizeException",
+            Some(&length.to_string()),
+        ));
+    }
+    let kind = vm.classes.get(component).kind;
+    let array = if kind == oxjvm_vm::ClassKind::Primitive {
+        let base = vm.classes.get(component).primitive;
+        let base = base.ok_or_else(|| VmError::internal("primitive class without base type"))?;
+        vm.allocate_array_of(primitive_array_component(base), length as usize)?
+    } else {
+        vm.allocate_object_array(component, length as usize)?
+    };
+    object(array)
+}
+
+fn array_new_instance_dimensions(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let component = class_argument(vm, ref_arg(args, 0))?;
+    let dimensions = ref_arg(args, 1);
+    let count = vm.array_length(dimensions)?;
+    let mut values = Vec::with_capacity(count);
+    for index in 0..count {
+        let value = vm.array_get(dimensions, index as i32)?.as_int();
+        if value < 0 {
+            return Err(vm.throw_new(
+                "java/lang/NegativeArraySizeException",
+                Some(&value.to_string()),
+            ));
+        }
+        values.push(value as usize);
+    }
+    array_allocate_dimensions(vm, component, &values).map(Value::Ref)
+}
+
+fn array_allocate_dimensions(
+    vm: &mut Vm<'_>,
+    component: ClassId,
+    dimensions: &[usize],
+) -> Result<ObjectRef, VmError> {
+    if dimensions.is_empty() {
+        return Err(VmError::internal("Array.newInstance with no dimensions"));
+    }
+    if dimensions.len() == 1 {
+        let kind = vm.classes.get(component).kind;
+        return if kind == oxjvm_vm::ClassKind::Primitive {
+            let base = vm.classes.get(component).primitive;
+            let base =
+                base.ok_or_else(|| VmError::internal("primitive class without base type"))?;
+            vm.allocate_array_of(primitive_array_component(base), dimensions[0])
+        } else {
+            vm.allocate_object_array(component, dimensions[0])
+        };
+    }
+    let inner_component = vm.array_class_for(component)?;
+    let outer = vm.allocate_object_array(inner_component, dimensions[0])?;
+    for index in 0..dimensions[0] {
+        let inner = array_allocate_dimensions(vm, component, &dimensions[1..])?;
+        vm.array_set_ref(outer, index, inner)?;
+    }
+    Ok(outer)
+}
+
+fn array_get_value(vm: &mut Vm<'_>, array: ObjectRef, index: i32) -> Result<Value, VmError> {
+    let value = vm.array_get(array, index)?;
+    if vm.classes.get(vm.class_of(array)).kind == oxjvm_vm::ClassKind::Array {
+        let descriptor = array_component_descriptor(vm, array);
+        if descriptor != "Ljava/lang/Object;" {
+            return crate::boxed::box_value(vm, value, descriptor);
+        }
+    }
+    Ok(value)
+}
+
+const ARRAY_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
+    method(
+        "newInstance",
+        "(Ljava/lang/Class;I)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_STATIC,
+        array_new_instance,
+    ),
+    method(
+        "newInstance",
+        "(Ljava/lang/Class;[I)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_STATIC,
+        array_new_instance_dimensions,
+    ),
+    method(
+        "getLength",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| int(vm.array_length(ref_arg(args, 0))? as i32),
+    ),
+    method(
+        "get",
+        "(Ljava/lang/Object;I)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| array_get_value(vm, ref_arg(args, 0), crate::int_arg(args, 1)),
+    ),
+    method(
+        "getBoolean",
+        "(Ljava/lang/Object;I)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            boolean(
+                vm.array_get(ref_arg(args, 0), crate::int_arg(args, 1))?
+                    .as_int()
+                    != 0,
+            )
+        },
+    ),
+    method(
+        "getByte",
+        "(Ljava/lang/Object;I)B",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            int(vm
+                .array_get(ref_arg(args, 0), crate::int_arg(args, 1))?
+                .as_int())
+        },
+    ),
+    method(
+        "getChar",
+        "(Ljava/lang/Object;I)C",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            int(vm
+                .array_get(ref_arg(args, 0), crate::int_arg(args, 1))?
+                .as_int())
+        },
+    ),
+    method(
+        "getShort",
+        "(Ljava/lang/Object;I)S",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            int(vm
+                .array_get(ref_arg(args, 0), crate::int_arg(args, 1))?
+                .as_int())
+        },
+    ),
+    method(
+        "getInt",
+        "(Ljava/lang/Object;I)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            int(vm
+                .array_get(ref_arg(args, 0), crate::int_arg(args, 1))?
+                .as_int())
+        },
+    ),
+    method(
+        "getLong",
+        "(Ljava/lang/Object;I)J",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            long(
+                vm.array_get(ref_arg(args, 0), crate::int_arg(args, 1))?
+                    .as_long(),
+            )
+        },
+    ),
+    method(
+        "getFloat",
+        "(Ljava/lang/Object;I)F",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            float(
+                vm.array_get(ref_arg(args, 0), crate::int_arg(args, 1))?
+                    .as_float(),
+            )
+        },
+    ),
+    method(
+        "getDouble",
+        "(Ljava/lang/Object;I)D",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            double(
+                vm.array_get(ref_arg(args, 0), crate::int_arg(args, 1))?
+                    .as_double(),
+            )
+        },
+    ),
+    method(
+        "set",
+        "(Ljava/lang/Object;ILjava/lang/Object;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            let index = crate::int_arg(args, 1);
+            let descriptor = array_component_descriptor(vm, array);
+            let value = if descriptor == "Ljava/lang/Object;" {
+                Value::Ref(ref_arg(args, 2))
+            } else {
+                crate::boxed::unbox_value(vm, ref_arg(args, 2), descriptor)
+            };
+            vm.array_set(array, index, value, true)?;
+            void()
+        },
+    ),
+    method(
+        "setBoolean",
+        "(Ljava/lang/Object;IZ)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            vm.array_set(
+                ref_arg(args, 0),
+                crate::int_arg(args, 1),
+                Value::Int(crate::int_arg(args, 2)),
+                true,
+            )?;
+            void()
+        },
+    ),
+    method(
+        "setByte",
+        "(Ljava/lang/Object;IB)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            vm.array_set(
+                ref_arg(args, 0),
+                crate::int_arg(args, 1),
+                Value::Int(crate::int_arg(args, 2)),
+                true,
+            )?;
+            void()
+        },
+    ),
+    method(
+        "setChar",
+        "(Ljava/lang/Object;IC)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            vm.array_set(
+                ref_arg(args, 0),
+                crate::int_arg(args, 1),
+                Value::Int(crate::int_arg(args, 2)),
+                true,
+            )?;
+            void()
+        },
+    ),
+    method(
+        "setShort",
+        "(Ljava/lang/Object;IS)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            vm.array_set(
+                ref_arg(args, 0),
+                crate::int_arg(args, 1),
+                Value::Int(crate::int_arg(args, 2)),
+                true,
+            )?;
+            void()
+        },
+    ),
+    method(
+        "setInt",
+        "(Ljava/lang/Object;II)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            vm.array_set(
+                ref_arg(args, 0),
+                crate::int_arg(args, 1),
+                Value::Int(crate::int_arg(args, 2)),
+                true,
+            )?;
+            void()
+        },
+    ),
+    method(
+        "setLong",
+        "(Ljava/lang/Object;IJ)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            vm.array_set(
+                ref_arg(args, 0),
+                crate::int_arg(args, 1),
+                Value::Long(crate::long_arg(args, 2)),
+                true,
+            )?;
+            void()
+        },
+    ),
+    method(
+        "setFloat",
+        "(Ljava/lang/Object;IF)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            vm.array_set(
+                ref_arg(args, 0),
+                crate::int_arg(args, 1),
+                Value::Float(crate::float_arg(args, 2)),
+                true,
+            )?;
+            void()
+        },
+    ),
+    method(
+        "setDouble",
+        "(Ljava/lang/Object;ID)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            vm.array_set(
+                ref_arg(args, 0),
+                crate::int_arg(args, 1),
+                Value::Double(crate::double_arg(args, 2)),
+                true,
+            )?;
+            void()
+        },
+    ),
+];
+
+/// `java.lang.reflect.Array`.
+pub(crate) const REFLECT_ARRAY: oxjvm_vm::NativeClass = class(
+    "java/lang/reflect/Array",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[],
+    &ARRAY_METHODS,
+    None,
+);
 // -------------------------------------------------------------------------------------------
 // Class lookups
 // -------------------------------------------------------------------------------------------
@@ -3697,3 +4077,113 @@ pub(crate) fn class_reflect_method(
 
     Err(vm.throw_new("java/lang/NoSuchMethodException", Some(&name)))
 }
+// -------------------------------------------------------------------------------------------
+// ProtectionDomain (stub)
+// -------------------------------------------------------------------------------------------
+
+const PERMISSION_COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "implies",
+        "(Ljava/security/Permission;)Z",
+        ACC_PUBLIC,
+        |_, _, _| boolean(false),
+    ),
+    method(
+        "add",
+        "(Ljava/security/Permission;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method(
+        "elements",
+        "()Ljava/util/Enumeration;",
+        ACC_PUBLIC,
+        |vm, _, _| object(crate::util::new_enumeration(vm, &[])?),
+    ),
+    method("isReadOnly", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
+];
+
+/// `java.security.PermissionCollection`: an empty, read-only collection.
+pub(crate) const PERMISSION_COLLECTION: oxjvm_vm::NativeClass = class(
+    "java/security/PermissionCollection",
+    Some("java/lang/Object"),
+    &["java/io/Serializable"],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[],
+    &PERMISSION_COLLECTION_METHODS,
+    None,
+);
+
+const PERMISSIONS_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "implies",
+        "(Ljava/security/Permission;)Z",
+        ACC_PUBLIC,
+        |_, _, _| boolean(false),
+    ),
+    method(
+        "add",
+        "(Ljava/security/Permission;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method(
+        "elements",
+        "()Ljava/util/Enumeration;",
+        ACC_PUBLIC,
+        |vm, _, _| object(crate::util::new_enumeration(vm, &[])?),
+    ),
+    method("isReadOnly", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
+];
+
+/// `java.security.Permissions`: the concrete empty permission collection.
+pub(crate) const PERMISSIONS: oxjvm_vm::NativeClass = class(
+    "java/security/Permissions",
+    Some("java/security/PermissionCollection"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[],
+    &PERMISSIONS_METHODS,
+    None,
+);
+
+const PROTECTION_DOMAIN_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "getPermissions",
+        "()Ljava/security/PermissionCollection;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/security/Permissions")?;
+            object(vm.new_instance(class)?)
+        },
+    ),
+    method(
+        "getCodeSource",
+        "()Ljava/security/CodeSource;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "implies",
+        "(Ljava/security/Permission;)Z",
+        ACC_PUBLIC,
+        |_, _, _| boolean(false),
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| object(vm.make_string("ProtectionDomain")?),
+    ),
+];
+
+/// `java.security.ProtectionDomain`: a domain without code source or permissions.
+pub(crate) const PROTECTION_DOMAIN: oxjvm_vm::NativeClass = class(
+    "java/security/ProtectionDomain",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &PROTECTION_DOMAIN_METHODS,
+    None,
+);

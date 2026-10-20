@@ -2,13 +2,14 @@
 
 use alloc::string::{String, ToString};
 use alloc::vec;
+use alloc::vec::Vec;
 
 use oxjvm_classfile::flags::*;
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
 use crate::{boolean, class, field, int, method, object, receiver, ref_arg, string_arg, void};
 
-const LOCALE_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+const LOCALE_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -174,6 +175,30 @@ const LOCALE_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/util/Locale;",
         ACC_PUBLIC | ACC_STATIC,
         locale_of,
+    ),
+    method(
+        "getAvailableLocales",
+        "()[Ljava/util/Locale;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/util/Locale")?;
+            vm.ensure_initialized(class)?;
+            let names = [
+                "ROOT", "ENGLISH", "US", "UK", "CANADA", "FRANCE", "GERMANY", "ITALY", "JAPAN",
+                "KOREA", "CHINA", "PRC", "TAIWAN",
+            ];
+            let mut locales = Vec::new();
+            for name in names {
+                if let Some(value) = vm.read_static_ref_if_set(class, name, "Ljava/util/Locale;") {
+                    locales.push(value);
+                }
+            }
+            let array = vm.allocate_object_array(class, locales.len())?;
+            for (index, locale) in locales.iter().enumerate() {
+                vm.array_set_ref(array, index, *locale)?;
+            }
+            object(array)
+        },
     ),
 ];
 

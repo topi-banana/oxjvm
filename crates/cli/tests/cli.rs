@@ -149,6 +149,30 @@ fn disassembles_and_inspects_a_class_file() {
 }
 
 #[test]
+fn runs_p1_reflection_fixture_with_files_and_urls() {
+    let fixtures =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../classfile/tests/fixtures");
+    let output = Command::new(env!("CARGO_BIN_EXE_oxjvm"))
+        .args(["run", "-cp"])
+        .arg(&fixtures)
+        .arg("demo.P1Reflection")
+        .output()
+        .expect("spawn oxjvm");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("parameter=sample"), "{stdout}");
+    assert!(
+        stdout.contains("classApi=true:0:true:java.lang.Number"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("url=5:104:file:/tmp/a/c.txt"), "{stdout}");
+}
+
+#[test]
 fn reports_a_missing_main_class_with_status_one() {
     let output = Command::new(env!("CARGO_BIN_EXE_oxjvm"))
         .args(["run", "-cp", "/nonexistent", "Nope"])

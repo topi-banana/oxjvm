@@ -646,6 +646,11 @@ exception!(
     "java/lang/ReflectiveOperationException",
     "java/lang/Exception"
 );
+exception!(
+    INSTANTIATION_EXCEPTION,
+    "java/lang/InstantiationException",
+    "java/lang/ReflectiveOperationException"
+);
 
 const INVOCATION_TARGET_EXCEPTION_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     method("<init>", "()V", ACC_PUBLIC, invocation_target_ctor),
@@ -746,6 +751,11 @@ exception!(
     RUNTIME_EXCEPTION,
     "java/lang/RuntimeException",
     "java/lang/Exception"
+);
+exception!(
+    MISSING_RESOURCE_EXCEPTION,
+    "java/util/MissingResourceException",
+    "java/lang/RuntimeException"
 );
 exception!(
     ARITHMETIC_EXCEPTION,
