@@ -167,7 +167,7 @@ fn stream_get(vm: &mut Vm<'_>, this: ObjectRef) -> Vec<ObjectRef> {
     stream_elements(vm, this)
 }
 
-const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
+const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
     method(
         "of",
         "([Ljava/lang/Object;)Ljava/util/stream/Stream;",
@@ -376,6 +376,74 @@ const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
         ACC_PUBLIC | ACC_ABSTRACT,
         abstract_method_pub,
     ),
+    method(
+        "mapToInt",
+        "(Ljava/util/function/ToIntFunction;)Ljava/util/stream/IntStream;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "mapToLong",
+        "(Ljava/util/function/ToLongFunction;)Ljava/util/stream/LongStream;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "mapToDouble",
+        "(Ljava/util/function/ToDoubleFunction;)Ljava/util/stream/DoubleStream;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "iterate",
+        "(Ljava/lang/Object;Ljava/util/function/UnaryOperator;)Ljava/util/stream/Stream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let mut current = ref_arg(args, 0);
+            let operator = ref_arg(args, 1);
+            let mut elements = Vec::new();
+            for _ in 0..1024 {
+                elements.push(current);
+                let (class, method) = vm.resolve_virtual_method(
+                    operator,
+                    "apply",
+                    "(Ljava/lang/Object;)Ljava/lang/Object;",
+                )?;
+                current = vm
+                    .invoke_method(
+                        class,
+                        method,
+                        vec![Value::Ref(operator), Value::Ref(current)],
+                    )?
+                    .as_ref();
+            }
+            object(stream_from(vm, elements)?)
+        },
+    ),
+    method(
+        "generate",
+        "(Ljava/util/function/Supplier;)Ljava/util/stream/Stream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let supplier = ref_arg(args, 0);
+            let (class, method) =
+                vm.resolve_virtual_method(supplier, "get", "()Ljava/lang/Object;")?;
+            let mut elements = Vec::new();
+            for _ in 0..1024 {
+                elements.push(
+                    vm.invoke_method(class, method, vec![Value::Ref(supplier)])?
+                        .as_ref(),
+                );
+            }
+            object(stream_from(vm, elements)?)
+        },
+    ),
+    method(
+        "reduce",
+        "(Ljava/lang/Object;Ljava/util/function/BiFunction;Ljava/util/function/BinaryOperator;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
 ];
 
 const BASE_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
@@ -443,7 +511,7 @@ pub(crate) const STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const OXJVM_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
+const OXJVM_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
     method(
         "filter",
         "(Ljava/util/function/Predicate;)Ljava/util/stream/Stream;",
@@ -853,6 +921,100 @@ const OXJVM_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
                 make_custom_collector(vm, ref_arg(args, 1), ref_arg(args, 2), ObjectRef::NULL)?;
             let elements = stream_get(vm, receiver(args));
             collect_elements(vm, collector, elements)
+        },
+    ),
+    method(
+        "mapToInt",
+        "(Ljava/util/function/ToIntFunction;)Ljava/util/stream/IntStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let function = ref_arg(args, 1);
+            let mut values = Vec::new();
+            for element in stream_get(vm, receiver(args)) {
+                let (class, method) =
+                    vm.resolve_virtual_method(function, "applyAsInt", "(Ljava/lang/Object;)I")?;
+                values.push(
+                    vm.invoke_method(
+                        class,
+                        method,
+                        vec![Value::Ref(function), Value::Ref(element)],
+                    )?
+                    .as_int(),
+                );
+            }
+            crate::intstream::int_stream_of(vm, values)
+        },
+    ),
+    method(
+        "mapToLong",
+        "(Ljava/util/function/ToLongFunction;)Ljava/util/stream/LongStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let function = ref_arg(args, 1);
+            let mut values = Vec::new();
+            for element in stream_get(vm, receiver(args)) {
+                let (class, method) =
+                    vm.resolve_virtual_method(function, "applyAsLong", "(Ljava/lang/Object;)J")?;
+                values.push(
+                    vm.invoke_method(
+                        class,
+                        method,
+                        vec![Value::Ref(function), Value::Ref(element)],
+                    )?
+                    .as_long(),
+                );
+            }
+            object(crate::primitive_stream::long_stream_from(vm, values)?)
+        },
+    ),
+    method(
+        "mapToDouble",
+        "(Ljava/util/function/ToDoubleFunction;)Ljava/util/stream/DoubleStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let function = ref_arg(args, 1);
+            let mut values = Vec::new();
+            for element in stream_get(vm, receiver(args)) {
+                let (class, method) =
+                    vm.resolve_virtual_method(function, "applyAsDouble", "(Ljava/lang/Object;)D")?;
+                values.push(
+                    vm.invoke_method(
+                        class,
+                        method,
+                        vec![Value::Ref(function), Value::Ref(element)],
+                    )?
+                    .as_double(),
+                );
+            }
+            object(crate::primitive_stream::double_stream_from(vm, values)?)
+        },
+    ),
+    method(
+        "reduce",
+        "(Ljava/lang/Object;Ljava/util/function/BiFunction;Ljava/util/function/BinaryOperator;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let mut accumulator = ref_arg(args, 1);
+            let function = ref_arg(args, 2);
+            for element in stream_get(vm, receiver(args)) {
+                let (class, method) = vm.resolve_virtual_method(
+                    function,
+                    "apply",
+                    "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                )?;
+                accumulator = vm
+                    .invoke_method(
+                        class,
+                        method,
+                        vec![
+                            Value::Ref(function),
+                            Value::Ref(accumulator),
+                            Value::Ref(element),
+                        ],
+                    )?
+                    .as_ref();
+            }
+            object(accumulator)
         },
     ),
 ];

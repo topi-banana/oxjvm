@@ -34,6 +34,7 @@ pub(crate) mod math;
 pub(crate) mod net;
 pub(crate) mod nio;
 pub(crate) mod optional;
+pub(crate) mod primitive_stream;
 pub(crate) mod reflect;
 pub(crate) mod regex;
 pub(crate) mod service_loader;
@@ -116,7 +117,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 415] = [
+static REGISTRY: [NativeClass; 437] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -357,6 +358,22 @@ static REGISTRY: [NativeClass; 415] = [
     util::CURRENCY,
     file::FILE_FILTER,
     invoke::THREAD_FACTORY,
+    invoke::DOUBLE_CONSUMER,
+    invoke::DOUBLE_PREDICATE,
+    invoke::DOUBLE_UNARY_OPERATOR,
+    invoke::DOUBLE_FUNCTION,
+    invoke::DOUBLE_BINARY_OPERATOR,
+    invoke::DOUBLE_TO_INT_FUNCTION,
+    invoke::DOUBLE_TO_LONG_FUNCTION,
+    invoke::LONG_CONSUMER,
+    invoke::LONG_PREDICATE,
+    invoke::LONG_UNARY_OPERATOR,
+    invoke::LONG_FUNCTION,
+    invoke::LONG_BINARY_OPERATOR,
+    invoke::LONG_TO_INT_FUNCTION,
+    invoke::LONG_TO_DOUBLE_FUNCTION,
+    invoke::INT_TO_LONG_FUNCTION,
+    invoke::INT_TO_DOUBLE_FUNCTION,
     invoke::OJVM_IDENTITY,
     invoke::OJVM_FUNCTION,
     invoke::PREDICATE_COMBINER,
@@ -377,6 +394,12 @@ static REGISTRY: [NativeClass; 415] = [
     util::NAVIGABLE_MAP,
     util::TREE_MAP,
     intstream::INT_STREAM,
+    primitive_stream::DOUBLE_STREAM,
+    primitive_stream::OJVM_DOUBLE_STREAM,
+    primitive_stream::LONG_STREAM,
+    primitive_stream::OJVM_LONG_STREAM,
+    primitive_stream::OPTIONAL_DOUBLE,
+    primitive_stream::OPTIONAL_LONG,
     intstream::OJVM_INT_STREAM,
     stream::BASE_STREAM,
     stream::STREAM,

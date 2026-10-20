@@ -662,7 +662,7 @@ macro_rules! functional_interface {
 // Each interface carries the same shape; the dispatcher selects by descriptor, so a shared array
 // with one abstract method of each common descriptor is sufficient and lets a single class serve
 // every functional interface users link against.
-const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
+const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
     method(
         "apply",
         "(Ljava/lang/Object;)Ljava/lang/Object;",
@@ -726,6 +726,114 @@ const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
     method(
         "applyAsInt",
         "(I)I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "accept",
+        "(D)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "test",
+        "(D)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "applyAsDouble",
+        "(D)D",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "apply",
+        "(D)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "applyAsDouble",
+        "(Ljava/lang/Object;)D",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "accept",
+        "(J)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "test",
+        "(J)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "applyAsLong",
+        "(J)J",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "apply",
+        "(J)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "applyAsLong",
+        "(Ljava/lang/Object;)J",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "applyAsDouble",
+        "(DD)D",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "applyAsLong",
+        "(JJ)J",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "accept",
+        "(Ljava/lang/Object;D)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "accept",
+        "(Ljava/lang/Object;J)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "applyAsInt",
+        "(J)I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "applyAsDouble",
+        "(J)D",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "applyAsLong",
+        "(I)J",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "applyAsDouble",
+        "(I)D",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
@@ -972,6 +1080,43 @@ functional_interface!(TO_INT_FUNCTION, "java/util/function/ToIntFunction");
 functional_interface!(TO_LONG_FUNCTION, "java/util/function/ToLongFunction");
 functional_interface!(TO_DOUBLE_FUNCTION, "java/util/function/ToDoubleFunction");
 functional_interface!(THREAD_FACTORY, "java/util/concurrent/ThreadFactory");
+functional_interface!(DOUBLE_CONSUMER, "java/util/function/DoubleConsumer");
+functional_interface!(DOUBLE_PREDICATE, "java/util/function/DoublePredicate");
+functional_interface!(
+    DOUBLE_UNARY_OPERATOR,
+    "java/util/function/DoubleUnaryOperator"
+);
+functional_interface!(DOUBLE_FUNCTION, "java/util/function/DoubleFunction");
+functional_interface!(
+    DOUBLE_BINARY_OPERATOR,
+    "java/util/function/DoubleBinaryOperator"
+);
+functional_interface!(
+    DOUBLE_TO_INT_FUNCTION,
+    "java/util/function/DoubleToIntFunction"
+);
+functional_interface!(
+    DOUBLE_TO_LONG_FUNCTION,
+    "java/util/function/DoubleToLongFunction"
+);
+functional_interface!(LONG_CONSUMER, "java/util/function/LongConsumer");
+functional_interface!(LONG_PREDICATE, "java/util/function/LongPredicate");
+functional_interface!(LONG_UNARY_OPERATOR, "java/util/function/LongUnaryOperator");
+functional_interface!(LONG_FUNCTION, "java/util/function/LongFunction");
+functional_interface!(
+    LONG_BINARY_OPERATOR,
+    "java/util/function/LongBinaryOperator"
+);
+functional_interface!(LONG_TO_INT_FUNCTION, "java/util/function/LongToIntFunction");
+functional_interface!(
+    LONG_TO_DOUBLE_FUNCTION,
+    "java/util/function/LongToDoubleFunction"
+);
+functional_interface!(INT_TO_LONG_FUNCTION, "java/util/function/IntToLongFunction");
+functional_interface!(
+    INT_TO_DOUBLE_FUNCTION,
+    "java/util/function/IntToDoubleFunction"
+);
 
 pub(crate) const APPENDABLE: oxjvm_vm::NativeClass = class(
     "java/lang/Appendable",

@@ -1460,7 +1460,7 @@ macro_rules! array_mismatch {
     };
 }
 
-const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 70] = [
+const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 72] = [
     method(
         "toString",
         "([I)Ljava/lang/String;",
@@ -1680,6 +1680,34 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 70] = [
                 values.push(vm.array_get(array, index as i32)?.as_int());
             }
             crate::intstream::int_stream_of(vm, values)
+        },
+    ),
+    method(
+        "stream",
+        "([D)Ljava/util/stream/DoubleStream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            let length = vm.array_length(array)?;
+            let mut values = Vec::with_capacity(length);
+            for index in 0..length {
+                values.push(vm.array_get(array, index as i32)?.as_double());
+            }
+            object(crate::primitive_stream::double_stream_from(vm, values)?)
+        },
+    ),
+    method(
+        "stream",
+        "([J)Ljava/util/stream/LongStream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            let length = vm.array_length(array)?;
+            let mut values = Vec::with_capacity(length);
+            for index in 0..length {
+                values.push(vm.array_get(array, index as i32)?.as_long());
+            }
+            object(crate::primitive_stream::long_stream_from(vm, values)?)
         },
     ),
     array_equals!("([B[B)Z"),
