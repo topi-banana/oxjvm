@@ -95,10 +95,30 @@ pub fn run(
     classes: &[&[u8]],
     sink: &mut dyn FnMut(Stream, &[u8]),
 ) -> Result<i32, oxjvm_vm::VmError> {
+    run_with_options(
+        main_class,
+        args,
+        classes,
+        sink,
+        oxjvm_vm::VmOptions::default(),
+    )
+}
+
+/// Run a main class with in-memory class bytes and an explicit configuration.
+///
+/// The options carry the heap budget (`-Xms`/`-Xmx`) and the stack depth limit (`-Xss`), so a
+/// wasm host can bound the memory a guest may use.
+pub fn run_with_options(
+    main_class: &str,
+    args: &[&str],
+    classes: &[&[u8]],
+    sink: &mut dyn FnMut(Stream, &[u8]),
+    options: oxjvm_vm::VmOptions,
+) -> Result<i32, oxjvm_vm::VmError> {
     let mut host = MemoryHost::new(sink);
     for bytes in classes {
         let _ = host.insert_parsed(bytes.to_vec());
     }
-    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let mut vm = Vm::with_options(&mut host, oxjvm_java::natives(), options);
     vm.run_main(main_class, args)
 }

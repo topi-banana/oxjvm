@@ -12,7 +12,7 @@ use std::process::ExitCode;
 use oxjvm_classfile::attribute::AttributeData;
 use oxjvm_classfile::{ClassFile, opcode};
 use oxjvm_platform::{Host, HostError, Stream};
-use oxjvm_vm::{Vm, VmError};
+use oxjvm_vm::{Vm, VmError, VmOptions};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -40,10 +40,13 @@ fn usage() {
     println!(
         "oxjvm {}\n\
          Usage:\n\
-         \x20 oxjvm run [-cp <path>] [-D name=value]... <MainClass> [args...]\n\
+         \x20 oxjvm run [-cp <path>] [-D name=value]... [-Xms <size>] [-Xmx <size>]\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20 [-Xss <size>] <MainClass> [args...]\n\
          \x20 oxjvm disasm <file.class>\n\
          \x20 oxjvm inspect <file.class>\n\
-         \x20 oxjvm version",
+         \x20 oxjvm version\n\
+         \n\
+         Memory sizes accept a k, m, or g suffix (for example -Xmx256m).",
         env!("CARGO_PKG_VERSION")
     );
 }
@@ -379,6 +382,7 @@ impl Host for StdHost {
 fn run(args: &[String]) -> ExitCode {
     let mut classpath: Vec<PathBuf> = Vec::new();
     let mut overrides: Vec<(String, String)> = Vec::new();
+    let mut options = VmOptions::default();
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -397,11 +401,35 @@ fn run(args: &[String]) -> ExitCode {
                 overrides.push((key.to_string(), value.to_string()));
                 index += 1;
             }
+            other if is_x_option(other) => {
+                let (name, inline) = split_x_option(other);
+                let value = match inline {
+                    Some(value) => value,
+                    None => {
+                        index += 1;
+                        let Some(value) = args.get(index) else {
+                            eprintln!("oxjvm: {name} requires a value");
+                            return ExitCode::FAILURE;
+                        };
+                        value.clone()
+                    }
+                };
+                if !apply_x_option(name, &value, &mut options) {
+                    return ExitCode::FAILURE;
+                }
+                index += 1;
+            }
             other if !other.starts_with('-') => break,
             other => {
                 eprintln!("oxjvm: unknown option `{other}`");
                 return ExitCode::FAILURE;
             }
+        }
+    }
+    if let (Some(initial), Some(max)) = (options.initial_heap_bytes, options.max_heap_bytes) {
+        if initial > max {
+            eprintln!("oxjvm: -Xms must not be larger than -Xmx");
+            return ExitCode::FAILURE;
         }
     }
     let Some(main_class) = args.get(index) else {
@@ -413,14 +441,74 @@ fn run(args: &[String]) -> ExitCode {
     }
     let program_args: Vec<String> = args[index + 1..].to_vec();
     let mut host = StdHost::new(classpath, &overrides);
-    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let mut vm = Vm::with_options(&mut host, oxjvm_java::natives(), options);
     let argument_refs: Vec<&str> = program_args.iter().map(String::as_str).collect();
     match vm.run_main(main_class, &argument_refs) {
         Ok(status) => ExitCode::from((status & 0xFF) as u8),
         Err(VmError::Exit(status)) => ExitCode::from((status & 0xFF) as u8),
+        Err(VmError::Thrown(exception)) => {
+            vm.print_uncaught("main", exception);
+            ExitCode::FAILURE
+        }
         Err(error) => {
             eprintln!("oxjvm: {error}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+/// The `-X` options the launcher understands.
+const X_OPTIONS: [&str; 3] = ["-Xms", "-Xmx", "-Xss"];
+
+/// Whether the argument is one of the `-X` options.
+fn is_x_option(argument: &str) -> bool {
+    X_OPTIONS
+        .iter()
+        .any(|option| argument == *option || argument.starts_with(option))
+}
+
+/// Split a `-X` option into its name and the value attached to it.
+///
+/// `-Xmx256m` and `-Xmx=256m` carry their value; a bare `-Xmx` takes the next argument.
+fn split_x_option(argument: &str) -> (&str, Option<String>) {
+    if let Some((name, value)) = argument.split_once('=') {
+        return (name, Some(value.to_string()));
+    }
+    for option in X_OPTIONS {
+        if argument.len() > option.len() && argument.starts_with(option) {
+            return (option, Some(argument[option.len()..].to_string()));
+        }
+    }
+    (argument, None)
+}
+
+/// Apply a `-X` option to the VM configuration.
+fn apply_x_option(name: &str, value: &str, options: &mut VmOptions) -> bool {
+    match name {
+        "-Xms" | "-Xmx" => {
+            let Some(bytes) = oxjvm_vm::parse_memory_size(value) else {
+                eprintln!("oxjvm: {name} expects a size such as 512m, got `{value}`");
+                return false;
+            };
+            if name == "-Xms" {
+                options.initial_heap_bytes = Some(bytes);
+            } else {
+                options.max_heap_bytes = Some(bytes);
+            }
+            true
+        }
+        "-Xss" => {
+            let Some(bytes) = oxjvm_vm::parse_memory_size(value) else {
+                eprintln!("oxjvm: {name} expects a size such as 1m, got `{value}`");
+                return false;
+            };
+            let frames = bytes / oxjvm_vm::options::STACK_FRAME_BYTES;
+            options.max_stack_frames = usize::try_from(frames).unwrap_or(usize::MAX).max(1);
+            true
+        }
+        _ => {
+            eprintln!("oxjvm: unknown option `{name}`");
+            false
         }
     }
 }

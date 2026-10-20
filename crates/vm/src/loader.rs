@@ -111,7 +111,7 @@ impl<'a> Vm<'a> {
             return self.resolve_array_class(name);
         }
         if let Some(def) = self.natives.iter().find(|native| native.name == name) {
-            return Ok(self.load_native_class(def));
+            return self.load_native_class(def);
         }
         if self.loading.contains(name) {
             return Err(self.throw_new(
@@ -472,7 +472,7 @@ impl<'a> Vm<'a> {
                 let text = pool
                     .utf8(*string_index)
                     .map_err(|error| VmError::invalid_code(context, error.to_string()))?;
-                Value::Ref(self.intern(text))
+                Value::Ref(self.intern(text)?)
             }
             other => {
                 return Err(VmError::invalid_code(
@@ -547,9 +547,17 @@ impl<'a> Vm<'a> {
     // -----------------------------------------------------------------------------------------
 
     /// Load a native class from the registry.
-    pub fn load_native_class(&mut self, definition: &'static NativeClass) -> ClassId {
+    ///
+    /// # Errors
+    ///
+    /// Raises `java.lang.OutOfMemoryError` when the class's string constants do not fit in the
+    /// heap budget.
+    pub fn load_native_class(
+        &mut self,
+        definition: &'static NativeClass,
+    ) -> Result<ClassId, VmError> {
         if let Some(id) = self.classes.by_name(definition.name) {
-            return id;
+            return Ok(id);
         }
         let super_class = definition.super_name.map(|name| {
             self.resolve_class(name)
@@ -654,18 +662,18 @@ impl<'a> Vm<'a> {
         let native_constants: Vec<Option<Value>> = definition
             .fields
             .iter()
-            .map(|native_field| {
+            .map(|native_field| -> Result<Option<Value>, VmError> {
                 let is_static = native_field.access_flags & ACC_STATIC != 0;
-                match (native_field.constant, is_static) {
+                Ok(match (native_field.constant, is_static) {
                     (Some(NativeConstant::Int(value)), true) => Some(Value::Int(value)),
                     (Some(NativeConstant::Long(value)), true) => Some(Value::Long(value)),
                     (Some(NativeConstant::Float(value)), true) => Some(Value::Float(value)),
                     (Some(NativeConstant::Double(value)), true) => Some(Value::Double(value)),
-                    (Some(NativeConstant::Str(text)), true) => Some(Value::Ref(self.intern(text))),
+                    (Some(NativeConstant::Str(text)), true) => Some(Value::Ref(self.intern(text)?)),
                     _ => None,
-                }
+                })
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
         {
             let class = self.classes.get_mut(id);
             class.id = id;
@@ -690,7 +698,7 @@ impl<'a> Vm<'a> {
             class.static_values = static_values;
             class.instance_defaults = defaults;
         }
-        id
+        Ok(id)
     }
 
     // -----------------------------------------------------------------------------------------
@@ -1147,7 +1155,7 @@ impl<'a> Vm<'a> {
     pub fn new_instance(&mut self, class: ClassId) -> Result<ObjectRef, VmError> {
         let defaults = self.classes.get(class).instance_defaults.clone();
         self.maybe_gc();
-        Ok(self.heap.allocate(class, ObjectData::Instance(defaults)))
+        self.allocate_object(class, ObjectData::Instance(defaults))
     }
 
     /// Write an instance reference field.
@@ -1198,7 +1206,7 @@ impl<'a> Vm<'a> {
         value: &str,
     ) -> Result<(), VmError> {
         let (declaring, field) = self.find_field(class, name, "Ljava/lang/String;")?;
-        let string = self.intern(value);
+        let string = self.intern(value)?;
         self.set_instance_ref(object, declaring, field, string);
         Ok(())
     }

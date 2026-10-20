@@ -206,3 +206,73 @@ fn reports_a_missing_main_class_with_status_one() {
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stderr).contains("Nope"));
 }
+
+#[test]
+fn accepts_the_memory_options() {
+    let dir = scratch_dir("options");
+    fs::write(dir.join("Hello.class"), build_hello_class()).expect("write class");
+    for option in ["-Xmx256m", "-Xmx=256m", "-Xmx", "-Xms64m", "-Xss1m"] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_oxjvm"));
+        command.args(["run", "-cp"]).arg(&dir);
+        if option == "-Xmx" {
+            command.arg(option).arg("256m");
+        } else {
+            command.arg(option);
+        }
+        let output = command.arg("Hello").output().expect("spawn oxjvm");
+        assert!(
+            output.status.success(),
+            "{option} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "Hello from oxjvm!\n"
+        );
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn rejects_malformed_memory_options() {
+    for option in ["-Xmx", "-Xmx12x", "-Xms", "-Xss", "-Xfoo1m"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_oxjvm"))
+            .args(["run", option, "Hello"])
+            .output()
+            .expect("spawn oxjvm");
+        assert!(!output.status.success(), "{option} was accepted");
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).is_empty(),
+            "{option} failed silently"
+        );
+    }
+}
+
+#[test]
+fn rejects_an_initial_heap_larger_than_the_maximum() {
+    let output = Command::new(env!("CARGO_BIN_EXE_oxjvm"))
+        .args(["run", "-Xms64m", "-Xmx16m", "Hello"])
+        .output()
+        .expect("spawn oxjvm");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("-Xms"));
+}
+
+#[test]
+fn a_tiny_heap_fails_to_start() {
+    let dir = scratch_dir("tiny");
+    fs::write(dir.join("Hello.class"), build_hello_class()).expect("write class");
+    let output = Command::new(env!("CARGO_BIN_EXE_oxjvm"))
+        .args(["run", "-Xmx64", "-cp"])
+        .arg(&dir)
+        .arg("Hello")
+        .output()
+        .expect("spawn oxjvm");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("OutOfMemoryError") || stderr.contains("heap space"),
+        "stderr: {stderr}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}

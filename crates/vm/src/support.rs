@@ -407,7 +407,7 @@ impl<'a> Vm<'a> {
         let class = object.class;
         let data = object.data.clone();
         self.maybe_gc();
-        Ok(self.heap.allocate(class, data))
+        self.allocate_object(class, data)
     }
 
     /// `System.arraycopy`: bounds- and type-checked array copying, including overlap.

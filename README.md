@@ -18,6 +18,28 @@ main([Ljava/lang/String;)V
       8: return           b1
 ```
 
+## Memory and stack limits
+
+The launcher understands the `-X` options the `java` launcher does:
+
+| Option       | Meaning                                                              | Default       |
+| ------------ | -------------------------------------------------------------------- | ------------- |
+| `-Xms<size>` | The heap size at which the collector starts working                  | 64 MiB        |
+| `-Xmx<size>` | The maximum heap size; a larger allocation raises `OutOfMemoryError` | unbounded     |
+| `-Xss<size>` | The thread stack size, converted to a frame limit (1 KiB per frame)  | 65 536 frames |
+
+Sizes accept a `k`, `m`, or `g` suffix (`-Xmx256m`, `-Xmx=256m`, and `-Xmx 256m` all work). The
+heap is metered in the bytes the guest objects occupy — a `byte[]` costs one byte per element, an
+`int[]` four, a `String` two per UTF-16 code unit — plus a fixed header per object. When an
+allocation does not fit, the collector runs once to reclaim what it can, and the allocation raises
+`java.lang.OutOfMemoryError` if the object still does not fit. The size the collector works within
+starts at `-Xms` and grows toward `-Xmx` as the live set demands, so a program that keeps more
+data alive collects less and less often. `Runtime.maxMemory()`, `Runtime.totalMemory()`, and
+`Runtime.freeMemory()` report the same budget.
+
+Embedders configure the same limits through `Vm::with_options` and a `VmOptions` value; the wasm
+facade exposes them as `oxjvm_wasm::run_with_options`.
+
 ## Workspace
 
 | Crate              | Description                                                                                    | `no_std` |
@@ -59,7 +81,8 @@ single-threaded wasm engine, and keeps working when the engine provides shared-m
 * **Threads**: cooperative scheduling with monitors, `wait`/`notify`, `sleep`, `yield`, `join`,
   `interrupt`, daemons, and `synchronized` methods. Deterministic; no host threads required.
 * **GC**: precise mark-sweep over frames, statics, interned strings, class objects, and method
-  handles.
+  handles. The heap is metered in bytes, so the collector can be given a budget (`-Xms`/`-Xmx`)
+  and an exhausted heap raises `OutOfMemoryError` rather than growing without bound.
 * **Core library**: the `java.*` classes listed in `oxjvm-java` — strings, builders, boxed
   primitives, `Math`/`StrictMath` (including a correctly rounded `sqrt` and polynomial
   transcendentals), exceptions with stack traces, `System`, `Thread`, `Class`, `Runtime`,
@@ -73,7 +96,7 @@ single-threaded wasm engine, and keeps working when the engine provides shared-m
   streams are not implemented. Missing classes surface as `NoClassDefFoundError`, exactly as the
   JVM reports them.
 * `Reference` types are erased in the verifier (see above) and `StackOverflowError` is raised from
-  a frame limit rather than a host stack overflow.
+  a frame limit (`-Xss`) rather than a host stack overflow.
 * `Object.wait` wakes on `notify`/timeout without modelling spurious wakeups; interruption during
   `sleep`/`wait` wakes the thread rather than throwing `InterruptedException` mid-park.
 * Records' generated `equals`/`hashCode`/`toString` (the `ObjectMethods` bootstrap) are not
