@@ -47,6 +47,7 @@ pub(crate) mod stream;
 pub(crate) mod text;
 pub(crate) mod throwable;
 pub(crate) mod time;
+pub(crate) mod tree;
 pub(crate) mod unsafe_api;
 pub(crate) mod uri;
 pub(crate) mod util;
@@ -121,7 +122,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 510] = [
+static REGISTRY: [NativeClass; 512] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -329,7 +330,7 @@ static REGISTRY: [NativeClass; 510] = [
     util::OJVM_ENUMERATION,
     util::STRING_TOKENIZER,
     util::HASH_SET,
-    util::TREE_SET,
+    tree::TREE_SET,
     util::LINKED_HASH_SET,
     util::BIT_SET,
     util::HASHTABLE,
@@ -420,7 +421,9 @@ static REGISTRY: [NativeClass; 510] = [
     time::INSTANT,
     util::SORTED_MAP,
     util::NAVIGABLE_MAP,
-    util::TREE_MAP,
+    tree::TREE_MAP,
+    tree::OXJVM_ENTRY_ORDER,
+    tree::OXJVM_REVERSED_ORDER,
     intstream::INT_STREAM,
     primitive_stream::DOUBLE_STREAM,
     primitive_stream::OJVM_DOUBLE_STREAM,

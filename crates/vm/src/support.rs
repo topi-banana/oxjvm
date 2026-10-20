@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use crate::Vm;
 use crate::class::ClassId;
 use crate::error::VmError;
-use crate::heap::{BacktraceFrame, MethodHandleValue, ObjectData};
+use crate::heap::{BacktraceFrame, MethodHandleValue, ObjectData, SortedMap};
 use crate::thread::ThreadState;
 use crate::value::{ObjectRef, Value};
 
@@ -285,6 +285,30 @@ impl<'a> Vm<'a> {
         match &self.heap.get(object)?.data {
             ObjectData::MethodType(descriptor) => Some(descriptor.clone()),
             _ => None,
+        }
+    }
+
+    /// The ordered-map payload of an object, if it has one.
+    #[must_use]
+    pub fn sorted_map(&self, object: ObjectRef) -> Option<&SortedMap> {
+        match &self.heap.get(object)?.data {
+            ObjectData::SortedMap(map) => Some(map),
+            _ => None,
+        }
+    }
+
+    /// The ordered-map payload of an object, for mutation.
+    pub fn sorted_map_mut(&mut self, object: ObjectRef) -> Option<&mut SortedMap> {
+        match &mut self.heap.get_mut(object)?.data {
+            ObjectData::SortedMap(map) => Some(map),
+            _ => None,
+        }
+    }
+
+    /// Replace the ordered-map payload of an object.
+    pub fn set_sorted_map(&mut self, object: ObjectRef, map: SortedMap) {
+        if let Some(object) = self.heap.get_mut(object) {
+            object.data = ObjectData::SortedMap(map);
         }
     }
 

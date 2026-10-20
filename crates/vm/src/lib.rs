@@ -41,7 +41,9 @@ pub use class::{
 };
 pub use error::VmError;
 pub use frame::Frame;
-pub use heap::{ArrayData, BacktraceFrame, MethodHandleValue, ObjectData, OutOfMemory};
+pub use heap::{
+    ArrayData, BacktraceFrame, MethodHandleValue, ObjectData, OutOfMemory, SortedEntry, SortedMap,
+};
 pub use loader::ResolvedMethod;
 pub use options::{VmOptions, parse_memory_size};
 pub use thread::{JavaThread, ThreadState};

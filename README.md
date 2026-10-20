@@ -87,6 +87,7 @@ single-threaded wasm engine, and keeps working when the engine provides shared-m
   primitives, `Math`/`StrictMath` (including a correctly rounded `sqrt` and polynomial
   transcendentals), exceptions with stack traces, `System`, `Thread`, `Class`, `Runtime`,
   `Objects`, `Arrays`, `Random` (bit-compatible with `java.util.Random`), `ArrayList`, `HashMap`,
+  `TreeMap`/`TreeSet` (ordered by the keys' own comparison, kept in a Rust `BTreeMap`),
   `Collections`, method handles, and the functional interfaces.
 
 ## Known deviations
