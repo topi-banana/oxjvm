@@ -1635,3 +1635,30 @@ fn p1_primitive_streams() {
         );
     }
 }
+
+#[test]
+fn p1_executors_and_threads() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/P1Concurrent").expect("P1Concurrent");
+    for (method, expected) in [
+        ("executor", "42:done:true"),
+        ("thread", "main:true:true:true:true"),
+    ] {
+        let (declaring, index) = vm
+            .find_method(class, method, "()Ljava/lang/String;")
+            .expect(method);
+        let value = match vm.invoke_method(declaring, index, Vec::new()) {
+            Ok(value) => value,
+            Err(VmError::Thrown(exception)) => {
+                panic!("{method}: threw {}", vm.class_name(vm.class_of(exception)))
+            }
+            Err(error) => panic!("{method}: {error:?}"),
+        };
+        assert_eq!(
+            vm.string_value(value.as_ref()).as_deref(),
+            Some(expected),
+            "{method}"
+        );
+    }
+}

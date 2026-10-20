@@ -23,6 +23,7 @@ pub(crate) mod buffer;
 pub(crate) mod charset;
 pub(crate) mod concurrent;
 pub(crate) mod encoding;
+pub(crate) mod executor;
 pub(crate) mod file;
 pub(crate) mod intstream;
 pub(crate) mod invoke;
@@ -117,7 +118,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 437] = [
+static REGISTRY: [NativeClass; 454] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -135,6 +136,8 @@ static REGISTRY: [NativeClass; 437] = [
     lang::PROCESS_BUILDER_REDIRECT,
     lang::RUNTIME_VERSION,
     lang::THREAD,
+    lang::THREAD_GROUP,
+    lang::THREAD_STATE,
     lang::THREAD_LOCAL,
     lang::INHERITABLE_THREAD_LOCAL,
     lang::CLASS_LOADER,
@@ -220,6 +223,9 @@ static REGISTRY: [NativeClass; 437] = [
     throwable::NEGATIVE_ARRAY_SIZE_EXCEPTION,
     throwable::NULL_POINTER_EXCEPTION,
     throwable::UNSUPPORTED_OPERATION_EXCEPTION,
+    throwable::REJECTED_EXECUTION_EXCEPTION,
+    throwable::TIMEOUT_EXCEPTION,
+    throwable::EXECUTION_EXCEPTION,
     throwable::BUFFER_OVERFLOW_EXCEPTION,
     throwable::BUFFER_UNDERFLOW_EXCEPTION,
     throwable::INVALID_MARK_EXCEPTION,
@@ -542,6 +548,18 @@ static REGISTRY: [NativeClass; 437] = [
     atomic::ATOMIC_BOOLEAN,
     atomic::ATOMIC_REFERENCE,
     concurrent::TIME_UNIT,
+    executor::FUTURE,
+    executor::RUNNABLE_FUTURE,
+    executor::SCHEDULED_FUTURE,
+    executor::FUTURE_TASK,
+    executor::EXECUTOR,
+    executor::EXECUTOR_SERVICE,
+    executor::SCHEDULED_EXECUTOR_SERVICE,
+    executor::OJVM_EXECUTOR_SERVICE,
+    executor::EXECUTORS,
+    executor::OJVM_CALLABLE,
+    executor::OJVM_THREAD_FACTORY,
+    executor::THREAD_LOCAL_RANDOM,
     concurrent::COUNT_DOWN_LATCH,
     concurrent::CONDITION,
     concurrent::CONDITION_OBJECT,

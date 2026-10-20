@@ -1109,6 +1109,21 @@ exception!(
     "java/lang/RuntimeException"
 );
 exception!(
+    REJECTED_EXECUTION_EXCEPTION,
+    "java/util/concurrent/RejectedExecutionException",
+    "java/lang/RuntimeException"
+);
+exception!(
+    TIMEOUT_EXCEPTION,
+    "java/util/concurrent/TimeoutException",
+    "java/lang/Exception"
+);
+exception!(
+    EXECUTION_EXCEPTION,
+    "java/util/concurrent/ExecutionException",
+    "java/lang/Exception"
+);
+exception!(
     BUFFER_OVERFLOW_EXCEPTION,
     "java/nio/BufferOverflowException",
     "java/lang/RuntimeException"

@@ -4971,13 +4971,37 @@ pub(crate) const RUNTIME: oxjvm_vm::NativeClass = class(
 // Thread
 // -------------------------------------------------------------------------------------------
 
-const THREAD_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
+const THREAD_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
     method("<init>", "()V", ACC_PUBLIC, thread_init),
     method("<init>", "(Ljava/lang/Runnable;)V", ACC_PUBLIC, thread_init),
     method("<init>", "(Ljava/lang/String;)V", ACC_PUBLIC, thread_init),
     method(
         "<init>",
         "(Ljava/lang/Runnable;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        thread_init,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/ThreadGroup;Ljava/lang/Runnable;)V",
+        ACC_PUBLIC,
+        thread_init,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/ThreadGroup;Ljava/lang/Runnable;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        thread_init,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/ThreadGroup;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        thread_init,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/ThreadGroup;Ljava/lang/Runnable;Ljava/lang/String;JZ)V",
         ACC_PUBLIC,
         thread_init,
     ),
@@ -5201,6 +5225,111 @@ const THREAD_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
         "()Ljava/lang/Thread$Builder$OfPlatform;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _| new_thread_builder(vm),
+    ),
+    method(
+        "getStackTrace",
+        "()[Ljava/lang/StackTraceElement;",
+        ACC_PUBLIC,
+        |vm, _, args| thread_stack_trace(vm, receiver(args)),
+    ),
+    method(
+        "join",
+        "(Ljava/time/Duration;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let duration = ref_arg(args, 1);
+            let (class, method) = vm.resolve_virtual_method(duration, "toMillis", "()J")?;
+            let millis = vm
+                .invoke_method(class, method, vec![Value::Ref(duration)])?
+                .as_long();
+            vm.join_thread(receiver(args), Some(millis.max(0)));
+            boolean(true)
+        },
+    ),
+    method(
+        "getThreadGroup",
+        "()Ljava/lang/ThreadGroup;",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, _| object(new_thread_group(vm, "main")?),
+    ),
+    method("isVirtual", "()Z", ACC_PUBLIC | ACC_FINAL, |_, _, _| {
+        boolean(false)
+    }),
+    method("threadId", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(vm.thread_id(receiver(args)))
+    }),
+    method(
+        "startVirtualThread",
+        "(Ljava/lang/Runnable;)Ljava/lang/Thread;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let class = vm.resolve_class("java/lang/Thread")?;
+            let thread = vm.new_instance(class)?;
+            thread_init(
+                vm,
+                oxjvm_vm::NativeContext { class, method: 0 },
+                &[Value::Ref(thread), Value::Ref(ref_arg(args, 0))],
+            )?;
+            vm.start_thread(thread)?;
+            object(thread)
+        },
+    ),
+    method(
+        "getAllStackTraces",
+        "()Ljava/util/Map;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let map = crate::util::hash_map_new(vm)?;
+            let current = vm.current_thread_object();
+            let trace = thread_stack_trace(vm, current)?.as_ref();
+            crate::util::hash_map_insert(vm, map, current, trace)?;
+            object(map)
+        },
+    ),
+    method(
+        "sleep",
+        "(Ljava/time/Duration;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let duration = ref_arg(args, 0);
+            let (class, method) = vm.resolve_virtual_method(duration, "toMillis", "()J")?;
+            let millis = vm
+                .invoke_method(class, method, vec![Value::Ref(duration)])?
+                .as_long();
+            vm.sleep_current(millis.max(0));
+            void()
+        },
+    ),
+    method("onSpinWait", "()V", ACC_PUBLIC | ACC_STATIC, |_, _, _| {
+        void()
+    }),
+    method(
+        "getState",
+        "()Ljava/lang/Thread$State;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/lang/Thread$State")?;
+            vm.ensure_initialized(class)?;
+            object(
+                vm.read_static_ref_if_set(class, "RUNNABLE", "Ljava/lang/Thread$State;")
+                    .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method(
+        "enumerate",
+        "([Ljava/lang/Thread;)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            let length = vm.array_length(array)?;
+            if length > 0 {
+                vm.array_set_ref(array, 0, vm.current_thread_object())?;
+                int(1)
+            } else {
+                int(0)
+            }
+        },
     ),
 ];
 
@@ -5501,6 +5630,276 @@ pub(crate) const THREAD: oxjvm_vm::NativeClass = class(
     ],
     &THREAD_METHODS,
     None,
+);
+
+fn thread_stack_trace(vm: &mut Vm<'_>, _thread: ObjectRef) -> Result<Value, VmError> {
+    let frames = vm.capture_frames();
+    let element = vm.resolve_class("java/lang/StackTraceElement")?;
+    let array = vm.allocate_object_array(element, frames.len())?;
+    let constructor = vm.find_method(
+        element,
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;I)V",
+    );
+    for (index, frame) in frames.into_iter().enumerate() {
+        let element_object = vm.new_instance(element)?;
+        let file = match &frame.file_name {
+            Some(name) => vm.make_string(name)?,
+            None => ObjectRef::NULL,
+        };
+        let class_name = vm.make_string(&frame.class_name)?;
+        let method_name = vm.make_string(&frame.method_name)?;
+        if let Some((constructor_class, constructor_method)) = constructor {
+            vm.invoke_method(
+                constructor_class,
+                constructor_method,
+                vec![
+                    Value::Ref(element_object),
+                    Value::Ref(class_name),
+                    Value::Ref(method_name),
+                    Value::Ref(file),
+                    Value::Int(i32::from(frame.line_number.unwrap_or(0))),
+                ],
+            )?;
+        }
+        vm.array_set_ref(array, index, element_object)?;
+    }
+    object(array)
+}
+
+// -------------------------------------------------------------------------------------------
+// ThreadGroup
+// -------------------------------------------------------------------------------------------
+
+fn new_thread_group(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/lang/ThreadGroup")?;
+    let group = vm.new_instance(class)?;
+    vm.set_string_field(group, class, "name", name)?;
+    Ok(group)
+}
+
+const THREAD_GROUP_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        vm.set_string_field(this, vm.class_of(this), "name", "main")?;
+        void()
+    }),
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let name = string_arg(vm, args[1])?;
+            vm.set_string_field(this, vm.class_of(this), "name", &name)?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/ThreadGroup;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let name = string_arg(vm, args[2])?;
+            vm.set_string_field(this, vm.class_of(this), "name", &name)?;
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "parent", "Ljava/lang/ThreadGroup;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method(
+        "getName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = vm
+                .read_string_field(receiver(args), vm.class_of(receiver(args)), "name")
+                .unwrap_or_default();
+            object(vm.make_string(&name)?)
+        },
+    ),
+    method(
+        "getParent",
+        "()Ljava/lang/ThreadGroup;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(
+                vm.read_ref_field(
+                    receiver(args),
+                    vm.class_of(receiver(args)),
+                    "parent",
+                    "Ljava/lang/ThreadGroup;",
+                )
+                .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method("activeCount", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method("activeGroupCount", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method(
+        "enumerate",
+        "([Ljava/lang/Thread;)I",
+        ACC_PUBLIC,
+        |_, _, _| int(0),
+    ),
+    method("list", "()V", ACC_PUBLIC, |_, _, _| void()),
+];
+
+pub(crate) const THREAD_GROUP: oxjvm_vm::NativeClass = class(
+    "java/lang/ThreadGroup",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("parent", "Ljava/lang/ThreadGroup;", ACC_PRIVATE, None),
+    ],
+    &THREAD_GROUP_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// Thread.State
+// -------------------------------------------------------------------------------------------
+
+const THREAD_STATE_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method("name", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
+        let name = vm
+            .read_string_field(receiver(args), vm.class_of(receiver(args)), "name")
+            .unwrap_or_default();
+        object(vm.make_string(&name)?)
+    }),
+    method("ordinal", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_int_field(vm, receiver(args), "ordinal"))
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = vm
+                .read_string_field(receiver(args), vm.class_of(receiver(args)), "name")
+                .unwrap_or_default();
+            object(vm.make_string(&name)?)
+        },
+    ),
+    method(
+        "values",
+        "()[Ljava/lang/Thread$State;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/lang/Thread$State")?;
+            let names = [
+                "NEW",
+                "RUNNABLE",
+                "BLOCKED",
+                "WAITING",
+                "TIMED_WAITING",
+                "TERMINATED",
+            ];
+            let array = vm.allocate_object_array(class, names.len())?;
+            for (index, name) in names.iter().enumerate() {
+                if let Some(value) =
+                    vm.read_static_ref_if_set(class, name, "Ljava/lang/Thread$State;")
+                {
+                    vm.array_set_ref(array, index, value)?;
+                }
+            }
+            object(array)
+        },
+    ),
+    method(
+        "valueOf",
+        "(Ljava/lang/String;)Ljava/lang/Thread$State;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = vm.string_or_empty(ref_arg(args, 0));
+            let class = vm.resolve_class("java/lang/Thread$State")?;
+            vm.ensure_initialized(class)?;
+            if let Some(value) = vm.read_static_ref_if_set(class, &name, "Ljava/lang/Thread$State;")
+            {
+                return object(value);
+            }
+            Err(vm.throw_new("java/lang/IllegalArgumentException", Some(&name)))
+        },
+    ),
+];
+
+fn thread_state_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/lang/Thread$State")?;
+    for (ordinal, name) in [
+        "NEW",
+        "RUNNABLE",
+        "BLOCKED",
+        "WAITING",
+        "TIMED_WAITING",
+        "TERMINATED",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let instance = vm.new_instance(class)?;
+        vm.set_string_field(instance, class, "name", name)?;
+        write_int_field(vm, instance, "ordinal", ordinal as i32);
+        vm.set_static_value(
+            class,
+            name,
+            "Ljava/lang/Thread$State;",
+            Value::Ref(instance),
+        );
+    }
+    Ok(())
+}
+
+pub(crate) const THREAD_STATE: oxjvm_vm::NativeClass = class(
+    "java/lang/Thread$State",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("ordinal", "I", ACC_PRIVATE, None),
+        field(
+            "NEW",
+            "Ljava/lang/Thread$State;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "RUNNABLE",
+            "Ljava/lang/Thread$State;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "BLOCKED",
+            "Ljava/lang/Thread$State;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "WAITING",
+            "Ljava/lang/Thread$State;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "TIMED_WAITING",
+            "Ljava/lang/Thread$State;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "TERMINATED",
+            "Ljava/lang/Thread$State;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+    ],
+    &THREAD_STATE_METHODS,
+    Some(thread_state_clinit),
 );
 
 // -------------------------------------------------------------------------------------------
