@@ -259,3 +259,38 @@ fn a_shallow_stack_raises_stack_overflow() {
         .expect_err("the stack is exhausted");
     assert_eq!(thrown_class(&vm, error), "java/lang/StackOverflowError");
 }
+
+/// Fill the heap up to a few bytes below its budget, so that the next allocation does not
+/// fit and the collector has to run to reclaim the garbage.
+fn fill_the_heap(vm: &mut Vm<'_>, limit: u64) -> oxjvm_vm::ObjectRef {
+    let headroom = limit - vm.heap_used_bytes();
+    vm.allocate_array_of(ArrayComponent::Byte, (headroom - 32) as usize)
+        .expect("filler")
+}
+
+#[test]
+fn a_collection_during_interning_keeps_the_object_alive() {
+    let mut host = TestHost::default();
+    let limit = 256 * 1024;
+    let mut vm = Vm::with_options(
+        &mut host,
+        oxjvm_java::natives(),
+        VmOptions::with_max_heap_bytes(limit),
+    );
+    let class = vm.resolve_class("java/lang/Thread").expect("Thread");
+    let object = vm.new_instance(class).expect("instance");
+    let _filler = fill_the_heap(&mut vm, limit);
+    // Interning the name may collect, and the object is not reachable from a root yet.
+    vm.set_string_field(object, class, "name", "worker")
+        .expect("set name");
+    assert_eq!(
+        vm.class_name(vm.class_of(object)),
+        "java/lang/Thread",
+        "the object was collected and its slot reused"
+    );
+    assert_eq!(
+        vm.read_string_field(object, class, "name").as_deref(),
+        Some("worker"),
+        "the name was lost"
+    );
+}

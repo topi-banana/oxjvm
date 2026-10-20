@@ -480,10 +480,15 @@ impl<'a> Vm<'a> {
         let string_class = self.resolve_class("java/lang/String")?;
         let array_class = self.array_class_for(string_class)?;
         let array = self.allocate_array(array_class, args.len())?;
-        for (index, text) in args.iter().enumerate() {
-            let string = self.intern(text)?;
-            self.array_set_ref(array, index, string)?;
-        }
+        // The array is not reachable from a root until `main` receives it, so it is rooted
+        // while it is filled: interning the arguments may collect.
+        self.with_protected(array, |vm| {
+            for (index, text) in args.iter().enumerate() {
+                let string = vm.intern(text)?;
+                vm.array_set_ref(array, index, string)?;
+            }
+            Ok::<(), VmError>(())
+        })?;
         Ok(array)
     }
 
@@ -492,6 +497,10 @@ impl<'a> Vm<'a> {
     // -----------------------------------------------------------------------------------------
 
     /// Intern a Rust string as a `java.lang.String`, returning the canonical object.
+    ///
+    /// Interning allocates, and that allocation may run a collection when the heap budget
+    /// is exhausted, so a caller that holds a reference only on the Rust stack has to root
+    /// it with [`Vm::protect`] or [`Vm::with_protected`] for the duration.
     ///
     /// # Errors
     ///

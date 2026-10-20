@@ -1198,6 +1198,11 @@ impl<'a> Vm<'a> {
     }
 
     /// Write an instance `String` field by name.
+    ///
+    /// # Errors
+    ///
+    /// Propagates field lookup failures, and raises `java.lang.OutOfMemoryError` when the
+    /// heap budget cannot hold the interned string.
     pub fn set_string_field(
         &mut self,
         object: ObjectRef,
@@ -1206,7 +1211,9 @@ impl<'a> Vm<'a> {
         value: &str,
     ) -> Result<(), VmError> {
         let (declaring, field) = self.find_field(class, name, "Ljava/lang/String;")?;
-        let string = self.intern(value)?;
+        // Interning the value may collect, and the object the caller handed us is not
+        // reachable from a root yet, so it is rooted while the string is created.
+        let string = self.with_protected(object, |vm| vm.intern(value))?;
         self.set_instance_ref(object, declaring, field, string);
         Ok(())
     }

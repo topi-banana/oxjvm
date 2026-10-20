@@ -210,13 +210,19 @@ impl<'a> Vm<'a> {
         let built = (|| -> Result<ObjectRef, VmError> {
             let thread_class = self.resolve_class("java/lang/Thread")?;
             let object = self.new_instance(thread_class)?;
-            self.set_string_field(object, thread_class, "name", name)?;
-            self.set_boolean_field(object, thread_class, "daemon", daemon)?;
-            if let Some(target) = runnable {
-                let (declaring, field) =
-                    self.find_field(thread_class, "target", "Ljava/lang/Runnable;")?;
-                self.set_instance_ref(object, declaring, field, target);
-            }
+            // The thread object is not reachable from a root until the scheduler record
+            // points at it, so it is rooted while it is set up: naming the thread interns
+            // a string, and the interning may collect.
+            self.with_protected(object, |vm| -> Result<(), VmError> {
+                vm.set_string_field(object, thread_class, "name", name)?;
+                vm.set_boolean_field(object, thread_class, "daemon", daemon)?;
+                if let Some(target) = runnable {
+                    let (declaring, field) =
+                        vm.find_field(thread_class, "target", "Ljava/lang/Runnable;")?;
+                    vm.set_instance_ref(object, declaring, field, target);
+                }
+                Ok(())
+            })?;
             Ok(object)
         })();
         match built {
