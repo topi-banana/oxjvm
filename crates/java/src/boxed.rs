@@ -2245,7 +2245,7 @@ pub(crate) const FLOAT: oxjvm_vm::NativeClass = class(
     Some(float_clinit),
 );
 
-const DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+const DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
     method("<init>", "(D)V", ACC_PUBLIC, |vm, _, args| {
         write_value_long(
             vm,
@@ -2373,6 +2373,36 @@ const DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
     ),
     method("isNaN", "(D)Z", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
         boolean(crate::double_arg(args, 0).is_nan())
+    }),
+    method("isFinite", "(D)Z", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        boolean(crate::double_arg(args, 0).is_finite())
+    }),
+    method(
+        "isInfinite",
+        "(D)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| boolean(crate::double_arg(args, 0).is_infinite()),
+    ),
+    method("compare", "(DD)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        int(compare_doubles(
+            crate::double_arg(args, 0),
+            crate::double_arg(args, 1),
+        ))
+    }),
+    method("sum", "(DD)D", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        Ok(Value::Double(
+            crate::double_arg(args, 0) + crate::double_arg(args, 1),
+        ))
+    }),
+    method("max", "(DD)D", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        Ok(Value::Double(
+            crate::double_arg(args, 0).max(crate::double_arg(args, 1)),
+        ))
+    }),
+    method("min", "(DD)D", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        Ok(Value::Double(
+            crate::double_arg(args, 0).min(crate::double_arg(args, 1)),
+        ))
     }),
 ];
 

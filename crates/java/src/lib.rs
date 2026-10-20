@@ -37,6 +37,7 @@ pub(crate) mod net;
 pub(crate) mod nio;
 pub(crate) mod optional;
 pub(crate) mod primitive_stream;
+pub(crate) mod reference;
 pub(crate) mod reflect;
 pub(crate) mod regex;
 pub(crate) mod serialization;
@@ -120,7 +121,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 495] = [
+static REGISTRY: [NativeClass; 510] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -228,6 +229,12 @@ static REGISTRY: [NativeClass; 495] = [
     throwable::REJECTED_EXECUTION_EXCEPTION,
     throwable::TIMEOUT_EXCEPTION,
     throwable::EXECUTION_EXCEPTION,
+    throwable::FILE_SYSTEM_NOT_FOUND_EXCEPTION,
+    throwable::PROVIDER_NOT_FOUND_EXCEPTION,
+    throwable::FILE_SYSTEM_ALREADY_EXISTS_EXCEPTION,
+    throwable::MALFORMED_INPUT_EXCEPTION,
+    throwable::UNMAPPABLE_CHARACTER_EXCEPTION,
+    throwable::CODER_MALFUNCTION_ERROR,
     throwable::BUFFER_OVERFLOW_EXCEPTION,
     throwable::BUFFER_UNDERFLOW_EXCEPTION,
     throwable::INVALID_MARK_EXCEPTION,
@@ -391,6 +398,10 @@ static REGISTRY: [NativeClass; 495] = [
     invoke::LONG_TO_DOUBLE_FUNCTION,
     invoke::INT_TO_LONG_FUNCTION,
     invoke::INT_TO_DOUBLE_FUNCTION,
+    invoke::BOOLEAN_SUPPLIER,
+    invoke::INT_SUPPLIER,
+    invoke::LONG_SUPPLIER,
+    invoke::DOUBLE_SUPPLIER,
     invoke::OJVM_IDENTITY,
     invoke::OJVM_FUNCTION,
     invoke::PREDICATE_COMBINER,
@@ -554,6 +565,11 @@ static REGISTRY: [NativeClass; 495] = [
     reflect::ACCESS_FLAG,
     reflect::ACCESS_FLAG_LOCATION,
     reflect::REFLECT_PERMISSION,
+    reference::REFERENCE,
+    reference::WEAK_REFERENCE,
+    reference::SOFT_REFERENCE,
+    reference::PHANTOM_REFERENCE,
+    reference::REFERENCE_QUEUE,
     beans::PROPERTY_DESCRIPTOR,
     beans::PROPERTY_EDITOR,
     beans::PROPERTY_EDITOR_SUPPORT,

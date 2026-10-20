@@ -1114,6 +1114,36 @@ exception!(
     "java/lang/RuntimeException"
 );
 exception!(
+    FILE_SYSTEM_NOT_FOUND_EXCEPTION,
+    "java/nio/file/FileSystemNotFoundException",
+    "java/lang/RuntimeException"
+);
+exception!(
+    PROVIDER_NOT_FOUND_EXCEPTION,
+    "java/nio/file/ProviderNotFoundException",
+    "java/lang/RuntimeException"
+);
+exception!(
+    FILE_SYSTEM_ALREADY_EXISTS_EXCEPTION,
+    "java/nio/file/FileSystemAlreadyExistsException",
+    "java/lang/RuntimeException"
+);
+exception!(
+    MALFORMED_INPUT_EXCEPTION,
+    "java/nio/charset/MalformedInputException",
+    "java/io/IOException"
+);
+exception!(
+    UNMAPPABLE_CHARACTER_EXCEPTION,
+    "java/nio/charset/UnmappableCharacterException",
+    "java/io/IOException"
+);
+exception!(
+    CODER_MALFUNCTION_ERROR,
+    "java/nio/charset/CoderMalfunctionError",
+    "java/lang/Error"
+);
+exception!(
     TIMEOUT_EXCEPTION,
     "java/util/concurrent/TimeoutException",
     "java/lang/Exception"
