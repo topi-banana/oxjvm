@@ -662,7 +662,7 @@ macro_rules! functional_interface {
 // Each interface carries the same shape; the dispatcher selects by descriptor, so a shared array
 // with one abstract method of each common descriptor is sufficient and lets a single class serve
 // every functional interface users link against.
-const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
     method(
         "apply",
         "(Ljava/lang/Object;)Ljava/lang/Object;",
@@ -775,6 +775,18 @@ const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         ACC_PUBLIC,
         |vm, _, args| predicate_combine(vm, 2, receiver(args), ObjectRef::NULL),
     ),
+    method(
+        "andThen",
+        "(Ljava/util/function/Function;)Ljava/util/function/Function;",
+        ACC_PUBLIC,
+        |vm, _, args| function_and_then(vm, receiver(args), ref_arg(args, 1), false),
+    ),
+    method(
+        "compose",
+        "(Ljava/util/function/Function;)Ljava/util/function/Function;",
+        ACC_PUBLIC,
+        |vm, _, args| function_and_then(vm, receiver(args), ref_arg(args, 1), true),
+    ),
 ];
 
 fn predicate_combine(
@@ -864,6 +876,73 @@ pub(crate) const OJVM_IDENTITY: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
     &[],
     &IDENTITY_METHODS,
+    None,
+);
+
+fn function_and_then(
+    vm: &mut Vm<'_>,
+    receiver: ObjectRef,
+    argument: ObjectRef,
+    compose: bool,
+) -> Result<Value, VmError> {
+    if argument.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let class = vm.resolve_class("java/util/function/OxjvmFunction")?;
+    let instance = vm.new_instance(class)?;
+    let (first, second) = if compose {
+        (argument, receiver)
+    } else {
+        (receiver, argument)
+    };
+    for (name, value) in [("first", first), ("second", second)] {
+        let (declaring, field) = vm.find_field(class, name, "Ljava/util/function/Function;")?;
+        vm.set_instance_ref(instance, declaring, field, value);
+    }
+    object(instance)
+}
+
+const OJVM_FUNCTION_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "apply",
+    "(Ljava/lang/Object;)Ljava/lang/Object;",
+    ACC_PUBLIC,
+    |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let first = vm
+            .read_ref_field(this, class, "first", "Ljava/util/function/Function;")
+            .unwrap_or(ObjectRef::NULL);
+        let second = vm
+            .read_ref_field(this, class, "second", "Ljava/util/function/Function;")
+            .unwrap_or(ObjectRef::NULL);
+        let (first_class, first_method) =
+            vm.resolve_virtual_method(first, "apply", "(Ljava/lang/Object;)Ljava/lang/Object;")?;
+        let intermediate = vm.invoke_method(
+            first_class,
+            first_method,
+            alloc::vec![Value::Ref(first), Value::Ref(ref_arg(args, 1))],
+        )?;
+        let (second_class, second_method) =
+            vm.resolve_virtual_method(second, "apply", "(Ljava/lang/Object;)Ljava/lang/Object;")?;
+        vm.invoke_method(
+            second_class,
+            second_method,
+            alloc::vec![Value::Ref(second), intermediate],
+        )
+    },
+)];
+
+/// A composed `Function` returned by `Function.andThen`/`compose`.
+pub(crate) const OJVM_FUNCTION: oxjvm_vm::NativeClass = class(
+    "java/util/function/OxjvmFunction",
+    Some("java/lang/Object"),
+    &["java/util/function/Function"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[
+        field("first", "Ljava/util/function/Function;", ACC_PRIVATE, None),
+        field("second", "Ljava/util/function/Function;", ACC_PRIVATE, None),
+    ],
+    &OJVM_FUNCTION_METHODS,
     None,
 );
 

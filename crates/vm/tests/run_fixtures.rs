@@ -1344,6 +1344,32 @@ fn p1_ten() {
 }
 
 #[test]
+fn inherited_interface_methods() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/P0Interfaces").expect("P0Interfaces");
+    for (method, expected) in [
+        ("andThen", "xab"),
+        ("compose", "xba"),
+        ("setForEach", "REDGREEN"),
+        ("listForEach", "xy"),
+        ("bufferInterface", "3:b"),
+    ] {
+        let (declaring, index) = vm
+            .find_method(class, method, "()Ljava/lang/String;")
+            .expect(method);
+        let value = vm
+            .invoke_method(declaring, index, Vec::new())
+            .expect(method);
+        assert_eq!(
+            vm.string_value(value.as_ref()).as_deref(),
+            Some(expected),
+            "{method}"
+        );
+    }
+}
+
+#[test]
 fn throwable_cause_only_constructor() {
     let mut host = fixture_host();
     let mut vm = Vm::new(&mut host, oxjvm_java::natives());

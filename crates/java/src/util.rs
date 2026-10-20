@@ -226,8 +226,8 @@ const COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method(
         "forEach",
         "(Ljava/util/function/Consumer;)V",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        crate::lang::abstract_method_pub,
+        ACC_PUBLIC,
+        collection_for_each,
     ),
     method(
         "toArray",
@@ -371,8 +371,8 @@ const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
     method(
         "forEach",
         "(Ljava/util/function/Consumer;)V",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        crate::lang::abstract_method_pub,
+        ACC_PUBLIC,
+        collection_for_each,
     ),
     method(
         "of",
@@ -828,8 +828,8 @@ const SET_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
     method(
         "forEach",
         "(Ljava/util/function/Consumer;)V",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        crate::lang::abstract_method_pub,
+        ACC_PUBLIC,
+        collection_for_each,
     ),
 ];
 
@@ -2528,7 +2528,7 @@ fn collection_for_each(
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
     let (class, method) = vm.resolve_virtual_method(consumer, "accept", "(Ljava/lang/Object;)V")?;
-    let elements = array_list_elements(vm, receiver(args));
+    let elements = collection_elements(vm, receiver(args))?;
     for element in elements {
         vm.invoke_method(
             class,
