@@ -2056,18 +2056,21 @@ const FLOAT_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
         ACC_PUBLIC | ACC_STATIC,
         |_, _, args| int(crate::float_arg(args, 0).to_bits() as i32),
     ),
-    method(
-        "compare",
-        "(FF)I",
-        ACC_PUBLIC | ACC_STATIC,
-        |_, _, args| int(compare_floats(crate::float_arg(args, 0), crate::float_arg(args, 1))),
-    ),
+    method("compare", "(FF)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        int(compare_floats(
+            crate::float_arg(args, 0),
+            crate::float_arg(args, 1),
+        ))
+    }),
     method("isFinite", "(F)Z", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
         boolean(crate::float_arg(args, 0).is_finite())
     }),
-    method("isInfinite", "(F)Z", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
-        boolean(crate::float_arg(args, 0).is_infinite())
-    }),
+    method(
+        "isInfinite",
+        "(F)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| boolean(crate::float_arg(args, 0).is_infinite()),
+    ),
     method(
         "intBitsToFloat",
         "(I)F",

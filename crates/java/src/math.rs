@@ -940,30 +940,44 @@ macro_rules! math_methods {
             method("nextDown", "(D)D", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
                 double(next_after(double_arg(args, 0), f64::NEG_INFINITY))
             }),
-            method("getExponent", "(F)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
-                let value = float_arg(args, 0);
-                let bits = value.to_bits();
-                let exponent = ((bits >> 23) & 0xff) as i32;
-                int(if value.is_nan() || value.is_infinite() {
-                    0x80
-                } else if exponent == 0 {
-                    if bits & 0x7f_ffff == 0 { -127 } else { -126 }
-                } else {
-                    exponent - 127
-                })
-            }),
-            method("getExponent", "(D)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
-                let value = double_arg(args, 0);
-                let bits = value.to_bits();
-                let exponent = ((bits >> 52) & 0x7ff) as i32;
-                int(if value.is_nan() || value.is_infinite() {
-                    0x400
-                } else if exponent == 0 {
-                    if bits & 0xf_ffff_ffff_ffff == 0 { -1023 } else { -1022 }
-                } else {
-                    exponent - 1023
-                })
-            }),
+            method(
+                "getExponent",
+                "(F)I",
+                ACC_PUBLIC | ACC_STATIC,
+                |_, _, args| {
+                    let value = float_arg(args, 0);
+                    let bits = value.to_bits();
+                    let exponent = ((bits >> 23) & 0xff) as i32;
+                    int(if value.is_nan() || value.is_infinite() {
+                        0x80
+                    } else if exponent == 0 {
+                        if bits & 0x7f_ffff == 0 { -127 } else { -126 }
+                    } else {
+                        exponent - 127
+                    })
+                },
+            ),
+            method(
+                "getExponent",
+                "(D)I",
+                ACC_PUBLIC | ACC_STATIC,
+                |_, _, args| {
+                    let value = double_arg(args, 0);
+                    let bits = value.to_bits();
+                    let exponent = ((bits >> 52) & 0x7ff) as i32;
+                    int(if value.is_nan() || value.is_infinite() {
+                        0x400
+                    } else if exponent == 0 {
+                        if bits & 0xf_ffff_ffff_ffff == 0 {
+                            -1023
+                        } else {
+                            -1022
+                        }
+                    } else {
+                        exponent - 1023
+                    })
+                },
+            ),
             method("scalb", "(FI)F", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
                 float((f64::from(float_arg(args, 0)) * pow2(int_arg(args, 1))) as f32)
             }),

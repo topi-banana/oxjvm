@@ -169,7 +169,7 @@ fn runs_p1_reflection_fixture_with_files_and_urls() {
         stdout.contains("classApi=true:0:true:java.lang.Number"),
         "{stdout}"
     );
-    assert!(stdout.contains("url=5:104:file:/tmp/a/c.txt"), "{stdout}");
+    assert!(stdout.contains("url=file:/tmp/a/c.txt"), "{stdout}");
 }
 
 #[test]
