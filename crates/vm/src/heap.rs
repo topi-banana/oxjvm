@@ -484,9 +484,19 @@ impl Heap {
         self.objects.get(reference.slot())?.as_ref()
     }
 
+    /// The size of an object in bytes, header included, or `None` for a dead slot.
+    #[must_use]
+    pub fn object_size(&self, reference: ObjectRef) -> Option<u64> {
+        self.get(reference).map(|object| object.data.object_size())
+    }
+
     /// Replace an object's payload, keeping the byte accounting in step.
     ///
     /// Returns the new object size, or `None` when the reference is null or a dead slot.
+    ///
+    /// The byte budget is not enforced here: the heap cannot collect on its own, so the
+    /// caller decides whether the growth fits. [`crate::Vm::replace_payload`] checks it
+    /// and raises `java.lang.OutOfMemoryError` when it does not.
     pub fn replace_payload(&mut self, reference: ObjectRef, data: ObjectData) -> Option<u64> {
         if reference.is_null() {
             return None;

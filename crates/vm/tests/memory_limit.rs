@@ -3,7 +3,7 @@
 use oxjvm_classfile::attribute::{Attribute, AttributeData, CodeAttribute};
 use oxjvm_classfile::{ClassFile, ConstantPool, CpInfo, MethodInfo};
 use oxjvm_platform::{Host, HostError, MemoryClasses, Stream};
-use oxjvm_vm::{ArrayComponent, Vm, VmError, VmOptions};
+use oxjvm_vm::{ArrayComponent, ObjectData, Value, Vm, VmError, VmOptions};
 
 /// A host with no class path and captured output.
 #[derive(Default)]
@@ -293,4 +293,72 @@ fn a_collection_during_interning_keeps_the_object_alive() {
         Some("worker"),
         "the name was lost"
     );
+}
+
+#[test]
+fn a_payload_replacement_that_does_not_fit_raises_out_of_memory() {
+    let mut host = TestHost::default();
+    let limit = 256 * 1024;
+    let mut vm = Vm::with_options(
+        &mut host,
+        oxjvm_java::natives(),
+        VmOptions::with_max_heap_bytes(limit),
+    );
+    let class = vm.resolve_class("java/lang/String").expect("String");
+    let object = vm.new_instance(class).expect("instance");
+    // The filler stays alive, so the collector cannot make room for the replacement.
+    let filler = fill_the_heap(&mut vm, limit);
+    vm.protect(filler);
+    // The replacement is charged against the budget like any other allocation.
+    let error = vm
+        .replace_payload(object, ObjectData::String(vec![0u16; 64 * 1024]))
+        .expect_err("out of memory");
+    assert_eq!(thrown_class(&vm, error), "java/lang/OutOfMemoryError");
+    // The payload was left alone.
+    assert!(vm.string_utf16(object).is_none());
+}
+
+#[test]
+fn a_payload_replacement_that_fits_keeps_the_accounting_straight() {
+    let mut host = TestHost::default();
+    let limit = 256 * 1024;
+    let mut vm = Vm::with_options(
+        &mut host,
+        oxjvm_java::natives(),
+        VmOptions::with_max_heap_bytes(limit),
+    );
+    let class = vm.resolve_class("java/lang/String").expect("String");
+    let object = vm.new_instance(class).expect("instance");
+    let before = vm.heap_used_bytes();
+    vm.replace_payload(object, ObjectData::String(vec![0u16; 1024]))
+        .expect("replace");
+    // A thousand UTF-16 code units, plus the object header.
+    assert_eq!(vm.heap_used_bytes(), before + 2 * 1024);
+}
+
+#[test]
+fn a_string_that_does_not_fit_raises_out_of_memory() {
+    let mut host = TestHost::default();
+    let limit = 256 * 1024;
+    let mut vm = Vm::with_options(
+        &mut host,
+        oxjvm_java::natives(),
+        VmOptions::with_max_heap_bytes(limit),
+    );
+    let class = vm.resolve_class("java/lang/String").expect("String");
+    // The characters take half the budget; the string they make takes the other half,
+    // which does not fit next to them.
+    let chars = vm
+        .allocate_array_of(ArrayComponent::Char, 100 * 1024)
+        .expect("chars");
+    let string = vm.new_instance(class).expect("string");
+    let (declaring, index) = vm.find_method(class, "<init>", "([C)V").expect("ctor");
+    let error = vm
+        .invoke_method(
+            declaring,
+            index,
+            vec![Value::Ref(string), Value::Ref(chars)],
+        )
+        .expect_err("out of memory");
+    assert_eq!(thrown_class(&vm, error), "java/lang/OutOfMemoryError");
 }

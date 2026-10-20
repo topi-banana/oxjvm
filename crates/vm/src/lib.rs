@@ -1050,10 +1050,19 @@ impl<'a> Vm<'a> {
 
     /// Replace an object's payload, keeping the heap accounting in step.
     ///
+    /// The growth the replacement adds is charged against the heap budget, like any other
+    /// allocation: a replacement that does not fit raises `java.lang.OutOfMemoryError`.
+    ///
     /// # Errors
     ///
-    /// Fails when the reference is null or no longer live.
+    /// Fails when the reference is null or no longer live, and raises
+    /// `java.lang.OutOfMemoryError` when the replacement does not fit in the budget.
     pub fn replace_payload(&mut self, reference: Ref, data: ObjectData) -> Result<(), VmError> {
+        let previous = self.heap.object_size(reference).unwrap_or(0);
+        let growth = data.object_size().saturating_sub(previous);
+        // The object is rooted while the budget is checked, because checking it may
+        // collect.
+        self.with_protected(reference, |vm| vm.ensure_heap_budget(growth))?;
         self.heap
             .replace_payload(reference, data)
             .map(|_| ())
