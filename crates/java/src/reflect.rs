@@ -183,7 +183,7 @@ fn set_instance_value(
 // Method
 // -------------------------------------------------------------------------------------------
 
-const METHOD_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
+const METHOD_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -454,6 +454,54 @@ const METHOD_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         let flags = vm.classes.get(class).methods[slot as usize].access_flags;
         boolean(flags & ACC_VARARGS != 0)
     }),
+    method(
+        "getAnnotatedReturnType",
+        "()Ljava/lang/reflect/AnnotatedType;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (class, slot) = method_parts(vm, receiver(args));
+            let (_, descriptor, _) = method_entry(vm, class, slot);
+            let parsed = MethodDescriptor::parse(&descriptor)
+                .map_err(|_| VmError::internal("bad method descriptor"))?;
+            let type_class = match parsed.returns {
+                Some(returns) => field_type_class(vm, &returns)?,
+                None => vm.primitive_class(oxjvm_classfile::BaseType::Void)?,
+            };
+            object(new_annotated_type(vm, type_class)?)
+        },
+    ),
+    method(
+        "getAnnotatedReceiverType",
+        "()Ljava/lang/reflect/AnnotatedType;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (class, slot) = method_parts(vm, receiver(args));
+            let (_, _, flags) = method_entry(vm, class, slot);
+            if flags & ACC_STATIC != 0 {
+                return object(ObjectRef::NULL);
+            }
+            object(new_annotated_type(vm, class)?)
+        },
+    ),
+    method(
+        "getAnnotatedParameterTypes",
+        "()[Ljava/lang/reflect/AnnotatedType;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (class, slot) = method_parts(vm, receiver(args));
+            let (_, descriptor, _) = method_entry(vm, class, slot);
+            annotated_parameter_types(vm, &descriptor)
+        },
+    ),
+    method(
+        "getTypeParameters",
+        "()[Ljava/lang/reflect/TypeVariable;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/lang/reflect/TypeVariable")?;
+            object(vm.allocate_object_array(class, 0)?)
+        },
+    ),
 ];
 
 fn reflect_invoke(
@@ -519,6 +567,157 @@ fn new_invocation_target(vm: &mut Vm<'_>, target: ObjectRef) -> VmError {
         Err(other) => other,
     }
 }
+
+pub(crate) fn new_annotated_type(vm: &mut Vm<'_>, class: ClassId) -> Result<ObjectRef, VmError> {
+    let annotated_class = vm.resolve_class("java/lang/reflect/OjvmAnnotatedType")?;
+    let annotated = vm.new_instance(annotated_class)?;
+    let class_object = vm.class_object(class)?;
+    let (declaring, field) = vm.find_field(annotated_class, "type", "Ljava/lang/Class;")?;
+    vm.set_instance_ref(annotated, declaring, field, class_object);
+    Ok(annotated)
+}
+
+fn annotated_parameter_types(vm: &mut Vm<'_>, descriptor: &str) -> Result<Value, VmError> {
+    let parsed =
+        MethodDescriptor::parse(descriptor).map_err(|_| VmError::internal("bad descriptor"))?;
+    let annotated_class = vm.resolve_class("java/lang/reflect/AnnotatedType")?;
+    let array = vm.allocate_object_array(annotated_class, parsed.parameters.len())?;
+    for (index, parameter) in parsed.parameters.iter().enumerate() {
+        let type_class = field_type_class(vm, parameter)?;
+        let annotated = new_annotated_type(vm, type_class)?;
+        vm.array_set_ref(array, index, annotated)?;
+    }
+    object(array)
+}
+
+const ANNOTATED_TYPE_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method(
+        "getType",
+        "()Ljava/lang/reflect/Type;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getAnnotatedOwnerType",
+        "()Ljava/lang/reflect/AnnotatedType;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getAnnotation",
+        "(Ljava/lang/Class;)Ljava/lang/annotation/Annotation;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getAnnotations",
+        "()[Ljava/lang/annotation/Annotation;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getDeclaredAnnotations",
+        "()[Ljava/lang/annotation/Annotation;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "isAnnotationPresent",
+        "(Ljava/lang/Class;)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getAnnotatedBounds",
+        "()[Ljava/lang/reflect/AnnotatedType;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
+pub(crate) const ANNOTATED_TYPE: oxjvm_vm::NativeClass = class(
+    "java/lang/reflect/AnnotatedType",
+    Some("java/lang/Object"),
+    &["java/lang/reflect/AnnotatedElement"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &ANNOTATED_TYPE_METHODS,
+    None,
+);
+
+const OJVM_ANNOTATED_TYPE_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method(
+        "getType",
+        "()Ljava/lang/reflect/Type;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(
+                vm.read_ref_field(
+                    receiver(args),
+                    vm.class_of(receiver(args)),
+                    "type",
+                    "Ljava/lang/Class;",
+                )
+                .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method(
+        "getAnnotatedOwnerType",
+        "()Ljava/lang/reflect/AnnotatedType;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "getAnnotation",
+        "(Ljava/lang/Class;)Ljava/lang/annotation/Annotation;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "getAnnotations",
+        "()[Ljava/lang/annotation/Annotation;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/lang/annotation/Annotation")?;
+            object(vm.allocate_object_array(class, 0)?)
+        },
+    ),
+    method(
+        "getDeclaredAnnotations",
+        "()[Ljava/lang/annotation/Annotation;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/lang/annotation/Annotation")?;
+            object(vm.allocate_object_array(class, 0)?)
+        },
+    ),
+    method(
+        "isAnnotationPresent",
+        "(Ljava/lang/Class;)Z",
+        ACC_PUBLIC,
+        |_, _, _| boolean(false),
+    ),
+    method(
+        "getAnnotatedBounds",
+        "()[Ljava/lang/reflect/AnnotatedType;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/lang/reflect/AnnotatedType")?;
+            object(vm.allocate_object_array(class, 0)?)
+        },
+    ),
+];
+
+pub(crate) const OJVM_ANNOTATED_TYPE: oxjvm_vm::NativeClass = class(
+    "java/lang/reflect/OjvmAnnotatedType",
+    Some("java/lang/Object"),
+    &["java/lang/reflect/AnnotatedType"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[field("type", "Ljava/lang/Class;", ACC_PRIVATE, None)],
+    &OJVM_ANNOTATED_TYPE_METHODS,
+    None,
+);
 
 pub(crate) const EXECUTABLE: oxjvm_vm::NativeClass = class(
     "java/lang/reflect/Executable",
@@ -676,7 +875,7 @@ fn reflect_field_set_primitive(
     void()
 }
 
-const FIELD_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
+const FIELD_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -971,6 +1170,17 @@ const FIELD_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
         let flags = vm.classes.get(class).fields[slot as usize].access_flags;
         boolean(flags & ACC_ENUM != 0)
     }),
+    method(
+        "getAnnotatedType",
+        "()Ljava/lang/reflect/AnnotatedType;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (class, slot) = field_parts(vm, receiver(args));
+            let (_, descriptor, _) = field_entry(vm, class, slot);
+            let type_class = crate::annotation::class_for_descriptor(vm, &descriptor)?;
+            object(new_annotated_type(vm, type_class)?)
+        },
+    ),
 ];
 
 pub(crate) const FIELD: oxjvm_vm::NativeClass = class(
@@ -2792,7 +3002,7 @@ fn constructor_new_instance(
     object(instance)
 }
 
-const CONSTRUCTOR_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
+const CONSTRUCTOR_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -3037,6 +3247,25 @@ const CONSTRUCTOR_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
             object(vm.make_string(text.trim())?)
         },
     ),
+    method(
+        "getAnnotatedReceiverType",
+        "()Ljava/lang/reflect/AnnotatedType;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (class, _) = constructor_parts(vm, receiver(args));
+            object(new_annotated_type(vm, class)?)
+        },
+    ),
+    method(
+        "getAnnotatedParameterTypes",
+        "()[Ljava/lang/reflect/AnnotatedType;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (class, slot) = constructor_parts(vm, receiver(args));
+            let (_, descriptor, _) = method_entry(vm, class, slot);
+            annotated_parameter_types(vm, &descriptor)
+        },
+    ),
 ];
 
 pub(crate) const CONSTRUCTOR: oxjvm_vm::NativeClass = class(
@@ -3225,7 +3454,7 @@ fn parameter_annotations_by_type(
     crate::annotation::typed_annotation_array(vm, requested, &found)
 }
 
-const PARAMETER_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const PARAMETER_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -3407,6 +3636,23 @@ const PARAMETER_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
             .wrapping_mul(31)
             .wrapping_add(slot as i32))
     }),
+    method(
+        "getAnnotatedType",
+        "()Ljava/lang/reflect/AnnotatedType;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (executable, slot) = parameter_parts(vm, receiver(args));
+            let descriptor = executable_descriptor(vm, executable)?;
+            let parsed = MethodDescriptor::parse(&descriptor)
+                .map_err(|_| VmError::internal("bad executable descriptor"))?;
+            let parameter = parsed
+                .parameters
+                .get(slot)
+                .ok_or_else(|| VmError::internal("parameter index out of range"))?;
+            let type_class = field_type_class(vm, parameter)?;
+            object(new_annotated_type(vm, type_class)?)
+        },
+    ),
 ];
 
 /// `java.lang.reflect.Parameter`.
@@ -4185,5 +4431,341 @@ pub(crate) const PROTECTION_DOMAIN: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC,
     &[],
     &PROTECTION_DOMAIN_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// RecordComponent / AccessFlag
+// -------------------------------------------------------------------------------------------
+
+const RECORD_COMPONENT_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method("getName", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, _| {
+        object(vm.make_string("")?)
+    }),
+    method("getType", "()Ljava/lang/Class;", ACC_PUBLIC, |_, _, _| {
+        object(ObjectRef::NULL)
+    }),
+    method(
+        "getDeclaringRecord",
+        "()Ljava/lang/Class;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "getAccessor",
+        "()Ljava/lang/reflect/Method;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "getAnnotatedType",
+        "()Ljava/lang/reflect/AnnotatedType;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| object(vm.make_string("")?),
+    ),
+];
+
+pub(crate) const RECORD_COMPONENT: oxjvm_vm::NativeClass = class(
+    "java/lang/reflect/RecordComponent",
+    Some("java/lang/Object"),
+    &["java/lang/reflect/AnnotatedElement"],
+    ACC_PUBLIC | ACC_FINAL,
+    &[],
+    &RECORD_COMPONENT_METHODS,
+    None,
+);
+
+const ACCESS_FLAG_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method("mask", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "mask"))
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = vm
+                .read_string_field(receiver(args), vm.class_of(receiver(args)), "name")
+                .unwrap_or_default();
+            object(vm.make_string(&name)?)
+        },
+    ),
+    method(
+        "values",
+        "()[Ljava/lang/reflect/AccessFlag;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/lang/reflect/AccessFlag")?;
+            let names = [
+                "PUBLIC",
+                "PRIVATE",
+                "PROTECTED",
+                "STATIC",
+                "FINAL",
+                "SYNCHRONIZED",
+                "VOLATILE",
+                "TRANSIENT",
+                "NATIVE",
+                "INTERFACE",
+                "ABSTRACT",
+                "STRICT",
+                "SYNTHETIC",
+                "ANNOTATION",
+                "ENUM",
+                "MANDATED",
+                "MODULE",
+                "RECORD",
+                "SEALED",
+            ];
+            let array = vm.allocate_object_array(class, names.len())?;
+            for (index, name) in names.iter().enumerate() {
+                if let Some(value) =
+                    vm.read_static_ref_if_set(class, name, "Ljava/lang/reflect/AccessFlag;")
+                {
+                    vm.array_set_ref(array, index, value)?;
+                }
+            }
+            object(array)
+        },
+    ),
+    method(
+        "valueOf",
+        "(Ljava/lang/String;)Ljava/lang/reflect/AccessFlag;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = vm.string_or_empty(ref_arg(args, 0));
+            let class = vm.resolve_class("java/lang/reflect/AccessFlag")?;
+            vm.ensure_initialized(class)?;
+            if let Some(value) =
+                vm.read_static_ref_if_set(class, &name, "Ljava/lang/reflect/AccessFlag;")
+            {
+                return object(value);
+            }
+            Err(vm.throw_new("java/lang/IllegalArgumentException", Some(&name)))
+        },
+    ),
+    method("locations", "()Ljava/util/Set;", ACC_PUBLIC, |vm, _, _| {
+        object(crate::util::hash_set_from(vm, &[])?)
+    }),
+];
+
+fn access_flag_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/lang/reflect/AccessFlag")?;
+    for (name, mask) in [
+        ("PUBLIC", 0x0001),
+        ("PRIVATE", 0x0002),
+        ("PROTECTED", 0x0004),
+        ("STATIC", 0x0008),
+        ("FINAL", 0x0010),
+        ("SYNCHRONIZED", 0x0020),
+        ("VOLATILE", 0x0040),
+        ("TRANSIENT", 0x0080),
+        ("NATIVE", 0x0100),
+        ("INTERFACE", 0x0200),
+        ("ABSTRACT", 0x0400),
+        ("STRICT", 0x0800),
+        ("SYNTHETIC", 0x1000),
+        ("ANNOTATION", 0x2000),
+        ("ENUM", 0x4000),
+        ("MANDATED", 0x8000),
+        ("MODULE", 0x8000),
+        ("RECORD", 0x10000),
+        ("SEALED", 0x20000),
+    ] {
+        let instance = vm.new_instance(class)?;
+        vm.set_string_field(instance, class, "name", name)?;
+        crate::lang::write_int_field(vm, instance, "mask", mask);
+        vm.set_static_value(
+            class,
+            name,
+            "Ljava/lang/reflect/AccessFlag;",
+            Value::Ref(instance),
+        );
+    }
+    Ok(())
+}
+
+pub(crate) const ACCESS_FLAG: oxjvm_vm::NativeClass = class(
+    "java/lang/reflect/AccessFlag",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("mask", "I", ACC_PRIVATE, None),
+        field(
+            "PUBLIC",
+            "Ljava/lang/reflect/AccessFlag;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "PRIVATE",
+            "Ljava/lang/reflect/AccessFlag;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "PROTECTED",
+            "Ljava/lang/reflect/AccessFlag;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "STATIC",
+            "Ljava/lang/reflect/AccessFlag;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "FINAL",
+            "Ljava/lang/reflect/AccessFlag;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "SYNCHRONIZED",
+            "Ljava/lang/reflect/AccessFlag;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "VOLATILE",
+            "Ljava/lang/reflect/AccessFlag;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "TRANSIENT",
+            "Ljava/lang/reflect/AccessFlag;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "NATIVE",
+            "Ljava/lang/reflect/AccessFlag;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "INTERFACE",
+            "Ljava/lang/reflect/AccessFlag;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "ABSTRACT",
+            "Ljava/lang/reflect/AccessFlag;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "STRICT",
+            "Ljava/lang/reflect/AccessFlag;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "SYNTHETIC",
+            "Ljava/lang/reflect/AccessFlag;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "ANNOTATION",
+            "Ljava/lang/reflect/AccessFlag;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "ENUM",
+            "Ljava/lang/reflect/AccessFlag;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "MANDATED",
+            "Ljava/lang/reflect/AccessFlag;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "MODULE",
+            "Ljava/lang/reflect/AccessFlag;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "RECORD",
+            "Ljava/lang/reflect/AccessFlag;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "SEALED",
+            "Ljava/lang/reflect/AccessFlag;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+    ],
+    &ACCESS_FLAG_METHODS,
+    Some(access_flag_clinit),
+);
+
+pub(crate) const ACCESS_FLAG_LOCATION: oxjvm_vm::NativeClass = class(
+    "java/lang/reflect/AccessFlag$Location",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const REFLECT_PERMISSION: oxjvm_vm::NativeClass = class(
+    "java/lang/reflect/ReflectPermission",
+    Some("java/lang/Object"),
+    &["java/io/Serializable"],
+    ACC_PUBLIC | ACC_FINAL,
+    &[field("name", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &[
+        method(
+            "<init>",
+            "(Ljava/lang/String;)V",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let name = string_arg(vm, args[1])?;
+                vm.set_string_field(receiver(args), vm.class_of(receiver(args)), "name", &name)?;
+                void()
+            },
+        ),
+        method(
+            "<init>",
+            "(Ljava/lang/String;Ljava/lang/String;)V",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let name = string_arg(vm, args[1])?;
+                vm.set_string_field(receiver(args), vm.class_of(receiver(args)), "name", &name)?;
+                void()
+            },
+        ),
+        method(
+            "getName",
+            "()Ljava/lang/String;",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let name = vm
+                    .read_string_field(receiver(args), vm.class_of(receiver(args)), "name")
+                    .unwrap_or_default();
+                object(vm.make_string(&name)?)
+            },
+        ),
+    ],
     None,
 );

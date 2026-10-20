@@ -1745,3 +1745,24 @@ fn p1_method_handles_and_var_handles() {
         );
     }
 }
+
+#[test]
+fn p1_annotated_types_and_records() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/P1Annotated").expect("P1Annotated");
+    let (declaring, index) = vm
+        .find_method(class, "annotated", "()Ljava/lang/String;")
+        .expect("annotated");
+    let value = match vm.invoke_method(declaring, index, Vec::new()) {
+        Ok(value) => value,
+        Err(VmError::Thrown(exception)) => {
+            panic!("annotated: threw {}", vm.class_name(vm.class_of(exception)))
+        }
+        Err(error) => panic!("annotated: {error:?}"),
+    };
+    assert_eq!(
+        vm.string_value(value.as_ref()).as_deref(),
+        Some("void:1:0:java.lang.Object:java.lang.String:0")
+    );
+}

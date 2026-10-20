@@ -239,7 +239,7 @@ pub(crate) const OBJECT: oxjvm_vm::NativeClass = class(
 // Class
 // -------------------------------------------------------------------------------------------
 
-const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 60] = [
+const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -714,6 +714,27 @@ const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 60] = [
                 }
                 None => object(ObjectRef::NULL),
             }
+        },
+    ),
+    method(
+        "getAnnotatedSuperclass",
+        "()Ljava/lang/reflect/AnnotatedType;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = class_argument(vm, receiver(args))?;
+            match vm.classes.get(class).super_class {
+                Some(super_class) => object(crate::reflect::new_annotated_type(vm, super_class)?),
+                None => object(ObjectRef::NULL),
+            }
+        },
+    ),
+    method(
+        "getRecordComponents",
+        "()[Ljava/lang/reflect/RecordComponent;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/lang/reflect/RecordComponent")?;
+            object(vm.allocate_object_array(class, 0)?)
         },
     ),
 ];
@@ -6770,7 +6791,7 @@ pub(crate) const COMPARATOR: oxjvm_vm::NativeClass = class(
 // StackTraceElement
 // -------------------------------------------------------------------------------------------
 
-const STACK_TRACE_ELEMENT_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+const STACK_TRACE_ELEMENT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method(
         "<init>",
         "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;I)V",
@@ -6851,6 +6872,21 @@ const STACK_TRACE_ELEMENT_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
                         == read_int_field(vm, other, "lineNumber"),
             )
         },
+    ),
+    method("isNativeMethod", "()Z", ACC_PUBLIC, |_, _, _| {
+        boolean(false)
+    }),
+    method(
+        "getModuleName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "getModuleVersion",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
     ),
 ];
 

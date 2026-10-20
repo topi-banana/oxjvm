@@ -120,7 +120,7 @@ pub fn natives() -> &'static [NativeClass] {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 489] = [
+static REGISTRY: [NativeClass; 495] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -548,6 +548,12 @@ static REGISTRY: [NativeClass; 489] = [
     reflect::PERMISSION_COLLECTION,
     reflect::PERMISSIONS,
     reflect::PROTECTION_DOMAIN,
+    reflect::ANNOTATED_TYPE,
+    reflect::OJVM_ANNOTATED_TYPE,
+    reflect::RECORD_COMPONENT,
+    reflect::ACCESS_FLAG,
+    reflect::ACCESS_FLAG_LOCATION,
+    reflect::REFLECT_PERMISSION,
     beans::PROPERTY_DESCRIPTOR,
     beans::PROPERTY_EDITOR,
     beans::PROPERTY_EDITOR_SUPPORT,

@@ -365,7 +365,7 @@ unsafe_class!(
 
 /// The method table is shared by both `Unsafe` spellings, with the static
 /// `getUnsafe` handled per class in `clinit`.
-static UNSAFE_METHODS: [oxjvm_vm::NativeMethodDef; 48] = [
+static UNSAFE_METHODS: [oxjvm_vm::NativeMethodDef; 78] = [
     method(
         "getUnsafe",
         "()Ljava/lang/Object;",
@@ -837,6 +837,279 @@ static UNSAFE_METHODS: [oxjvm_vm::NativeMethodDef; 48] = [
                 crate::long_arg(args, 2),
                 Value::Ref(ref_arg(args, 3)),
             )
+        },
+    ),
+    method("allocateMemory", "(J)J", ACC_PUBLIC, |vm, _, args| {
+        long((vm.host.random_seed() as i64 | 0x1000).wrapping_add(crate::long_arg(args, 1)))
+    }),
+    method("reallocateMemory", "(JJ)J", ACC_PUBLIC, |_, _, args| {
+        long(crate::long_arg(args, 1))
+    }),
+    method("freeMemory", "(J)V", ACC_PUBLIC, |_, _, _| void()),
+    method("setMemory", "(JJB)V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "setMemory",
+        "(Ljava/lang/Object;JJB)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method("copyMemory", "(JJJ)V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "copyMemory",
+        "(Ljava/lang/Object;JLjava/lang/Object;JJ)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method("addressSize", "()I", ACC_PUBLIC, |_, _, _| int(8)),
+    method("unalignedAccess", "()Z", ACC_PUBLIC, |_, _, _| {
+        boolean(true)
+    }),
+    method(
+        "arrayBaseOffset",
+        "(Ljava/lang/Class;)J",
+        ACC_PUBLIC,
+        |_, _, _| long(ARRAY_BASE_OFFSET),
+    ),
+    method(
+        "arrayBaseOffset",
+        "(Ljava/lang/Class;)I",
+        ACC_PUBLIC,
+        |_, _, _| int(ARRAY_BASE_OFFSET as i32),
+    ),
+    method(
+        "arrayIndexScale",
+        "(Ljava/lang/Class;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = class_argument_value(vm, args[1])?;
+            int(component_scale(vm, class))
+        },
+    ),
+    method(
+        "staticFieldBase",
+        "(Ljava/lang/reflect/Field;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "staticFieldOffset",
+        "(Ljava/lang/reflect/Field;)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            long(i64::from(crate::lang::read_int_field(vm, ref_arg(args, 1), "slot")) * 8)
+        },
+    ),
+    method(
+        "objectFieldOffset",
+        "(Ljava/lang/Class;Ljava/lang/String;)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = class_argument_value(vm, args[1])?;
+            let name = crate::string_arg(vm, args[2])?;
+            let index = vm
+                .classes
+                .get(class)
+                .fields
+                .iter()
+                .position(|field| field.name == name)
+                .unwrap_or(0);
+            long(index as i64 * 8)
+        },
+    ),
+    method(
+        "getIntUnaligned",
+        "(Ljava/lang/Object;J)I",
+        ACC_PUBLIC,
+        |vm, _, args| unsafe_get(vm, ref_arg(args, 1), crate::long_arg(args, 2), "I"),
+    ),
+    method(
+        "putIntUnaligned",
+        "(Ljava/lang/Object;JI)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            unsafe_put(
+                vm,
+                ref_arg(args, 1),
+                crate::long_arg(args, 2),
+                Value::Int(crate::int_arg(args, 3)),
+            )
+        },
+    ),
+    method(
+        "getShortUnaligned",
+        "(Ljava/lang/Object;J)S",
+        ACC_PUBLIC,
+        |vm, _, args| unsafe_get(vm, ref_arg(args, 1), crate::long_arg(args, 2), "S"),
+    ),
+    method(
+        "putShortUnaligned",
+        "(Ljava/lang/Object;JS)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            unsafe_put(
+                vm,
+                ref_arg(args, 1),
+                crate::long_arg(args, 2),
+                Value::Int(crate::int_arg(args, 3)),
+            )
+        },
+    ),
+    method(
+        "getLongUnaligned",
+        "(Ljava/lang/Object;J)J",
+        ACC_PUBLIC,
+        |vm, _, args| unsafe_get(vm, ref_arg(args, 1), crate::long_arg(args, 2), "J"),
+    ),
+    method(
+        "putLongUnaligned",
+        "(Ljava/lang/Object;JJ)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            unsafe_put(
+                vm,
+                ref_arg(args, 1),
+                crate::long_arg(args, 2),
+                Value::Long(crate::long_arg(args, 3)),
+            )
+        },
+    ),
+    method(
+        "getFloat",
+        "(Ljava/lang/Object;J)F",
+        ACC_PUBLIC,
+        |vm, _, args| unsafe_get(vm, ref_arg(args, 1), crate::long_arg(args, 2), "F"),
+    ),
+    method(
+        "putFloat",
+        "(Ljava/lang/Object;JF)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            unsafe_put(
+                vm,
+                ref_arg(args, 1),
+                crate::long_arg(args, 2),
+                Value::Float(crate::float_arg(args, 3)),
+            )
+        },
+    ),
+    method(
+        "getDouble",
+        "(Ljava/lang/Object;J)D",
+        ACC_PUBLIC,
+        |vm, _, args| unsafe_get(vm, ref_arg(args, 1), crate::long_arg(args, 2), "D"),
+    ),
+    method(
+        "putDouble",
+        "(Ljava/lang/Object;JD)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            unsafe_put(
+                vm,
+                ref_arg(args, 1),
+                crate::long_arg(args, 2),
+                Value::Double(crate::double_arg(args, 3)),
+            )
+        },
+    ),
+    method(
+        "compareAndSetReference",
+        "(Ljava/lang/Object;JLjava/lang/Object;Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let old = unsafe_get(vm, ref_arg(args, 1), crate::long_arg(args, 2), "L")?.as_ref();
+            if old == ref_arg(args, 3) {
+                unsafe_put(
+                    vm,
+                    ref_arg(args, 1),
+                    crate::long_arg(args, 2),
+                    Value::Ref(ref_arg(args, 4)),
+                )?;
+                boolean(true)
+            } else {
+                boolean(false)
+            }
+        },
+    ),
+    method(
+        "getAndSetReference",
+        "(Ljava/lang/Object;JLjava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let old = unsafe_get(vm, ref_arg(args, 1), crate::long_arg(args, 2), "L")?;
+            unsafe_put(
+                vm,
+                ref_arg(args, 1),
+                crate::long_arg(args, 2),
+                Value::Ref(ref_arg(args, 3)),
+            )?;
+            object(old.as_ref())
+        },
+    ),
+    method(
+        "compareAndExchangeReference",
+        "(Ljava/lang/Object;JLjava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let old = unsafe_get(vm, ref_arg(args, 1), crate::long_arg(args, 2), "L")?;
+            if old.as_ref() == ref_arg(args, 3) {
+                unsafe_put(
+                    vm,
+                    ref_arg(args, 1),
+                    crate::long_arg(args, 2),
+                    Value::Ref(ref_arg(args, 4)),
+                )?;
+            }
+            object(old.as_ref())
+        },
+    ),
+    method(
+        "compareAndSetByte",
+        "(Ljava/lang/Object;JBB)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let old = unsafe_get(vm, ref_arg(args, 1), crate::long_arg(args, 2), "B")?.as_int();
+            if old == crate::int_arg(args, 3) {
+                unsafe_put(
+                    vm,
+                    ref_arg(args, 1),
+                    crate::long_arg(args, 2),
+                    Value::Int(crate::int_arg(args, 4)),
+                )?;
+                boolean(true)
+            } else {
+                boolean(false)
+            }
+        },
+    ),
+    method(
+        "allocateUninitializedArray",
+        "(Ljava/lang/Class;I)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = class_argument_value(vm, args[1])?;
+            let length = crate::int_arg(args, 2).max(0) as usize;
+            let kind = vm.classes.get(class).kind;
+            if kind == oxjvm_vm::ClassKind::Primitive {
+                let base = vm
+                    .classes
+                    .get(class)
+                    .primitive
+                    .ok_or_else(|| VmError::internal("primitive"))?;
+                let component = match base {
+                    oxjvm_classfile::BaseType::Boolean => oxjvm_vm::ArrayComponent::Boolean,
+                    oxjvm_classfile::BaseType::Byte => oxjvm_vm::ArrayComponent::Byte,
+                    oxjvm_classfile::BaseType::Char => oxjvm_vm::ArrayComponent::Char,
+                    oxjvm_classfile::BaseType::Short => oxjvm_vm::ArrayComponent::Short,
+                    oxjvm_classfile::BaseType::Int => oxjvm_vm::ArrayComponent::Int,
+                    oxjvm_classfile::BaseType::Long => oxjvm_vm::ArrayComponent::Long,
+                    oxjvm_classfile::BaseType::Float => oxjvm_vm::ArrayComponent::Float,
+                    oxjvm_classfile::BaseType::Double => oxjvm_vm::ArrayComponent::Double,
+                    oxjvm_classfile::BaseType::Void => oxjvm_vm::ArrayComponent::Reference,
+                };
+                object(vm.allocate_array_of(component, length)?)
+            } else {
+                object(vm.allocate_object_array(class, length)?)
+            }
         },
     ),
 ];

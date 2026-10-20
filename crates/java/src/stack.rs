@@ -163,7 +163,7 @@ fn frame_field(vm: &Vm<'_>, this: ObjectRef, name: &str) -> ObjectRef {
         .unwrap_or(ObjectRef::NULL)
 }
 
-const STACK_FRAME_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const STACK_FRAME_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method(
         "getClassName",
         "()Ljava/lang/String;",
@@ -207,6 +207,12 @@ const STACK_FRAME_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         abstract_method_pub,
     ),
     method(
+        "toStackTraceElement",
+        "()Ljava/lang/StackTraceElement;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
         "toString",
         "()Ljava/lang/String;",
         ACC_PUBLIC | ACC_ABSTRACT,
@@ -224,7 +230,7 @@ pub(crate) const STACK_FRAME: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const OJVM_STACK_FRAME_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const OJVM_STACK_FRAME_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method(
         "getClassName",
         "()Ljava/lang/String;",
@@ -277,6 +283,46 @@ const OJVM_STACK_FRAME_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method("isNativeMethod", "()Z", ACC_PUBLIC, |_, _, _| {
         boolean(false)
     }),
+    method(
+        "toStackTraceElement",
+        "()Ljava/lang/StackTraceElement;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class_name = vm
+                .string_or_empty(frame_field(vm, this, "className"))
+                .replace('/', ".");
+            let method_name = vm.string_or_empty(frame_field(vm, this, "methodName"));
+            let file_name = vm
+                .read_string_field(this, vm.class_of(this), "fileName")
+                .unwrap_or_default();
+            let line = crate::lang::read_int_field(vm, this, "lineNumber");
+            let element_class = vm.resolve_class("java/lang/StackTraceElement")?;
+            let element = vm.new_instance(element_class)?;
+            let (declaring, ctor) = vm
+                .find_method(
+                    element_class,
+                    "<init>",
+                    "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;I)V",
+                )
+                .ok_or_else(|| VmError::internal("StackTraceElement ctor missing"))?;
+            let class_text = vm.make_string(&class_name)?;
+            let method_text = vm.make_string(&method_name)?;
+            let file_text = vm.make_string(&file_name)?;
+            vm.invoke_method(
+                declaring,
+                ctor,
+                vec![
+                    Value::Ref(element),
+                    Value::Ref(class_text),
+                    Value::Ref(method_text),
+                    Value::Ref(file_text),
+                    Value::Int(line),
+                ],
+            )?;
+            object(element)
+        },
+    ),
     method(
         "toString",
         "()Ljava/lang/String;",
