@@ -29,6 +29,7 @@ pub mod frame;
 pub mod heap;
 pub mod interpreter;
 pub mod loader;
+pub mod options;
 pub mod support;
 pub mod thread;
 pub mod value;
@@ -40,8 +41,9 @@ pub use class::{
 };
 pub use error::VmError;
 pub use frame::Frame;
-pub use heap::{ArrayData, BacktraceFrame, MethodHandleValue, ObjectData};
+pub use heap::{ArrayData, BacktraceFrame, MethodHandleValue, ObjectData, OutOfMemory};
 pub use loader::ResolvedMethod;
+pub use options::{VmOptions, parse_memory_size};
 pub use thread::{JavaThread, ThreadState};
 pub use value::{ObjectRef, Value};
 
@@ -205,6 +207,16 @@ pub struct Vm<'a> {
     pub(crate) gc_countdown: usize,
     /// Whether a collection is due.
     pub(crate) gc_requested: bool,
+    /// The runtime configuration (heap budget, stack depth).
+    pub options: VmOptions,
+    /// The heap size the collector currently works within. It starts at `-Xms` and grows toward
+    /// `-Xmx` as the live set demands.
+    pub(crate) commit_bytes: u64,
+    /// Set while the `OutOfMemoryError` is being created, so the exception itself can be
+    /// allocated past the budget.
+    pub(crate) oom_throw: bool,
+    /// The error that stopped the boot sequence, if any.
+    pub(crate) boot_error: Option<VmError>,
     /// Print each executed instruction (debugging aid).
     pub(crate) trace: bool,
     /// Primitive classes by base type.
@@ -223,9 +235,26 @@ impl<'a> Vm<'a> {
     ///
     /// The registry must contain `java/lang/Object`; every other native class is loaded on first
     /// use. [`crate::loader`] describes the boot sequence.
+    ///
+    /// The heap is unbounded; use [`Vm::with_options`] to give it a budget.
     #[must_use]
     pub fn new(host: &'a mut dyn Host, natives: &'static [NativeClass]) -> Self {
+        Self::with_options(host, natives, VmOptions::default())
+    }
+
+    /// Create a VM over a host and a native class registry, with an explicit configuration.
+    ///
+    /// The registry must contain `java/lang/Object`; every other native class is loaded on first
+    /// use. [`crate::loader`] describes the boot sequence.
+    #[must_use]
+    pub fn with_options(
+        host: &'a mut dyn Host,
+        natives: &'static [NativeClass],
+        options: VmOptions,
+    ) -> Self {
         let random_state = host.random_seed();
+        let limit_bytes = options.max_heap_bytes;
+        let commit_bytes = options.commit_bytes();
         let mut vm = Self {
             host,
             classes: ClassTable::new(),
@@ -251,29 +280,43 @@ impl<'a> Vm<'a> {
             random_state,
             gc_countdown: 64 * 1024,
             gc_requested: false,
+            options,
+            commit_bytes,
+            oom_throw: false,
+            boot_error: None,
             trace: false,
             primitive_classes: BTreeMap::new(),
             properties: BTreeMap::new(),
             booted: false,
             boxed_cache: BTreeMap::new(),
         };
+        vm.heap.set_limit_bytes(limit_bytes);
         vm.boot();
         vm
     }
 
     /// Boot the runtime: load the root classes and create the main thread.
     ///
+    /// A failure here (a heap budget too small to hold the root classes, say) is remembered and
+    /// reported by the first [`Vm::run_main`].
+    ///
     /// # Panics
     ///
     /// Panics when the native registry has no `java/lang/Object`, which is a host programming
     /// error rather than a guest condition.
     fn boot(&mut self) {
+        if let Err(error) = self.boot_runtime() {
+            self.boot_error = Some(error);
+        }
+    }
+
+    fn boot_runtime(&mut self) -> Result<(), VmError> {
         let object = self
             .natives
             .iter()
             .find(|native| native.name == "java/lang/Object")
             .expect("the native registry must define java/lang/Object");
-        self.load_native_class(object);
+        self.load_native_class(object)?;
         // Primitive type classes, for `Integer.TYPE`, `void.class`, and array components.
         for base in [
             oxjvm_classfile::BaseType::Boolean,
@@ -334,11 +377,10 @@ impl<'a> Vm<'a> {
             self.primitive_classes.insert(base, id);
         }
         // The main thread.
-        let main = self
-            .create_thread("main", false, None)
-            .expect("main thread construction requires java/lang/Thread");
+        let main = self.create_thread("main", false, None)?;
         self.main_thread = main;
         self.booted = true;
+        Ok(())
     }
 
     /// Run a main class to completion.
@@ -348,6 +390,10 @@ impl<'a> Vm<'a> {
     /// `System.exit`.
     pub fn run_main(&mut self, main_class: &str, args: &[&str]) -> Result<i32, VmError> {
         self.booted = true;
+        // A boot that ran out of heap is reported here, like the `java` launcher does.
+        if let Some(error) = self.boot_error.take() {
+            return Err(error);
+        }
         // `java a.b.C` names the class in binary form; the internal name uses slashes.
         let internal_name = main_class.replace('.', "/");
         let class = match self.resolve_class(&internal_name) {
@@ -434,10 +480,15 @@ impl<'a> Vm<'a> {
         let string_class = self.resolve_class("java/lang/String")?;
         let array_class = self.array_class_for(string_class)?;
         let array = self.allocate_array(array_class, args.len())?;
-        for (index, text) in args.iter().enumerate() {
-            let string = self.intern(text);
-            self.array_set_ref(array, index, string)?;
-        }
+        // The array is not reachable from a root until `main` receives it, so it is rooted
+        // while it is filled: interning the arguments may collect.
+        self.with_protected(array, |vm| {
+            for (index, text) in args.iter().enumerate() {
+                let string = vm.intern(text)?;
+                vm.array_set_ref(array, index, string)?;
+            }
+            Ok::<(), VmError>(())
+        })?;
         Ok(array)
     }
 
@@ -446,17 +497,25 @@ impl<'a> Vm<'a> {
     // -----------------------------------------------------------------------------------------
 
     /// Intern a Rust string as a `java.lang.String`, returning the canonical object.
-    pub fn intern(&mut self, text: &str) -> Ref {
+    ///
+    /// Interning allocates, and that allocation may run a collection when the heap budget
+    /// is exhausted, so a caller that holds a reference only on the Rust stack has to root
+    /// it with [`Vm::protect`] or [`Vm::with_protected`] for the duration.
+    ///
+    /// # Errors
+    ///
+    /// Raises `java.lang.OutOfMemoryError` when the heap budget cannot hold the string.
+    pub fn intern(&mut self, text: &str) -> Result<Ref, VmError> {
         if let Some(&existing) = self.interned.get(text) {
-            return existing;
+            return Ok(existing);
         }
         let string_class = self
             .resolve_class("java/lang/String")
             .expect("java/lang/String must exist to intern strings");
         let units: Vec<u16> = text.encode_utf16().collect();
-        let reference = self.heap.allocate(string_class, ObjectData::String(units));
+        let reference = self.allocate_object(string_class, ObjectData::String(units))?;
         self.interned.insert(text.into(), reference);
-        reference
+        Ok(reference)
     }
 
     /// Look up a cached boxed primitive (tag is the wrapper's primitive descriptor byte).
@@ -473,7 +532,7 @@ impl<'a> Vm<'a> {
     /// Create a non-interned `java.lang.String` from UTF-16 code units.
     pub fn make_string_utf16(&mut self, units: Vec<u16>) -> Result<Ref, VmError> {
         let string_class = self.resolve_class("java/lang/String")?;
-        Ok(self.heap.allocate(string_class, ObjectData::String(units)))
+        self.allocate_object(string_class, ObjectData::String(units))
     }
 
     /// Create a `java.lang.String` from a Rust string.
@@ -513,7 +572,7 @@ impl<'a> Vm<'a> {
             return Ok(reference);
         }
         let class_class = self.resolve_class("java/lang/Class")?;
-        let reference = self.heap.allocate(class_class, ObjectData::Class(class));
+        let reference = self.allocate_object(class_class, ObjectData::Class(class))?;
         self.classes.get_mut(class).class_object = Some(reference);
         Ok(reference)
     }
@@ -625,9 +684,13 @@ impl<'a> Vm<'a> {
             .clone()
             .ok_or_else(|| VmError::internal("allocate_array on a non-array class"))?;
         self.maybe_gc();
-        Ok(self
-            .heap
-            .allocate(class, ObjectData::Array(ArrayData::zeroed(component, len))))
+        // The budget is checked before the elements are allocated: a huge array must raise
+        // `OutOfMemoryError` rather than exhaust the host allocator.
+        self.ensure_heap_budget(ArrayData::size_of(&component, len))?;
+        let Some(data) = ArrayData::zeroed(&component, len) else {
+            return Err(self.throw_out_of_memory());
+        };
+        self.allocate_object(class, ObjectData::Array(data))
     }
 
     /// Allocate an object array with the given component class.
@@ -737,7 +800,10 @@ impl<'a> Vm<'a> {
     pub fn throw_new(&mut self, class_name: &str, message: Option<&str>) -> VmError {
         let result = (|| -> Result<Ref, VmError> {
             let class = self.resolve_class(class_name)?;
-            let message_value = message.map(|text| self.intern(text));
+            let message_value = match message {
+                Some(text) => Some(self.intern(text)?),
+                None => None,
+            };
             let (constructor_class, constructor) = if message.is_some() {
                 self.find_method(class, "<init>", "(Ljava/lang/String;)V")
             } else {
@@ -902,6 +968,127 @@ impl<'a> Vm<'a> {
     }
 
     // -----------------------------------------------------------------------------------------
+    // Allocation and the heap budget
+    // -----------------------------------------------------------------------------------------
+
+    /// Allocate an object, enforcing the heap budget.
+    ///
+    /// A collection runs before the budget is declared exhausted, so a heap that only holds
+    /// garbage is reclaimed first. An allocation that still does not fit raises
+    /// `java.lang.OutOfMemoryError`.
+    pub(crate) fn allocate_object(
+        &mut self,
+        class: ClassId,
+        data: ObjectData,
+    ) -> Result<Ref, VmError> {
+        if self.oom_throw {
+            // The `OutOfMemoryError` itself is created past the budget, so the failure can
+            // always be reported.
+            return Ok(self.heap.allocate_unchecked(class, data));
+        }
+        self.ensure_heap_budget(data.object_size())?;
+        match self.heap.allocate(class, data) {
+            Ok(reference) => Ok(reference),
+            Err(_) => Err(self.throw_out_of_memory()),
+        }
+    }
+
+    /// Make sure `bytes` fit in the heap budget, collecting first when they do not.
+    ///
+    /// # Errors
+    ///
+    /// Raises `java.lang.OutOfMemoryError` when the heap cannot hold the allocation even after
+    /// a collection.
+    pub(crate) fn ensure_heap_budget(&mut self, bytes: u64) -> Result<(), VmError> {
+        if self.oom_throw || self.heap.can_fit(bytes) {
+            return Ok(());
+        }
+        if self.in_native == 0 {
+            // Reclaim what the collector can before declaring the heap full. A native call
+            // holds raw references on the Rust stack, so no collection may run there.
+            self.gc();
+        }
+        if self.heap.can_fit(bytes) {
+            return Ok(());
+        }
+        Err(self.throw_out_of_memory())
+    }
+
+    /// Create and throw `java.lang.OutOfMemoryError`.
+    fn throw_out_of_memory(&mut self) -> VmError {
+        // The exception object is allocated past the budget, so the failure is reportable even
+        // when the heap is completely full.
+        self.oom_throw = true;
+        let error = self.throw_new("java/lang/OutOfMemoryError", Some("Java heap space"));
+        self.oom_throw = false;
+        error
+    }
+
+    /// Create and throw `java.lang.StackOverflowError`.
+    ///
+    /// The exception is built without pushing a Java frame — the constructor would need one, and
+    /// the stack is exactly what ran out. Reporting the overflow therefore cannot exhaust the
+    /// stack again.
+    pub(crate) fn throw_stack_overflow(&mut self) -> VmError {
+        let result = (|| -> Result<Ref, VmError> {
+            let class = self.resolve_class("java/lang/StackOverflowError")?;
+            let exception = self.new_instance(class)?;
+            self.capture_backtrace(exception);
+            Ok(exception)
+        })();
+        match result {
+            Ok(exception) => VmError::Thrown(exception),
+            Err(error) => error,
+        }
+    }
+
+    /// The bytes the live objects occupy.
+    #[must_use]
+    pub fn heap_used_bytes(&self) -> u64 {
+        self.heap.used_bytes()
+    }
+
+    /// Replace an object's payload, keeping the heap accounting in step.
+    ///
+    /// The growth the replacement adds is charged against the heap budget, like any other
+    /// allocation: a replacement that does not fit raises `java.lang.OutOfMemoryError`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the reference is null or no longer live, and raises
+    /// `java.lang.OutOfMemoryError` when the replacement does not fit in the budget.
+    pub fn replace_payload(&mut self, reference: Ref, data: ObjectData) -> Result<(), VmError> {
+        let previous = self.heap.object_size(reference).unwrap_or(0);
+        let growth = data.object_size().saturating_sub(previous);
+        // The object is rooted while the budget is checked, because checking it may
+        // collect.
+        self.with_protected(reference, |vm| vm.ensure_heap_budget(growth))?;
+        self.heap
+            .replace_payload(reference, data)
+            .map(|_| ())
+            .ok_or_else(|| VmError::internal("replace_payload on a dead object"))
+    }
+
+    /// The committed heap size: `-Xms`, capped by `-Xmx`, and never below the live set.
+    #[must_use]
+    pub fn heap_total_bytes(&self) -> u64 {
+        self.commit_bytes.max(self.heap.used_bytes())
+    }
+
+    /// The maximum heap size, or `None` when the heap is unbounded.
+    #[must_use]
+    pub fn heap_max_bytes(&self) -> Option<u64> {
+        self.options.max_heap_bytes()
+    }
+
+    /// The bytes still available before the collector runs.
+    #[must_use]
+    pub fn heap_free_bytes(&self) -> u64 {
+        self.heap_total_bytes()
+            .saturating_sub(self.heap.used_bytes())
+    }
+
+    // -----------------------------------------------------------------------------------------
     // Garbage collection
     // -----------------------------------------------------------------------------------------
 
@@ -911,6 +1098,24 @@ impl<'a> Vm<'a> {
         self.heap.collect(roots.into_iter());
         self.gc_requested = false;
         self.gc_countdown = 64 * 1024;
+        self.grow_commit_bytes();
+    }
+
+    /// Grow the heap the collector works within when the live set needs more room.
+    ///
+    /// The size doubles until it reaches the maximum, so a program whose live set keeps growing
+    /// collects less and less often instead of collecting on every allocation.
+    fn grow_commit_bytes(&mut self) {
+        let used = self.heap.used_bytes();
+        if used < self.commit_bytes {
+            return;
+        }
+        let doubled = self
+            .commit_bytes
+            .saturating_mul(2)
+            .max(used.saturating_mul(2));
+        let limit = self.options.max_heap_bytes.unwrap_or(u64::MAX);
+        self.commit_bytes = doubled.min(limit).max(used);
     }
 
     fn gc_roots(&self) -> Vec<Ref> {
@@ -958,7 +1163,8 @@ impl<'a> Vm<'a> {
         roots
     }
 
-    /// Request a collection once enough allocations have happened.
+    /// Request a collection once the heap has grown past its committed size, or once enough
+    /// allocations have happened.
     pub(crate) fn maybe_gc(&mut self) {
         if self.in_native > 0 {
             return;
@@ -967,6 +1173,13 @@ impl<'a> Vm<'a> {
             self.gc();
             return;
         }
+        // The heap has grown past the size the collector works within: collect.
+        if self.heap.used_bytes() >= self.commit_bytes {
+            self.gc_requested = true;
+            return;
+        }
+        // The allocation counter keeps the collector running in an unbounded heap, where the
+        // committed size is only a default.
         if self.gc_countdown == 0 {
             self.gc_requested = true;
         } else {

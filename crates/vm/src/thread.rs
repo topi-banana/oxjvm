@@ -201,21 +201,41 @@ impl<'a> Vm<'a> {
         daemon: bool,
         runnable: Option<ObjectRef>,
     ) -> Result<usize, VmError> {
-        let thread_class = self.resolve_class("java/lang/Thread")?;
-        let object = self.new_instance(thread_class)?;
-        self.set_string_field(object, thread_class, "name", name)?;
-        self.set_boolean_field(object, thread_class, "daemon", daemon)?;
-        if let Some(target) = runnable {
-            let (declaring, field) =
-                self.find_field(thread_class, "target", "Ljava/lang/Runnable;")?;
-            self.set_instance_ref(object, declaring, field, target);
-        }
+        // The scheduler record goes in first: an allocation failure below must still leave the
+        // VM with a thread to report the failure on.
         let index = self.threads.len();
-        let mut thread = JavaThread::new(index, object, name.into(), daemon);
+        let mut thread = JavaThread::new(index, ObjectRef::NULL, name.into(), daemon);
         thread.started = runnable.is_some();
         self.threads.push(thread);
-        self.thread_objects.insert(object, index);
-        Ok(index)
+        let built = (|| -> Result<ObjectRef, VmError> {
+            let thread_class = self.resolve_class("java/lang/Thread")?;
+            let object = self.new_instance(thread_class)?;
+            // The thread object is not reachable from a root until the scheduler record
+            // points at it, so it is rooted while it is set up: naming the thread interns
+            // a string, and the interning may collect.
+            self.with_protected(object, |vm| -> Result<(), VmError> {
+                vm.set_string_field(object, thread_class, "name", name)?;
+                vm.set_boolean_field(object, thread_class, "daemon", daemon)?;
+                if let Some(target) = runnable {
+                    let (declaring, field) =
+                        vm.find_field(thread_class, "target", "Ljava/lang/Runnable;")?;
+                    vm.set_instance_ref(object, declaring, field, target);
+                }
+                Ok(())
+            })?;
+            Ok(object)
+        })();
+        match built {
+            Ok(object) => {
+                self.threads[index].object = object;
+                self.thread_objects.insert(object, index);
+                Ok(index)
+            }
+            Err(error) => {
+                self.threads[index].state = ThreadState::Terminated;
+                Err(error)
+            }
+        }
     }
 
     /// Start a Java thread from a `java.lang.Thread` object: schedule `run()V` on it.

@@ -1776,17 +1776,17 @@ pub(crate) fn write_string_payload(
     string: ObjectRef,
     units: Vec<u16>,
 ) -> Result<(), VmError> {
-    let Some(data) = vm.heap.get_mut(string).map(|object| &mut object.data) else {
+    let Some(data) = vm.heap.get(string).map(|object| &object.data) else {
         return Err(VmError::internal("write_string_payload on a non-string"));
     };
     match data {
-        oxjvm_vm::ObjectData::String(payload) => {
-            *payload = units;
+        oxjvm_vm::ObjectData::String(_) => {
+            vm.replace_payload(string, oxjvm_vm::ObjectData::String(units))?;
             Ok(())
         }
         // `new String(...)` allocates a plain instance; the constructor converts it.
-        data @ oxjvm_vm::ObjectData::Instance(_) => {
-            *data = oxjvm_vm::ObjectData::String(units);
+        oxjvm_vm::ObjectData::Instance(_) => {
+            vm.replace_payload(string, oxjvm_vm::ObjectData::String(units))?;
             Ok(())
         }
         _ => Err(VmError::internal("write_string_payload on a non-string")),
@@ -2133,7 +2133,7 @@ fn string_intern(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let text = vm.string_or_empty(receiver(args));
-    let interned = vm.intern(&text);
+    let interned = vm.intern(&text)?;
     object(interned)
 }
 
@@ -4325,9 +4325,15 @@ const RUNTIME_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         runtime_get_runtime,
     ),
     method("availableProcessors", "()I", ACC_PUBLIC, |_, _, _| int(1)),
-    method("freeMemory", "()J", ACC_PUBLIC, |_, _, _| long(1 << 26)),
-    method("totalMemory", "()J", ACC_PUBLIC, |_, _, _| long(1 << 26)),
-    method("maxMemory", "()J", ACC_PUBLIC, |_, _, _| long(1 << 30)),
+    method("freeMemory", "()J", ACC_PUBLIC, |vm, _, _| {
+        long(vm.heap_free_bytes() as i64)
+    }),
+    method("totalMemory", "()J", ACC_PUBLIC, |vm, _, _| {
+        long(vm.heap_total_bytes() as i64)
+    }),
+    method("maxMemory", "()J", ACC_PUBLIC, |vm, _, _| {
+        long(vm.heap_max_bytes().unwrap_or(i64::MAX as u64) as i64)
+    }),
     method("gc", "()V", ACC_PUBLIC, |vm, _, _| {
         vm.gc();
         void()

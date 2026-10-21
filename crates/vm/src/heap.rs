@@ -3,9 +3,16 @@
 use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::mem::size_of;
 
 use crate::class::ClassId;
 use crate::value::{ObjectRef, Value};
+
+/// The per-object overhead charged to every allocation, in bytes.
+///
+/// It stands in for the header every real JVM object carries: the mark word, the class
+/// pointer, and the identity hash the collector keeps per object.
+pub const OBJECT_HEADER_BYTES: u64 = 16;
 
 /// One object's payload.
 #[derive(Debug, Clone, PartialEq)]
@@ -24,6 +31,28 @@ pub enum ObjectData {
     MethodHandle(MethodHandleValue),
     /// A captured stack trace attached to a `Throwable`.
     Backtrace(Vec<BacktraceFrame>),
+}
+
+impl ObjectData {
+    /// The size of the payload in bytes, excluding the object header.
+    #[must_use]
+    pub fn payload_bytes(&self) -> u64 {
+        match self {
+            Self::Instance(fields) => (fields.len() * size_of::<Value>()) as u64,
+            Self::Array(array) => array.payload_bytes(),
+            Self::String(units) => (units.len() * size_of::<u16>()) as u64,
+            Self::Class(_) => 0,
+            Self::MethodType(descriptor) => descriptor.len() as u64,
+            Self::MethodHandle(handle) => handle.payload_bytes(),
+            Self::Backtrace(frames) => (frames.len() * size_of::<BacktraceFrame>()) as u64,
+        }
+    }
+
+    /// The total number of bytes the object occupies, header included.
+    #[must_use]
+    pub fn object_size(&self) -> u64 {
+        OBJECT_HEADER_BYTES + self.payload_bytes()
+    }
 }
 
 /// A captured Java stack frame.
@@ -77,6 +106,41 @@ impl ArrayData {
             Self::Double(v) => v.len(),
             Self::Reference(v) => v.len(),
         }
+    }
+
+    /// The size of the elements in bytes.
+    #[must_use]
+    pub fn payload_bytes(&self) -> u64 {
+        match self {
+            Self::Boolean(v) => v.len() as u64,
+            Self::Byte(v) => v.len() as u64,
+            Self::Char(v) => (v.len() * size_of::<u16>()) as u64,
+            Self::Short(v) => (v.len() * size_of::<i16>()) as u64,
+            Self::Int(v) => (v.len() * size_of::<i32>()) as u64,
+            Self::Long(v) => (v.len() * size_of::<i64>()) as u64,
+            Self::Float(v) => (v.len() * size_of::<f32>()) as u64,
+            Self::Double(v) => (v.len() * size_of::<f64>()) as u64,
+            Self::Reference(v) => (v.len() * size_of::<ObjectRef>()) as u64,
+        }
+    }
+
+    /// The number of bytes one element of `component` occupies.
+    #[must_use]
+    pub const fn element_size(component: &crate::class::ArrayComponent) -> usize {
+        use crate::class::ArrayComponent as C;
+        match component {
+            C::Boolean | C::Byte => 1,
+            C::Char | C::Short => 2,
+            C::Int | C::Float => 4,
+            C::Long | C::Double => 8,
+            C::Reference => size_of::<ObjectRef>(),
+        }
+    }
+
+    /// The number of bytes an array of `len` elements occupies, header included.
+    #[must_use]
+    pub fn size_of(component: &crate::class::ArrayComponent, len: usize) -> u64 {
+        OBJECT_HEADER_BYTES + (len as u64).saturating_mul(Self::element_size(component) as u64)
     }
 
     /// Whether the array has no elements.
@@ -134,19 +198,30 @@ impl ArrayData {
     }
 
     /// Allocate a zeroed array of `len` elements for a component type.
+    ///
+    /// Returns `None` when the host allocator cannot provide the memory, so the VM can raise
+    /// `OutOfMemoryError` instead of aborting the process.
     #[must_use]
-    pub fn zeroed(component: crate::class::ArrayComponent, len: usize) -> Self {
+    pub fn zeroed(component: &crate::class::ArrayComponent, len: usize) -> Option<Self> {
         use crate::class::ArrayComponent as C;
+        macro_rules! zeroed {
+            ($variant:ident, $value:expr) => {{
+                let mut data = Vec::new();
+                data.try_reserve_exact(len).ok()?;
+                data.resize(len, $value);
+                Some(Self::$variant(data))
+            }};
+        }
         match component {
-            C::Boolean => Self::Boolean(alloc::vec![0; len]),
-            C::Byte => Self::Byte(alloc::vec![0; len]),
-            C::Char => Self::Char(alloc::vec![0; len]),
-            C::Short => Self::Short(alloc::vec![0; len]),
-            C::Int => Self::Int(alloc::vec![0; len]),
-            C::Long => Self::Long(alloc::vec![0; len]),
-            C::Float => Self::Float(alloc::vec![0.0; len]),
-            C::Double => Self::Double(alloc::vec![0.0; len]),
-            C::Reference => Self::Reference(alloc::vec![ObjectRef::NULL; len]),
+            C::Boolean => zeroed!(Boolean, 0u8),
+            C::Byte => zeroed!(Byte, 0i8),
+            C::Char => zeroed!(Char, 0u16),
+            C::Short => zeroed!(Short, 0i16),
+            C::Int => zeroed!(Int, 0i32),
+            C::Long => zeroed!(Long, 0i64),
+            C::Float => zeroed!(Float, 0.0f32),
+            C::Double => zeroed!(Double, 0.0f64),
+            C::Reference => zeroed!(Reference, ObjectRef::NULL),
         }
     }
 }
@@ -226,6 +301,27 @@ pub enum MethodHandleValue {
     },
 }
 
+impl MethodHandleValue {
+    /// The size of the handle's payload in bytes.
+    #[must_use]
+    pub fn payload_bytes(&self) -> u64 {
+        match self {
+            Self::Static { .. }
+            | Self::Virtual { .. }
+            | Self::Special { .. }
+            | Self::New { .. }
+            | Self::StaticGetter { .. }
+            | Self::StaticSetter { .. }
+            | Self::Getter { .. }
+            | Self::Setter { .. }
+            | Self::Identity { .. } => 0,
+            Self::Bound { target, .. } => {
+                size_of::<MethodHandleValue>() as u64 + target.payload_bytes()
+            }
+        }
+    }
+}
+
 /// A per-object monitor (intrinsic lock).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Monitor {
@@ -267,6 +363,12 @@ impl Object {
     }
 }
 
+/// The heap could not satisfy an allocation within its byte budget.
+///
+/// The VM turns this into a `java.lang.OutOfMemoryError`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutOfMemory;
+
 /// The object heap, with a mark-sweep collector.
 #[derive(Debug, Default)]
 pub struct Heap {
@@ -275,22 +377,73 @@ pub struct Heap {
     next_hash: u32,
     /// Number of live objects (for statistics and thresholds).
     pub live: usize,
+    /// Bytes occupied by the live objects.
+    used_bytes: u64,
+    /// The byte budget the heap must stay within; `None` means unbounded.
+    limit_bytes: Option<u64>,
 }
 
 impl Heap {
-    /// An empty heap.
+    /// An empty, unbounded heap.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_limit(None)
+    }
+
+    /// An empty heap with a byte budget; `None` means unbounded.
+    #[must_use]
+    pub fn with_limit(limit_bytes: Option<u64>) -> Self {
         Self {
             objects: Vec::new(),
             free: Vec::new(),
             next_hash: 1,
             live: 0,
+            used_bytes: 0,
+            limit_bytes,
         }
     }
 
+    /// The byte budget the heap must stay within, or `None` when it is unbounded.
+    #[must_use]
+    pub const fn limit_bytes(&self) -> Option<u64> {
+        self.limit_bytes
+    }
+
+    /// Set the byte budget the heap must stay within; `None` makes the heap unbounded.
+    pub fn set_limit_bytes(&mut self, limit_bytes: Option<u64>) {
+        self.limit_bytes = limit_bytes;
+    }
+
+    /// The bytes occupied by the live objects.
+    #[must_use]
+    pub const fn used_bytes(&self) -> u64 {
+        self.used_bytes
+    }
+
+    /// Whether an allocation of `bytes` fits in the budget.
+    #[must_use]
+    pub fn can_fit(&self, bytes: u64) -> bool {
+        self.limit_bytes
+            .is_none_or(|limit| self.used_bytes.saturating_add(bytes) <= limit)
+    }
+
     /// Allocate an object slot and return its reference.
-    pub fn allocate(&mut self, class: ClassId, data: ObjectData) -> ObjectRef {
+    ///
+    /// Fails with [`OutOfMemory`] when the object would push the heap past its byte budget.
+    /// An unbounded heap never fails.
+    pub fn allocate(&mut self, class: ClassId, data: ObjectData) -> Result<ObjectRef, OutOfMemory> {
+        if !self.can_fit(data.object_size()) {
+            return Err(OutOfMemory);
+        }
+        Ok(self.allocate_unchecked(class, data))
+    }
+
+    /// Allocate an object even when the byte budget is exhausted.
+    ///
+    /// The bytes are still charged to the heap, but the budget is not enforced. This is how the
+    /// `OutOfMemoryError` itself is created once the heap is full.
+    pub fn allocate_unchecked(&mut self, class: ClassId, data: ObjectData) -> ObjectRef {
+        let bytes = data.object_size();
         let hash = self.mix_hash();
         let object = Object {
             class,
@@ -308,6 +461,7 @@ impl Heap {
             ObjectRef(self.objects.len() as u32)
         };
         self.live += 1;
+        self.used_bytes += bytes;
         reference
     }
 
@@ -328,6 +482,34 @@ impl Heap {
             return None;
         }
         self.objects.get(reference.slot())?.as_ref()
+    }
+
+    /// The size of an object in bytes, header included, or `None` for a dead slot.
+    #[must_use]
+    pub fn object_size(&self, reference: ObjectRef) -> Option<u64> {
+        self.get(reference).map(|object| object.data.object_size())
+    }
+
+    /// Replace an object's payload, keeping the byte accounting in step.
+    ///
+    /// Returns the new object size, or `None` when the reference is null or a dead slot.
+    ///
+    /// The byte budget is not enforced here: the heap cannot collect on its own, so the
+    /// caller decides whether the growth fits. [`crate::Vm::replace_payload`] checks it
+    /// and raises `java.lang.OutOfMemoryError` when it does not.
+    pub fn replace_payload(&mut self, reference: ObjectRef, data: ObjectData) -> Option<u64> {
+        if reference.is_null() {
+            return None;
+        }
+        let bytes = data.object_size();
+        let previous = {
+            let object = self.objects.get_mut(reference.slot())?.as_mut()?;
+            let previous = object.data.object_size();
+            object.data = data;
+            previous
+        };
+        self.used_bytes = self.used_bytes.saturating_sub(previous) + bytes;
+        Some(bytes)
     }
 
     /// Mutably borrow an object, or `None` for null or a dead slot.
@@ -367,6 +549,7 @@ impl Heap {
         for slot in &mut self.objects {
             if let Some(object) = slot {
                 if !object.marked {
+                    self.used_bytes = self.used_bytes.saturating_sub(object.data.object_size());
                     *slot = None;
                     self.live -= 1;
                 } else {

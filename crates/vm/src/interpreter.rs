@@ -311,8 +311,8 @@ impl<'a> Vm<'a> {
     ) -> Result<(), VmError> {
         let frame = self.build_frame(class, method, args, return_pc, monitor)?;
         let depth = self.current_thread().depth();
-        if depth >= 65_536 {
-            return Err(self.throw_new("java/lang/StackOverflowError", None));
+        if depth >= self.options.max_stack_frames {
+            return Err(self.throw_stack_overflow());
         }
         self.current_thread_mut().frames.push(frame);
         Ok(())
@@ -806,7 +806,7 @@ impl<'a> Vm<'a> {
                             error.to_string(),
                         )
                     })?;
-                Value::Ref(self.intern(&text))
+                Value::Ref(self.intern(&text)?)
             }
             CpInfo::Class(name_index) => {
                 let name = self
@@ -862,16 +862,14 @@ impl<'a> Vm<'a> {
     pub fn make_method_type(&mut self, descriptor: &str) -> Result<ObjectRef, VmError> {
         let class = self.resolve_class("java/lang/invoke/MethodType")?;
         self.maybe_gc();
-        Ok(self
-            .heap
-            .allocate(class, ObjectData::MethodType(descriptor.into())))
+        self.allocate_object(class, ObjectData::MethodType(descriptor.into()))
     }
 
     /// Create a `java.lang.invoke.MethodHandle` object.
     pub fn make_method_handle(&mut self, value: MethodHandleValue) -> Result<ObjectRef, VmError> {
         let class = self.resolve_class("java/lang/invoke/MethodHandle")?;
         self.maybe_gc();
-        Ok(self.heap.allocate(class, ObjectData::MethodHandle(value)))
+        self.allocate_object(class, ObjectData::MethodHandle(value))
     }
 
     /// Format a value for string concatenation, following `String.valueOf` for its descriptor.
@@ -950,7 +948,7 @@ impl<'a> Vm<'a> {
             CallSite::Concat { recipe, constants } => {
                 let values = self.pop_arguments(&parsed);
                 let text = self.concat(&recipe, &constants, &parsed, &values)?;
-                let string = self.intern(&text);
+                let string = self.intern(&text)?;
                 self.push(Value::Ref(string));
             }
             CallSite::Lambda {

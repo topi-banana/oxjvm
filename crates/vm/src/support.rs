@@ -300,6 +300,19 @@ impl<'a> Vm<'a> {
         }
     }
 
+    /// Run `body` with `object` registered as a GC root.
+    ///
+    /// The collector may run while `body` allocates — the heap budget is checked by
+    /// collecting first — so a reference that only the Rust stack holds has to be rooted
+    /// for the duration. The root is dropped when `body` returns, whether it succeeded or
+    /// not.
+    pub fn with_protected<T>(&mut self, object: ObjectRef, body: impl FnOnce(&mut Self) -> T) -> T {
+        self.protect(object);
+        let result = body(self);
+        self.unprotect(object);
+        result
+    }
+
     /// The class of `System.out`.
     #[must_use]
     pub fn stdout_object(&self) -> ObjectRef {
@@ -407,7 +420,7 @@ impl<'a> Vm<'a> {
         let class = object.class;
         let data = object.data.clone();
         self.maybe_gc();
-        Ok(self.heap.allocate(class, data))
+        self.allocate_object(class, data)
     }
 
     /// `System.arraycopy`: bounds- and type-checked array copying, including overlap.
