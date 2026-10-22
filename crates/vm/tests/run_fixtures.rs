@@ -1887,9 +1887,71 @@ fn p2_apis_that_were_missing() {
         let (declaring, index) = vm
             .find_method(class, method, "()Ljava/lang/String;")
             .expect(method);
-        let value = vm
-            .invoke_method(declaring, index, Vec::new())
+        let value = match vm.invoke_method(declaring, index, Vec::new()) {
+            Ok(value) => value,
+            Err(VmError::Thrown(exception)) => {
+                let message = vm
+                    .read_string_field(exception, vm.class_of(exception), "message")
+                    .unwrap_or_default();
+                panic!(
+                    "{method}: threw {} {message}",
+                    vm.class_name(vm.class_of(exception))
+                )
+            }
+            Err(error) => panic!("{method}: {error:?}"),
+        };
+        assert_eq!(
+            vm.string_value(value.as_ref()).as_deref(),
+            Some(expected),
+            "{method}"
+        );
+    }
+}
+
+#[test]
+fn p2_message_format_reads_and_writes_messages() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm
+        .resolve_class("demo/P2MessageFormat")
+        .expect("P2MessageFormat");
+    for (method, expected) in [
+        (
+            "patterns",
+            "There are {1} files on {2} at {3}|On {2}, there are {1} files, with \
+             {0,number,currency}.|'{'1,number,percent}, {1,number,percent}, |Quotes '', '{', \
+             a {0} '{'0}",
+        ),
+        (
+            "formats",
+            "There are 3,456 files on Disk|On Disk, there are 3,456 files, with $1.00.|345,600%|\
+             3,456|34,56|1|Thursday, January 1, 1970",
+        ),
+        ("quoting", "'x'|{x}|y"),
+        ("choice", "none:one:0.0#none|1.0#one:yes"),
+        ("numbers", "3,456.789:3,456.79:3,457:25%:$1,234.50"),
+        ("parsed", "4:3,456:Disk"),
+        (
+            "failures",
+            "NullPointerException:IllegalArgumentException:IllegalArgumentException",
+        ),
+    ] {
+        let (declaring, index) = vm
+            .find_method(class, method, "()Ljava/lang/String;")
             .expect(method);
+        let value = match vm.invoke_method(declaring, index, Vec::new()) {
+            Ok(value) => value,
+            Err(VmError::Thrown(exception)) => {
+                let message = vm
+                    .read_string_field(exception, vm.class_of(exception), "message")
+                    .unwrap_or_default();
+                panic!(
+                    "{method}: threw {} {message}",
+                    vm.class_name(vm.class_of(exception))
+                )
+            }
+            Err(error) => panic!("{method}: {error:?}"),
+        };
         assert_eq!(
             vm.string_value(value.as_ref()).as_deref(),
             Some(expected),

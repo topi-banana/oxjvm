@@ -92,7 +92,7 @@ const LOCALE_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
         "getDisplayName",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
-        locale_to_string,
+        locale_display_name,
     ),
     method(
         "toString",
@@ -414,6 +414,72 @@ fn locale_string_field(vm: &mut Vm<'_>, this: ObjectRef, name: &str) -> Result<V
         Some(reference) if !reference.is_null() => object(reference),
         _ => object(vm.make_string("")?),
     }
+}
+
+/// The name of a language, the way the JDK writes it.
+fn language_display_name(language: &str) -> &'static str {
+    match language {
+        "en" => "English",
+        "fr" => "French",
+        "de" => "German",
+        "it" => "Italian",
+        "ja" => "Japanese",
+        "ko" => "Korean",
+        "zh" => "Chinese",
+        "es" => "Spanish",
+        "pt" => "Portuguese",
+        "ru" => "Russian",
+        other => {
+            let _ = other;
+            ""
+        }
+    }
+}
+
+/// The name of a country, the way the JDK writes it.
+fn country_display_name(country: &str) -> &'static str {
+    match country {
+        "US" => "United States",
+        "GB" => "United Kingdom",
+        "CA" => "Canada",
+        "FR" => "France",
+        "DE" => "Germany",
+        "IT" => "Italy",
+        "JP" => "Japan",
+        "KR" => "South Korea",
+        "CN" => "China",
+        "TW" => "Taiwan",
+        "AU" => "Australia",
+        "IN" => "India",
+        other => {
+            let _ = other;
+            ""
+        }
+    }
+}
+
+/// `Locale.getDisplayName`: the language in words, with the country in brackets.
+fn locale_display_name(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let language = vm
+        .read_string_field(this, vm.class_of(this), "language")
+        .unwrap_or_default();
+    let country = vm
+        .read_string_field(this, vm.class_of(this), "country")
+        .unwrap_or_default();
+    let language_name = language_display_name(&language);
+    let country_name = country_display_name(&country);
+    let text = match (language_name.is_empty(), country_name.is_empty()) {
+        (true, true) => language.clone(),
+        (false, true) => language_name.to_string(),
+        (true, false) => country_name.to_string(),
+        (false, false) => alloc::format!("{language_name} ({country_name})"),
+    };
+    object(vm.make_string(&text)?)
 }
 
 fn locale_to_string(

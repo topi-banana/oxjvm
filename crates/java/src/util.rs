@@ -4004,7 +4004,7 @@ fn abstract_map_entries(
     }
 }
 
-const ABSTRACT_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const ABSTRACT_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let (class, method) = vm.resolve_virtual_method(this, "size", "()I")?;
@@ -4113,6 +4113,12 @@ const ABSTRACT_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         }
         int(hash)
     }),
+    method(
+        "computeIfPresent",
+        "(Ljava/lang/Object;Ljava/util/function/BiFunction;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        hash_map_compute_if_present,
+    ),
     method(
         "getOrDefault",
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
@@ -4487,7 +4493,7 @@ pub(crate) const ARRAY_LIST_LIST_ITERATOR: oxjvm_vm::NativeClass = class(
 // HashMap (linear-probing arrays)
 // -------------------------------------------------------------------------------------------
 
-const HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
+const HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
     method("<init>", "()V", ACC_PUBLIC, hash_map_init),
     method("<init>", "(I)V", ACC_PUBLIC, hash_map_init),
     method("<init>", "(IF)V", ACC_PUBLIC, hash_map_init),
@@ -4527,6 +4533,12 @@ const HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         "(Ljava/lang/Object;Ljava/util/function/Function;)Ljava/lang/Object;",
         ACC_PUBLIC,
         hash_map_compute_if_absent,
+    ),
+    method(
+        "computeIfPresent",
+        "(Ljava/lang/Object;Ljava/util/function/BiFunction;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        hash_map_compute_if_present,
     ),
     method(
         "getOrDefault",
@@ -4770,6 +4782,64 @@ fn hash_bucket(hash: i32, capacity: usize) -> usize {
     ((hash ^ (hash >> 16)) as usize) & (capacity - 1)
 }
 
+/// `Map.computeIfPresent`: the function is called with the key and the value that is there.
+fn hash_map_compute_if_present(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    hash_map_compute_if_present_on(vm, this, ref_arg(args, 1), ref_arg(args, 2))
+}
+
+/// `Map.computeIfPresent` on a map that keeps its entries itself.
+fn hash_map_compute_if_present_on(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    key: ObjectRef,
+    function: ObjectRef,
+) -> Result<Value, VmError> {
+    if function.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let pairs = hash_map_pairs(vm, this);
+    let Some((_, value)) = pairs
+        .iter()
+        .find(|(candidate, _)| keys_equal(vm, *candidate, key).unwrap_or(false))
+    else {
+        return object(ObjectRef::NULL);
+    };
+    let value = *value;
+    let (class, method) = vm.resolve_virtual_method(
+        function,
+        "apply",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+    )?;
+    let result = vm
+        .invoke_method(
+            class,
+            method,
+            vec![Value::Ref(function), Value::Ref(key), Value::Ref(value)],
+        )?
+        .as_ref();
+    if result.is_null() {
+        // A null result takes the mapping away.
+        let mut pairs = pairs;
+        pairs.retain(|(candidate, _)| !keys_equal(vm, *candidate, key).unwrap_or(false));
+        hash_map_store(vm, this, &pairs)?;
+    } else {
+        let mut pairs = pairs;
+        if let Some(entry) = pairs
+            .iter_mut()
+            .find(|(candidate, _)| keys_equal(vm, *candidate, key).unwrap_or(false))
+        {
+            entry.1 = result;
+        }
+        hash_map_store(vm, this, &pairs)?;
+    }
+    object(result)
+}
+
 fn hash_map_compute_if_absent(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
@@ -4941,7 +5011,7 @@ pub(crate) const HASH_MAP: oxjvm_vm::NativeClass = class(
 // IdentityHashMap (key identity, same pair-array layout as HashMap)
 // -------------------------------------------------------------------------------------------
 
-const IDENTITY_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const IDENTITY_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method("<init>", "()V", ACC_PUBLIC, hash_map_init),
     method("<init>", "(I)V", ACC_PUBLIC, hash_map_init),
     method(
@@ -4961,6 +5031,12 @@ const IDENTITY_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         "(Ljava/lang/Object;)Ljava/lang/Object;",
         ACC_PUBLIC,
         identity_map_get,
+    ),
+    method(
+        "computeIfPresent",
+        "(Ljava/lang/Object;Ljava/util/function/BiFunction;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        hash_map_compute_if_present,
     ),
     method(
         "getOrDefault",
@@ -8134,7 +8210,7 @@ pub(crate) const CONCURRENT_MAP: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const CONCURRENT_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
+const CONCURRENT_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let map = new_concurrent_map(vm)?;
         concurrent_init(vm, args, map)
@@ -8183,6 +8259,16 @@ const CONCURRENT_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
                 "(Ljava/lang/Object;)Ljava/lang/Object;",
                 &[Value::Ref(ref_arg(args, 1))],
             )
+        },
+    ),
+    method(
+        "computeIfPresent",
+        "(Ljava/lang/Object;Ljava/util/function/BiFunction;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            // The concurrent map keeps its entries in a map of its own.
+            let map = concurrent_map(vm, receiver(args));
+            hash_map_compute_if_present_on(vm, map, ref_arg(args, 1), ref_arg(args, 2))
         },
     ),
     method(
@@ -8638,7 +8724,7 @@ fn enum_map_init(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
     void()
 }
 
-const ENUM_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
+const ENUM_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
     method(
         "<init>",
         "(Ljava/lang/Class;)V",
@@ -8701,6 +8787,12 @@ const ENUM_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
                 &[Value::Ref(ref_arg(args, 1))],
             )
         },
+    ),
+    method(
+        "computeIfPresent",
+        "(Ljava/lang/Object;Ljava/util/function/BiFunction;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        hash_map_compute_if_present,
     ),
     method(
         "getOrDefault",

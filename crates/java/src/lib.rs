@@ -25,6 +25,7 @@ pub(crate) mod concurrent;
 pub(crate) mod encoding;
 pub(crate) mod executor;
 pub(crate) mod file;
+pub(crate) mod format;
 pub(crate) mod intstream;
 pub(crate) mod invoke;
 pub(crate) mod io;
@@ -134,7 +135,7 @@ pub fn is_non_writable_property(key: &str) -> bool {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 520] = [
+static REGISTRY: [NativeClass; 532] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -150,6 +151,18 @@ static REGISTRY: [NativeClass; 520] = [
     lang::MODULE_LAYER,
     lang::PROCESS_BUILDER,
     lang::PROCESS_BUILDER_REDIRECT,
+    format::FORMAT,
+    format::FIELD_POSITION,
+    format::NUMBER_FORMAT,
+    format::OJVM_NUMBER_FORMAT,
+    format::DATE_FORMAT,
+    format::OJVM_DATE_FORMAT,
+    format::CHOICE_FORMAT,
+    format::MESSAGE_FORMAT,
+    format::PARSE_EXCEPTION,
+    format::PARSE_POSITION,
+    format::NUMBER_FORMAT_STYLE,
+    format::DECIMAL_FORMAT,
     lang::REDIRECT_TYPE,
     lang::OJVM_REDIRECT,
     process::PROCESS,

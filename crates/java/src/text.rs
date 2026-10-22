@@ -283,12 +283,27 @@ pub(crate) fn format_pattern(pattern: &str, millis: i64) -> String {
                     out.push_str(&alloc::format!("{:04}", year));
                 }
             }
+            'M' if run >= 3 => {
+                // Three letters name the month, four name it in full.
+                out.push_str(month_name(month, run >= 4));
+            }
             'M' => push_number(&mut out, month, run),
             'd' => push_number(&mut out, day, run),
             'H' => push_number(&mut out, hour, run),
+            'h' => {
+                let twelve = match hour % 12 {
+                    0 => 12,
+                    other => other,
+                };
+                push_number(&mut out, twelve, run);
+            }
             'm' => push_number(&mut out, minute, run),
             's' => push_number(&mut out, second, run),
             'S' => push_number(&mut out, milli, run),
+            'a' => out.push_str(if hour < 12 { "AM" } else { "PM" }),
+            'E' => out.push_str(day_name(millis, run >= 4)),
+            'z' => out.push_str("UTC"),
+            'Z' => out.push_str("UTC"),
             _ => {
                 for _ in 0..run {
                     out.push(ch);
@@ -298,6 +313,47 @@ pub(crate) fn format_pattern(pattern: &str, millis: i64) -> String {
         index += run;
     }
     out
+}
+
+/// The name of a month, in full or abbreviated.
+pub(crate) fn month_name(month: i64, full: bool) -> &'static str {
+    const SHORT: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    const FULL: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    let index = (month - 1).clamp(0, 11) as usize;
+    if full { FULL[index] } else { SHORT[index] }
+}
+
+/// The name of the day of the week, in full or abbreviated.
+pub(crate) fn day_name(millis: i64, full: bool) -> &'static str {
+    const SHORT: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const FULL: [&str; 7] = [
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+    ];
+    // The epoch itself was a Thursday.
+    let days = millis.div_euclid(86_400_000);
+    let weekday = (days + 4).rem_euclid(7) as usize;
+    if full { FULL[weekday] } else { SHORT[weekday] }
 }
 
 fn push_number(out: &mut String, value: i64, width: usize) {
