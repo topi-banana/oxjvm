@@ -31,6 +31,211 @@ pub enum ObjectData {
     MethodHandle(MethodHandleValue),
     /// A captured stack trace attached to a `Throwable`.
     Backtrace(Vec<BacktraceFrame>),
+    /// An ordered map: the entries of a `java.util.TreeMap`.
+    SortedMap(SortedMap),
+}
+
+/// One entry of a [`SortedMap`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SortedEntry {
+    /// The key.
+    pub key: ObjectRef,
+    /// The value.
+    pub value: ObjectRef,
+}
+
+/// A map payload whose entries are kept in an order its owner defines.
+///
+/// The entries live in a Rust `BTreeMap` keyed by a *rank*. The rank is a
+/// fractional index: an entry that goes between two neighbours only needs a
+/// rank between theirs, so the map never renumbers the entries around it. The
+/// owner turns a guest key into a rank by comparing the key with the entries
+/// through the guest's own comparison, so keeping the map ordered never asks
+/// the guest a question the collector cannot answer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SortedMap {
+    /// The entries, keyed by rank.
+    entries: BTreeMap<i64, SortedEntry>,
+    /// The ranks in entry order: the position index the owner searches.
+    ranks: Vec<i64>,
+    /// The object that decides the order of the keys, or null when the keys
+    /// order themselves. `java.util.TreeMap` keeps its `Comparator` here.
+    ordering: ObjectRef,
+}
+
+impl Default for SortedMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SortedMap {
+    /// The distance between two neighbouring ranks.
+    const SPACING: i64 = 1 << 40;
+
+    /// An empty map.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            ranks: Vec::new(),
+            ordering: ObjectRef::NULL,
+        }
+    }
+
+    /// The number of entries.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.ranks.len()
+    }
+
+    /// Whether the map has no entries.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.ranks.is_empty()
+    }
+
+    /// The size of the payload in bytes, excluding the object header.
+    ///
+    /// Every entry costs the rank that orders it plus the key and the value it
+    /// holds, and the order index costs one rank per entry.
+    #[must_use]
+    pub fn payload_bytes(&self) -> u64 {
+        let per_entry = size_of::<i64>() + size_of::<SortedEntry>();
+        (self.entries.len() * per_entry) as u64
+            + (self.ranks.len() * size_of::<i64>()) as u64
+            + size_of::<ObjectRef>() as u64
+    }
+
+    /// The object that decides the order of the keys, or null when the keys
+    /// order themselves.
+    #[must_use]
+    pub fn ordering(&self) -> ObjectRef {
+        self.ordering
+    }
+
+    /// Set the object that decides the order of the keys.
+    pub fn set_ordering(&mut self, ordering: ObjectRef) {
+        self.ordering = ordering;
+    }
+
+    /// The entry at `index` in the map's order.
+    #[must_use]
+    pub fn get_at(&self, index: usize) -> Option<&SortedEntry> {
+        let rank = *self.ranks.get(index)?;
+        self.entries.get(&rank)
+    }
+
+    /// The key at `index` in the map's order.
+    #[must_use]
+    pub fn key_at(&self, index: usize) -> Option<ObjectRef> {
+        self.get_at(index).map(|entry| entry.key)
+    }
+
+    /// The value at `index` in the map's order.
+    #[must_use]
+    pub fn value_at(&self, index: usize) -> Option<ObjectRef> {
+        self.get_at(index).map(|entry| entry.value)
+    }
+
+    /// The entries, in the map's order.
+    pub fn iter(&self) -> impl Iterator<Item = &SortedEntry> {
+        self.entries.values()
+    }
+
+    /// The keys, in the map's order.
+    pub fn keys(&self) -> impl Iterator<Item = ObjectRef> + '_ {
+        self.entries.values().map(|entry| entry.key)
+    }
+
+    /// The values, in the map's order.
+    pub fn values(&self) -> impl Iterator<Item = ObjectRef> + '_ {
+        self.entries.values().map(|entry| entry.value)
+    }
+
+    /// Insert an entry at `index` in the map's order.
+    pub fn insert_at(&mut self, index: usize, key: ObjectRef, value: ObjectRef) {
+        let index = index.min(self.ranks.len());
+        let rank = self.rank_for(index);
+        self.entries.insert(rank, SortedEntry { key, value });
+        self.ranks.insert(index, rank);
+    }
+
+    /// Remove the entry at `index` in the map's order.
+    pub fn remove_at(&mut self, index: usize) -> Option<SortedEntry> {
+        if index >= self.ranks.len() {
+            return None;
+        }
+        let rank = self.ranks.remove(index);
+        self.entries.remove(&rank)
+    }
+
+    /// Replace the value of the entry at `index`, returning the old one.
+    pub fn set_value_at(&mut self, index: usize, value: ObjectRef) -> Option<ObjectRef> {
+        let rank = *self.ranks.get(index)?;
+        let entry = self.entries.get_mut(&rank)?;
+        let previous = entry.value;
+        entry.value = value;
+        Some(previous)
+    }
+
+    /// Drop every entry.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.ranks.clear();
+    }
+
+    /// The rank a new entry at `index` takes.
+    ///
+    /// The rank sits between the ranks of the neighbours, so the entries keep
+    /// their order without the map renumbering them. The gap between two
+    /// neighbours halves with every insertion, and the map spreads the ranks
+    /// out again once a gap runs out.
+    fn rank_for(&mut self, index: usize) -> i64 {
+        let len = self.ranks.len();
+        if len == 0 {
+            return 0;
+        }
+        if index == 0 {
+            return match self.ranks[0].checked_sub(Self::SPACING) {
+                Some(rank) => rank,
+                None => {
+                    self.respace();
+                    -Self::SPACING
+                }
+            };
+        }
+        if index >= len {
+            return match self.ranks[len - 1].checked_add(Self::SPACING) {
+                Some(rank) => rank,
+                None => {
+                    self.respace();
+                    len as i64 * Self::SPACING
+                }
+            };
+        }
+        let low = self.ranks[index - 1];
+        let high = self.ranks[index];
+        let rank = low + (high - low) / 2;
+        if rank == low {
+            // The gap between the neighbours is exhausted: spread the ranks
+            // out again and take a fresh one.
+            self.respace();
+            return self.rank_for(index);
+        }
+        rank
+    }
+
+    /// Give the entries evenly spread ranks again.
+    fn respace(&mut self) {
+        let entries: Vec<SortedEntry> = self.entries.values().cloned().collect();
+        self.entries.clear();
+        for (index, entry) in entries.into_iter().enumerate() {
+            let rank = index as i64 * Self::SPACING;
+            self.entries.insert(rank, entry);
+            self.ranks[index] = rank;
+        }
+    }
 }
 
 impl ObjectData {
@@ -45,6 +250,7 @@ impl ObjectData {
             Self::MethodType(descriptor) => descriptor.len() as u64,
             Self::MethodHandle(handle) => handle.payload_bytes(),
             Self::Backtrace(frames) => (frames.len() * size_of::<BacktraceFrame>()) as u64,
+            Self::SortedMap(map) => map.payload_bytes(),
         }
     }
 
@@ -587,6 +793,13 @@ impl Heap {
                 while let MethodHandleValue::Bound { receiver, target } = current {
                     visit(*receiver);
                     current = target;
+                }
+            }
+            ObjectData::SortedMap(map) => {
+                visit(map.ordering());
+                for entry in map.iter() {
+                    visit(entry.key);
+                    visit(entry.value);
                 }
             }
             ObjectData::String(_)

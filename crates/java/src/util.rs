@@ -843,7 +843,7 @@ pub(crate) const SET: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const SORTED_SET_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+const SORTED_SET_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     method(
         "comparator",
         "()Ljava/util/Comparator;",
@@ -868,6 +868,18 @@ const SORTED_SET_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
+    method(
+        "headSet",
+        "(Ljava/lang/Object;)Ljava/util/SortedSet;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "tailSet",
+        "(Ljava/lang/Object;)Ljava/util/SortedSet;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
 ];
 
 pub(crate) const SORTED_SET: oxjvm_vm::NativeClass = class(
@@ -880,7 +892,7 @@ pub(crate) const SORTED_SET: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const NAVIGABLE_SET_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+const NAVIGABLE_SET_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method(
         "first",
         "()Ljava/lang/Object;",
@@ -908,6 +920,30 @@ const NAVIGABLE_SET_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     method(
         "descendingSet",
         "()Ljava/util/NavigableSet;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "lower",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "floor",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "ceiling",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "higher",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
@@ -4531,7 +4567,7 @@ fn map_index_of(
     Ok(-1)
 }
 
-fn keys_equal(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmError> {
+pub(crate) fn keys_equal(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmError> {
     if a == b {
         return Ok(true);
     }
@@ -4749,7 +4785,7 @@ fn hash_map_to_string(
     object(vm.make_string(&text)?)
 }
 
-fn value_to_string(vm: &mut Vm<'_>, reference: ObjectRef) -> Result<String, VmError> {
+pub(crate) fn value_to_string(vm: &mut Vm<'_>, reference: ObjectRef) -> Result<String, VmError> {
     if reference.is_null() {
         return Ok("null".into());
     }
@@ -5014,6 +5050,60 @@ pub(crate) const NAVIGABLE_MAP: oxjvm_vm::NativeClass = class(
             ACC_PUBLIC | ACC_ABSTRACT,
             crate::lang::abstract_method_pub,
         ),
+        method(
+            "lowerEntry",
+            "(Ljava/lang/Object;)Ljava/util/Map$Entry;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+        method(
+            "higherEntry",
+            "(Ljava/lang/Object;)Ljava/util/Map$Entry;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+        method(
+            "ceilingEntry",
+            "(Ljava/lang/Object;)Ljava/util/Map$Entry;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+        method(
+            "floorEntry",
+            "(Ljava/lang/Object;)Ljava/util/Map$Entry;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+        method(
+            "pollFirst",
+            "()Ljava/util/Map$Entry;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+        method(
+            "pollLast",
+            "()Ljava/util/Map$Entry;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+        method(
+            "headMap",
+            "(Ljava/lang/Object;)Ljava/util/NavigableMap;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+        method(
+            "tailMap",
+            "(Ljava/lang/Object;)Ljava/util/NavigableMap;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+        method(
+            "subMap",
+            "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/NavigableMap;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
     ],
     None,
 );
@@ -5062,55 +5152,6 @@ pub(crate) const SORTED_MAP: oxjvm_vm::NativeClass = class(
             crate::lang::abstract_method_pub,
         ),
     ],
-    None,
-);
-
-// -------------------------------------------------------------------------------------------
-// TreeMap
-// -------------------------------------------------------------------------------------------
-
-const TREE_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
-    method(
-        "comparator",
-        "()Ljava/util/Comparator;",
-        ACC_PUBLIC,
-        |_, _, _| object(ObjectRef::NULL),
-    ),
-    method(
-        "firstKey",
-        "()Ljava/lang/Object;",
-        ACC_PUBLIC,
-        |vm, _, args| {
-            let pairs = hash_map_pairs(vm, receiver(args));
-            let Some((key, _)) = pairs.first() else {
-                return Err(vm.throw_new("java/util/NoSuchElementException", None));
-            };
-            object(*key)
-        },
-    ),
-    method(
-        "lastKey",
-        "()Ljava/lang/Object;",
-        ACC_PUBLIC,
-        |vm, _, args| {
-            let pairs = hash_map_pairs(vm, receiver(args));
-            let Some((key, _)) = pairs.last() else {
-                return Err(vm.throw_new("java/util/NoSuchElementException", None));
-            };
-            object(*key)
-        },
-    ),
-];
-
-/// `TreeMap`: HashMap storage for now; the sorted views are only surfaced through
-/// `firstKey`/`lastKey`, which read the live entries.
-pub(crate) const TREE_MAP: oxjvm_vm::NativeClass = class(
-    "java/util/TreeMap",
-    Some("java/util/HashMap"),
-    &["java/util/NavigableMap", "java/io/Serializable"],
-    ACC_PUBLIC,
-    &[],
-    &TREE_MAP_METHODS,
     None,
 );
 
@@ -5978,7 +6019,7 @@ fn invoke_virtual_bool(
 }
 
 /// `Collection.removeAll`: remove every element the other collection contains.
-fn collection_remove_all(
+pub(crate) fn collection_remove_all(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
@@ -5999,7 +6040,7 @@ fn collection_remove_all(
 }
 
 /// `Collection.retainAll`: remove every element the other collection does not contain.
-fn collection_retain_all(
+pub(crate) fn collection_retain_all(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
@@ -6519,7 +6560,7 @@ fn hash_map_put_all(vm: &mut Vm<'_>, this: ObjectRef, source: ObjectRef) -> Resu
     void()
 }
 
-fn hash_set_present(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+pub(crate) fn hash_set_present(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class("java/lang/Boolean")?;
     let name = "TRUE";
     if let Some(existing) = vm.read_static_ref_if_set(class, name, "Ljava/lang/Boolean;") {
@@ -6825,89 +6866,6 @@ pub(crate) const HASH_SET: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC,
     &[field("map", "Ljava/util/HashMap;", ACC_PRIVATE, None)],
     &HASH_SET_METHODS,
-    None,
-);
-
-const TREE_SET_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
-    method(
-        "comparator",
-        "()Ljava/util/Comparator;",
-        ACC_PUBLIC,
-        |_, _, _| object(ObjectRef::NULL),
-    ),
-    method(
-        "first",
-        "()Ljava/lang/Object;",
-        ACC_PUBLIC,
-        |vm, _, args| {
-            let map = hash_set_map(vm, receiver(args));
-            let pairs = hash_map_pairs(vm, map);
-            match pairs.first() {
-                Some((key, _)) => object(*key),
-                None => Err(vm.throw_new("java/util/NoSuchElementException", None)),
-            }
-        },
-    ),
-    method("last", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
-        let map = hash_set_map(vm, receiver(args));
-        let pairs = hash_map_pairs(vm, map);
-        match pairs.last() {
-            Some((key, _)) => object(*key),
-            None => Err(vm.throw_new("java/util/NoSuchElementException", None)),
-        }
-    }),
-    method(
-        "pollFirst",
-        "()Ljava/lang/Object;",
-        ACC_PUBLIC,
-        |vm, _, args| {
-            let this = receiver(args);
-            let map = hash_set_map(vm, this);
-            let pairs = hash_map_pairs(vm, map);
-            let Some((key, _)) = pairs.first().copied() else {
-                return object(ObjectRef::NULL);
-            };
-            hash_map_call(
-                vm,
-                map,
-                "remove",
-                "(Ljava/lang/Object;)Ljava/lang/Object;",
-                &[Value::Ref(key)],
-            )?;
-            object(key)
-        },
-    ),
-    method(
-        "pollLast",
-        "()Ljava/lang/Object;",
-        ACC_PUBLIC,
-        |vm, _, args| {
-            let this = receiver(args);
-            let map = hash_set_map(vm, this);
-            let pairs = hash_map_pairs(vm, map);
-            let Some((key, _)) = pairs.last().copied() else {
-                return object(ObjectRef::NULL);
-            };
-            hash_map_call(
-                vm,
-                map,
-                "remove",
-                "(Ljava/lang/Object;)Ljava/lang/Object;",
-                &[Value::Ref(key)],
-            )?;
-            object(key)
-        },
-    ),
-];
-
-/// `TreeSet`: unordered `HashSet` storage with the `SortedSet`/`NavigableSet` view.
-pub(crate) const TREE_SET: oxjvm_vm::NativeClass = class(
-    "java/util/TreeSet",
-    Some("java/util/HashSet"),
-    &["java/util/NavigableSet", "java/io/Serializable"],
-    ACC_PUBLIC,
-    &[],
-    &TREE_SET_METHODS,
     None,
 );
 
@@ -7697,7 +7655,7 @@ fn entry_field(vm: &Vm<'_>, this: ObjectRef, name: &str) -> ObjectRef {
         .unwrap_or(ObjectRef::NULL)
 }
 
-fn object_hash(vm: &mut Vm<'_>, reference: ObjectRef) -> Result<i32, VmError> {
+pub(crate) fn object_hash(vm: &mut Vm<'_>, reference: ObjectRef) -> Result<i32, VmError> {
     if reference.is_null() {
         return Ok(0);
     }
@@ -7733,7 +7691,11 @@ fn map_entry_set(vm: &mut Vm<'_>, map: ObjectRef) -> Result<Value, VmError> {
     object(set)
 }
 
-fn new_entry(vm: &mut Vm<'_>, key: ObjectRef, value: ObjectRef) -> Result<ObjectRef, VmError> {
+pub(crate) fn new_entry(
+    vm: &mut Vm<'_>,
+    key: ObjectRef,
+    value: ObjectRef,
+) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class("java/util/OxjvmEntry")?;
     let instance = vm.new_instance(class)?;
     let (declaring, field) = vm.find_field(class, "key", "Ljava/lang/Object;")?;
