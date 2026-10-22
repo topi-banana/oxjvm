@@ -1766,3 +1766,29 @@ fn p1_annotated_types_and_records() {
         Some("void:1:0:java.lang.Object:java.lang.String:0")
     );
 }
+
+#[test]
+fn p2_arrays_hash_code() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/P2Arrays").expect("P2Arrays");
+    for (method, expected) in [
+        (
+            "hashCodes",
+            "30817:994:-32504895:-260045887:994:4066:994:40359:123106:0:1",
+        ),
+        ("deep", "true:31926:false"),
+    ] {
+        let (declaring, index) = vm
+            .find_method(class, method, "()Ljava/lang/String;")
+            .expect(method);
+        let value = vm
+            .invoke_method(declaring, index, Vec::new())
+            .expect(method);
+        assert_eq!(
+            vm.string_value(value.as_ref()).as_deref(),
+            Some(expected),
+            "{method}"
+        );
+    }
+}

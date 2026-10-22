@@ -1106,7 +1106,7 @@ pub(crate) const MAP: oxjvm_vm::NativeClass = class(
 // Objects
 // -------------------------------------------------------------------------------------------
 
-const OBJECTS_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
+const OBJECTS_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method(
         "equals",
         "(Ljava/lang/Object;Ljava/lang/Object;)Z",
@@ -1258,18 +1258,6 @@ const OBJECTS_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
             }
             long(index)
         },
-    ),
-    method(
-        "deepEquals",
-        "(Ljava/lang/Object;Ljava/lang/Object;)Z",
-        ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| boolean(objects_deep_equals(vm, ref_arg(args, 0), ref_arg(args, 1))?),
-    ),
-    method(
-        "deepHashCode",
-        "(Ljava/lang/Object;)I",
-        ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| int(objects_deep_hash_code(vm, ref_arg(args, 0))?),
     ),
 ];
 
@@ -1460,7 +1448,18 @@ macro_rules! array_mismatch {
     };
 }
 
-const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 72] = [
+macro_rules! array_hash_code {
+    ($descriptor:literal, $component:expr) => {
+        method(
+            "hashCode",
+            $descriptor,
+            ACC_PUBLIC | ACC_STATIC,
+            |vm, _, args| int(arrays_hash_code(vm, ref_arg(args, 0), $component)?),
+        )
+    };
+}
+
+const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 83] = [
     method(
         "toString",
         "([I)Ljava/lang/String;",
@@ -1753,6 +1752,38 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 72] = [
     array_mismatch!("([D[D)I"),
     array_mismatch!("([Z[Z)I"),
     array_mismatch!("([Ljava/lang/Object;[Ljava/lang/Object;)I"),
+    method(
+        "deepEquals",
+        "([Ljava/lang/Object;[Ljava/lang/Object;)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| boolean(objects_deep_equals(vm, ref_arg(args, 0), ref_arg(args, 1))?),
+    ),
+    method(
+        "deepHashCode",
+        "([Ljava/lang/Object;)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| int(objects_deep_hash_code(vm, ref_arg(args, 0))?),
+    ),
+    array_hash_code!("([I)I", ArrayComponent::Int),
+    array_hash_code!("([J)I", ArrayComponent::Long),
+    array_hash_code!("([D)I", ArrayComponent::Double),
+    array_hash_code!("([F)I", ArrayComponent::Float),
+    array_hash_code!("([B)I", ArrayComponent::Byte),
+    array_hash_code!("([C)I", ArrayComponent::Char),
+    array_hash_code!("([S)I", ArrayComponent::Short),
+    array_hash_code!("([Z)I", ArrayComponent::Boolean),
+    method(
+        "hashCode",
+        "([Ljava/lang/Object;)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            int(arrays_hash_code(
+                vm,
+                ref_arg(args, 0),
+                ArrayComponent::Reference,
+            )?)
+        },
+    ),
     method(
         "mismatch",
         "([III[III)I",
@@ -2181,6 +2212,90 @@ fn arrays_equal(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmE
         }
         _ => Ok(false),
     }
+}
+
+/// `Arrays.hashCode` for an array of the given component type.
+///
+/// The JDK folds every element into a running `31 * result + element` hash, and folds a `long` or
+/// `double` element down to its low 32 bits first.  A `null` element contributes zero, and an
+/// element of any other type contributes its own `hashCode`.
+fn arrays_hash_code(
+    vm: &mut Vm<'_>,
+    array: ObjectRef,
+    component: ArrayComponent,
+) -> Result<i32, VmError> {
+    if array.is_null() {
+        return Ok(0);
+    }
+    let data = vm.heap.get(array).map(|object| object.data.clone());
+    let Some(ObjectData::Array(values)) = data else {
+        return Ok(0);
+    };
+    let mut result = 1i32;
+    match (component, values) {
+        (ArrayComponent::Boolean, ArrayData::Boolean(elements)) => {
+            for value in elements {
+                result = result
+                    .wrapping_mul(31)
+                    .wrapping_add(if value != 0 { 1231 } else { 1237 });
+            }
+        }
+        (ArrayComponent::Byte, ArrayData::Byte(elements)) => {
+            for value in elements {
+                result = result.wrapping_mul(31).wrapping_add(i32::from(value));
+            }
+        }
+        (ArrayComponent::Char, ArrayData::Char(elements)) => {
+            for value in elements {
+                result = result.wrapping_mul(31).wrapping_add(i32::from(value));
+            }
+        }
+        (ArrayComponent::Short, ArrayData::Short(elements)) => {
+            for value in elements {
+                result = result.wrapping_mul(31).wrapping_add(i32::from(value));
+            }
+        }
+        (ArrayComponent::Int, ArrayData::Int(elements)) => {
+            for value in elements {
+                result = result.wrapping_mul(31).wrapping_add(value);
+            }
+        }
+        (ArrayComponent::Long, ArrayData::Long(elements)) => {
+            for value in elements {
+                result = result
+                    .wrapping_mul(31)
+                    .wrapping_add((value ^ (value >> 32)) as i32);
+            }
+        }
+        (ArrayComponent::Float, ArrayData::Float(elements)) => {
+            for value in elements {
+                result = result.wrapping_mul(31).wrapping_add(value.to_bits() as i32);
+            }
+        }
+        (ArrayComponent::Double, ArrayData::Double(elements)) => {
+            for value in elements {
+                let bits = value.to_bits();
+                result = result
+                    .wrapping_mul(31)
+                    .wrapping_add((bits ^ (bits >> 32)) as i32);
+            }
+        }
+        (ArrayComponent::Reference, ArrayData::Reference(elements)) => {
+            for value in elements {
+                let hash = if value.is_null() {
+                    0
+                } else {
+                    let (class, method) = vm.resolve_virtual_method(value, "hashCode", "()I")?;
+                    vm.invoke_method(class, method, vec![Value::Ref(value)])?
+                        .as_int()
+                };
+                result = result.wrapping_mul(31).wrapping_add(hash);
+            }
+        }
+        // A component type that does not match the array's own type contributes nothing.
+        _ => {}
+    }
+    Ok(result)
 }
 
 fn arrays_mismatch(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<i32, VmError> {
