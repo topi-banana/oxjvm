@@ -1809,3 +1809,27 @@ fn p2_array_length_reports_the_jdks_exceptions() {
         Some("java.lang.NullPointerException:java.lang.IllegalArgumentException:none:none")
     );
 }
+
+#[test]
+fn p2_regex_named_groups_and_repetitions() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/P2Regex").expect("P2Regex");
+    for (method, expected) in [
+        ("namedGroups", "true:2026:10:2026-10:10"),
+        ("repetitions", "true:true:true:false"),
+        ("unknownGroup", "No group with name <nope>"),
+    ] {
+        let (declaring, index) = vm
+            .find_method(class, method, "()Ljava/lang/String;")
+            .expect(method);
+        let value = vm
+            .invoke_method(declaring, index, Vec::new())
+            .expect(method);
+        assert_eq!(
+            vm.string_value(value.as_ref()).as_deref(),
+            Some(expected),
+            "{method}"
+        );
+    }
+}
