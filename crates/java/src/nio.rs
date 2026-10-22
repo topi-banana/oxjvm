@@ -68,7 +68,7 @@ fn join_path(base: &str, child: &str) -> String {
 // Path (concrete implementation) + Paths
 // -------------------------------------------------------------------------------------------
 
-const PATH_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
+const PATH_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -341,6 +341,48 @@ const PATH_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
         },
     ),
     method(
+        "subpath",
+        "(II)Ljava/nio/file/Path;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let path = path_string(vm, receiver(args));
+            let begin = crate::int_arg(args, 1);
+            let end = crate::int_arg(args, 2);
+            // The JDK treats a path as a sequence of name elements and hands out a range of
+            // them; a range that is out of bounds is an IndexOutOfBoundsException.
+            let elements: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+            if begin < 0 || end > elements.len() as i32 || begin > end {
+                return Err(vm.throw_new(
+                    "java/lang/IndexOutOfBoundsException",
+                    Some(&alloc::format!(
+                        "beginIndex={begin}, endIndex={end}, path length={}",
+                        elements.len()
+                    )),
+                ));
+            }
+            let slice = elements[begin as usize..end as usize].join("/");
+            new_path(vm, &slice)
+        },
+    ),
+    method(
+        "resolveSibling",
+        "(Ljava/lang/String;)Ljava/nio/file/Path;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = string_arg(vm, args[1])?;
+            if other.starts_with('/') {
+                return new_path(vm, &other);
+            }
+            // A sibling is resolved against the parent of this path.
+            let path = path_string(vm, receiver(args));
+            let parent = match path.rfind('/') {
+                Some(index) => &path[..index],
+                None => "",
+            };
+            new_path(vm, &join_path(parent, &other))
+        },
+    ),
+    method(
         "toRealPath",
         "([Ljava/nio/file/LinkOption;)Ljava/nio/file/Path;",
         ACC_PUBLIC,
@@ -370,7 +412,7 @@ pub(crate) const OXJVM_PATH: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PATH_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
+const PATH_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
     method(
         "of",
         "(Ljava/lang/String;[Ljava/lang/String;)Ljava/nio/file/Path;",
@@ -428,6 +470,18 @@ const PATH_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
     method(
         "resolveSibling",
         "(Ljava/nio/file/Path;)Ljava/nio/file/Path;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "resolveSibling",
+        "(Ljava/lang/String;)Ljava/nio/file/Path;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "subpath",
+        "(II)Ljava/nio/file/Path;",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),

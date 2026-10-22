@@ -1147,6 +1147,7 @@ const COLLECT_CUSTOM: i32 = 16;
 const COLLECT_REDUCING: i32 = 17;
 const COLLECT_PARTITIONING: i32 = 18;
 const COLLECT_COLLECTING_AND_THEN: i32 = 19;
+const COLLECT_GROUPING: i32 = 20;
 
 fn collector_new(vm: &mut Vm<'_>, kind: i32) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class(COLLECTOR_CLASS)?;
@@ -1498,6 +1499,49 @@ fn collect_elements(
             crate::util::hash_map_insert(vm, map, false_key, no_list)?;
             object(map)
         }
+        COLLECT_GROUPING => {
+            let classifier = collector_get(vm, collector, "f1");
+            let factory = collector_get(vm, collector, "f2");
+            let downstream = collector_get(vm, collector, "f3");
+            // Every key gets its own group; the group's value is either a list or whatever the
+            // downstream collector produces.  The keys are compared by value, the way a map
+            // compares them, so two equal keys share one group.
+            let map = if factory.is_null() {
+                crate::util::hash_map_new(vm)?
+            } else {
+                call_supplier(vm, factory)?
+            };
+            let mut groups: Vec<(ObjectRef, Vec<ObjectRef>)> = Vec::new();
+            for element in &elements {
+                let key = call_apply1(vm, classifier, *element)?;
+                let known = groups
+                    .iter()
+                    .find(|(candidate, _)| {
+                        crate::util::keys_equal(vm, *candidate, key).unwrap_or(*candidate == key)
+                    })
+                    .map(|(candidate, _)| *candidate);
+                match known {
+                    Some(candidate) => {
+                        let group = groups
+                            .iter_mut()
+                            .find(|(other, _)| *other == candidate)
+                            .map(|(_, group)| group)
+                            .expect("group");
+                        group.push(*element);
+                    }
+                    None => groups.push((key, vec![*element])),
+                }
+            }
+            for (key, group) in groups {
+                let value = if downstream.is_null() {
+                    crate::util::array_list_from(vm, &group)?
+                } else {
+                    collect_elements(vm, downstream, group)?.as_ref()
+                };
+                crate::util::hash_map_insert(vm, map, key, value)?;
+            }
+            object(map)
+        }
         COLLECT_COLLECTING_AND_THEN => {
             let downstream = collector_get(vm, collector, "f4");
             let finisher = collector_get(vm, collector, "f2");
@@ -1643,7 +1687,7 @@ pub(crate) const COLLECTOR: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const COLLECTORS_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
+const COLLECTORS_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
     method(
         "toList",
         "()Ljava/util/stream/Collector;",
@@ -1675,6 +1719,39 @@ const COLLECTORS_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
         |vm, _, args| {
             let collector = collector_new(vm, COLLECT_TO_COLLECTION)?;
             collector_set(vm, collector, "f4", ref_arg(args, 0));
+            object(collector)
+        },
+    ),
+    method(
+        "groupingBy",
+        "(Ljava/util/function/Function;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_GROUPING)?;
+            collector_set(vm, collector, "f1", ref_arg(args, 0));
+            object(collector)
+        },
+    ),
+    method(
+        "groupingBy",
+        "(Ljava/util/function/Function;Ljava/util/stream/Collector;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_GROUPING)?;
+            collector_set(vm, collector, "f1", ref_arg(args, 0));
+            collector_set(vm, collector, "f3", ref_arg(args, 1));
+            object(collector)
+        },
+    ),
+    method(
+        "groupingBy",
+        "(Ljava/util/function/Function;Ljava/util/function/Supplier;Ljava/util/stream/Collector;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_GROUPING)?;
+            collector_set(vm, collector, "f1", ref_arg(args, 0));
+            collector_set(vm, collector, "f2", ref_arg(args, 1));
+            collector_set(vm, collector, "f3", ref_arg(args, 2));
             object(collector)
         },
     ),

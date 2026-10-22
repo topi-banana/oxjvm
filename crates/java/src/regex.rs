@@ -7,6 +7,7 @@
 //! instead of hanging.
 
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
@@ -112,6 +113,8 @@ pub(crate) struct Flags {
 pub(crate) struct Regex {
     prog: Vec<Inst>,
     groups: usize,
+    /// The group index of every named capturing group, by name.
+    names: BTreeMap<String, usize>,
 }
 
 /// One match with its capture spans (UTF-16 offsets).
@@ -148,6 +151,8 @@ struct Parser<'a> {
     case_insensitive: bool,
     multiline: bool,
     dotall: bool,
+    /// The names of the named capturing groups, in the order they were declared.
+    names: Vec<String>,
 }
 
 type ParseError = (String, usize);
@@ -263,10 +268,7 @@ impl<'a> Parser<'a> {
                         let max = self.parse_number();
                         (min, max)
                     }
-                    (Some(min), Some(ch)) if ch == b'}' as u16 => {
-                        self.pos += 1;
-                        (min, Some(min))
-                    }
+                    (Some(min), Some(ch)) if ch == b'}' as u16 => (min, Some(min)),
                     _ => {
                         self.pos = saved;
                         return Ok(atom);
@@ -344,13 +346,14 @@ impl<'a> Parser<'a> {
                             self.expect_close()?;
                             Ok(inner)
                         }
-                        // Named capturing group `(?<name>...)`: the name is ignored, the group
-                        // still counts for backreference numbering.
+                        // Named capturing group `(?<name>...)`: the name is kept so that
+                        // `Matcher.group(String)` can find the group.
                         Some(lt) if lt == b'<' as u16 => {
+                            let mut name = String::new();
                             loop {
                                 match self.next() {
                                     Some(ch) if ch == b'>' as u16 => break,
-                                    Some(_) => {}
+                                    Some(ch) => name.push(char::from_u32(ch as u32).unwrap_or('?')),
                                     None => {
                                         return Err(("Unclosed group name".into(), self.pos));
                                     }
@@ -358,6 +361,7 @@ impl<'a> Parser<'a> {
                             }
                             self.groups += 1;
                             let index = self.groups - 1;
+                            self.names.push(name.clone());
                             let inner = self.parse_alternation()?;
                             self.expect_close()?;
                             Ok(Node::Group(index, Box::new(inner)))
@@ -649,13 +653,13 @@ pub(crate) fn compile(pattern: &[u16], flags: i32) -> Result<Regex, (String, usi
         dotall: flags & FLAG_DOTALL != 0,
     };
     let literal = flags & FLAG_LITERAL != 0;
-    let (node, groups) = if literal {
+    let (node, groups, names) = if literal {
         let node = if pattern.is_empty() {
             Node::Empty
         } else {
             Node::Concat(pattern.iter().map(|ch| Node::Char(*ch)).collect())
         };
-        (node, 0)
+        (node, 0, Vec::new())
     } else {
         let mut parser = Parser {
             pattern,
@@ -664,13 +668,24 @@ pub(crate) fn compile(pattern: &[u16], flags: i32) -> Result<Regex, (String, usi
             case_insensitive: initial.case_insensitive,
             multiline: initial.multiline,
             dotall: initial.dotall,
+            names: Vec::new(),
         };
-        parser.parse()?
+        let (node, groups) = parser.parse()?;
+        (node, groups, parser.names)
     };
     let mut prog = Vec::new();
     compile_node(&node, &mut prog, initial);
     prog.push(Inst::Match);
-    Ok(Regex { prog, groups })
+    let names = names
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| (name, index + 1))
+        .collect();
+    Ok(Regex {
+        prog,
+        groups,
+        names,
+    })
 }
 
 /// Compile a pattern from a Rust string, reporting errors as `PatternSyntaxException`.
@@ -1206,7 +1221,7 @@ fn pattern_regex(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(Regex, usize), VmE
 // Matcher
 // -------------------------------------------------------------------------------------------
 
-const MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+const MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
     method("matches", "()Z", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let (regex, _) = pattern_regex_for(vm, this)?;
@@ -1247,6 +1262,15 @@ const MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         "(I)Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| matcher_group(vm, receiver(args), crate::int_arg(args, 1)),
+    ),
+    method(
+        "group",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = string_arg(vm, args[1])?;
+            matcher_named_group(vm, receiver(args), name)
+        },
     ),
     method("start", "()I", ACC_PUBLIC, |vm, _, args| {
         int(matcher_span_start(vm, receiver(args), 0))
@@ -1646,6 +1670,21 @@ fn matcher_group(vm: &mut Vm<'_>, this: ObjectRef, group: i32) -> Result<Value, 
     object(vm.make_string_utf16(slice)?)
 }
 
+/// The group a named capturing group captured.
+///
+/// The JDK answers an unknown name with an `IllegalArgumentException`, and a name that belongs
+/// to a group which did not take part in the match with `null`.
+fn matcher_named_group(vm: &mut Vm<'_>, this: ObjectRef, name: String) -> Result<Value, VmError> {
+    let (regex, _) = pattern_regex_for(vm, this)?;
+    let Some(index) = regex.names.get(&name).copied() else {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some(&alloc::format!("No group with name <{name}>")),
+        ));
+    };
+    matcher_group(vm, this, index as i32)
+}
+
 fn matcher_span_start(vm: &mut Vm<'_>, this: ObjectRef, group: i32) -> i32 {
     matcher_span(vm, this, group).map_or(-1, |(start, _)| start)
 }
@@ -1763,6 +1802,16 @@ mod tests {
         assert_eq!(span("a{2,}", "aaaa"), Some((0, 4)));
         assert_eq!(span("a+?", "aaa"), Some((0, 1)));
         assert_eq!(span("<.*?>", "<a><b>"), Some((0, 3)));
+    }
+
+    #[test]
+    fn exact_repetitions() {
+        assert_eq!(span("a{4}", "aaaa"), Some((0, 4)));
+        assert_eq!(span("a{4}", "aaa"), None);
+        assert_eq!(span("\\d{4}", "x2026"), Some((1, 5)));
+        assert_eq!(span("[0-9]{2}", "12"), Some((0, 2)));
+        // The count is a part of the pattern, not a literal.
+        assert_eq!(span("a{4}", "a{4}"), None);
     }
 
     #[test]

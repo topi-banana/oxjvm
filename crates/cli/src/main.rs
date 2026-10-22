@@ -11,7 +11,7 @@ use std::process::ExitCode;
 
 use oxjvm_classfile::attribute::AttributeData;
 use oxjvm_classfile::{ClassFile, opcode};
-use oxjvm_platform::{Host, HostError, Stream};
+use oxjvm_platform::{Host, HostError, ProcessInfo, ProcessResult, Stream};
 use oxjvm_vm::{Vm, VmError, VmOptions};
 
 fn main() -> ExitCode {
@@ -214,6 +214,11 @@ impl StdHost {
                 .unwrap_or_default(),
         );
         for (key, value) in overrides {
+            // JEP 223 pins the platform properties to the values the platform reports, so a
+            // `-D` that tries to replace one of them is dropped instead of applied.
+            if oxjvm_java::is_non_writable_property(key) {
+                continue;
+            }
             properties.insert(key.clone(), value.clone());
         }
         Self {
@@ -250,6 +255,39 @@ impl Host for StdHost {
 
     fn filesystem(&mut self) -> Option<&mut dyn oxjvm_platform::FileSystem> {
         Some(&mut self.fs)
+    }
+
+    fn run_process(
+        &mut self,
+        program: &str,
+        args: &[String],
+        directory: Option<&str>,
+    ) -> Result<ProcessResult, HostError> {
+        let mut command = std::process::Command::new(program);
+        command.args(args);
+        if let Some(directory) = directory {
+            command.current_dir(directory);
+        }
+        let output = command
+            .output()
+            .map_err(|error| HostError::Io(format!("cannot run {program}: {error}")))?;
+        Ok(ProcessResult {
+            pid: 0,
+            status: output.status.code().unwrap_or(-1),
+            stdout: output.stdout,
+            stderr: output.stderr,
+        })
+    }
+
+    fn processes(&mut self) -> Vec<ProcessInfo> {
+        vec![ProcessInfo {
+            pid: std::process::id(),
+            command: std::env::args().collect::<Vec<String>>().join(" "),
+        }]
+    }
+
+    fn current_process_id(&mut self) -> u32 {
+        std::process::id()
     }
 
     fn load_resource(&mut self, resource: &str) -> Option<Vec<u8>> {

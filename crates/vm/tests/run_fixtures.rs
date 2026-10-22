@@ -1766,3 +1766,134 @@ fn p1_annotated_types_and_records() {
         Some("void:1:0:java.lang.Object:java.lang.String:0")
     );
 }
+
+#[test]
+fn p2_arrays_hash_code() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/P2Arrays").expect("P2Arrays");
+    for (method, expected) in [
+        (
+            "hashCodes",
+            "30817:994:-32504895:-260045887:994:4066:994:40359:123106:0:1",
+        ),
+        ("deep", "true:31926:false"),
+    ] {
+        let (declaring, index) = vm
+            .find_method(class, method, "()Ljava/lang/String;")
+            .expect(method);
+        let value = vm
+            .invoke_method(declaring, index, Vec::new())
+            .expect(method);
+        assert_eq!(
+            vm.string_value(value.as_ref()).as_deref(),
+            Some(expected),
+            "{method}"
+        );
+    }
+}
+
+#[test]
+fn p2_array_length_reports_the_jdks_exceptions() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/P2Checks").expect("P2Checks");
+    let (declaring, index) = vm
+        .find_method(class, "arrayLength", "()Ljava/lang/String;")
+        .expect("arrayLength");
+    let value = vm
+        .invoke_method(declaring, index, Vec::new())
+        .expect("arrayLength");
+    assert_eq!(
+        vm.string_value(value.as_ref()).as_deref(),
+        Some("java.lang.NullPointerException:java.lang.IllegalArgumentException:none:none")
+    );
+}
+
+#[test]
+fn p2_regex_named_groups_and_repetitions() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/P2Regex").expect("P2Regex");
+    for (method, expected) in [
+        ("namedGroups", "true:2026:10:2026-10:10"),
+        ("repetitions", "true:true:true:false"),
+        ("unknownGroup", "No group with name <nope>"),
+    ] {
+        let (declaring, index) = vm
+            .find_method(class, method, "()Ljava/lang/String;")
+            .expect(method);
+        let value = vm
+            .invoke_method(declaring, index, Vec::new())
+            .expect(method);
+        assert_eq!(
+            vm.string_value(value.as_ref()).as_deref(),
+            Some(expected),
+            "{method}"
+        );
+    }
+}
+
+#[test]
+fn p2_string_buffer_appends_and_edits() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm
+        .resolve_class("demo/P2StringBuffer")
+        .expect("P2StringBuffer");
+    for (method, expected) in [
+        ("appends", "1xctrue21.52.5oab:17:1"),
+        ("edits", "hello:olleh:1:XYc"),
+    ] {
+        let (declaring, index) = vm
+            .find_method(class, method, "()Ljava/lang/String;")
+            .expect(method);
+        let value = vm
+            .invoke_method(declaring, index, Vec::new())
+            .expect(method);
+        assert_eq!(
+            vm.string_value(value.as_ref()).as_deref(),
+            Some(expected),
+            "{method}"
+        );
+    }
+}
+
+#[test]
+fn p2_apis_that_were_missing() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/P2Apis").expect("P2Apis");
+    for (method, expected) in [
+        ("paths", "a|b/c|/a/b/d|/x/y|d"),
+        ("grouping", "{a=[aa, ab], b=[bc]}|{a=2, b=1}"),
+        ("bits", "31:23:0:63:3:8:1:8"),
+        (
+            "enums",
+            "[TUESDAY, WEDNESDAY]:[TUESDAY]:[MONDAY, TUESDAY, WEDNESDAY]",
+        ),
+        (
+            "hex",
+            "0x1.0p0:0x1.0p-1:0x1.0p0:0x1.8p0:0x0.0p0:-0x0.0p0:NaN:Infinity",
+        ),
+        ("entries", "k:7:k=7"),
+        ("chars", "4:ab"),
+        (
+            "redirects",
+            "READ:/tmp/x:redirect to read from file \"/tmp/x\":WRITE:redirect to write to file \
+             \"/tmp/y\":INHERIT:PIPE:WRITE",
+        ),
+    ] {
+        let (declaring, index) = vm
+            .find_method(class, method, "()Ljava/lang/String;")
+            .expect(method);
+        let value = vm
+            .invoke_method(declaring, index, Vec::new())
+            .expect(method);
+        assert_eq!(
+            vm.string_value(value.as_ref()).as_deref(),
+            Some(expected),
+            "{method}"
+        );
+    }
+}

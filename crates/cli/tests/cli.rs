@@ -198,6 +198,92 @@ fn runs_p1_nio_fixture_with_file_systems_and_channels() {
 }
 
 #[test]
+fn drops_a_definition_that_would_replace_a_pinned_property() {
+    // JEP 223 pins the platform properties, so `-Djava.vm.name=Unexpected` must not make the VM
+    // claim a different name; an ordinary property is still applied.
+    let fixtures =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../classfile/tests/fixtures");
+    let output = Command::new(env!("CARGO_BIN_EXE_oxjvm"))
+        .args(["run", "-cp"])
+        .arg(&fixtures)
+        .arg("-Djava.vm.name=Unexpected")
+        .arg("-Djava.vm.vendor=Unexpected")
+        .arg("-Doxjvm.test.property=applied")
+        .arg("demo.P2Props")
+        .output()
+        .expect("spawn oxjvm");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("pinned=oxjvm:oxjvm:oxjvm:"), "{stdout}");
+    assert!(stdout.contains("plain=applied"), "{stdout}");
+    // The guest may still change a pinned property itself.
+    assert!(stdout.contains("setByGuest=guest"), "{stdout}");
+}
+
+#[test]
+fn runs_the_p2_api_fixture() {
+    // The fixture touches the filesystem, so it runs through the CLI, which has one.
+    let fixtures =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../classfile/tests/fixtures");
+    let output = Command::new(env!("CARGO_BIN_EXE_oxjvm"))
+        .args(["run", "-cp"])
+        .arg(&fixtures)
+        .arg("demo.P2Apis")
+        .output()
+        .expect("spawn oxjvm");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for expected in [
+        "paths=a|b/c|/a/b/d|/x/y|d",
+        "grouping={a=[aa, ab], b=[bc]}|{a=2, b=1}",
+        "bits=31:23:0:63:3:8:1:8",
+        "enums=[TUESDAY, WEDNESDAY]:[TUESDAY]:[MONDAY, TUESDAY, WEDNESDAY]",
+        "hex=0x1.0p0:0x1.0p-1:0x1.0p0:0x1.8p0:0x0.0p0:-0x0.0p0:NaN:Infinity",
+        "transfer=5:hello",
+        "entries=k:7:k=7",
+        "properties=true:true",
+        "chars=4:ab",
+        "redirects=READ:/tmp/x:redirect to read from file \"/tmp/x\":WRITE:redirect to write to file \"/tmp/y\":INHERIT:PIPE:WRITE",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "{expected} missing from {stdout}"
+        );
+    }
+}
+
+#[test]
+fn runs_the_p2_process_fixture() {
+    // A guest that starts another program needs the host, so the fixture runs through the CLI.
+    let fixtures =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../classfile/tests/fixtures");
+    let output = Command::new(env!("CARGO_BIN_EXE_oxjvm"))
+        .args(["run", "-cp"])
+        .arg(&fixtures)
+        .arg("demo.P2Process")
+        .output()
+        .expect("spawn oxjvm");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("started=hello:0"), "{stdout}");
+    assert!(stdout.contains("executed=hello:0"), "{stdout}");
+    // The handle of the running program: its id, that it is alive, and the programs the host sees.
+    assert!(stdout.contains(":true:"), "{stdout}");
+}
+
+#[test]
 fn reports_a_missing_main_class_with_status_one() {
     let output = Command::new(env!("CARGO_BIN_EXE_oxjvm"))
         .args(["run", "-cp", "/nonexistent", "Nope"])

@@ -37,6 +37,8 @@ pub(crate) mod net;
 pub(crate) mod nio;
 pub(crate) mod optional;
 pub(crate) mod primitive_stream;
+pub(crate) mod process;
+pub(crate) mod process_handle;
 pub(crate) mod reference;
 pub(crate) mod reflect;
 pub(crate) mod regex;
@@ -121,8 +123,18 @@ pub fn natives() -> &'static [NativeClass] {
     &REGISTRY
 }
 
+/// Whether a `-D` override for this system property has to be dropped.
+///
+/// JEP 223 pins the platform properties (the VM name and vendor, the specification name, …) to
+/// the values the platform reports, so a launcher that lets `-D` replace one of them lies about
+/// which VM it is.  A host that parses `-D` options asks the runtime here before applying one.
+#[must_use]
+pub fn is_non_writable_property(key: &str) -> bool {
+    lang::is_non_writable_property(key)
+}
+
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 512] = [
+static REGISTRY: [NativeClass; 520] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -138,6 +150,14 @@ static REGISTRY: [NativeClass; 512] = [
     lang::MODULE_LAYER,
     lang::PROCESS_BUILDER,
     lang::PROCESS_BUILDER_REDIRECT,
+    lang::REDIRECT_TYPE,
+    lang::OJVM_REDIRECT,
+    process::PROCESS,
+    process::OJVM_PROCESS,
+    process_handle::PROCESS_HANDLE,
+    process_handle::OJVM_PROCESS_HANDLE,
+    process_handle::PROCESS_HANDLE_INFO,
+    process_handle::OJVM_PROCESS_HANDLE_INFO,
     lang::RUNTIME_VERSION,
     lang::THREAD,
     lang::THREAD_GROUP,

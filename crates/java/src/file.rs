@@ -722,7 +722,7 @@ fn fs_set_modified(vm: &mut Vm<'_>, path: &str, millis: i64) -> bool {
 // java.io.FileInputStream
 // -------------------------------------------------------------------------------------------
 
-const FILE_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const FILE_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -762,6 +762,41 @@ const FILE_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         write_file_position(vm, this, next);
         long((next - position) as i64)
     }),
+    method(
+        "transferTo",
+        "(Ljava/io/OutputStream;)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            // The JDK copies what is left in 8 KiB chunks and reports the number of bytes.
+            let this = receiver(args);
+            let target = ref_arg(args, 1);
+            let class = vm.class_of(this);
+            let data = vm
+                .read_ref_field(this, class, "data", "[B")
+                .unwrap_or(ObjectRef::NULL);
+            let (length, position) = file_input_state(vm, this)?;
+            let mut transferred = 0i64;
+            let mut offset = position;
+            while offset < length {
+                let count = 8192usize.min(length - offset);
+                let (declaring, method) = vm.resolve_virtual_method(target, "write", "([BII)V")?;
+                vm.invoke_method(
+                    declaring,
+                    method,
+                    vec![
+                        Value::Ref(target),
+                        Value::Ref(data),
+                        Value::Int(offset as i32),
+                        Value::Int(count as i32),
+                    ],
+                )?;
+                offset += count;
+                transferred += count as i64;
+            }
+            write_file_position(vm, this, offset);
+            long(transferred)
+        },
+    ),
     method(
         "getChannel",
         "()Ljava/nio/channels/FileChannel;",
