@@ -978,12 +978,18 @@ macro_rules! map_of {
     };
 }
 
-const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
+const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
     method(
         "entry",
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map$Entry;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| object(new_entry(vm, ref_arg(args, 0), ref_arg(args, 1))?),
+    ),
+    method(
+        "computeIfPresent",
+        "(Ljava/lang/Object;Ljava/util/function/BiFunction;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
     ),
     method(
         "put",
