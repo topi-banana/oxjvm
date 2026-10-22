@@ -525,7 +525,7 @@ fn byte_buffer_put_short(vm: &mut Vm<'_>, this: ObjectRef, value: i16) -> Result
     Ok(())
 }
 
-const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 48] = [
+const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
     method(
         "allocate",
         "(I)Ljava/nio/ByteBuffer;",
@@ -946,6 +946,40 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 48] = [
                 buffer_limit(vm, this),
                 byte_buffer_order(vm, this),
                 true,
+            )?)
+        },
+    ),
+    method(
+        "asCharBuffer",
+        "()Ljava/nio/CharBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            // The view reads the remaining bytes in pairs, most significant byte first.
+            let this = receiver(args);
+            let bytes = byte_buffer_bytes(vm, this);
+            let offset = byte_buffer_offset(vm, this);
+            let position = buffer_position(vm, this);
+            let limit = buffer_limit(vm, this);
+            let count = ((limit - position).max(0) / 2) as usize;
+            let chars = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Char, count)?;
+            for index in 0..count {
+                let high = vm
+                    .array_get(bytes, offset + position + index as i32 * 2)?
+                    .as_int();
+                let low = vm
+                    .array_get(bytes, offset + position + index as i32 * 2 + 1)?
+                    .as_int();
+                let unit = ((high as u32 & 0xFF) << 8) | (low as u32 & 0xFF);
+                vm.array_set(chars, index as i32, Value::Int(unit as i32), false)?;
+            }
+            object(new_char_buffer(
+                vm,
+                chars,
+                0,
+                count as i32,
+                0,
+                count as i32,
+                false,
             )?)
         },
     ),

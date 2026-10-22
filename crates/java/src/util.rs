@@ -942,7 +942,13 @@ macro_rules! map_of {
     };
 }
 
-const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
+const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
+    method(
+        "entry",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map$Entry;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| object(new_entry(vm, ref_arg(args, 0), ref_arg(args, 1))?),
+    ),
     method(
         "put",
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
@@ -4646,7 +4652,7 @@ fn map_index_of(
     Ok(-1)
 }
 
-fn keys_equal(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmError> {
+pub(crate) fn keys_equal(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmError> {
     if a == b {
         return Ok(true);
     }
@@ -5233,7 +5239,7 @@ pub(crate) const TREE_MAP: oxjvm_vm::NativeClass = class(
 // Properties
 // -------------------------------------------------------------------------------------------
 
-const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method("<init>", "()V", ACC_PUBLIC, properties_init),
     method(
         "getProperty",
@@ -5354,6 +5360,18 @@ const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
         ACC_PUBLIC,
         |vm, _, args| properties_load(vm, args),
     ),
+    method(
+        "store",
+        "(Ljava/io/OutputStream;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| properties_store(vm, args),
+    ),
+    method(
+        "store",
+        "(Ljava/io/Writer;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| properties_store(vm, args),
+    ),
 ];
 
 pub(crate) const PROPERTIES: oxjvm_vm::NativeClass = class(
@@ -5409,6 +5427,47 @@ fn properties_load(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
             vec![Value::Ref(key), Value::Ref(value)],
         )?;
     }
+    void()
+}
+
+/// `Properties.store`: write the properties in the JDK's format.
+///
+/// Every entry becomes a `key=value` line, and the comment is written as a `#` line above
+/// them.
+fn properties_store(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let stream = ref_arg(args, 1);
+    let comment = vm.string_value(ref_arg(args, 2)).unwrap_or_default();
+    let mut text = String::new();
+    if !comment.is_empty() {
+        text.push('#');
+        text.push_str(&comment);
+        text.push('\n');
+    }
+    // The JDK writes the time of the store as a comment line below the caller's comment.
+    text.push('#');
+    text.push_str(&date_to_string(vm.host.current_time_millis()));
+    text.push('\n');
+    let pairs = hash_map_pairs(vm, properties_map(vm, this));
+    for (key, value) in pairs {
+        let key = vm.string_or_empty(key);
+        let value = vm.string_or_empty(value);
+        text.push_str(&key);
+        text.push('=');
+        text.push_str(&value);
+        text.push('\n');
+    }
+    let bytes = text.into_bytes();
+    let array = vm.allocate_array_of(ArrayComponent::Byte, bytes.len())?;
+    for (index, byte) in bytes.iter().enumerate() {
+        vm.array_set(array, index as i32, Value::Int(i32::from(*byte)), false)?;
+    }
+    let (declaring, method) = vm.resolve_virtual_method(stream, "write", "([B)V")?;
+    vm.invoke_method(
+        declaring,
+        method,
+        vec![Value::Ref(stream), Value::Ref(array)],
+    )?;
     void()
 }
 
@@ -8831,6 +8890,20 @@ fn new_enum_set(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
     Ok(set)
 }
 
+/// Remember the enum type of a set, so that `complementOf` knows what it complements.
+fn enum_set_set_type(vm: &mut Vm<'_>, set: ObjectRef, element_type: ObjectRef) {
+    let class = vm.class_of(set);
+    if let Some((declaring, field)) = vm.find_field_opt(class, "elementType", "Ljava/lang/Class;") {
+        vm.set_instance_ref(set, declaring, field, element_type);
+    }
+}
+
+/// The enum type of a set, when it is known.
+fn enum_set_type(vm: &mut Vm<'_>, set: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(set, vm.class_of(set), "elementType", "Ljava/lang/Class;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
 fn enum_set_add(vm: &mut Vm<'_>, this: ObjectRef, element: ObjectRef) -> Result<Value, VmError> {
     let map = enum_set_map(vm, this);
     let index = hash_map_index_of(vm, map, element)?;
@@ -8848,12 +8921,51 @@ fn enum_set_add(vm: &mut Vm<'_>, this: ObjectRef, element: ObjectRef) -> Result<
     boolean(true)
 }
 
-const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method(
         "noneOf",
         "(Ljava/lang/Class;)Ljava/util/EnumSet;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| object(new_enum_set(vm)?),
+        |vm, _, args| {
+            let set = new_enum_set(vm)?;
+            enum_set_set_type(vm, set, ref_arg(args, 0));
+            object(set)
+        },
+    ),
+    method(
+        "complementOf",
+        "(Ljava/util/EnumSet;)Ljava/util/EnumSet;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let source = ref_arg(args, 0);
+            let element_type = enum_set_type(vm, source);
+            let set = new_enum_set(vm)?;
+            enum_set_set_type(vm, set, element_type);
+            if element_type.is_null() {
+                return object(set);
+            }
+            // The complement holds every constant of the enum that the set does not.
+            let (class, method) = vm.resolve_virtual_method(
+                element_type,
+                "getEnumConstants",
+                "()[Ljava/lang/Object;",
+            )?;
+            let constants = vm
+                .invoke_method(class, method, vec![Value::Ref(element_type)])?
+                .as_ref();
+            if constants.is_null() {
+                return object(set);
+            }
+            let length = vm.array_length(constants)?;
+            for index in 0..length {
+                let element = vm.array_get(constants, index as i32)?.as_ref();
+                let present = hash_map_index_of(vm, enum_set_map(vm, source), element)?;
+                if present < 0 {
+                    enum_set_add(vm, set, element)?;
+                }
+            }
+            object(set)
+        },
     ),
     method(
         "allOf",
@@ -8862,6 +8974,7 @@ const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         |vm, _, args| {
             let set = new_enum_set(vm)?;
             let class_object = ref_arg(args, 0);
+            enum_set_set_type(vm, set, class_object);
             let (class, method) = vm.resolve_virtual_method(
                 class_object,
                 "getEnumConstants",
@@ -8886,7 +8999,10 @@ const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let set = new_enum_set(vm)?;
-            enum_set_add(vm, set, ref_arg(args, 0))?;
+            let element = ref_arg(args, 0);
+            let element_type = vm.class_object(vm.class_of(element))?;
+            enum_set_set_type(vm, set, element_type);
+            enum_set_add(vm, set, element)?;
             object(set)
         },
     ),
@@ -8896,6 +9012,8 @@ const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let set = new_enum_set(vm)?;
+            let element_type = vm.class_object(vm.class_of(ref_arg(args, 0)))?;
+            enum_set_set_type(vm, set, element_type);
             enum_set_add(vm, set, ref_arg(args, 0))?;
             enum_set_add(vm, set, ref_arg(args, 1))?;
             object(set)
@@ -8907,6 +9025,8 @@ const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let set = new_enum_set(vm)?;
+            let element_type = vm.class_object(vm.class_of(ref_arg(args, 0)))?;
+            enum_set_set_type(vm, set, element_type);
             for index in 0..3 {
                 enum_set_add(vm, set, ref_arg(args, index))?;
             }
@@ -8919,6 +9039,8 @@ const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let set = new_enum_set(vm)?;
+            let element_type = vm.class_object(vm.class_of(ref_arg(args, 0)))?;
+            enum_set_set_type(vm, set, element_type);
             for index in 0..4 {
                 enum_set_add(vm, set, ref_arg(args, index))?;
             }
@@ -8931,6 +9053,8 @@ const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let set = new_enum_set(vm)?;
+            let element_type = vm.class_object(vm.class_of(ref_arg(args, 0)))?;
+            enum_set_set_type(vm, set, element_type);
             for index in 0..5 {
                 enum_set_add(vm, set, ref_arg(args, index))?;
             }
@@ -9027,8 +9151,18 @@ const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
+            // A set prints its elements between brackets, not as a map.
             let map = enum_set_map(vm, receiver(args));
-            hash_map_call(vm, map, "toString", "()Ljava/lang/String;", &[])
+            let mut text = String::from("[");
+            let pairs = hash_map_pairs(vm, map);
+            for (index, (element, _)) in pairs.iter().enumerate() {
+                if index > 0 {
+                    text.push_str(", ");
+                }
+                text.push_str(&value_to_string(vm, *element)?);
+            }
+            text.push(']');
+            object(vm.make_string(&text)?)
         },
     ),
 ];
@@ -9038,7 +9172,10 @@ pub(crate) const ENUM_SET: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &["java/util/Set", "java/io/Serializable"],
     ACC_PUBLIC | ACC_ABSTRACT,
-    &[field("map", "Ljava/util/HashMap;", ACC_PRIVATE, None)],
+    &[
+        field("map", "Ljava/util/HashMap;", ACC_PRIVATE, None),
+        field("elementType", "Ljava/lang/Class;", ACC_PRIVATE, None),
+    ],
     &ENUM_SET_METHODS,
     None,
 );

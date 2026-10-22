@@ -1858,3 +1858,42 @@ fn p2_string_buffer_appends_and_edits() {
         );
     }
 }
+
+#[test]
+fn p2_apis_that_were_missing() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/P2Apis").expect("P2Apis");
+    for (method, expected) in [
+        ("paths", "a|b/c|/a/b/d|/x/y|d"),
+        ("grouping", "{a=[aa, ab], b=[bc]}|{a=2, b=1}"),
+        ("bits", "31:23:0:63:3:8:1:8"),
+        (
+            "enums",
+            "[TUESDAY, WEDNESDAY]:[TUESDAY]:[MONDAY, TUESDAY, WEDNESDAY]",
+        ),
+        (
+            "hex",
+            "0x1.0p0:0x1.0p-1:0x1.0p0:0x1.8p0:0x0.0p0:-0x0.0p0:NaN:Infinity",
+        ),
+        ("entries", "k:7:k=7"),
+        ("chars", "4:ab"),
+        (
+            "redirects",
+            "READ:/tmp/x:redirect to read from file \"/tmp/x\":WRITE:redirect to write to file \
+             \"/tmp/y\":INHERIT:PIPE:WRITE",
+        ),
+    ] {
+        let (declaring, index) = vm
+            .find_method(class, method, "()Ljava/lang/String;")
+            .expect(method);
+        let value = vm
+            .invoke_method(declaring, index, Vec::new())
+            .expect(method);
+        assert_eq!(
+            vm.string_value(value.as_ref()).as_deref(),
+            Some(expected),
+            "{method}"
+        );
+    }
+}

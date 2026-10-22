@@ -5096,7 +5096,7 @@ const PROCESS_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     ),
 ];
 
-/// `ProcessBuilder$Redirect`: only the constants are needed, so the fields stay null.
+/// `ProcessBuilder$Redirect`: the constants plus the redirects a caller builds from a file.
 pub(crate) const PROCESS_BUILDER_REDIRECT: oxjvm_vm::NativeClass = class(
     "java/lang/ProcessBuilder$Redirect",
     Some("java/lang/Object"),
@@ -5122,9 +5122,258 @@ pub(crate) const PROCESS_BUILDER_REDIRECT: oxjvm_vm::NativeClass = class(
             None,
         ),
     ],
+    &REDIRECT_METHODS,
+    Some(redirect_clinit),
+);
+
+/// `ProcessBuilder$Redirect$Type`: the kind of a redirect.
+pub(crate) const REDIRECT_TYPE: oxjvm_vm::NativeClass = class(
+    "java/lang/ProcessBuilder$Redirect$Type",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("ordinal", "I", ACC_PRIVATE, None),
+        field(
+            "PIPE",
+            "Ljava/lang/ProcessBuilder$Redirect$Type;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "INHERIT",
+            "Ljava/lang/ProcessBuilder$Redirect$Type;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "DISCARD",
+            "Ljava/lang/ProcessBuilder$Redirect$Type;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "READ",
+            "Ljava/lang/ProcessBuilder$Redirect$Type;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "WRITE",
+            "Ljava/lang/ProcessBuilder$Redirect$Type;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "APPEND",
+            "Ljava/lang/ProcessBuilder$Redirect$Type;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+    ],
+    &REDIRECT_TYPE_METHODS,
+    Some(redirect_type_clinit),
+);
+
+/// The redirect a caller builds with `ProcessBuilder.Redirect.from` and friends.
+pub(crate) const OJVM_REDIRECT: oxjvm_vm::NativeClass = class(
+    "java/lang/OjvmRedirect",
+    Some("java/lang/ProcessBuilder$Redirect"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field(
+            "type",
+            "Ljava/lang/ProcessBuilder$Redirect$Type;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field("file", "Ljava/io/File;", ACC_PRIVATE, None),
+    ],
     &[],
     None,
 );
+
+const REDIRECT_TYPE_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method("name", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
+        let class = vm.class_of(receiver(args));
+        object(
+            vm.make_string(
+                &vm.read_string_field(receiver(args), class, "name")
+                    .unwrap_or_default(),
+            )?,
+        )
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            // An enum prints its name.
+            let class = vm.class_of(receiver(args));
+            object(
+                vm.make_string(
+                    &vm.read_string_field(receiver(args), class, "name")
+                        .unwrap_or_default(),
+                )?,
+            )
+        },
+    ),
+    method("ordinal", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_int_field(vm, receiver(args), "ordinal"))
+    }),
+];
+
+const REDIRECT_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method(
+        "from",
+        "(Ljava/io/File;)Ljava/lang/ProcessBuilder$Redirect;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| new_redirect(vm, "READ", ref_arg(args, 0)),
+    ),
+    method(
+        "to",
+        "(Ljava/io/File;)Ljava/lang/ProcessBuilder$Redirect;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| new_redirect(vm, "WRITE", ref_arg(args, 0)),
+    ),
+    method(
+        "appendTo",
+        "(Ljava/io/File;)Ljava/lang/ProcessBuilder$Redirect;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| new_redirect(vm, "APPEND", ref_arg(args, 0)),
+    ),
+    method(
+        "type",
+        "()Ljava/lang/ProcessBuilder$Redirect$Type;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = vm.class_of(receiver(args));
+            object(
+                vm.read_ref_field(
+                    receiver(args),
+                    class,
+                    "type",
+                    "Ljava/lang/ProcessBuilder$Redirect$Type;",
+                )
+                .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method("file", "()Ljava/io/File;", ACC_PUBLIC, |vm, _, args| {
+        let class = vm.class_of(receiver(args));
+        object(
+            vm.read_ref_field(receiver(args), class, "file", "Ljava/io/File;")
+                .unwrap_or(ObjectRef::NULL),
+        )
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = vm.class_of(receiver(args));
+            let kind = vm
+                .read_ref_field(
+                    receiver(args),
+                    class,
+                    "type",
+                    "Ljava/lang/ProcessBuilder$Redirect$Type;",
+                )
+                .unwrap_or(ObjectRef::NULL);
+            let name = if kind.is_null() {
+                String::new()
+            } else {
+                vm.read_string_field(kind, vm.class_of(kind), "name")
+                    .unwrap_or_default()
+            };
+            let file = vm
+                .read_ref_field(receiver(args), class, "file", "Ljava/io/File;")
+                .unwrap_or(ObjectRef::NULL);
+            let path = if file.is_null() {
+                String::new()
+            } else {
+                crate::file::file_path(vm, file)
+            };
+            let text = match name.as_str() {
+                "READ" => alloc::format!("redirect to read from file \"{path}\""),
+                "WRITE" => alloc::format!("redirect to write to file \"{path}\""),
+                "APPEND" => alloc::format!("redirect to append to file \"{path}\""),
+                other => other.to_string(),
+            };
+            object(vm.make_string(&text)?)
+        },
+    ),
+];
+
+/// A redirect of the given kind, pointing at a file.
+fn new_redirect(vm: &mut Vm<'_>, kind: &str, file: ObjectRef) -> Result<Value, VmError> {
+    if file.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let class = vm.resolve_class("java/lang/OjvmRedirect")?;
+    let instance = vm.new_instance(class)?;
+    let type_class = vm.resolve_class("java/lang/ProcessBuilder$Redirect$Type")?;
+    vm.ensure_initialized(type_class)?;
+    let kind_value = vm
+        .read_static_ref_if_set(type_class, kind, "Ljava/lang/ProcessBuilder$Redirect$Type;")
+        .unwrap_or(ObjectRef::NULL);
+    let (declaring, field) =
+        vm.find_field(class, "type", "Ljava/lang/ProcessBuilder$Redirect$Type;")?;
+    vm.set_instance_ref(instance, declaring, field, kind_value);
+    let (declaring, field) = vm.find_field(class, "file", "Ljava/io/File;")?;
+    vm.set_instance_ref(instance, declaring, field, file);
+    object(instance)
+}
+
+/// The type constants of a redirect.
+fn redirect_type_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/lang/ProcessBuilder$Redirect$Type")?;
+    for (ordinal, name) in ["PIPE", "INHERIT", "DISCARD", "READ", "WRITE", "APPEND"]
+        .iter()
+        .enumerate()
+    {
+        let instance = vm.new_instance(class)?;
+        vm.set_string_field(instance, class, "name", name)?;
+        write_int_field(vm, instance, "ordinal", ordinal as i32);
+        vm.set_static_value(
+            class,
+            name,
+            "Ljava/lang/ProcessBuilder$Redirect$Type;",
+            Value::Ref(instance),
+        );
+    }
+    Ok(())
+}
+
+/// The three redirects the JDK defines as constants.
+fn redirect_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/lang/OjvmRedirect")?;
+    let type_class = vm.resolve_class("java/lang/ProcessBuilder$Redirect$Type")?;
+    vm.ensure_initialized(type_class)?;
+    for (name, kind) in [
+        ("PIPE", "PIPE"),
+        ("INHERIT", "INHERIT"),
+        ("DISCARD", "WRITE"),
+    ] {
+        let instance = vm.new_instance(class)?;
+        let kind_value = vm
+            .read_static_ref_if_set(type_class, kind, "Ljava/lang/ProcessBuilder$Redirect$Type;")
+            .unwrap_or(ObjectRef::NULL);
+        let (declaring, field) =
+            vm.find_field(class, "type", "Ljava/lang/ProcessBuilder$Redirect$Type;")?;
+        vm.set_instance_ref(instance, declaring, field, kind_value);
+        let redirect_class = vm.resolve_class("java/lang/ProcessBuilder$Redirect")?;
+        vm.set_static_value(
+            redirect_class,
+            name,
+            "Ljava/lang/ProcessBuilder$Redirect;",
+            Value::Ref(instance),
+        );
+    }
+    Ok(())
+}
 
 /// `java.lang.ProcessBuilder`: external processes cannot be started (`start` throws).
 pub(crate) const PROCESS_BUILDER: oxjvm_vm::NativeClass = class(

@@ -79,7 +79,7 @@ pub(crate) const NUMBER: oxjvm_vm::NativeClass = class(
 // Integer
 // -------------------------------------------------------------------------------------------
 
-const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
+const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
     method("<init>", "(I)V", ACC_PUBLIC, boxed_int_init),
     method("intValue", "()I", ACC_PUBLIC, |vm, _, args| {
         int(read_value_int(vm, receiver(args)))
@@ -261,6 +261,39 @@ const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
     method("bitCount", "(I)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
         int(int_arg(args, 0).count_ones() as i32)
     }),
+    method(
+        "numberOfLeadingZeros",
+        "(I)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| int(int_arg(args, 0).leading_zeros() as i32),
+    ),
+    method(
+        "numberOfTrailingZeros",
+        "(I)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| int(int_arg(args, 0).trailing_zeros() as i32),
+    ),
+    method(
+        "highestOneBit",
+        "(I)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let value = int_arg(args, 0) as u32;
+            if value == 0 {
+                return int(0);
+            }
+            int((1u32 << (31 - value.leading_zeros())) as i32)
+        },
+    ),
+    method(
+        "lowestOneBit",
+        "(I)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let value = int_arg(args, 0);
+            int(value & value.wrapping_neg())
+        },
+    ),
     method(
         "divideUnsigned",
         "(II)I",
@@ -697,7 +730,7 @@ pub(crate) const INTEGER: oxjvm_vm::NativeClass = class(
 // Long
 // -------------------------------------------------------------------------------------------
 
-const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
+const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
     method("<init>", "(J)V", ACC_PUBLIC, |vm, _, args| {
         write_value_long(vm, receiver(args), long_arg(args, 1));
         void()
@@ -864,6 +897,42 @@ const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
     ),
     method("sum", "(JJ)J", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
         long(long_arg(args, 0).wrapping_add(long_arg(args, 1)))
+    }),
+    method(
+        "numberOfLeadingZeros",
+        "(J)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| int(long_arg(args, 0).leading_zeros() as i32),
+    ),
+    method(
+        "numberOfTrailingZeros",
+        "(J)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| int(long_arg(args, 0).trailing_zeros() as i32),
+    ),
+    method(
+        "highestOneBit",
+        "(J)J",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let value = long_arg(args, 0) as u64;
+            if value == 0 {
+                return long(0);
+            }
+            long((1u64 << (63 - value.leading_zeros())) as i64)
+        },
+    ),
+    method(
+        "lowestOneBit",
+        "(J)J",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let value = long_arg(args, 0);
+            long(value & value.wrapping_neg())
+        },
+    ),
+    method("bitCount", "(J)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        int(long_arg(args, 0).count_ones() as i32)
     }),
 ];
 
@@ -1966,7 +2035,69 @@ pub(crate) const UNICODE_BLOCK: oxjvm_vm::NativeClass = class(
     Some(unicode_block_clinit),
 );
 
-const FLOAT_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
+/// `Double.toHexString`: the JDK's hexadecimal form, `0x1.<mantissa>p<exponent>`.
+///
+/// The exponent is the binary exponent of the value, and the mantissa keeps the trailing zeros
+/// the JDK drops.  A zero, an infinity and a NaN have their own spellings.
+fn double_to_hex_string(value: f64) -> String {
+    if value.is_nan() {
+        return "NaN".into();
+    }
+    if value.is_infinite() {
+        return if value.is_sign_negative() {
+            "-Infinity".into()
+        } else {
+            "Infinity".into()
+        };
+    }
+    let sign = if value.is_sign_negative() { "-" } else { "" };
+    let magnitude = value.abs();
+    if magnitude == 0.0 {
+        return alloc::format!("{sign}0x0.0p0");
+    }
+    let bits = magnitude.to_bits();
+    let exponent = ((bits >> 52) & 0x7ff) as i32 - 1023;
+    // The implicit leading one and the 52 fraction bits are the significand.
+    let significand = (bits & 0x000f_ffff_ffff_ffff) | 0x0010_0000_0000_0000;
+    let digits = alloc::format!("{significand:013x}");
+    let fraction = digits[1..].trim_end_matches('0');
+    if fraction.is_empty() {
+        alloc::format!("{sign}0x1.0p{exponent}")
+    } else {
+        alloc::format!("{sign}0x1.{fraction}p{exponent}")
+    }
+}
+
+/// `Float.toHexString`: the single-precision form of [`double_to_hex_string`].
+fn float_to_hex_string(value: f32) -> String {
+    if value.is_nan() {
+        return "NaN".into();
+    }
+    if value.is_infinite() {
+        return if value.is_sign_negative() {
+            "-Infinity".into()
+        } else {
+            "Infinity".into()
+        };
+    }
+    let sign = if value.is_sign_negative() { "-" } else { "" };
+    let magnitude = value.abs();
+    if magnitude == 0.0 {
+        return alloc::format!("{sign}0x0.0p0");
+    }
+    let bits = magnitude.to_bits();
+    let exponent = ((bits >> 23) & 0xff) as i32 - 127;
+    let significand = (bits & 0x007f_ffff) | 0x0080_0000;
+    let digits = alloc::format!("{significand:06x}");
+    let fraction = digits[1..].trim_end_matches('0');
+    if fraction.is_empty() {
+        alloc::format!("{sign}0x1.0p{exponent}")
+    } else {
+        alloc::format!("{sign}0x1.{fraction}p{exponent}")
+    }
+}
+
+const FLOAT_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
     method("<init>", "(F)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(
             vm,
@@ -1975,6 +2106,15 @@ const FLOAT_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
         );
         void()
     }),
+    method(
+        "toHexString",
+        "(F)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = float_to_hex_string(crate::float_arg(args, 0));
+            object(vm.make_string(&text)?)
+        },
+    ),
     method("floatValue", "()F", ACC_PUBLIC, |vm, _, args| {
         float(f32::from_bits(read_value_int(vm, receiver(args)) as u32))
     }),
@@ -2245,7 +2385,7 @@ pub(crate) const FLOAT: oxjvm_vm::NativeClass = class(
     Some(float_clinit),
 );
 
-const DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
+const DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
     method("<init>", "(D)V", ACC_PUBLIC, |vm, _, args| {
         write_value_long(
             vm,
@@ -2254,6 +2394,15 @@ const DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
         );
         void()
     }),
+    method(
+        "toHexString",
+        "(D)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = double_to_hex_string(crate::double_arg(args, 0));
+            object(vm.make_string(&text)?)
+        },
+    ),
     method("doubleValue", "()D", ACC_PUBLIC, |vm, _, args| {
         double(f64::from_bits(read_value_long(vm, receiver(args)) as u64))
     }),
