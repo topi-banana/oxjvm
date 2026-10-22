@@ -214,6 +214,11 @@ impl StdHost {
                 .unwrap_or_default(),
         );
         for (key, value) in overrides {
+            // JEP 223 pins the platform properties to the values the platform reports, so a
+            // `-D` that tries to replace one of them is dropped instead of applied.
+            if oxjvm_java::is_non_writable_property(key) {
+                continue;
+            }
             properties.insert(key.clone(), value.clone());
         }
         Self {

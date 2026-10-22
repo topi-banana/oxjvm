@@ -198,6 +198,33 @@ fn runs_p1_nio_fixture_with_file_systems_and_channels() {
 }
 
 #[test]
+fn drops_a_definition_that_would_replace_a_pinned_property() {
+    // JEP 223 pins the platform properties, so `-Djava.vm.name=Unexpected` must not make the VM
+    // claim a different name; an ordinary property is still applied.
+    let fixtures =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../classfile/tests/fixtures");
+    let output = Command::new(env!("CARGO_BIN_EXE_oxjvm"))
+        .args(["run", "-cp"])
+        .arg(&fixtures)
+        .arg("-Djava.vm.name=Unexpected")
+        .arg("-Djava.vm.vendor=Unexpected")
+        .arg("-Doxjvm.test.property=applied")
+        .arg("demo.P2Props")
+        .output()
+        .expect("spawn oxjvm");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("pinned=oxjvm:oxjvm:oxjvm:"), "{stdout}");
+    assert!(stdout.contains("plain=applied"), "{stdout}");
+    // The guest may still change a pinned property itself.
+    assert!(stdout.contains("setByGuest=guest"), "{stdout}");
+}
+
+#[test]
 fn reports_a_missing_main_class_with_status_one() {
     let output = Command::new(env!("CARGO_BIN_EXE_oxjvm"))
         .args(["run", "-cp", "/nonexistent", "Nope"])

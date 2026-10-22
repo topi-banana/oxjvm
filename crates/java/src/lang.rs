@@ -4127,6 +4127,44 @@ pub(crate) const SYSTEM_PROPERTY_DEFAULTS: [(&str, &str); 27] = [
     ("java.awt.headless", "true"),
 ];
 
+/// The system properties a `-D` override must not change.
+///
+/// JEP 223 pins these to the values the platform reports, so the JDK's launcher drops a `-D`
+/// that tries to replace one of them: `java -Djava.vm.name=Other` still reports the real VM
+/// name.  The guest may still call `System.setProperty` on them, exactly as on the JDK.
+pub(crate) const NON_WRITABLE_PROPERTIES: [&str; 24] = [
+    "java.vendor.version",
+    "java.vendor.url",
+    "java.vendor",
+    "java.vendor.url.bug",
+    "java.vendor.url.bug.id",
+    "java.vendor.url.bug.help",
+    "java.vendor.url.security",
+    "java.specification.version",
+    "java.specification.vendor",
+    "java.specification.name",
+    "java.specification.title",
+    "java.vm.version",
+    "java.vm.name",
+    "java.vm.vendor",
+    "java.vm.specification.version",
+    "java.vm.specification.vendor",
+    "java.vm.specification.name",
+    "java.runtime.version",
+    "java.runtime.name",
+    "java.runtime.vendor",
+    "java.runtime.specification.version",
+    "java.runtime.specification.vendor",
+    "java.runtime.specification.name",
+    "java.specification.maintenance.version",
+];
+
+/// Whether a `-D` override for this property has to be dropped.
+#[must_use]
+pub fn is_non_writable_property(key: &str) -> bool {
+    NON_WRITABLE_PROPERTIES.contains(&key)
+}
+
 /// Looks up a system property: guest overrides first, then the host's own properties, then the
 /// VM defaults.
 ///

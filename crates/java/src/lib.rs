@@ -120,6 +120,16 @@ pub fn natives() -> &'static [NativeClass] {
     &REGISTRY
 }
 
+/// Whether a `-D` override for this system property has to be dropped.
+///
+/// JEP 223 pins the platform properties (the VM name and vendor, the specification name, …) to
+/// the values the platform reports, so a launcher that lets `-D` replace one of them lies about
+/// which VM it is.  A host that parses `-D` options asks the runtime here before applying one.
+#[must_use]
+pub fn is_non_writable_property(key: &str) -> bool {
+    lang::is_non_writable_property(key)
+}
+
 /// The registry itself, ordered so that `java/lang/Object` is first.
 static REGISTRY: [NativeClass; 510] = [
     lang::OBJECT,
