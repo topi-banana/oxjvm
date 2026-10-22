@@ -37,6 +37,8 @@ pub(crate) mod net;
 pub(crate) mod nio;
 pub(crate) mod optional;
 pub(crate) mod primitive_stream;
+pub(crate) mod process;
+pub(crate) mod process_handle;
 pub(crate) mod reference;
 pub(crate) mod reflect;
 pub(crate) mod regex;
@@ -131,7 +133,7 @@ pub fn is_non_writable_property(key: &str) -> bool {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 512] = [
+static REGISTRY: [NativeClass; 518] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -149,6 +151,12 @@ static REGISTRY: [NativeClass; 512] = [
     lang::PROCESS_BUILDER_REDIRECT,
     lang::REDIRECT_TYPE,
     lang::OJVM_REDIRECT,
+    process::PROCESS,
+    process::OJVM_PROCESS,
+    process_handle::PROCESS_HANDLE,
+    process_handle::OJVM_PROCESS_HANDLE,
+    process_handle::PROCESS_HANDLE_INFO,
+    process_handle::OJVM_PROCESS_HANDLE_INFO,
     lang::RUNTIME_VERSION,
     lang::THREAD,
     lang::THREAD_GROUP,

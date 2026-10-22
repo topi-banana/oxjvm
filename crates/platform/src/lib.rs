@@ -154,6 +154,34 @@ pub trait Host {
         let _ = path;
         Vec::new()
     }
+
+    /// Run a program and wait for it to finish.
+    ///
+    /// The host reports the exit status and the output of the program.  A host that cannot
+    /// start programs answers [`HostError::Unsupported`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HostError`] when the program cannot be started or fails to run.
+    fn run_process(
+        &mut self,
+        program: &str,
+        args: &[String],
+        directory: Option<&str>,
+    ) -> Result<ProcessResult, HostError> {
+        let _ = (program, args, directory);
+        Err(HostError::Unsupported("running external programs"))
+    }
+
+    /// The processes the host can see.
+    fn processes(&mut self) -> Vec<ProcessInfo> {
+        Vec::new()
+    }
+
+    /// The process id of the host process.
+    fn current_process_id(&mut self) -> u32 {
+        0
+    }
 }
 
 /// One occurrence of a class-path resource inside a class-path entry.
@@ -164,6 +192,28 @@ pub struct ResourceHit {
     pub url: String,
     /// The resource bytes.
     pub bytes: Vec<u8>,
+}
+
+/// What the host knows about a process it ran.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProcessResult {
+    /// The process id the host gave the process.
+    pub pid: u32,
+    /// The exit status of the process.
+    pub status: i32,
+    /// The bytes the process wrote to its standard output.
+    pub stdout: Vec<u8>,
+    /// The bytes the process wrote to its standard error.
+    pub stderr: Vec<u8>,
+}
+
+/// A process the host can see.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessInfo {
+    /// The process id.
+    pub pid: u32,
+    /// The command line, as the host reports it.
+    pub command: String,
 }
 
 /// An in-memory class path, keyed by internal class name.

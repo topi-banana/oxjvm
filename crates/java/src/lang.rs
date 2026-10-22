@@ -4466,7 +4466,25 @@ pub(crate) const SYSTEM: oxjvm_vm::NativeClass = class(
     Some(system_clinit),
 );
 
-const RUNTIME_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const RUNTIME_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+    method(
+        "exec",
+        "(Ljava/lang/String;)Ljava/lang/Process;",
+        ACC_PUBLIC,
+        |vm, _, args| crate::process::runtime_exec(vm, args),
+    ),
+    method(
+        "exec",
+        "([Ljava/lang/String;)Ljava/lang/Process;",
+        ACC_PUBLIC,
+        |vm, _, args| crate::process::runtime_exec_array(vm, args),
+    ),
+    method(
+        "exec",
+        "(Ljava/lang/String;[Ljava/lang/String;)Ljava/lang/Process;",
+        ACC_PUBLIC,
+        |vm, _, args| crate::process::runtime_exec(vm, args),
+    ),
     method(
         "getRuntime",
         "()Ljava/lang/Runtime;",
@@ -5006,7 +5024,7 @@ fn process_builder_store_command(
     object(this)
 }
 
-const PROCESS_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+const PROCESS_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method(
         "<init>",
         "([Ljava/lang/String;)V",
@@ -5043,12 +5061,12 @@ const PROCESS_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
         ACC_PUBLIC,
         |vm, _, args| process_builder_store_command(vm, receiver(args), ref_arg(args, 1)),
     ),
-    method("start", "()Ljava/lang/Process;", ACC_PUBLIC, |vm, _, _| {
-        Err(vm.throw_new(
-            "java/io/IOException",
-            Some("cannot start external processes"),
-        ))
-    }),
+    method(
+        "start",
+        "()Ljava/lang/Process;",
+        ACC_PUBLIC,
+        |vm, _, args| crate::process::process_builder_start(vm, receiver(args)),
+    ),
     method("redirectErrorStream", "()Z", ACC_PUBLIC, |_, _, _| {
         boolean(false)
     }),
@@ -5073,6 +5091,12 @@ const PROCESS_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method(
         "redirectError",
         "(Ljava/lang/ProcessBuilder$Redirect;)Ljava/lang/ProcessBuilder;",
+        ACC_PUBLIC,
+        |_, _, args| object(receiver(args)),
+    ),
+    method(
+        "inheritIO",
+        "()Ljava/lang/ProcessBuilder;",
         ACC_PUBLIC,
         |_, _, args| object(receiver(args)),
     ),
