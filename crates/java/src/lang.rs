@@ -3315,14 +3315,20 @@ const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
     ),
 ];
 
-const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
     method("<init>", "()V", ACC_PUBLIC, builder_init),
-    method("<init>", "(I)V", ACC_PUBLIC, builder_init),
+    method("<init>", "(I)V", ACC_PUBLIC, builder_init_capacity),
     method(
         "<init>",
         "(Ljava/lang/String;)V",
         ACC_PUBLIC,
         builder_init_string,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/CharSequence;)V",
+        ACC_PUBLIC,
+        builder_init_sequence,
     ),
     method(
         "toString",
@@ -3333,21 +3339,126 @@ const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method("length", "()I", ACC_PUBLIC, builder_length),
     method("charAt", "(I)C", ACC_PUBLIC, builder_char_at),
     method("setLength", "(I)V", ACC_PUBLIC, builder_set_length),
+    method("setCharAt", "(IC)V", ACC_PUBLIC, builder_set_char_at),
     method(
         "append",
-        "(Ljava/lang/String;)Ljava/lang/StringBuffer;",
+        "(Ljava/lang/Object;)Ljava/lang/StringBuffer;",
         ACC_PUBLIC,
         builder_append_object,
     ),
     method(
         "append",
+        "(Ljava/lang/String;)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_append_string,
+    ),
+    method(
+        "append",
+        "(Ljava/lang/CharSequence;)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_append_sequence,
+    ),
+    method(
+        "append",
+        "([C)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_append_chars,
+    ),
+    method(
+        "append",
+        "([CII)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_append_chars_range,
+    ),
+    method(
+        "append",
+        "(Ljava/lang/CharSequence;II)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_append_sequence_range,
+    ),
+    method(
+        "append",
+        "(Z)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_append_bool,
+    ),
+    method(
+        "append",
         "(C)Ljava/lang/StringBuffer;",
         ACC_PUBLIC,
-        |vm, _, args| {
-            let text = char::from_u32(int_arg(args, 1) as u32 & 0xFFFF)
-                .map_or(String::new(), String::from);
-            builder_append_text(vm, receiver(args), &text)
-        },
+        builder_append_char,
+    ),
+    method(
+        "append",
+        "(I)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_append_int,
+    ),
+    method(
+        "append",
+        "(J)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_append_long,
+    ),
+    method(
+        "append",
+        "(F)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_append_float,
+    ),
+    method(
+        "append",
+        "(D)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_append_double,
+    ),
+    method(
+        "append",
+        "(Ljava/lang/StringBuffer;)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_append_object,
+    ),
+    method(
+        "indexOf",
+        "(Ljava/lang/String;)I",
+        ACC_PUBLIC,
+        builder_index_of,
+    ),
+    method(
+        "substring",
+        "(II)Ljava/lang/String;",
+        ACC_PUBLIC,
+        builder_substring,
+    ),
+    method(
+        "delete",
+        "(II)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_delete,
+    ),
+    method(
+        "deleteCharAt",
+        "(I)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_delete_char_at,
+    ),
+    method(
+        "insert",
+        "(ILjava/lang/String;)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_insert_string,
+    ),
+    method(
+        "replace",
+        "(IILjava/lang/String;)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_replace,
+    ),
+    method(
+        "reverse",
+        "()Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_reverse,
     ),
 ];
 

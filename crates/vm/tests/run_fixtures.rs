@@ -1833,3 +1833,28 @@ fn p2_regex_named_groups_and_repetitions() {
         );
     }
 }
+
+#[test]
+fn p2_string_buffer_appends_and_edits() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm
+        .resolve_class("demo/P2StringBuffer")
+        .expect("P2StringBuffer");
+    for (method, expected) in [
+        ("appends", "1xctrue21.52.5oab:17:1"),
+        ("edits", "hello:olleh:1:XYc"),
+    ] {
+        let (declaring, index) = vm
+            .find_method(class, method, "()Ljava/lang/String;")
+            .expect(method);
+        let value = vm
+            .invoke_method(declaring, index, Vec::new())
+            .expect(method);
+        assert_eq!(
+            vm.string_value(value.as_ref()).as_deref(),
+            Some(expected),
+            "{method}"
+        );
+    }
+}
