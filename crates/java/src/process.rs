@@ -134,7 +134,7 @@ pub(crate) fn runtime_exec_array(vm: &mut Vm<'_>, args: &[Value]) -> Result<Valu
     object(process)
 }
 
-const PROCESS_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const PROCESS_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method("pid", "()J", ACC_PUBLIC, |vm, _, args| {
         long(crate::lang::read_long_field(vm, receiver(args), "pid"))
     }),
@@ -183,6 +183,62 @@ const PROCESS_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         },
     ),
     method("destroy", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "waitFor",
+        "(JLjava/util/concurrent/TimeUnit;)Z",
+        ACC_PUBLIC,
+        |_vm, _, args| {
+            // The runtime waits for the program before it hands the process over.
+            let _ = (args[1].as_long(), args[2].as_ref());
+            boolean(true)
+        },
+    ),
+    method(
+        "inputReader",
+        "()Ljava/io/BufferedReader;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = vm.class_of(receiver(args));
+            let bytes = vm
+                .read_ref_field(receiver(args), class, "stdout", "[B")
+                .unwrap_or(ObjectRef::NULL);
+            let stream = output_stream(vm, bytes)?.as_ref();
+            let reader = vm.resolve_class("java/io/BufferedReader")?;
+            let instance = vm.new_instance(reader)?;
+            let (declaring, ctor) = vm
+                .find_method(reader, "<init>", "(Ljava/io/Reader;)V")
+                .ok_or_else(|| VmError::internal("BufferedReader lacks its constructor"))?;
+            vm.invoke_method(
+                declaring,
+                ctor,
+                vec![Value::Ref(instance), Value::Ref(stream)],
+            )?;
+            object(instance)
+        },
+    ),
+    method(
+        "outputWriter",
+        "()Ljava/io/BufferedWriter;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = vm.class_of(receiver(args));
+            let bytes = vm
+                .read_ref_field(receiver(args), class, "stdout", "[B")
+                .unwrap_or(ObjectRef::NULL);
+            let stream = output_stream(vm, bytes)?.as_ref();
+            let writer = vm.resolve_class("java/io/BufferedWriter")?;
+            let instance = vm.new_instance(writer)?;
+            let (declaring, ctor) = vm
+                .find_method(writer, "<init>", "(Ljava/io/Writer;)V")
+                .ok_or_else(|| VmError::internal("BufferedWriter lacks its constructor"))?;
+            vm.invoke_method(
+                declaring,
+                ctor,
+                vec![Value::Ref(instance), Value::Ref(stream)],
+            )?;
+            object(instance)
+        },
+    ),
     method(
         "destroyForcibly",
         "()Ljava/lang/Process;",
