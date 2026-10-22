@@ -1792,3 +1792,20 @@ fn p2_arrays_hash_code() {
         );
     }
 }
+
+#[test]
+fn p2_array_length_reports_the_jdks_exceptions() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/P2Checks").expect("P2Checks");
+    let (declaring, index) = vm
+        .find_method(class, "arrayLength", "()Ljava/lang/String;")
+        .expect("arrayLength");
+    let value = vm
+        .invoke_method(declaring, index, Vec::new())
+        .expect("arrayLength");
+    assert_eq!(
+        vm.string_value(value.as_ref()).as_deref(),
+        Some("java.lang.NullPointerException:java.lang.IllegalArgumentException:none:none")
+    );
+}

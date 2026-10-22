@@ -1992,7 +1992,7 @@ fn lambda_constructor_native(
 ) -> Result<Value, VmError> {
     let receiver = args[0].as_ref();
     let class = vm.class_of(receiver);
-    let Some(definition) = vm.lambda_defs.get(&class) else {
+    let Some(definition) = vm.lambda_definition(class) else {
         return Err(VmError::internal(
             "lambda constructor on an unregistered class",
         ));
@@ -2019,7 +2019,7 @@ fn lambda_invoke_native(
 ) -> Result<Value, VmError> {
     let receiver = args[0].as_ref();
     let class = vm.class_of(receiver);
-    let Some(definition) = vm.lambda_defs.get(&class) else {
+    let Some(definition) = vm.lambda_definition(class) else {
         return Err(VmError::internal(
             "lambda invocation on an unregistered class",
         ));

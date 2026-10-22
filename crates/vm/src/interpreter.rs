@@ -1833,10 +1833,7 @@ impl<'a> Vm<'a> {
             }
             0xbe => {
                 let reference = self.pop_ref();
-                if reference.is_null() {
-                    return Err(self.throw_new("java/lang/NullPointerException", None));
-                }
-                let length = self.array_length(reference)?;
+                let length = self.array_length_or_throw(reference)?;
                 self.push(Value::Int(length as i32));
             }
             0xbf => {
@@ -2049,7 +2046,12 @@ impl<'a> Vm<'a> {
                 return Ok(());
             }
         }
-        Err(VmError::internal("final field write rejected"))
+        // The JVMS calls this an `IllegalAccessError`: a final field may only be written by the
+        // declaring class, inside its constructor or its class initializer.
+        Err(self.throw_new(
+            "java/lang/IllegalAccessError",
+            Some("cannot write a final field outside its constructor"),
+        ))
     }
 
     /// Resolve and cache a field reference.

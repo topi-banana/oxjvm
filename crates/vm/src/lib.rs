@@ -591,6 +591,22 @@ impl<'a> Vm<'a> {
         &self.classes.get(class).name
     }
 
+    /// The lambda definition of a class, or of the class it extends.
+    ///
+    /// A lambda body is registered for the class the runtime generated for it.  A class that
+    /// extends such a lambda inherits its SAM implementation, so the definition is looked up
+    /// along the superclass chain as well.
+    pub(crate) fn lambda_definition(&self, class: ClassId) -> Option<&LambdaDef> {
+        let mut current = Some(class);
+        while let Some(id) = current {
+            if let Some(definition) = self.lambda_defs.get(&id) {
+                return Some(definition);
+            }
+            current = self.classes.get(id).super_class;
+        }
+        None
+    }
+
     /// The nest host of a class: its `NestHost` attribute, or the class itself.
     ///
     /// JVMS 5.4.4: a class with no `NestHost` attribute is its own nest host.
@@ -714,6 +730,23 @@ impl<'a> Vm<'a> {
         }
     }
 
+    /// The length of an array, with the checks the JVM's `arraylength` performs.
+    ///
+    /// # Errors
+    ///
+    /// Throws `NullPointerException` for a null reference and `ClassCastException` for a
+    /// reference that does not point at an array, instead of reporting an internal error: a
+    /// guest that reaches such a reference has to see the exception the JDK raises.
+    pub fn array_length_or_throw(&mut self, reference: Ref) -> Result<usize, VmError> {
+        if reference.is_null() {
+            return Err(self.throw_new("java/lang/NullPointerException", None));
+        }
+        match self.heap.get(reference).map(|object| &object.data) {
+            Some(ObjectData::Array(array)) => Ok(array.len()),
+            _ => Err(self.throw_new("java/lang/ClassCastException", Some("not an array"))),
+        }
+    }
+
     /// Read an array element.
     ///
     /// # Errors
@@ -723,7 +756,7 @@ impl<'a> Vm<'a> {
         if reference.is_null() {
             return Err(self.throw_new("java/lang/NullPointerException", None));
         }
-        let length = self.array_length(reference).unwrap_or(0);
+        let length = self.array_length_or_throw(reference)?;
         if index < 0 || index as usize >= length {
             return Err(self.array_index_error(index, length));
         }
@@ -748,7 +781,7 @@ impl<'a> Vm<'a> {
         if reference.is_null() {
             return Err(self.throw_new("java/lang/NullPointerException", None));
         }
-        let length = self.array_length(reference).unwrap_or(0);
+        let length = self.array_length_or_throw(reference)?;
         if index < 0 || index as usize >= length {
             return Err(self.array_index_error(index, length));
         }

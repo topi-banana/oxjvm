@@ -3803,7 +3803,21 @@ const ARRAY_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
         "getLength",
         "(Ljava/lang/Object;)I",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| int(vm.array_length(ref_arg(args, 0))? as i32),
+        |vm, _, args| {
+            // The JDK answers a null reference with a NullPointerException and a reference that
+            // is not an array with an IllegalArgumentException.
+            let array = ref_arg(args, 0);
+            if array.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            match vm.array_length(array) {
+                Ok(length) => int(length as i32),
+                Err(_) => Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("Argument is not an array"),
+                )),
+            }
+        },
     ),
     method(
         "get",
