@@ -284,6 +284,31 @@ fn runs_the_p2_process_fixture() {
 }
 
 #[test]
+fn runs_the_p2_files_fixture() {
+    // The fixture touches the filesystem, so it runs through the CLI, which has one.
+    let fixtures =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../classfile/tests/fixtures");
+    let output = Command::new(env!("CARGO_BIN_EXE_oxjvm"))
+        .args(["run", "-cp"])
+        .arg(&fixtures)
+        .arg("demo.P2Files")
+        .output()
+        .expect("spawn oxjvm");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("copy=11:hello world"), "{stdout}");
+    assert!(
+        stdout.contains("lines=[one, two, three]:one|two|three|"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("compare=-1:5:true"), "{stdout}");
+}
+
+#[test]
 fn reports_a_missing_main_class_with_status_one() {
     let output = Command::new(env!("CARGO_BIN_EXE_oxjvm"))
         .args(["run", "-cp", "/nonexistent", "Nope"])

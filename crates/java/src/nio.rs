@@ -667,7 +667,7 @@ pub(crate) fn new_path(vm: &mut Vm<'_>, path: &str) -> Result<Value, VmError> {
 // Files
 // -------------------------------------------------------------------------------------------
 
-const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 48] = [
+const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
     method(
         "createDirectories",
         "(Ljava/nio/file/Path;[Ljava/nio/file/attribute/FileAttribute;)Ljava/nio/file/Path;",
@@ -725,6 +725,12 @@ const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 48] = [
             }
             object(ref_arg(args, 1))
         },
+    ),
+    method(
+        "copy",
+        "(Ljava/nio/file/Path;Ljava/io/OutputStream;)J",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| files_copy_to_stream(vm, args),
     ),
     method(
         "move",
@@ -1126,6 +1132,65 @@ const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 48] = [
     ),
     method(
         "readAllLines",
+        "(Ljava/nio/file/Path;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            // Without a charset the JDK reads the file as UTF-8.
+            let path = path_string(vm, ref_arg(args, 0));
+            let text = read_text_file(vm, &path)?;
+            let mut lines = Vec::new();
+            for line in text.lines() {
+                lines.push(vm.make_string(line)?);
+            }
+            object(crate::util::array_list_from(vm, &lines)?)
+        },
+    ),
+    method(
+        "newBufferedReader",
+        "(Ljava/nio/file/Path;)Ljava/io/BufferedReader;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| files_new_buffered_reader(vm, args),
+    ),
+    method(
+        "mismatch",
+        "(Ljava/nio/file/Path;Ljava/nio/file/Path;)J",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let first = path_string(vm, ref_arg(args, 0));
+            let second = path_string(vm, ref_arg(args, 1));
+            let left = vm
+                .host
+                .filesystem()
+                .and_then(|fs| fs.read(&first))
+                .unwrap_or_default();
+            let right = vm
+                .host
+                .filesystem()
+                .and_then(|fs| fs.read(&second))
+                .unwrap_or_default();
+            let mut offset = 0usize;
+            while offset < left.len() && offset < right.len() && left[offset] == right[offset] {
+                offset += 1;
+            }
+            if offset < left.len() || offset < right.len() {
+                long(offset as i64)
+            } else {
+                long(-1)
+            }
+        },
+    ),
+    method(
+        "isSameFile",
+        "(Ljava/nio/file/Path;Ljava/nio/file/Path;)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let first = path_string(vm, ref_arg(args, 0));
+            let second = path_string(vm, ref_arg(args, 1));
+            boolean(first == second)
+        },
+    ),
+    method(
+        "readAllLines",
         "(Ljava/nio/file/Path;Ljava/nio/charset/Charset;)Ljava/util/List;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
@@ -1428,6 +1493,59 @@ fn files_copy_stream(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> 
         return Err(vm.throw_new("java/io/IOException", Some(&path)));
     }
     long(bytes.len() as i64)
+}
+
+/// `Files.newBufferedReader`: a reader over the file, decoded as UTF-8.
+fn files_new_buffered_reader(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let path = path_string(vm, ref_arg(args, 0));
+    let text = read_text_file(vm, &path)?;
+    let reader_class = vm.resolve_class("java/io/StringReader")?;
+    let reader = vm.new_instance(reader_class)?;
+    let (declaring, ctor) = vm
+        .find_method(reader_class, "<init>", "(Ljava/lang/String;)V")
+        .ok_or_else(|| VmError::internal("StringReader lacks its constructor"))?;
+    let content = vm.make_string(&text)?;
+    vm.invoke_method(
+        declaring,
+        ctor,
+        vec![Value::Ref(reader), Value::Ref(content)],
+    )?;
+    let buffered_class = vm.resolve_class("java/io/BufferedReader")?;
+    let buffered = vm.new_instance(buffered_class)?;
+    let (declaring, ctor) = vm
+        .find_method(buffered_class, "<init>", "(Ljava/io/Reader;)V")
+        .ok_or_else(|| VmError::internal("BufferedReader lacks its constructor"))?;
+    vm.invoke_method(
+        declaring,
+        ctor,
+        vec![Value::Ref(buffered), Value::Ref(reader)],
+    )?;
+    object(buffered)
+}
+
+/// `Files.copy(Path, OutputStream)`: the file goes to the stream, byte for byte.
+///
+/// The JDK reads the file in chunks and writes each of them; the number of bytes it copied is
+/// the number of bytes the file holds.
+fn files_copy_to_stream(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let path = path_string(vm, ref_arg(args, 0));
+    let stream = ref_arg(args, 1);
+    if stream.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let Some(bytes) = vm.host.filesystem().and_then(|fs| fs.read(&path)) else {
+        return Err(vm.throw_new("java/io/IOException", Some(&path)));
+    };
+    let count = write_to_stream(vm, stream, &bytes)?;
+    long(count as i64)
+}
+
+/// Write bytes to an output stream, the way the JDK's `OutputStream.write(byte[])` does.
+fn write_to_stream(vm: &mut Vm<'_>, stream: ObjectRef, bytes: &[u8]) -> Result<usize, VmError> {
+    let array = bytes_array(vm, bytes)?;
+    let (class, write) = vm.resolve_virtual_method(stream, "write", "([B)V")?;
+    vm.invoke_method(class, write, vec![Value::Ref(stream), array])?;
+    Ok(bytes.len())
 }
 
 fn bytes_array(vm: &mut Vm<'_>, bytes: &[u8]) -> Result<Value, VmError> {
