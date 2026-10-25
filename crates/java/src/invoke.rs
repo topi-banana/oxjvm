@@ -1978,13 +1978,31 @@ pub(crate) const APPENDABLE: oxjvm_vm::NativeClass = class(
 // VarHandle.AccessMode
 // -------------------------------------------------------------------------------------------
 
-const ACCESS_MODE_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+const ACCESS_MODE_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     method("name", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
         let name = vm
             .read_string_field(receiver(args), vm.class_of(receiver(args)), "name")
             .unwrap_or_default();
         object(vm.make_string(&name)?)
     }),
+    method(
+        "methodName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = vm
+                .read_string_field(receiver(args), vm.class_of(receiver(args)), "name")
+                .unwrap_or_default();
+            // JDK lower-cases the first character: GET -> get, GET_VOLATILE -> getVolatile, etc.
+            let mut chars = name.chars();
+            let mut result = String::new();
+            if let Some(first) = chars.next() {
+                result.push(first.to_ascii_lowercase());
+                result.push_str(chars.as_str());
+            }
+            object(vm.make_string(&result)?)
+        },
+    ),
     method("ordinal", "()I", ACC_PUBLIC, |vm, _, args| {
         int(crate::lang::read_int_field(vm, receiver(args), "ordinal"))
     }),
