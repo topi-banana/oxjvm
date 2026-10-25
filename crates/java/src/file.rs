@@ -491,7 +491,7 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
             .host
             .filesystem()
             .and_then(|fs| fs.metadata(&path))
-            .map(|m| m.kind == oxjvm_platform::FileKind::Directory)
+            .map(|m| m.kind == FileKind::Directory)
             .unwrap_or(false);
         let suffix = if is_dir { "/" } else { "" };
         let text = if path.starts_with('/') {

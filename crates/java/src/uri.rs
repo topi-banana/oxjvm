@@ -175,7 +175,7 @@ const URI_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
             let base = uri_text(vm, receiver(args));
             let other = uri_text(vm, ref_arg(args, 1));
             let suffix = if !base.is_empty() && other.starts_with(&base) {
-                alloc::string::String::from(&other[base.len()..])
+                String::from(&other[base.len()..])
             } else {
                 other.clone()
             };

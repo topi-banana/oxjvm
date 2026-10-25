@@ -342,10 +342,6 @@ fn source_version_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     for (ordinal, name) in SOURCE_VERSIONS.iter().enumerate() {
         let instance = vm.new_instance(class)?;
         let name_ref = vm.make_string(name)?;
-        let (declaring, ctor) = vm
-            .find_method(class, "<init>", "(Ljava/lang/String;I)V")
-            .ok_or_else(|| VmError::internal("SourceVersion lacks its constructor"))?;
-        // the constructor is inherited from Enum; find on the declaring class path
         let (decl, ctor_id) = vm
             .find_method(class, "<init>", "(Ljava/lang/String;I)V")
             .ok_or_else(|| VmError::internal("SourceVersion lacks its constructor"))?;
@@ -359,7 +355,6 @@ fn source_version_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
             ],
         )?;
         let field_name = *name;
-        let (fdecl, _) = vm.find_field(class, field_name, "Ljavax/lang/model/SourceVersion;")?;
         // register the static slot lazily via set_static_value; the field must exist in the class definition
         vm.set_static_value(
             class,
@@ -494,7 +489,7 @@ fn java_file_object_kind_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
         ("OTHER", "OTHER", ""),
     ];
     let mut built = Vec::with_capacity(values_order.len());
-    for (ordinal, (name, disp, ext)) in values_order.iter().enumerate() {
+    for (ordinal, (name, _disp, ext)) in values_order.iter().enumerate() {
         let instance = vm.new_instance(class)?;
         let name_ref = vm.make_string(name)?;
         let (decl, ctor) = vm
@@ -821,7 +816,6 @@ const SIMPLE_JAVA_FILE_OBJECT_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method("toUri", "()Ljava/net/URI;", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let class = vm.class_of(this);
-        let (d, f) = vm.find_field(class, "uri", "Ljava/net/URI;")?;
         object(
             vm.read_ref_field(this, class, "uri", "Ljava/net/URI;")
                 .unwrap_or(ObjectRef::NULL),
@@ -963,20 +957,6 @@ const SIMPLE_JAVA_FILE_OBJECT_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
 // --------------------------------------------------------------------------
 // Pure interface shells (remove NoClassDefFoundError)
 // --------------------------------------------------------------------------
-
-macro_rules! interface {
-    ($name:expr, $supers:expr) => {
-        class(
-            $name,
-            Some("java/lang/Object"),
-            $supers,
-            ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
-            &[],
-            &[],
-            None,
-        )
-    };
-}
 
 const TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
     method(
@@ -2054,7 +2034,7 @@ const DOCUMENTATION_TOOL_LOCATION_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         },
     ),
     method("ordinal", "()I", ACC_PUBLIC | ACC_FINAL, |vm, _, args| {
-        int(crate::lang::read_int_field(vm, receiver(args), "ordinal"))
+        int(read_int_field(vm, receiver(args), "ordinal"))
     }),
     method(
         "getName",
