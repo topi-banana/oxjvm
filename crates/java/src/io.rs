@@ -1926,10 +1926,21 @@ fn buffered_reader_read_char(vm: &mut Vm<'_>, this: ObjectRef) -> Result<i32, Vm
         .as_int())
 }
 
-const BUFFERED_READER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const BUFFERED_READER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     method(
         "<init>",
         "(Ljava/io/Reader;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) = vm.find_field(vm.class_of(this), "in", "Ljava/io/Reader;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/Reader;I)V",
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
