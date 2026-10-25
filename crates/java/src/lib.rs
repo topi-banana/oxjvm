@@ -52,6 +52,7 @@ pub(crate) mod stream;
 pub(crate) mod text;
 pub(crate) mod throwable;
 pub(crate) mod time;
+pub(crate) mod tools;
 pub(crate) mod tree;
 pub(crate) mod unsafe_api;
 pub(crate) mod uri;
@@ -137,7 +138,7 @@ pub fn is_non_writable_property(key: &str) -> bool {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 647] = [
+static REGISTRY: [NativeClass; 671] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -504,6 +505,30 @@ static REGISTRY: [NativeClass; 647] = [
     management::DESCRIPTOR_SUPPORT,
     management::IMMUTABLE_DESCRIPTOR,
     management::MXBEAN_TYPE,
+    tools::SOURCE_VERSION,
+    tools::JAVA_FILE_OBJECT_KIND,
+    tools::STANDARD_LOCATION,
+    tools::DIAGNOSTIC_KIND,
+    tools::SIMPLE_JAVA_FILE_OBJECT,
+    tools::TOOL,
+    tools::FILE_OBJECT,
+    tools::JAVA_FILE_OBJECT,
+    tools::JAVA_FILE_MANAGER,
+    tools::STANDARD_JAVA_FILE_MANAGER,
+    tools::JAVA_COMPILER,
+    tools::JAVA_COMPILER_COMPILATION_TASK,
+    tools::DOCUMENTATION_TOOL,
+    tools::DOCUMENTATION_TOOL_DOCUMENTATION_TASK,
+    tools::DIAGNOSTIC,
+    tools::DIAGNOSTIC_LISTENER,
+    tools::OPTION_CHECKER,
+    tools::DIAGNOSTIC_COLLECTOR,
+    tools::FORWARDING_JAVA_FILE_MANAGER,
+    tools::FORWARDING_JAVA_FILE_OBJECT,
+    tools::TOOL_PROVIDER,
+    tools::JAVAC_TOOL,
+    tools::JAVAC_MAIN,
+    tools::JAVAC_CONTEXT,
     annotation::ELEMENT_TYPE,
     annotation::RETENTION_POLICY,
     annotation::RETENTION,
