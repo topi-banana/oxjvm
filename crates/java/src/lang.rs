@@ -7628,3 +7628,17 @@ pub(crate) const ZONE_ID: oxjvm_vm::NativeClass = class(
     &[],
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// Cipher (shell)
+// -------------------------------------------------------------------------------------------
+
+pub(crate) const CIPHER: oxjvm_vm::NativeClass = class(
+    "javax/crypto/Cipher",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &[],
+    None,
+);
