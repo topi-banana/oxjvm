@@ -2018,6 +2018,105 @@ pub(crate) const BUFFERED_READER: oxjvm_vm::NativeClass = class(
 );
 
 // -------------------------------------------------------------------------------------------
+// InputStreamReader
+// -------------------------------------------------------------------------------------------
+
+fn input_stream_reader_content(vm: &Vm<'_>, this: ObjectRef) -> String {
+    vm.read_string_field(this, vm.class_of(this), "content")
+        .unwrap_or_default()
+}
+
+fn input_stream_reader_init(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let stream = ref_arg(args, 1);
+    let mut bytes: Vec<u8> = Vec::new();
+    if !stream.is_null() {
+        while let Ok((class, method)) = vm.resolve_virtual_method(stream, "read", "()I") {
+            let value = vm
+                .invoke_method(class, method, vec![Value::Ref(stream)])?
+                .as_int();
+            if value < 0 {
+                break;
+            }
+            bytes.push(value as u8);
+        }
+    }
+    let content = String::from_utf8_lossy(&bytes).into_owned();
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, "content", "Ljava/lang/String;")?;
+    let value = vm.make_string(&content)?;
+    vm.set_instance_ref(this, declaring, field, value);
+    crate::lang::write_int_field(vm, this, "pos", 0);
+    void()
+}
+
+const INPUT_STREAM_READER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method(
+        "<init>",
+        "(Ljava/io/InputStream;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let _ = this;
+            input_stream_reader_init(vm, args)
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/InputStream;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| input_stream_reader_init(vm, args),
+    ),
+    method("read", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let content = input_stream_reader_content(vm, this);
+        let pos = crate::lang::read_int_field(vm, this, "pos");
+        let units: Vec<u16> = content.encode_utf16().collect();
+        if pos < 0 || pos as usize >= units.len() {
+            return int(-1);
+        }
+        crate::lang::write_int_field(vm, this, "pos", pos + 1);
+        int(i32::from(units[pos as usize]))
+    }),
+    method("read", "([CII)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let content = input_stream_reader_content(vm, this);
+        let units: Vec<u16> = content.encode_utf16().collect();
+        let mut pos = crate::lang::read_int_field(vm, this, "pos");
+        let offset = int_arg(args, 2);
+        let length = int_arg(args, 3);
+        let array = ref_arg(args, 1);
+        let mut count = 0;
+        while count < length && (pos as usize) < units.len() {
+            vm.array_set(
+                array,
+                offset + count,
+                Value::Int(i32::from(units[pos as usize])),
+                false,
+            )?;
+            pos += 1;
+            count += 1;
+        }
+        crate::lang::write_int_field(vm, this, "pos", pos);
+        if count == 0 { int(-1) } else { int(count) }
+    }),
+    method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+];
+
+pub(crate) const INPUT_STREAM_READER: oxjvm_vm::NativeClass = class(
+    "java/io/InputStreamReader",
+    Some("java/io/Reader"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("content", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("pos", "I", ACC_PRIVATE, None),
+    ],
+    &INPUT_STREAM_READER_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
 // BufferedWriter
 // -------------------------------------------------------------------------------------------
 
