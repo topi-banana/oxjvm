@@ -7670,3 +7670,37 @@ pub(crate) const MODULE_DESCRIPTOR: oxjvm_vm::NativeClass = class(
     &[],
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// HttpClient / HttpResponse (shell)
+// -------------------------------------------------------------------------------------------
+
+pub(crate) const HTTP_CLIENT: oxjvm_vm::NativeClass = class(
+    "java/net/http/HttpClient",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const HTTP_RESPONSE: oxjvm_vm::NativeClass = class(
+    "java/net/http/HttpResponse",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const HTTP_CLIENT_VERSION: oxjvm_vm::NativeClass = class(
+    "java/net/http/HttpClient$Version",
+    Some("java/lang/Enum"),
+    &[],
+    ACC_PUBLIC | ACC_ENUM,
+    &[],
+    &[],
+    None,
+);
