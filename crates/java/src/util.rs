@@ -978,7 +978,7 @@ macro_rules! map_of {
     };
 }
 
-const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
+const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
     method(
         "entry",
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map$Entry;",
@@ -1029,6 +1029,12 @@ const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
     ),
     method(
         "containsKey",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "containsValue",
         "(Ljava/lang/Object;)Z",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
