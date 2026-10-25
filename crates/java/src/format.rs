@@ -740,7 +740,7 @@ pub(crate) const DECIMAL_FORMAT: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const DECIMAL_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+const DECIMAL_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -786,7 +786,47 @@ const DECIMAL_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
             }
         },
     ),
+    method(
+        "getDecimalFormatSymbols",
+        "()Ljava/text/DecimalFormatSymbols;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/text/DecimalFormatSymbols")?;
+            object(vm.new_instance(class)?)
+        },
+    ),
 ];
+
+const DECIMAL_FORMAT_SYMBOLS_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("getDecimalSeparator", "()C", ACC_PUBLIC, |_, _, _| {
+        int('.' as i32)
+    }),
+    method("getGroupingSeparator", "()C", ACC_PUBLIC, |_, _, _| {
+        int(',' as i32)
+    }),
+    method("getMinusSign", "()C", ACC_PUBLIC, |_, _, _| int('-' as i32)),
+    method("getZeroDigit", "()C", ACC_PUBLIC, |_, _, _| int('0' as i32)),
+    method(
+        "getInfinity",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| object(vm.make_string("∞")?),
+    ),
+    method("getNaN", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, _| {
+        object(vm.make_string("NaN")?)
+    }),
+];
+
+pub(crate) const DECIMAL_FORMAT_SYMBOLS: oxjvm_vm::NativeClass = class(
+    "java/text/DecimalFormatSymbols",
+    Some("java/lang/Object"),
+    &["java/io/Serializable", "java/lang/Cloneable"],
+    ACC_PUBLIC,
+    &[],
+    &DECIMAL_FORMAT_SYMBOLS_METHODS,
+    None,
+);
 
 /// `java.text.NumberFormat`.
 pub(crate) const NUMBER_FORMAT: oxjvm_vm::NativeClass = class(
