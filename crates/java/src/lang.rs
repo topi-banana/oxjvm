@@ -7614,3 +7614,17 @@ pub(crate) const RANDOM_GENERATOR: oxjvm_vm::NativeClass = class(
     &[],
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// ZoneId (shell)
+// -------------------------------------------------------------------------------------------
+
+pub(crate) const ZONE_ID: oxjvm_vm::NativeClass = class(
+    "java/time/ZoneId",
+    Some("java/lang/Object"),
+    &["java/io/Serializable"],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[],
+    &[],
+    None,
+);
