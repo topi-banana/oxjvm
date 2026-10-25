@@ -239,7 +239,7 @@ pub(crate) const OBJECT: oxjvm_vm::NativeClass = class(
 // Class
 // -------------------------------------------------------------------------------------------
 
-const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
+const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 64] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -275,6 +275,18 @@ const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
         "()[Ljava/lang/Class;",
         ACC_PUBLIC,
         class_get_interfaces,
+    ),
+    method(
+        "getGenericInterfaces",
+        "()[Ljava/lang/reflect/Type;",
+        ACC_PUBLIC,
+        class_get_generic_interfaces,
+    ),
+    method(
+        "descriptorString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        class_descriptor_string,
     ),
     method(
         "getComponentType",
@@ -894,6 +906,51 @@ fn class_get_interfaces(
     let interfaces = vm.classes.get(class).interfaces.clone();
     let class_class = vm.resolve_class("java/lang/Class")?;
     let array = vm.allocate_object_array(class_class, interfaces.len())?;
+    for (index, interface) in interfaces.into_iter().enumerate() {
+        let class_object = vm.class_object(interface)?;
+        vm.array_set_ref(array, index, class_object)?;
+    }
+    object(array)
+}
+
+fn class_descriptor_string(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let class = class_argument(vm, receiver(args))?;
+    let definition = vm.classes.get(class);
+    let text = if definition.kind == oxjvm_vm::ClassKind::Primitive {
+        match definition.name.as_str() {
+            "boolean" => "Z",
+            "byte" => "B",
+            "char" => "C",
+            "short" => "S",
+            "int" => "I",
+            "long" => "J",
+            "float" => "F",
+            "double" => "D",
+            "void" => "V",
+            other => other,
+        }
+        .to_string()
+    } else if definition.name.starts_with('[') {
+        definition.name.clone()
+    } else {
+        alloc::format!("L{};", definition.name)
+    };
+    object(vm.make_string(&text)?)
+}
+
+fn class_get_generic_interfaces(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let class = class_argument(vm, receiver(args))?;
+    let interfaces = vm.classes.get(class).interfaces.clone();
+    let type_class = vm.resolve_class("java/lang/reflect/Type")?;
+    let array = vm.allocate_object_array(type_class, interfaces.len())?;
     for (index, interface) in interfaces.into_iter().enumerate() {
         let class_object = vm.class_object(interface)?;
         vm.array_set_ref(array, index, class_object)?;
