@@ -316,6 +316,113 @@ pub(crate) const COUNT_DOWN_LATCH: oxjvm_vm::NativeClass = class(
 );
 
 // -------------------------------------------------------------------------------------------
+// CyclicBarrier
+// -------------------------------------------------------------------------------------------
+
+const CYCLIC_BARRIER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+    method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let parties = crate::int_arg(args, 1);
+        if parties <= 0 {
+            return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("parties <= 0")));
+        }
+        let this = receiver(args);
+        crate::lang::write_int_field(vm, this, "parties", parties);
+        crate::lang::write_int_field(vm, this, "count", 0);
+        void()
+    }),
+    method(
+        "<init>",
+        "(ILjava/lang/Runnable;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let parties = crate::int_arg(args, 1);
+            if parties <= 0 {
+                return Err(
+                    vm.throw_new("java/lang/IllegalArgumentException", Some("parties <= 0"))
+                );
+            }
+            let this = receiver(args);
+            crate::lang::write_int_field(vm, this, "parties", parties);
+            crate::lang::write_int_field(vm, this, "count", 0);
+            void()
+        },
+    ),
+    method("await", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let parties = crate::lang::read_int_field(vm, this, "parties");
+        let waiting = crate::lang::read_int_field(vm, this, "count") + 1;
+        crate::lang::write_int_field(vm, this, "count", waiting);
+        if waiting >= parties {
+            crate::lang::write_int_field(vm, this, "count", 0);
+            vm.monitor_notify(this, true);
+            int(parties - waiting)
+        } else {
+            vm.park_until_notified(this, None);
+            int(parties - waiting)
+        }
+    }),
+    method(
+        "await",
+        "(JLjava/util/concurrent/TimeUnit;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let parties = crate::lang::read_int_field(vm, this, "parties");
+            let waiting = crate::lang::read_int_field(vm, this, "count") + 1;
+            crate::lang::write_int_field(vm, this, "count", waiting);
+            if waiting >= parties {
+                crate::lang::write_int_field(vm, this, "count", 0);
+                vm.monitor_notify(this, true);
+                boolean(true)
+            } else {
+                let millis = time_unit_to_millis(vm, ref_arg(args, 2), crate::long_arg(args, 1))?;
+                vm.park_until_notified(this, Some(millis));
+                boolean(true)
+            }
+        },
+    ),
+    method("getParties", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "parties"))
+    }),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        crate::lang::write_int_field(vm, this, "count", 0);
+        vm.monitor_notify(this, true);
+        void()
+    }),
+    method("isBroken", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method("getNumberWaiting", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "count"))
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let parties = crate::lang::read_int_field(vm, this, "parties");
+            let waiting = crate::lang::read_int_field(vm, this, "count");
+            object(vm.make_string(&alloc::format!(
+                "java.util.concurrent.CyclicBarrier[parties={parties}, waited={waiting}]"
+            ))?)
+        },
+    ),
+];
+
+pub(crate) const CYCLIC_BARRIER: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/CyclicBarrier",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("parties", "I", ACC_PRIVATE, None),
+        field("count", "I", ACC_PRIVATE, None),
+    ],
+    &CYCLIC_BARRIER_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
 // java.util.concurrent.locks
 // -------------------------------------------------------------------------------------------
 
