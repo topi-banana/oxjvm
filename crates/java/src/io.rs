@@ -2569,3 +2569,21 @@ pub(crate) const STRING_READER: oxjvm_vm::NativeClass = class(
     &STRING_READER_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// RandomAccessFile (shell)
+// -------------------------------------------------------------------------------------------
+
+pub(crate) const RANDOM_ACCESS_FILE: oxjvm_vm::NativeClass = class(
+    "java/io/RandomAccessFile",
+    Some("java/lang/Object"),
+    &[
+        "java/io/Closeable",
+        "java/io/DataInput",
+        "java/io/DataOutput",
+    ],
+    ACC_PUBLIC,
+    &[],
+    &[],
+    None,
+);
