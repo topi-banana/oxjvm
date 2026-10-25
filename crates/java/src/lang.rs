@@ -7586,3 +7586,17 @@ pub(crate) const SWITCH_BOOTSTRAPS: oxjvm_vm::NativeClass = class(
     &[],
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// ValueLayout (shell)
+// -------------------------------------------------------------------------------------------
+
+pub(crate) const VALUE_LAYOUT: oxjvm_vm::NativeClass = class(
+    "java/lang/foreign/ValueLayout",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE,
+    &[],
+    &[],
+    None,
+);
