@@ -4573,8 +4573,11 @@ fn runtime_version(vm: &mut Vm<'_>) -> Result<Value, VmError> {
     object(instance)
 }
 
-const RUNTIME_VERSION_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
+const RUNTIME_VERSION_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method("feature", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_int_field(vm, receiver(args), "feature"))
+    }),
+    method("major", "()I", ACC_PUBLIC, |vm, _, args| {
         int(read_int_field(vm, receiver(args), "feature"))
     }),
     method("interim", "()I", ACC_PUBLIC, |vm, _, args| {
