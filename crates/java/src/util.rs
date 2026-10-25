@@ -5730,7 +5730,7 @@ fn properties_set_property(
 // Collections
 // -------------------------------------------------------------------------------------------
 
-const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
+const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
     method(
         "sort",
         "(Ljava/util/List;)V",
@@ -5742,6 +5742,12 @@ const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         "(Ljava/util/List;Ljava/util/Comparator;)V",
         ACC_PUBLIC | ACC_STATIC,
         collections_sort_with,
+    ),
+    method(
+        "shuffle",
+        "(Ljava/util/List;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        collections_shuffle,
     ),
     method(
         "reverse",
@@ -6219,6 +6225,35 @@ fn collections_sort(
             invoke_void(vm, list, "set", &[Value::Int(cursor), Value::Ref(a)])?;
             cursor -= 1;
         }
+    }
+    void()
+}
+
+/// `Collections.shuffle(List)`: Fisher-Yates shuffle backed by a host-derived seed.
+fn collections_shuffle(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let list = ref_arg(args, 0);
+    let size = invoke_int(vm, list, "size")?;
+    if size < 2 {
+        return void();
+    }
+    let mut seed = vm.host.random_seed();
+    // Simple xorshift64.
+    let rng = |seed: &mut u64| -> usize {
+        *seed ^= *seed << 13;
+        *seed ^= *seed >> 7;
+        *seed ^= *seed << 17;
+        *seed as usize
+    };
+    for i in (1..size).rev() {
+        let j = rng(&mut seed) % ((i + 1) as usize);
+        let a = invoke_object(vm, list, "get", &[Value::Int(i)])?;
+        let b = invoke_object(vm, list, "get", &[Value::Int(j as i32)])?;
+        invoke_void(vm, list, "set", &[Value::Int(i), Value::Ref(b)])?;
+        invoke_void(vm, list, "set", &[Value::Int(j as i32), Value::Ref(a)])?;
     }
     void()
 }
