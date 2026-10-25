@@ -1,7 +1,7 @@
 //! Tier 2.3 shells: `java.lang.management.*` and collaborators.
 
-use oxjvm_classfile::flags::*;
 use crate::class;
+use oxjvm_classfile::flags::*;
 
 pub(crate) const MANAGEMENT_FACTORY: oxjvm_vm::NativeClass = class(
     "java/lang/management/ManagementFactory",
@@ -14,7 +14,15 @@ pub(crate) const MANAGEMENT_FACTORY: oxjvm_vm::NativeClass = class(
 );
 
 const fn mxbean(name: &'static str) -> oxjvm_vm::NativeClass {
-    class(name, Some("java/lang/Object"), &[], ACC_PUBLIC | ACC_INTERFACE, &[], &[], None)
+    class(
+        name,
+        Some("java/lang/Object"),
+        &[],
+        ACC_PUBLIC | ACC_INTERFACE,
+        &[],
+        &[],
+        None,
+    )
 }
 
 pub(crate) const MX_BEAN: oxjvm_vm::NativeClass = class(
@@ -27,9 +35,12 @@ pub(crate) const MX_BEAN: oxjvm_vm::NativeClass = class(
     None,
 );
 
-pub(crate) const MEMORY_MX_BEAN: oxjvm_vm::NativeClass = mxbean("java/lang/management/MemoryMXBean");
-pub(crate) const THREAD_MX_BEAN: oxjvm_vm::NativeClass = mxbean("java/lang/management/ThreadMXBean");
-pub(crate) const RUNTIME_MX_BEAN: oxjvm_vm::NativeClass = mxbean("java/lang/management/RuntimeMXBean");
+pub(crate) const MEMORY_MX_BEAN: oxjvm_vm::NativeClass =
+    mxbean("java/lang/management/MemoryMXBean");
+pub(crate) const THREAD_MX_BEAN: oxjvm_vm::NativeClass =
+    mxbean("java/lang/management/ThreadMXBean");
+pub(crate) const RUNTIME_MX_BEAN: oxjvm_vm::NativeClass =
+    mxbean("java/lang/management/RuntimeMXBean");
 pub(crate) const OPERATING_SYSTEM_MX_BEAN: oxjvm_vm::NativeClass =
     mxbean("java/lang/management/OperatingSystemMXBean");
 pub(crate) const CLASS_LOADING_MX_BEAN: oxjvm_vm::NativeClass =
@@ -40,11 +51,14 @@ pub(crate) const GARBAGE_COLLECTOR_MX_BEAN: oxjvm_vm::NativeClass =
     mxbean("java/lang/management/GarbageCollectorMXBean");
 pub(crate) const MEMORY_MANAGER_MX_BEAN: oxjvm_vm::NativeClass =
     mxbean("java/lang/management/MemoryManagerMXBean");
-pub(crate) const MEMORY_POOL_MX_BEAN: oxjvm_vm::NativeClass = mxbean("java/lang/management/MemoryPoolMXBean");
-pub(crate) const BUFFER_POOL_MX_BEAN: oxjvm_vm::NativeClass = mxbean("java/lang/management/BufferPoolMXBean");
+pub(crate) const MEMORY_POOL_MX_BEAN: oxjvm_vm::NativeClass =
+    mxbean("java/lang/management/MemoryPoolMXBean");
+pub(crate) const BUFFER_POOL_MX_BEAN: oxjvm_vm::NativeClass =
+    mxbean("java/lang/management/BufferPoolMXBean");
 pub(crate) const PLATFORM_LOGGING_MX_BEAN: oxjvm_vm::NativeClass =
     mxbean("java/lang/management/PlatformLoggingMXBean");
-pub(crate) const PLATFORM_MANAGED_OBJECT: oxjvm_vm::NativeClass = mxbean("java/lang/management/PlatformManagedObject");
+pub(crate) const PLATFORM_MANAGED_OBJECT: oxjvm_vm::NativeClass =
+    mxbean("java/lang/management/PlatformManagedObject");
 
 // memory support classes
 pub(crate) const MEMORY_USAGE: oxjvm_vm::NativeClass = class(
@@ -243,7 +257,10 @@ pub(crate) const ATTRIBUTE_LIST: oxjvm_vm::NativeClass = class(
 pub(crate) const STANDARD_MBEAN: oxjvm_vm::NativeClass = class(
     "javax/management/StandardMBean",
     Some("java/lang/Object"),
-    &["javax/management/DynamicMBean", "javax/management/MBeanRegistration"],
+    &[
+        "javax/management/DynamicMBean",
+        "javax/management/MBeanRegistration",
+    ],
     ACC_PUBLIC,
     &[],
     &[],

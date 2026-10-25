@@ -1,7 +1,7 @@
 //! Tier 2.2 shells: `java.security.*` and `java.security.*` collaborators.
 
-use oxjvm_classfile::flags::*;
 use crate::class;
+use oxjvm_classfile::flags::*;
 
 pub(crate) const SECURITY: oxjvm_vm::NativeClass = class(
     "java/security/Security",
