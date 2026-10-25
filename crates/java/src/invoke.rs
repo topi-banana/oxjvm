@@ -1444,7 +1444,7 @@ macro_rules! functional_interface {
 // Each interface carries the same shape; the dispatcher selects by descriptor, so a shared array
 // with one abstract method of each common descriptor is sufficient and lets a single class serve
 // every functional interface users link against.
-const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
+const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 43] = [
     method(
         "apply",
         "(Ljava/lang/Object;)Ljava/lang/Object;",
@@ -1690,6 +1690,12 @@ const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
         |vm, _, args| predicate_combine(vm, 2, receiver(args), ObjectRef::NULL),
     ),
     method(
+        "isEqual",
+        "(Ljava/lang/Object;)Ljava/util/function/Predicate;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| predicate_combine(vm, 3, ref_arg(args, 0), ObjectRef::NULL),
+    ),
+    method(
         "andThen",
         "(Ljava/util/function/Function;)Ljava/util/function/Function;",
         ACC_PUBLIC,
@@ -1754,6 +1760,17 @@ const PREDICATE_COMBINER_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
         let result = match op {
             0 => predicate_test(vm, left, value)? && predicate_test(vm, right, value)?,
             1 => predicate_test(vm, left, value)? || predicate_test(vm, right, value)?,
+            3 => {
+                if left.is_null() {
+                    value.is_null()
+                } else {
+                    let (cls, m) =
+                        vm.resolve_virtual_method(left, "equals", "(Ljava/lang/Object;)Z")?;
+                    vm.invoke_method(cls, m, alloc::vec![Value::Ref(left), Value::Ref(value)])?
+                        .as_int()
+                        != 0
+                }
+            }
             _ => !predicate_test(vm, left, value)?,
         };
         boolean(result)
