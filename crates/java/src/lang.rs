@@ -7704,3 +7704,17 @@ pub(crate) const HTTP_CLIENT_VERSION: oxjvm_vm::NativeClass = class(
     &[],
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// DataFlavor (shell)
+// -------------------------------------------------------------------------------------------
+
+pub(crate) const DATA_FLAVOR: oxjvm_vm::NativeClass = class(
+    "java/awt/datatransfer/DataFlavor",
+    Some("java/lang/Object"),
+    &["java/io/Externalizable"],
+    ACC_PUBLIC,
+    &[],
+    &[],
+    None,
+);
