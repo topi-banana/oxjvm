@@ -7600,3 +7600,17 @@ pub(crate) const VALUE_LAYOUT: oxjvm_vm::NativeClass = class(
     &[],
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// RandomGenerator (shell)
+// -------------------------------------------------------------------------------------------
+
+pub(crate) const RANDOM_GENERATOR: oxjvm_vm::NativeClass = class(
+    "java/util/random/RandomGenerator",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE,
+    &[],
+    &[],
+    None,
+);
