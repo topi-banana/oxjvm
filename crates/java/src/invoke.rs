@@ -401,7 +401,7 @@ pub(crate) const METHOD_HANDLE: oxjvm_vm::NativeClass = class(
 // MethodHandles + Lookup
 // -------------------------------------------------------------------------------------------
 
-const METHOD_HANDLES_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+const METHOD_HANDLES_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method(
         "lookup",
         "()Ljava/lang/invoke/MethodHandles$Lookup;",
@@ -447,6 +447,12 @@ const METHOD_HANDLES_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     ),
     method(
         "byteArrayViewVarHandle",
+        "(Ljava/lang/Class;Ljava/nio/ByteOrder;)Ljava/lang/invoke/VarHandle;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| new_var_handle(vm, ref_arg(args, 0), ObjectRef::NULL, ObjectRef::NULL, 2),
+    ),
+    method(
+        "byteBufferViewVarHandle",
         "(Ljava/lang/Class;Ljava/nio/ByteOrder;)Ljava/lang/invoke/VarHandle;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| new_var_handle(vm, ref_arg(args, 0), ObjectRef::NULL, ObjectRef::NULL, 2),
