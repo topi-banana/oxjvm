@@ -7642,3 +7642,17 @@ pub(crate) const CIPHER: oxjvm_vm::NativeClass = class(
     &[],
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// SSLContext (shell)
+// -------------------------------------------------------------------------------------------
+
+pub(crate) const SSL_CONTEXT: oxjvm_vm::NativeClass = class(
+    "javax/net/ssl/SSLContext",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &[],
+    None,
+);
