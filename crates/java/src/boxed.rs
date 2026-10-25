@@ -730,7 +730,7 @@ pub(crate) const INTEGER: oxjvm_vm::NativeClass = class(
 // Long
 // -------------------------------------------------------------------------------------------
 
-const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
+const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
     method("<init>", "(J)V", ACC_PUBLIC, |vm, _, args| {
         write_value_long(vm, receiver(args), long_arg(args, 1));
         void()
@@ -813,6 +813,19 @@ const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
     method("compare", "(JJ)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
         int(long_arg(args, 0).cmp(&long_arg(args, 1)) as i32)
     }),
+    method(
+        "divideUnsigned",
+        "(JJ)J",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let dividend = long_arg(args, 0) as u64;
+            let divisor = long_arg(args, 1) as u64;
+            if divisor == 0 {
+                return Err(vm.throw_new("java/lang/ArithmeticException", Some("/ by zero")));
+            }
+            long((dividend / divisor) as i64)
+        },
+    ),
     method(
         "toHexString",
         "(J)Ljava/lang/String;",
