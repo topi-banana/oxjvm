@@ -7572,3 +7572,17 @@ pub(crate) const ANNOTATION: oxjvm_vm::NativeClass = class(
     &ANNOTATION_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// SwitchBootstraps (shell)
+// -------------------------------------------------------------------------------------------
+
+pub(crate) const SWITCH_BOOTSTRAPS: oxjvm_vm::NativeClass = class(
+    "java/lang/runtime/SwitchBootstraps",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[],
+    &[],
+    None,
+);
