@@ -1408,12 +1408,8 @@ const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
     ),
     method("<init>", "([C)V", ACC_PUBLIC, string_init_chars),
     method("<init>", "([CII)V", ACC_PUBLIC, string_init_chars_range),
-    method(
-        "<init>",
-        "([III)V",
-        ACC_PUBLIC,
-        string_init_code_points,
-    ),    method("<init>", "([B)V", ACC_PUBLIC, string_init_bytes),
+    method("<init>", "([III)V", ACC_PUBLIC, string_init_code_points),
+    method("<init>", "([B)V", ACC_PUBLIC, string_init_bytes),
     method(
         "<init>",
         "([BLjava/lang/String;)V",
@@ -1832,9 +1828,7 @@ fn string_init_code_points(
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
     let codepoints: Vec<i32> = match vm.heap.get(reference).map(|object| &object.data) {
-        Some(oxjvm_vm::ObjectData::Array(oxjvm_vm::ArrayData::Int(values))) => {
-            values.iter().copied().collect()
-        }
+        Some(oxjvm_vm::ObjectData::Array(oxjvm_vm::ArrayData::Int(values))) => values.clone(),
         _ => return Err(vm.throw_new("java/lang/NullPointerException", None)),
     };
     let offset = int_arg(args, 2);
@@ -1842,10 +1836,9 @@ fn string_init_code_points(
     string_range_check(vm, offset, count, codepoints.len())?;
     let mut units: Vec<u16> = Vec::new();
     for &cp in &codepoints[offset as usize..(offset + count) as usize] {
-        if cp < 0 || cp > 0x10FFFF || (0xD800..=0xDFFF).contains(&cp) {
+        let Some(ch) = char::from_u32(cp as u32) else {
             return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
-        }
-        let ch = char::from_u32(cp as u32).unwrap_or(char::REPLACEMENT_CHARACTER);
+        };
         let mut buf = [0u16; 2];
         let encoded = ch.encode_utf16(&mut buf);
         units.extend_from_slice(encoded);
