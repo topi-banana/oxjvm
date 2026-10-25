@@ -365,7 +365,7 @@ unsafe_class!(
 
 /// The method table is shared by both `Unsafe` spellings, with the static
 /// `getUnsafe` handled per class in `clinit`.
-static UNSAFE_METHODS: [oxjvm_vm::NativeMethodDef; 78] = [
+static UNSAFE_METHODS: [oxjvm_vm::NativeMethodDef; 79] = [
     method(
         "getUnsafe",
         "()Ljava/lang/Object;",
@@ -548,6 +548,7 @@ static UNSAFE_METHODS: [oxjvm_vm::NativeMethodDef; 78] = [
             )
         },
     ),
+    method("putByte", "(JB)V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "getShort",
         "(Ljava/lang/Object;J)S",
