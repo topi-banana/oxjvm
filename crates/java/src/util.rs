@@ -1507,7 +1507,7 @@ macro_rules! array_hash_code {
     };
 }
 
-const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 83] = [
+const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 84] = [
     method(
         "toString",
         "([I)Ljava/lang/String;",
@@ -1694,6 +1694,14 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 83] = [
     method("sort", "([C)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
         arrays_sort_char(vm, ref_arg(args, 0))
     }),
+    method(
+        "binarySearch",
+        "([CC)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_binary_search_char(vm, ref_arg(args, 0), crate::int_arg(args, 1) as u16)
+        },
+    ),
     method("sort", "([B)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
         arrays_sort_byte(vm, ref_arg(args, 0))
     }),
@@ -1927,6 +1935,34 @@ fn arrays_sort_short(vm: &mut Vm<'_>, array: ObjectRef) -> Result<Value, VmError
 
 fn arrays_sort_char(vm: &mut Vm<'_>, array: ObjectRef) -> Result<Value, VmError> {
     arrays_sort_primitive(vm, array, ArrayComponent::Char)
+}
+
+fn arrays_binary_search_char(
+    vm: &mut Vm<'_>,
+    array: ObjectRef,
+    key: u16,
+) -> Result<Value, VmError> {
+    if array.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let units: Vec<u16> = match vm.heap.get(array).map(|o| &o.data) {
+        Some(ObjectData::Array(ArrayData::Char(u))) => u.clone(),
+        _ => return Err(vm.throw_new("java/lang/NullPointerException", None)),
+    };
+    let mut lo: i32 = 0;
+    let mut hi: i32 = units.len() as i32 - 1;
+    while lo <= hi {
+        let mid = ((lo as usize) + (hi as usize)) / 2;
+        let v = units[mid];
+        if v == key {
+            return int(mid as i32);
+        } else if v < key {
+            lo = mid as i32 + 1;
+        } else {
+            hi = mid as i32 - 1;
+        }
+    }
+    int(!lo)
 }
 
 fn arrays_sort_byte(vm: &mut Vm<'_>, array: ObjectRef) -> Result<Value, VmError> {
