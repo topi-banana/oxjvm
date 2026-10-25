@@ -7656,3 +7656,17 @@ pub(crate) const SSL_CONTEXT: oxjvm_vm::NativeClass = class(
     &[],
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// ModuleDescriptor (shell)
+// -------------------------------------------------------------------------------------------
+
+pub(crate) const MODULE_DESCRIPTOR: oxjvm_vm::NativeClass = class(
+    "java/lang/module/ModuleDescriptor",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &[],
+    None,
+);
