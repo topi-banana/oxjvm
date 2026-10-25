@@ -79,7 +79,7 @@ fn byte_array_of(vm: &mut Vm<'_>, reference: ObjectRef) -> Result<Vec<u8>, VmErr
 // Base64
 // -------------------------------------------------------------------------------------------
 
-const BASE64_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+const BASE64_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     method(
         "getEncoder",
         "()Ljava/util/Base64$Encoder;",
@@ -109,6 +109,24 @@ const BASE64_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
     ),
     method(
         "getUrlDecoder",
+        "()Ljava/util/Base64$Decoder;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/util/Base64$Decoder")?;
+            object(vm.new_instance(class)?)
+        },
+    ),
+    method(
+        "getMimeEncoder",
+        "()Ljava/util/Base64$Encoder;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/util/Base64$Encoder")?;
+            object(vm.new_instance(class)?)
+        },
+    ),
+    method(
+        "getMimeDecoder",
         "()Ljava/util/Base64$Decoder;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _| {
