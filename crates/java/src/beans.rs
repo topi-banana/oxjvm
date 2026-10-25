@@ -1241,7 +1241,7 @@ pub(crate) const VETOABLE_CHANGE_LISTENER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PROPERTY_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const PROPERTY_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method(
         "<init>",
         "(Ljava/lang/Object;)V",
@@ -1264,6 +1264,12 @@ const PROPERTY_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         "(Ljava/beans/PropertyChangeListener;)V",
         ACC_PUBLIC,
         |vm, _, args| change_add(vm, receiver(args), ref_arg(args, 1), "listeners"),
+    ),
+    method(
+        "addPropertyChangeListener",
+        "(Ljava/lang/String;Ljava/beans/PropertyChangeListener;)V",
+        ACC_PUBLIC,
+        |vm, _, args| change_add(vm, receiver(args), ref_arg(args, 2), "listeners"),
     ),
     method(
         "removePropertyChangeListener",
@@ -1471,7 +1477,7 @@ pub(crate) const PROPERTY_CHANGE_SUPPORT: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const VETOABLE_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const VETOABLE_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     method(
         "<init>",
         "(Ljava/lang/Object;)V",
@@ -1494,6 +1500,12 @@ const VETOABLE_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         "(Ljava/beans/VetoableChangeListener;)V",
         ACC_PUBLIC,
         |vm, _, args| change_add(vm, receiver(args), ref_arg(args, 1), "listeners"),
+    ),
+    method(
+        "addVetoableChangeListener",
+        "(Ljava/lang/String;Ljava/beans/VetoableChangeListener;)V",
+        ACC_PUBLIC,
+        |vm, _, args| change_add(vm, receiver(args), ref_arg(args, 2), "listeners"),
     ),
     method(
         "removeVetoableChangeListener",
