@@ -9941,3 +9941,31 @@ pub(crate) const CURRENCY: oxjvm_vm::NativeClass = class(
     &CURRENCY_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// Calendar / GregorianCalendar (shell)
+// -------------------------------------------------------------------------------------------
+
+pub(crate) const CALENDAR: oxjvm_vm::NativeClass = class(
+    "java/util/Calendar",
+    Some("java/lang/Object"),
+    &[
+        "java/io/Serializable",
+        "java/lang/Cloneable",
+        "java/lang/Comparable",
+    ],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const GREGORIAN_CALENDAR: oxjvm_vm::NativeClass = class(
+    "java/util/GregorianCalendar",
+    Some("java/util/Calendar"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &[],
+    None,
+);
