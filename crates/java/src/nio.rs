@@ -667,7 +667,7 @@ pub(crate) fn new_path(vm: &mut Vm<'_>, path: &str) -> Result<Value, VmError> {
 // Files
 // -------------------------------------------------------------------------------------------
 
-const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
+const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
     method(
         "createDirectories",
         "(Ljava/nio/file/Path;[Ljava/nio/file/attribute/FileAttribute;)Ljava/nio/file/Path;",
@@ -1366,6 +1366,16 @@ const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
             let path = path_string(vm, ref_arg(args, 0));
             let glob = string_arg(vm, args[1])?;
             new_directory_stream(vm, &path, Some(&glob))
+        },
+    ),
+    method(
+        "newDirectoryStream",
+        "(Ljava/nio/file/Path;Ljava/nio/file/DirectoryStream$Filter;)Ljava/nio/file/DirectoryStream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            let filter = ref_arg(args, 1);
+            new_directory_stream_filtered(vm, &path, filter)
         },
     ),
     method(
@@ -2552,6 +2562,45 @@ fn new_directory_stream(vm: &mut Vm<'_>, path: &str, glob: Option<&str>) -> Resu
     for name in names {
         if glob.is_none_or(|pattern| glob_matches(pattern, &name)) {
             elements.push(new_path(vm, &join_path(path, &name))?.as_ref());
+        }
+    }
+    let class = vm.resolve_class("java/nio/file/OjvmDirectoryStream")?;
+    let stream = vm.new_instance(class)?;
+    let object_class = vm.resolve_class("java/lang/Object")?;
+    let array = vm.allocate_object_array(object_class, elements.len())?;
+    for (index, element) in elements.iter().enumerate() {
+        vm.array_set_ref(array, index, *element)?;
+    }
+    let (declaring, field) = vm.find_field(class, "elements", "[Ljava/lang/Object;")?;
+    vm.set_instance_ref(stream, declaring, field, array);
+    crate::lang::write_int_field(vm, stream, "cursor", 0);
+    object(stream)
+}
+
+fn new_directory_stream_filtered(
+    vm: &mut Vm<'_>,
+    path: &str,
+    filter: ObjectRef,
+) -> Result<Value, VmError> {
+    let names = fs_list(vm, path).unwrap_or_default();
+    let mut elements = Vec::new();
+    for name in names {
+        let entry = new_path(vm, &join_path(path, &name))?;
+        if filter.is_null() {
+            continue;
+        }
+        let (declaring, method) =
+            vm.resolve_virtual_method(filter, "accept", "(Ljava/nio/file/Path;)Z")?;
+        let accepted = vm
+            .invoke_method(
+                declaring,
+                method,
+                vec![Value::Ref(filter), Value::Ref(entry.as_ref())],
+            )?
+            .as_int()
+            != 0;
+        if accepted {
+            elements.push(entry.as_ref());
         }
     }
     let class = vm.resolve_class("java/nio/file/OjvmDirectoryStream")?;
