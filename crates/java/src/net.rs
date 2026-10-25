@@ -1288,3 +1288,187 @@ pub(crate) const URL_CONNECTION: oxjvm_vm::NativeClass = class(
     &URL_CONNECTION_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// Tier 2.1 shells: networking types not yet fully implemented
+// -------------------------------------------------------------------------------------------
+
+pub(crate) const SERVER_SOCKET: oxjvm_vm::NativeClass = class(
+    "java/net/ServerSocket",
+    Some("java/lang/Object"),
+    &["java/io/Closeable"],
+    ACC_PUBLIC,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const SOCKET: oxjvm_vm::NativeClass = class(
+    "java/net/Socket",
+    Some("java/lang/Object"),
+    &["java/io/Closeable"],
+    ACC_PUBLIC,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const SOCKET_IMPL: oxjvm_vm::NativeClass = class(
+    "java/net/SocketImpl",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const SOCKET_ADDRESS: oxjvm_vm::NativeClass = class(
+    "java/net/SocketAddress",
+    Some("java/lang/Object"),
+    &["java/io/Serializable"],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const INET_SOCKET_ADDRESS: oxjvm_vm::NativeClass = class(
+    "java/net/InetSocketAddress",
+    Some("java/net/SocketAddress"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const SOCKET_OPTION: oxjvm_vm::NativeClass = class(
+    "java/net/SocketOption",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const DATAGRAM_SOCKET: oxjvm_vm::NativeClass = class(
+    "java/net/DatagramSocket",
+    Some("java/lang/Object"),
+    &["java/io/Closeable"],
+    ACC_PUBLIC,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const DATAGRAM_PACKET: oxjvm_vm::NativeClass = class(
+    "java/net/DatagramPacket",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const MULTICAST_SOCKET: oxjvm_vm::NativeClass = class(
+    "java/net/MulticastSocket",
+    Some("java/net/DatagramSocket"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const URL_CLASS_LOADER: oxjvm_vm::NativeClass = class(
+    "java/net/URLClassLoader",
+    Some("java/lang/ClassLoader"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const AUTHENTICATOR: oxjvm_vm::NativeClass = class(
+    "java/net/Authenticator",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const PROXY_SELECTOR: oxjvm_vm::NativeClass = class(
+    "java/net/ProxySelector",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const COOKIE_HANDLER: oxjvm_vm::NativeClass = class(
+    "java/net/CookieHandler",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const HTTP_URL_CONNECTION: oxjvm_vm::NativeClass = class(
+    "java/net/HttpURLConnection",
+    Some("java/net/URLConnection"),
+    &[],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const SOCKET_PERMISSION: oxjvm_vm::NativeClass = class(
+    "java/net/SocketPermission",
+    Some("java/security/Permission"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const URL_PERMISSION: oxjvm_vm::NativeClass = class(
+    "java/net/URLPermission",
+    Some("java/security/Permission"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const PROXY: oxjvm_vm::NativeClass = class(
+    "java/net/Proxy",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const INET6_ADDRESS: oxjvm_vm::NativeClass = class(
+    "java/net/Inet6Address",
+    Some("java/net/InetAddress"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &[],
+    None,
+);

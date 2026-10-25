@@ -34,6 +34,7 @@ pub(crate) mod lang;
 pub(crate) mod locale;
 pub(crate) mod logging;
 pub(crate) mod math;
+pub(crate) mod management;
 pub(crate) mod net;
 pub(crate) mod nio;
 pub(crate) mod optional;
@@ -43,6 +44,7 @@ pub(crate) mod process_handle;
 pub(crate) mod reference;
 pub(crate) mod reflect;
 pub(crate) mod regex;
+pub(crate) mod security;
 pub(crate) mod serialization;
 pub(crate) mod service_loader;
 pub(crate) mod stack;
@@ -135,7 +137,7 @@ pub fn is_non_writable_property(key: &str) -> bool {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 550] = [
+static REGISTRY: [NativeClass; 647] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -400,8 +402,108 @@ static REGISTRY: [NativeClass; 550] = [
     net::NETWORK_INTERFACE,
     net::URL_ENCODER,
     net::URL_DECODER,
+    // Tier 2.1 (java.net shells)
+    net::SERVER_SOCKET,
+    net::SOCKET,
+    net::SOCKET_IMPL,
+    net::SOCKET_ADDRESS,
+    net::INET_SOCKET_ADDRESS,
+    net::SOCKET_OPTION,
+    net::DATAGRAM_SOCKET,
+    net::DATAGRAM_PACKET,
+    net::MULTICAST_SOCKET,
+    net::URL_CLASS_LOADER,
+    net::AUTHENTICATOR,
+    net::PROXY_SELECTOR,
+    net::COOKIE_HANDLER,
+    net::HTTP_URL_CONNECTION,
+    net::SOCKET_PERMISSION,
+    net::URL_PERMISSION,
+    net::PROXY,
+    net::INET6_ADDRESS,
     beans::FEATURE_DESCRIPTOR,
     beans::EXCEPTION_LISTENER,
+    // Tier 2.2 (java.security shells)
+    security::SECURITY,
+    security::PROVIDER,
+    security::KEY,
+    security::PUBLIC_KEY,
+    security::PRIVATE_KEY,
+    security::KEY_PAIR,
+    security::KEY_STORE,
+    security::SECURE_RANDOM,
+    security::KEY_PAIR_GENERATOR,
+    security::KEY_PAIR_GENERATOR_SPI,
+    security::CERTIFICATE_FACTORY,
+    security::CERTIFICATE,
+    security::CERTIFICATE_ENCODING_EXCEPTION,
+    security::X509_CERTIFICATE,
+    security::ACCESS_CONTROLLER,
+    security::PERMISSION,
+    security::BASIC_PERMISSION,
+    security::PERMISSION_COLLECTION,
+    security::PERMISSIONS,
+    security::POLICY,
+    security::CODE_SOURCE,
+    security::PROTECTION_DOMAIN,
+    security::SECURE_CLASS_LOADER,
+    // Tier 2.3 (java.lang.management shells)
+    management::MANAGEMENT_FACTORY,
+    management::MX_BEAN,
+    management::MEMORY_MX_BEAN,
+    management::THREAD_MX_BEAN,
+    management::RUNTIME_MX_BEAN,
+    management::OPERATING_SYSTEM_MX_BEAN,
+    management::CLASS_LOADING_MX_BEAN,
+    management::COMPILATION_MX_BEAN,
+    management::GARBAGE_COLLECTOR_MX_BEAN,
+    management::MEMORY_MANAGER_MX_BEAN,
+    management::MEMORY_POOL_MX_BEAN,
+    management::BUFFER_POOL_MX_BEAN,
+    management::PLATFORM_LOGGING_MX_BEAN,
+    management::PLATFORM_MANAGED_OBJECT,
+    management::MEMORY_USAGE,
+    management::MEMORY_TYPE,
+    management::MEMORY_NOTIFICATION_INFO,
+    management::COMPOSITE_DATA,
+    management::COMPOSITE_TYPE,
+    management::OPEN_TYPE,
+    management::SIMPLE_TYPE,
+    management::TABULAR_TYPE,
+    management::TABULAR_DATA,
+    management::TABULAR_DATA_SUPPORT,
+    management::MBEAN_SERVER,
+    management::MBEAN_SERVER_FACTORY,
+    management::OBJECT_NAME,
+    management::MBEAN_INFO,
+    management::MBEAN_ATTRIBUTE_INFO,
+    management::MBEAN_FEATURE_INFO,
+    management::MBEAN_OPERATION_INFO,
+    management::MBEAN_PARAMETER_INFO,
+    management::OBJECT_INSTANCE,
+    management::ATTRIBUTE,
+    management::ATTRIBUTE_LIST,
+    management::STANDARD_MBEAN,
+    management::DYNAMIC_MBEAN,
+    management::MBEAN_REGISTRATION,
+    management::INTROSPECTION_EXCEPTION,
+    management::MALFORMED_OBJECT_NAME_EXCEPTION,
+    management::INSTANCE_NOT_FOUND_EXCEPTION,
+    management::OPERATIONS_EXCEPTION,
+    management::JM_EXCEPTION,
+    management::REFLECTION_EXCEPTION,
+    management::MBEAN_EXCEPTION,
+    management::NOT_COMPREHENSIBLE_EXCEPTION,
+    management::MONITOR,
+    management::NOTIFICATION_BROADCASTER,
+    management::NOTIFICATION_EMITTER,
+    management::NOTIFICATION,
+    management::NOTIFICATION_BROADCASTER_SUPPORT,
+    management::DESCRIPTOR,
+    management::DESCRIPTOR_READ,
+    management::DESCRIPTOR_SUPPORT,
+    management::IMMUTABLE_DESCRIPTOR,
+    management::MXBEAN_TYPE,
     annotation::ELEMENT_TYPE,
     annotation::RETENTION_POLICY,
     annotation::RETENTION,
