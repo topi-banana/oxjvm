@@ -1398,7 +1398,7 @@ pub(crate) const CLASS: oxjvm_vm::NativeClass = class(
 // String
 // -------------------------------------------------------------------------------------------
 
-const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
+const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "<init>",
@@ -1423,6 +1423,12 @@ const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
                 .is_some_and(<[u16]>::is_empty),
         )
     }),
+    method(
+        "lines",
+        "()Ljava/util/stream/Stream;",
+        ACC_PUBLIC,
+        string_lines,
+    ),
     method("charAt", "()C", ACC_PUBLIC, string_char_at),
     method("charAt", "(I)C", ACC_PUBLIC, string_char_at_index),
     method("codePointAt", "(I)I", ACC_PUBLIC, string_code_point_at),
@@ -1928,6 +1934,41 @@ fn char_array(vm: &mut Vm<'_>, reference: ObjectRef) -> Result<Vec<u16>, VmError
         Some(oxjvm_vm::ObjectData::Array(oxjvm_vm::ArrayData::Char(units))) => Ok(units.clone()),
         _ => Err(vm.throw_new("java/lang/NullPointerException", None)),
     }
+}
+
+fn string_lines(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let text = vm.string_or_empty(receiver(args));
+    let chars: Vec<char> = text.chars().collect();
+    let mut lines: Vec<ObjectRef> = Vec::new();
+    let mut current = String::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\n' {
+            lines.push(vm.make_string(&current)?);
+            current.clear();
+            i += 1;
+        } else if c == '\r' {
+            lines.push(vm.make_string(&current)?);
+            current.clear();
+            if i + 1 < chars.len() && chars[i + 1] == '\n' {
+                i += 2;
+            } else {
+                i += 1;
+            }
+        } else {
+            current.push(c);
+            i += 1;
+        }
+    }
+    if !current.is_empty() {
+        lines.push(vm.make_string(&current)?);
+    }
+    object(crate::stream::stream_from(vm, lines)?)
 }
 
 fn string_init_bytes(
