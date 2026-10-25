@@ -21,7 +21,7 @@ use oxjvm_classfile::{
 
 use crate::class::{
     ArrayComponent, Class, ClassId, ClassKind, ClassState, Code, Field, Handler, Method,
-    NativeClass, NativeConstant,
+    NativeClass, NativeConstant, NativeContext,
 };
 use crate::error::VmError;
 use crate::heap::{MethodHandleValue, ObjectData};
@@ -99,82 +99,11 @@ impl ResolvedMethod {
 /// harmless no-ops returning the default value for their return type.  This
 /// keeps the `registerNatives()` static initializer from throwing an
 /// `AbstractMethodError`, which is what blocked the 542 hotspot tests.
-fn whitebox_stub_int(
-    _vm: &mut crate::Vm<'_>,
-    _ctx: crate::class::NativeContext,
-    _args: &[crate::value::Value],
-) -> Result<crate::value::Value, crate::error::VmError> {
-    Ok(crate::value::Value::Int(0))
-}
-fn whitebox_stub_long(
-    _vm: &mut crate::Vm<'_>,
-    _ctx: crate::class::NativeContext,
-    _args: &[crate::value::Value],
-) -> Result<crate::value::Value, crate::error::VmError> {
-    Ok(crate::value::Value::Long(0))
-}
-fn whitebox_stub_float(
-    _vm: &mut crate::Vm<'_>,
-    _ctx: crate::class::NativeContext,
-    _args: &[crate::value::Value],
-) -> Result<crate::value::Value, crate::error::VmError> {
-    Ok(crate::value::Value::Float(0.0))
-}
-fn whitebox_stub_double(
-    _vm: &mut crate::Vm<'_>,
-    _ctx: crate::class::NativeContext,
-    _args: &[crate::value::Value],
-) -> Result<crate::value::Value, crate::error::VmError> {
-    Ok(crate::value::Value::Double(0.0))
-}
-fn whitebox_stub_ref(
-    _vm: &mut crate::Vm<'_>,
-    _ctx: crate::class::NativeContext,
-    _args: &[crate::value::Value],
-) -> Result<crate::value::Value, crate::error::VmError> {
-    Ok(crate::value::Value::Ref(crate::value::ObjectRef::NULL))
-}
-
-/// Pick a (compiled-in) Rust implementation for a WhiteBox native method.
-///
-/// `fullGC`/`youngGC` trigger a collection; `forceSafepoint` is a no-op that
-/// just runs GC; `getObjectSize`/`getHeapOopSize`/... return best-effort values.
-/// Everything else falls back to a type-shaped no-op stub so the class
-/// initialiser can complete.
-fn whitebox_native(name: &str, descriptor: &str) -> crate::NativeFn {
-    use crate::{
-        NativeFn, Vm, class::NativeContext, error::VmError, value::ObjectRef, value::Value,
-    };
-    // Specific, slightly less stubby implementations for the hot methods.
-    match name {
-        "fullGC" => return whitebox_full_gc,
-        "youngGC" => return whitebox_young_gc,
-        "forceSafepoint" => return whitebox_force_safepoint,
-        "getVMPageSize" => return whitebox_get_vm_page_size,
-        "getHeapOopSize" => return whitebox_get_heap_oop_size,
-        "getObjectSize0" => return whitebox_get_object_size,
-        "isObjectInOldGen0" => return whitebox_is_object_in_old_gen,
-        _ => {}
-    }
-    // Generic return-type-shaped stub.
-    let ret = descriptor.rsplit(')').next().unwrap_or("_");
-    let ret = ret.chars().next().unwrap_or('_');
-    match ret {
-        'V' => whitebox_stub_void,
-        'Z' | 'B' | 'C' | 'S' | 'I' => whitebox_stub_int,
-        'J' => whitebox_stub_long,
-        'F' => whitebox_stub_float,
-        'D' => whitebox_stub_double,
-        'L' | '[' => whitebox_stub_ref,
-        _ => whitebox_stub_int,
-    }
-}
-
 fn whitebox_dispatch(
-    vm: &mut crate::Vm<'_>,
-    ctx: crate::class::NativeContext,
-    args: &[crate::value::Value],
-) -> Result<crate::value::Value, crate::error::VmError> {
+    vm: &mut Vm<'_>,
+    ctx: NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
     let class = vm.classes.get(ctx.class);
     let mname = class.methods[ctx.method as usize].name.clone();
     let desc = class.methods[ctx.method as usize].descriptor.clone();
@@ -188,7 +117,7 @@ fn whitebox_dispatch(
         "getObjectSize0" => whitebox_get_object_size(vm, ctx, args),
         "countAliveClasses0" => {
             let internal = match args.get(1) {
-                Some(crate::value::Value::Ref(r)) if *r != crate::value::ObjectRef::NULL => {
+                Some(Value::Ref(r)) if *r != ObjectRef::NULL => {
                     vm.string_value(*r).unwrap_or_default().replace('.', "/")
                 }
                 _ => String::new(),
@@ -199,7 +128,7 @@ fn whitebox_dispatch(
                 .iter()
                 .filter(|c| c.name == internal)
                 .count() as i32;
-            return Ok(crate::value::Value::Int(n));
+            Ok(Value::Int(n))
         }
         _ => {
             let retc = desc
@@ -210,88 +139,74 @@ fn whitebox_dispatch(
                 .next()
                 .unwrap_or('_');
             match retc {
-                'V' => Ok(crate::value::Value::Int(0)),
-                'Z' | 'B' | 'C' | 'S' | 'I' => Ok(crate::value::Value::Int(0)),
-                'J' => Ok(crate::value::Value::Long(0)),
-                'F' => Ok(crate::value::Value::Float(0.0)),
-                'D' => Ok(crate::value::Value::Double(0.0)),
-                'L' | '[' => Ok(crate::value::Value::Ref(crate::value::ObjectRef::NULL)),
-                _ => Ok(crate::value::Value::Int(0)),
+                'V' => Ok(Value::Int(0)),
+                'Z' | 'B' | 'C' | 'S' | 'I' => Ok(Value::Int(0)),
+                'J' => Ok(Value::Long(0)),
+                'F' => Ok(Value::Float(0.0)),
+                'D' => Ok(Value::Double(0.0)),
+                'L' | '[' => Ok(Value::Ref(ObjectRef::NULL)),
+                _ => Ok(Value::Int(0)),
             }
         }
     }
 }
 
 fn whitebox_full_gc(
-    vm: &mut crate::Vm<'_>,
-    _ctx: crate::class::NativeContext,
-    _args: &[crate::value::Value],
-) -> Result<crate::value::Value, crate::error::VmError> {
+    vm: &mut Vm<'_>,
+    _ctx: NativeContext,
+    _args: &[Value],
+) -> Result<Value, VmError> {
     vm.gc();
-    Ok(crate::value::Value::Int(0))
+    Ok(Value::Int(0))
 }
 fn whitebox_young_gc(
-    vm: &mut crate::Vm<'_>,
-    _ctx: crate::class::NativeContext,
-    _args: &[crate::value::Value],
-) -> Result<crate::value::Value, crate::error::VmError> {
+    vm: &mut Vm<'_>,
+    _ctx: NativeContext,
+    _args: &[Value],
+) -> Result<Value, VmError> {
     vm.gc();
-    Ok(crate::value::Value::Int(0))
+    Ok(Value::Int(0))
 }
 fn whitebox_force_safepoint(
-    vm: &mut crate::Vm<'_>,
-    _ctx: crate::class::NativeContext,
-    _args: &[crate::value::Value],
-) -> Result<crate::value::Value, crate::error::VmError> {
+    vm: &mut Vm<'_>,
+    _ctx: NativeContext,
+    _args: &[Value],
+) -> Result<Value, VmError> {
     vm.gc();
-    Ok(crate::value::Value::Int(0))
+    Ok(Value::Int(0))
 }
 fn whitebox_get_vm_page_size(
-    _vm: &mut crate::Vm<'_>,
-    _ctx: crate::class::NativeContext,
-    _args: &[crate::value::Value],
-) -> Result<crate::value::Value, crate::error::VmError> {
-    Ok(crate::value::Value::Int(4096))
+    _vm: &mut Vm<'_>,
+    _ctx: NativeContext,
+    _args: &[Value],
+) -> Result<Value, VmError> {
+    Ok(Value::Int(4096))
 }
 fn whitebox_get_heap_oop_size(
-    _vm: &mut crate::Vm<'_>,
-    _ctx: crate::class::NativeContext,
-    _args: &[crate::value::Value],
-) -> Result<crate::value::Value, crate::error::VmError> {
-    Ok(crate::value::Value::Int(4))
+    _vm: &mut Vm<'_>,
+    _ctx: NativeContext,
+    _args: &[Value],
+) -> Result<Value, VmError> {
+    Ok(Value::Int(4))
 }
 fn whitebox_get_object_size(
-    vm: &mut crate::Vm<'_>,
-    _ctx: crate::class::NativeContext,
-    args: &[crate::value::Value],
-) -> Result<crate::value::Value, crate::error::VmError> {
+    vm: &mut Vm<'_>,
+    _ctx: NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
     let obj = match args.get(1) {
-        Some(crate::value::Value::Ref(r)) => *r,
-        _ => return Ok(crate::value::Value::Long(0)),
+        Some(Value::Ref(r)) => *r,
+        _ => return Ok(Value::Long(0)),
     };
-    if obj == crate::value::ObjectRef::NULL {
-        return Ok(crate::value::Value::Long(0));
+    if obj == ObjectRef::NULL {
+        return Ok(Value::Long(0));
     }
     let size = vm
         .heap
         .get(obj)
         .map(|o| o.data.object_size() as i64)
         .unwrap_or(0);
-    Ok(crate::value::Value::Long(size))
-}
-fn whitebox_is_object_in_old_gen(
-    _vm: &mut crate::Vm<'_>,
-    _ctx: crate::class::NativeContext,
-    _args: &[crate::value::Value],
-) -> Result<crate::value::Value, crate::error::VmError> {
-    Ok(crate::value::Value::Int(0))
-}
-fn whitebox_stub_void(
-    _vm: &mut crate::Vm<'_>,
-    _ctx: crate::class::NativeContext,
-    _args: &[crate::value::Value],
-) -> Result<crate::value::Value, crate::error::VmError> {
-    Ok(crate::value::Value::Int(0))
+    Ok(Value::Long(size))
 }
 
 impl<'a> Vm<'a> {
@@ -2195,7 +2110,7 @@ impl<'a> Vm<'a> {
 /// A lambda constructor: store captured arguments into their fields.
 fn lambda_constructor_native(
     vm: &mut Vm<'_>,
-    _context: crate::class::NativeContext,
+    _context: NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
     let receiver = args[0].as_ref();
@@ -2222,7 +2137,7 @@ fn lambda_constructor_native(
 /// A lambda SAM body: capture the receiver plus invocation arguments, then invoke the target.
 fn lambda_invoke_native(
     vm: &mut Vm<'_>,
-    _context: crate::class::NativeContext,
+    _context: NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
     let receiver = args[0].as_ref();
