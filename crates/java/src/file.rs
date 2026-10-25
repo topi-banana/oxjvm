@@ -487,10 +487,17 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
     }),
     method("toURI", "()Ljava/net/URI;", ACC_PUBLIC, |vm, _, args| {
         let path = file_path(vm, receiver(args));
+        let is_dir = vm
+            .host
+            .filesystem()
+            .and_then(|fs| fs.metadata(&path))
+            .map(|m| m.kind == oxjvm_platform::FileKind::Directory)
+            .unwrap_or(false);
+        let suffix = if is_dir { "/" } else { "" };
         let text = if path.starts_with('/') {
-            alloc::format!("file:{path}")
+            alloc::format!("file:{path}{suffix}")
         } else {
-            alloc::format!("file:/{path}")
+            alloc::format!("file:/{path}{suffix}")
         };
         crate::uri::new_uri(vm, &text)
     }),

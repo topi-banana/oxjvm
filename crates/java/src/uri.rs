@@ -54,7 +54,7 @@ fn uri_init(
     void()
 }
 
-const URI_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const URI_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method("<init>", "(Ljava/lang/String;)V", ACC_PUBLIC, uri_init),
     method(
         "create",
@@ -167,6 +167,26 @@ const URI_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         }
         object(crate::net::new_url(vm, &text)?)
     }),
+    method(
+        "relativize",
+        "(Ljava/net/URI;)Ljava/net/URI;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let base = uri_text(vm, receiver(args));
+            let other = uri_text(vm, ref_arg(args, 1));
+            let suffix = if !base.is_empty() && other.starts_with(&base) {
+                alloc::string::String::from(&other[base.len()..])
+            } else {
+                other.clone()
+            };
+            let class = vm.resolve_class("java/net/URI")?;
+            let instance = vm.new_instance(class)?;
+            let text = vm.make_string(&suffix)?;
+            let (declaring, field) = vm.find_field(class, "string", "Ljava/lang/String;")?;
+            vm.set_instance_ref(instance, declaring, field, text);
+            object(instance)
+        },
+    ),
 ];
 
 pub(crate) const URI: oxjvm_vm::NativeClass = class(

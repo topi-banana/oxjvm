@@ -49,6 +49,37 @@ const SOURCE_VERSIONS: [&str; 28] = [
 // javax.lang.model.SourceVersion
 // --------------------------------------------------------------------------
 
+pub(crate) const JAVA_FILE_MANAGER_LOCATION: oxjvm_vm::NativeClass = class(
+    "javax/tools/JavaFileManager$Location",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &JAVA_FILE_MANAGER_LOCATION_METHODS,
+    None,
+);
+
+const JAVA_FILE_MANAGER_LOCATION_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method(
+        "getName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "isOutputLocation",
+        "()Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "iterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
 pub(crate) const SOURCE_VERSION: oxjvm_vm::NativeClass = class(
     "javax/lang/model/SourceVersion",
     Some("java/lang/Enum"),
@@ -747,12 +778,13 @@ pub(crate) const SIMPLE_JAVA_FILE_OBJECT: oxjvm_vm::NativeClass = class(
             ACC_PROTECTED,
             None,
         ),
+        field("content", "Ljava/lang/String;", ACC_PROTECTED, None),
     ],
     &SIMPLE_JAVA_FILE_OBJECT_METHODS,
     None,
 );
 
-const SIMPLE_JAVA_FILE_OBJECT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const SIMPLE_JAVA_FILE_OBJECT_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method(
         "<init>",
         "(Ljava/net/URI;Ljavax/tools/JavaFileObject$Kind;)V",
@@ -780,7 +812,6 @@ const SIMPLE_JAVA_FILE_OBJECT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         |vm, _, args| {
             let this = receiver(args);
             let class = vm.class_of(this);
-            let (d, f) = vm.find_field(class, "kind", "Ljavax/tools/JavaFileObject$Kind;")?;
             object(
                 vm.read_ref_field(this, class, "kind", "Ljavax/tools/JavaFileObject$Kind;")
                     .unwrap_or(ObjectRef::NULL),
@@ -830,7 +861,39 @@ const SIMPLE_JAVA_FILE_OBJECT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "getCharContent",
         "(Z)Ljava/lang/CharSequence;",
         ACC_PUBLIC,
-        |vm, _, _args| object(vm.make_string("")?),
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let content = vm
+                .read_ref_field(this, class, "content", "Ljava/lang/String;")
+                .unwrap_or(ObjectRef::NULL);
+            if !content.is_null() {
+                return object(content);
+            }
+            // file-backed object: read contents from uri if present
+            let uri_ref = vm
+                .read_ref_field(this, class, "uri", "Ljava/net/URI;")
+                .unwrap_or(ObjectRef::NULL);
+            if uri_ref.is_null() {
+                return object(vm.make_string("")?);
+            }
+            let uri_text = vm
+                .read_string_field(uri_ref, vm.class_of(uri_ref), "string")
+                .unwrap_or_default();
+            // strip scheme
+            let path = if let Some(idx) = uri_text.find(':') {
+                &uri_text[idx + 1..]
+            } else {
+                uri_text.as_str()
+            };
+            let bytes = vm
+                .host
+                .filesystem()
+                .and_then(|fs| fs.read(path))
+                .unwrap_or_default();
+            let text = String::from_utf8_lossy(&bytes).into_owned();
+            object(vm.make_string(&text)?)
+        },
     ),
     method(
         "openInputStream",
@@ -855,6 +918,43 @@ const SIMPLE_JAVA_FILE_OBJECT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "()Ljava/io/Writer;",
         ACC_PUBLIC,
         |vm, _, _args| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method(
+        "getNestingKind",
+        "()Ljavax/lang/model/element/NestingKind;",
+        ACC_PUBLIC,
+        |_vm, _, _args| object(ObjectRef::NULL),
+    ),
+    method(
+        "getAccessLevel",
+        "()Ljavax/lang/model/element/Modifier;",
+        ACC_PUBLIC,
+        |_vm, _, _args| object(ObjectRef::NULL),
+    ),
+    method(
+        "forSource",
+        "(Ljava/net/URI;Ljava/lang/String;)Ljavax/tools/JavaFileObject;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let uri = ref_arg(args, 0);
+            let text = ref_arg(args, 1);
+            let sv = vm.resolve_class("javax/tools/SimpleJavaFileObject")?;
+            let instance = vm.new_instance(sv)?;
+            let (d, f) = vm.find_field(sv, "uri", "Ljava/net/URI;")?;
+            vm.set_instance_ref(instance, d, f, uri);
+            let kind_class = vm.resolve_class("javax/tools/JavaFileObject$Kind")?;
+            vm.ensure_initialized(kind_class)?;
+            let kind_ref = vm
+                .read_static_ref(kind_class, "SOURCE", "Ljavax/tools/JavaFileObject$Kind;")
+                .ok_or_else(|| VmError::internal("no SOURCE"))?;
+            let (d2, f2) = vm.find_field(sv, "kind", "Ljavax/tools/JavaFileObject$Kind;")?;
+            vm.set_instance_ref(instance, d2, f2, kind_ref);
+            if !text.is_null() {
+                let (d3, f3) = vm.find_field(sv, "content", "Ljava/lang/String;")?;
+                vm.set_instance_ref(instance, d3, f3, text);
+            }
+            object(instance)
+        },
     ),
 ];
 // Note: SimpleJavaFileObject needs uri/kind fields populated by subclass constructors.
@@ -903,15 +1003,99 @@ pub(crate) const TOOL: oxjvm_vm::NativeClass = class(
     None,
 );
 
+const FILE_OBJECT_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+    method(
+        "toUri",
+        "()Ljava/net/URI;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "openInputStream",
+        "()Ljava/io/InputStream;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "openOutputStream",
+        "()Ljava/io/OutputStream;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "openReader",
+        "(Z)Ljava/io/Reader;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getCharContent",
+        "(Z)Ljava/lang/CharSequence;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "openWriter",
+        "()Ljava/io/Writer;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getLastModified",
+        "()J",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "delete",
+        "()Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
 pub(crate) const FILE_OBJECT: oxjvm_vm::NativeClass = class(
     "javax/tools/FileObject",
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
     &[],
-    &[],
+    &FILE_OBJECT_METHODS,
     None,
 );
+
+const JAVA_FILE_OBJECT_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "getKind",
+        "()Ljavax/tools/JavaFileObject$Kind;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "isNameCompatible",
+        "(Ljava/lang/String;Ljavax/tools/JavaFileObject$Kind;)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getNestingKind",
+        "()Ljavax/lang/model/element/NestingKind;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getAccessLevel",
+        "()Ljavax/lang/model/element/Modifier;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
 
 pub(crate) const JAVA_FILE_OBJECT: oxjvm_vm::NativeClass = class(
     "javax/tools/JavaFileObject",
@@ -919,7 +1103,7 @@ pub(crate) const JAVA_FILE_OBJECT: oxjvm_vm::NativeClass = class(
     &["javax/tools/FileObject"],
     ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
     &[],
-    &[],
+    &JAVA_FILE_OBJECT_METHODS,
     None,
 );
 
@@ -933,13 +1117,40 @@ pub(crate) const JAVA_FILE_MANAGER: oxjvm_vm::NativeClass = class(
     None,
 );
 
+const STANDARD_JAVA_FILE_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "setLocation",
+        "(Ljavax/tools/JavaFileManager$Location;Ljava/lang/Iterable;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getLocation",
+        "(Ljavax/tools/JavaFileManager$Location;)Ljava/lang/Iterable;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getJavaFileObjects",
+        "([Ljava/io/File;)Ljava/lang/Iterable;",
+        ACC_PUBLIC | ACC_ABSTRACT | ACC_VARARGS,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "close",
+        "()V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
 pub(crate) const STANDARD_JAVA_FILE_MANAGER: oxjvm_vm::NativeClass = class(
     "javax/tools/StandardJavaFileManager",
     Some("java/lang/Object"),
     &["javax/tools/JavaFileManager"],
     ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
     &[],
-    &[],
+    &STANDARD_JAVA_FILE_MANAGER_METHODS,
     None,
 );
 
@@ -953,13 +1164,28 @@ pub(crate) const JAVA_COMPILER: oxjvm_vm::NativeClass = class(
     None,
 );
 
+const DOCUMENTATION_TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "getStandardFileManager",
+        "(Ljavax/tools/DiagnosticListener;Ljava/util/Locale;Ljava/nio/charset/Charset;)Ljavax/tools/StandardJavaFileManager;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getTask",
+        "(Ljava/io/Writer;Ljavax/tools/JavaFileManager;Ljavax/tools/DiagnosticListener;Ljava/lang/Class;Ljava/lang/Iterable;Ljava/lang/Iterable;)Ljavax/tools/DocumentationTool$DocumentationTask;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
 pub(crate) const DOCUMENTATION_TOOL: oxjvm_vm::NativeClass = class(
     "javax/tools/DocumentationTool",
     Some("java/lang/Object"),
     &["javax/tools/Tool", "javax/tools/OptionChecker"],
     ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
     &[],
-    &[],
+    &DOCUMENTATION_TOOL_METHODS,
     None,
 );
 
@@ -983,13 +1209,20 @@ pub(crate) const DIAGNOSTIC_LISTENER: oxjvm_vm::NativeClass = class(
     None,
 );
 
+const OPTION_CHECKER_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "isSupportedOption",
+    "(Ljava/lang/String;)I",
+    ACC_PUBLIC | ACC_ABSTRACT,
+    crate::lang::abstract_method_pub,
+)];
+
 pub(crate) const OPTION_CHECKER: oxjvm_vm::NativeClass = class(
     "javax/tools/OptionChecker",
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
     &[],
-    &[],
+    &OPTION_CHECKER_METHODS,
     None,
 );
 
@@ -1033,13 +1266,20 @@ pub(crate) const JAVA_COMPILER_COMPILATION_TASK: oxjvm_vm::NativeClass = class(
     None,
 );
 
+const DOCUMENTATION_TOOL_DOCUMENTATION_TASK_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "call",
+    "()Ljava/lang/Boolean;",
+    ACC_PUBLIC | ACC_ABSTRACT,
+    crate::lang::abstract_method_pub,
+)];
+
 pub(crate) const DOCUMENTATION_TOOL_DOCUMENTATION_TASK: oxjvm_vm::NativeClass = class(
     "javax/tools/DocumentationTool$DocumentationTask",
     Some("java/lang/Object"),
     &["java/util/concurrent/Callable"],
     ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
     &[],
-    &[],
+    &DOCUMENTATION_TOOL_DOCUMENTATION_TASK_METHODS,
     None,
 );
 
@@ -1316,7 +1556,7 @@ pub(crate) const JAVADOC_TOOL: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const JAVADOC_TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+const JAVADOC_TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     method(
         "instance",
         "()Ljdk/javadoc/internal/api/JavadocTool;",
@@ -1381,4 +1621,523 @@ const JAVADOC_TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         ACC_PUBLIC,
         |_vm, _, _args| boolean(false),
     ),
+    method(
+        "getStandardFileManager",
+        "(Ljavax/tools/DiagnosticListener;Ljava/util/Locale;Ljava/nio/charset/Charset;)Ljavax/tools/StandardJavaFileManager;",
+        ACC_PUBLIC,
+        |vm, _, _args| {
+            let class = vm.resolve_class("com/sun/tools/javac/file/JavacFileManager")?;
+            let instance = vm.new_instance(class)?;
+            // init
+            let (c, m) = vm
+                .find_method(class, "<init>", "()V")
+                .ok_or_else(|| VmError::internal("no ctor"))?;
+            vm.invoke_method(c, m, vec![Value::Ref(instance)])?;
+            object(instance)
+        },
+    ),
+    method(
+        "getTask",
+        "(Ljava/io/Writer;Ljavax/tools/JavaFileManager;Ljavax/tools/DiagnosticListener;Ljava/lang/Class;Ljava/lang/Iterable;Ljava/lang/Iterable;)Ljavax/tools/DocumentationTool$DocumentationTask;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let writer_ref = ref_arg(args, 1);
+            let file_manager = ref_arg(args, 2);
+            let diagnostic_listener = ref_arg(args, 3);
+            let doclet = ref_arg(args, 4);
+            let options_ref = ref_arg(args, 5);
+            let files_ref = ref_arg(args, 6);
+            if !options_ref.is_null() {
+                let elems = crate::util::collection_elements(vm, options_ref)?;
+                for elem in elems {
+                    if elem.is_null() {
+                        return Err(vm.throw_new("java/lang/NullPointerException", None));
+                    }
+                }
+            }
+            // validate source file kinds
+            if !files_ref.is_null() {
+                let elems = crate::util::collection_elements(vm, files_ref)?;
+                for elem in elems {
+                    if elem.is_null() {
+                        return Err(vm.throw_new("java/lang/NullPointerException", None));
+                    }
+                    // reject non-source files
+                    let source_kind = {
+                        let kind_class = vm.resolve_class("javax/tools/JavaFileObject$Kind")?;
+                        vm.ensure_initialized(kind_class)?;
+                        vm.read_static_ref_if_set(
+                            kind_class,
+                            "SOURCE",
+                            "Ljavax/tools/JavaFileObject$Kind;",
+                        )
+                    };
+                    if let Some(source_kind_ref) = source_kind {
+                        let elem_kind = if let Ok((c, m)) = vm.resolve_virtual_method(
+                            elem,
+                            "getKind",
+                            "()Ljavax/tools/JavaFileObject$Kind;",
+                        ) {
+                            vm.invoke_method(c, m, vec![Value::Ref(elem)])
+                                .ok()
+                                .map(|v| v.as_ref())
+                        } else {
+                            None
+                        };
+                        if let Some(kind_ref) = elem_kind {
+                            if kind_ref.raw() != source_kind_ref.raw() {
+                                return Err(vm.throw_new(
+                                    "java/lang/IllegalArgumentException",
+                                    Some("bad file"),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            let class = vm.resolve_class("jdk/javadoc/internal/api/JavadocTaskImpl")?;
+            let instance = vm.new_instance(class)?;
+            let (c, m) = vm
+                .find_method(class, "<init>", "()V")
+                .ok_or_else(|| VmError::internal("no ctor"))?;
+            vm.invoke_method(c, m, vec![Value::Ref(instance)])?;
+            // set fields
+            // simpler sequential:
+            if writer_ref.is_null() {
+            } else {
+                let (d, f) = vm.find_field(vm.class_of(instance), "writer", "Ljava/io/Writer;")?;
+                vm.set_instance_ref(instance, d, f, writer_ref);
+            }
+            {
+                let (d, f) =
+                    vm.find_field(vm.class_of(instance), "fileManager", "Ljava/lang/Object;")?;
+                vm.set_instance_ref(instance, d, f, file_manager);
+            }
+            {
+                let (d, f) = vm.find_field(
+                    vm.class_of(instance),
+                    "diagnosticListener",
+                    "Ljava/lang/Object;",
+                )?;
+                vm.set_instance_ref(instance, d, f, diagnostic_listener);
+            }
+            if !doclet.is_null() {
+                let (d, f) = vm.find_field(vm.class_of(instance), "doclet", "Ljava/lang/Class;")?;
+                vm.set_instance_ref(instance, d, f, doclet);
+            }
+            {
+                let (d, f) =
+                    vm.find_field(vm.class_of(instance), "options", "Ljava/lang/Object;")?;
+                vm.set_instance_ref(instance, d, f, options_ref);
+            }
+            {
+                let (d, f) = vm.find_field(vm.class_of(instance), "files", "Ljava/lang/Object;")?;
+                vm.set_instance_ref(instance, d, f, files_ref);
+            }
+            object(instance)
+        },
+    ),
 ];
+
+// --------------------------------------------------------------------------
+// com.sun.tools.javac.file.JavacFileManager (a concrete StandardJavaFileManager)
+// -------------------------------------------------------------------------- (a concrete StandardJavaFileManager)
+// --------------------------------------------------------------------------
+
+pub(crate) const JAVAC_FILE_MANAGER: oxjvm_vm::NativeClass = class(
+    "com/sun/tools/javac/file/JavacFileManager",
+    Some("java/lang/Object"),
+    &["javax/tools/StandardJavaFileManager"],
+    ACC_PUBLIC,
+    &[field("output", "Ljava/io/File;", ACC_PRIVATE, None)],
+    &JAVAC_FILE_MANAGER_METHODS,
+    None,
+);
+
+const JAVAC_FILE_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "setLocation",
+        "(Ljavax/tools/JavaFileManager$Location;Ljava/lang/Iterable;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let files_iter = ref_arg(args, 2);
+            if !files_iter.is_null() {
+                let elems = crate::util::collection_elements(vm, files_iter)?;
+                if let Some(&first) = elems.first() {
+                    if !first.is_null() {
+                        let class = vm.class_of(this);
+                        let (d, f) = vm.find_field(class, "output", "Ljava/io/File;")?;
+                        vm.set_instance_ref(this, d, f, first);
+                    }
+                }
+            }
+            void()
+        },
+    ),
+    method(
+        "getLocation",
+        "(Ljavax/tools/JavaFileManager$Location;)Ljava/lang/Iterable;",
+        ACC_PUBLIC,
+        |_vm, _, _args| object(ObjectRef::NULL),
+    ),
+    method(
+        "getJavaFileObjects",
+        "([Ljava/io/File;)Ljava/lang/Iterable;",
+        ACC_PUBLIC | ACC_VARARGS,
+        |vm, _, args| {
+            let files_array = ref_arg(args, 1);
+            let list_class = vm.resolve_class("java/util/ArrayList")?;
+            let list = vm.new_instance(list_class)?;
+            let (c, m) = vm
+                .find_method(list_class, "<init>", "()V")
+                .ok_or_else(|| VmError::internal("no ctor"))?;
+            vm.invoke_method(c, m, vec![Value::Ref(list)])?;
+            if !files_array.is_null() {
+                let length = vm.array_length(files_array)?;
+                let sfo_class = vm.resolve_class("javax/tools/SimpleJavaFileObject")?;
+                let kind_class = vm.resolve_class("javax/tools/JavaFileObject$Kind")?;
+                vm.ensure_initialized(kind_class)?;
+                for i in 0..length {
+                    let file_ref = vm.array_get(files_array, i as i32)?.as_ref();
+                    if file_ref.is_null() {
+                        continue;
+                    }
+                    // toURI
+                    let (tc, tm) =
+                        vm.resolve_virtual_method(file_ref, "toURI", "()Ljava/net/URI;")?;
+                    let uri_ref = vm
+                        .invoke_method(tc, tm, vec![Value::Ref(file_ref)])?
+                        .as_ref();
+                    // determine kind by extension
+                    let uri_text = vm
+                        .read_string_field(uri_ref, vm.class_of(uri_ref), "string")
+                        .unwrap_or_default();
+                    let kind_name = if uri_text.ends_with(".class") {
+                        "CLASS"
+                    } else if uri_text.ends_with(".java") {
+                        "SOURCE"
+                    } else {
+                        "OTHER"
+                    };
+                    let kind_ref = vm
+                        .read_static_ref_if_set(
+                            kind_class,
+                            kind_name,
+                            "Ljavax/tools/JavaFileObject$Kind;",
+                        )
+                        .ok_or_else(|| VmError::internal("no kind"))?;
+                    let sfo = vm.new_instance(sfo_class)?;
+                    let (d, f) = vm.find_field(sfo_class, "uri", "Ljava/net/URI;")?;
+                    vm.set_instance_ref(sfo, d, f, uri_ref);
+                    let (d2, f2) =
+                        vm.find_field(sfo_class, "kind", "Ljavax/tools/JavaFileObject$Kind;")?;
+                    vm.set_instance_ref(sfo, d2, f2, kind_ref);
+                    let (ac, am) =
+                        vm.resolve_virtual_method(list, "add", "(Ljava/lang/Object;)Z")?;
+                    let _ = vm.invoke_method(ac, am, vec![Value::Ref(list), Value::Ref(sfo)])?;
+                }
+            }
+            object(list)
+        },
+    ),
+    method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("flush", "()V", ACC_PUBLIC, |_, _, _| void()),
+];
+
+// --------------------------------------------------------------------------
+// jdk.javadoc.internal.api.JavadocTaskImpl
+// --------------------------------------------------------------------------
+
+pub(crate) const JAVADOC_TASK_IMPL: oxjvm_vm::NativeClass = class(
+    "jdk/javadoc/internal/api/JavadocTaskImpl",
+    Some("java/lang/Object"),
+    &[
+        "javax/tools/DocumentationTool$DocumentationTask",
+        "java/util/concurrent/Callable",
+    ],
+    ACC_PUBLIC,
+    &[
+        field("writer", "Ljava/io/Writer;", ACC_PRIVATE, None),
+        field("fileManager", "Ljava/lang/Object;", ACC_PRIVATE, None),
+        field(
+            "diagnosticListener",
+            "Ljava/lang/Object;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field("doclet", "Ljava/lang/Class;", ACC_PRIVATE, None),
+        field("options", "Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("files", "Ljava/lang/Object;", ACC_PRIVATE, None),
+    ],
+    &JAVADOC_TASK_IMPL_METHODS,
+    None,
+);
+
+const JAVADOC_TASK_IMPL_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "call",
+        "()Ljava/lang/Boolean;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            // extract fields
+            let file_manager = vm
+                .read_ref_field(this, class, "fileManager", "Ljava/lang/Object;")
+                .unwrap_or(ObjectRef::NULL);
+            let options_ref = vm
+                .read_ref_field(this, class, "options", "Ljava/lang/Object;")
+                .unwrap_or(ObjectRef::NULL);
+            let files_ref = vm
+                .read_ref_field(this, class, "files", "Ljava/lang/Object;")
+                .unwrap_or(ObjectRef::NULL);
+
+            // options list
+            let options: Vec<ObjectRef> = if files_ref.is_null() {
+                vec![]
+            } else {
+                crate::util::collection_elements(vm, options_ref).unwrap_or_default()
+            };
+            // output dir from file manager
+            let mut output_dir: Option<String> = None;
+            if !file_manager.is_null() {
+                let fm_class = vm.class_of(file_manager);
+                if let Some(out_ref) =
+                    vm.read_ref_field(file_manager, fm_class, "output", "Ljava/io/File;")
+                {
+                    if !out_ref.is_null() {
+                        output_dir = Some(crate::file::file_path(vm, out_ref));
+                    }
+                }
+            }
+
+            // write source files to a temp dir
+            let src_base = "/tmp/opencode/oxjvm-javadoc-src";
+            if let Some(fs) = vm.host.filesystem() {
+                let _ = fs.create_dir_all(src_base);
+            }
+            // remove old children? best-effort not needed
+            let mut source_paths: Vec<String> = Vec::new();
+            if !files_ref.is_null() {
+                let files = crate::util::collection_elements(vm, files_ref).unwrap_or_default();
+                for (index, src) in files.into_iter().enumerate() {
+                    if src.is_null() {
+                        continue;
+                    }
+                    let content_seq = {
+                        let (c, m) = match vm.resolve_virtual_method(
+                            src,
+                            "getCharContent",
+                            "(Z)Ljava/lang/CharSequence;",
+                        ) {
+                            Ok(x) => x,
+                            Err(_) => continue,
+                        };
+                        vm.invoke_method(c, m, vec![Value::Ref(src), Value::Int(0)])
+                            .ok()
+                    };
+                    let text = content_seq
+                        .map(|v| vm.string_or_empty(v.as_ref()))
+                        .unwrap_or_default();
+                    // Determine a Java source file name matching the public class name.
+                    let name_str = vm
+                        .resolve_virtual_method(src, "getName", "()Ljava/lang/String;")
+                        .ok()
+                        .and_then(|(c, m)| vm.invoke_method(c, m, vec![Value::Ref(src)]).ok())
+                        .map(|v| vm.string_or_empty(v.as_ref()))
+                        .unwrap_or_default();
+                    let basename = name_str.rsplit('/').next().unwrap_or("");
+                    let basename = if basename.is_empty() {
+                        alloc::format!("Source{}.java", index)
+                    } else {
+                        basename.to_string()
+                    };
+                    let path = alloc::format!("{}/{}", src_base, basename);
+                    if let Some(fs) = vm.host.filesystem() {
+                        let _ = fs.write(&path, text.as_bytes(), false);
+                    }
+                    source_paths.push(path);
+                }
+            }
+
+            // build command
+            let mut cmd: Vec<String> =
+                vec!["/home/topi/oxjvm-jtreg/downloads/jdk-27+35/bin/javadoc".to_string()];
+            if let Some(dir) = &output_dir {
+                cmd.push("-d".to_string());
+                cmd.push(dir.clone());
+            }
+            for opt in &options {
+                if !opt.is_null() {
+                    cmd.push(vm.string_or_empty(*opt));
+                }
+            }
+            for p in &source_paths {
+                cmd.push(p.clone());
+            }
+            // drop nulls already handled
+            let result = vm.host.run_process(&cmd[0], &cmd[1..], None);
+            let status = match result {
+                Ok(r) => r.status,
+                Err(_) => 1,
+            };
+            // return Boolean
+            let bool_class = vm.resolve_class("java/lang/Boolean")?;
+            vm.ensure_initialized(bool_class)?;
+            let name = if status == 0 { "TRUE" } else { "FALSE" };
+            let instance = vm
+                .read_static_ref(bool_class, name, "Ljava/lang/Boolean;")
+                .ok_or_else(|| VmError::internal("no Boolean constant"))?;
+            Ok(Value::Ref(instance))
+        },
+    ),
+];
+
+pub(crate) const DOCUMENTATION_TOOL_LOCATION: oxjvm_vm::NativeClass = class(
+    "javax/tools/DocumentationTool$Location",
+    Some("java/lang/Enum"),
+    &["javax/tools/JavaFileManager$Location"],
+    ACC_PUBLIC | ACC_FINAL | ACC_ENUM,
+    &[
+        field("name", "Ljava/lang/String;", ACC_PRIVATE | ACC_FINAL, None),
+        field("ordinal", "I", ACC_PRIVATE | ACC_FINAL, None),
+        field(
+            "DOCUMENTATION_OUTPUT",
+            "Ljavax/tools/DocumentationTool$Location;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "DOCLET_PATH",
+            "Ljavax/tools/DocumentationTool$Location;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "TAGLET_PATH",
+            "Ljavax/tools/DocumentationTool$Location;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "SNIPPET_PATH",
+            "Ljavax/tools/DocumentationTool$Location;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "$VALUES",
+            "[Ljavax/tools/DocumentationTool$Location;",
+            ACC_PRIVATE | ACC_STATIC | ACC_FINAL | ACC_SYNTHETIC,
+            None,
+        ),
+    ],
+    &DOCUMENTATION_TOOL_LOCATION_METHODS,
+    Some(documentation_tool_location_clinit),
+);
+
+const DOCUMENTATION_TOOL_LOCATION_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method(
+        "name",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let name = vm
+                .read_string_field(this, class, "name")
+                .unwrap_or_default();
+            object(vm.make_string(&name)?)
+        },
+    ),
+    method("ordinal", "()I", ACC_PUBLIC | ACC_FINAL, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "ordinal"))
+    }),
+    method(
+        "getName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let name = vm
+                .read_string_field(this, class, "name")
+                .unwrap_or_default();
+            object(vm.make_string(&name)?)
+        },
+    ),
+    method(
+        "iterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let list_class = vm.resolve_class("java/util/ArrayList")?;
+            let list = vm.new_instance(list_class)?;
+            let (c, m) = vm
+                .find_method(list_class, "<init>", "()V")
+                .ok_or_else(|| VmError::internal("no ctor"))?;
+            vm.invoke_method(c, m, vec![Value::Ref(list)])?;
+            let (ac, am) = vm.resolve_virtual_method(list, "add", "(Ljava/lang/Object;)Z")?;
+            let _ = vm.invoke_method(ac, am, vec![Value::Ref(list), Value::Ref(this)])?;
+            let (ic, im) = vm.resolve_virtual_method(list, "iterator", "()Ljava/util/Iterator;")?;
+            vm.invoke_method(ic, im, vec![Value::Ref(list)])
+        },
+    ),
+    method("isOutputLocation", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let name = vm
+            .read_string_field(this, class, "name")
+            .unwrap_or_default();
+        boolean(name == "DOCUMENTATION_OUTPUT")
+    }),
+];
+
+fn documentation_tool_location_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("javax/tools/DocumentationTool$Location")?;
+    let names = [
+        "DOCUMENTATION_OUTPUT",
+        "DOCLET_PATH",
+        "TAGLET_PATH",
+        "SNIPPET_PATH",
+    ];
+    let mut built = Vec::new();
+    for (ordinal, name) in names.iter().enumerate() {
+        let instance = vm.new_instance(class)?;
+        let name_ref = vm.make_string(name)?;
+        let (decl, ctor) = vm
+            .find_method(class, "<init>", "(Ljava/lang/String;I)V")
+            .ok_or_else(|| VmError::internal("ctor missing"))?;
+        vm.invoke_method(
+            decl,
+            ctor,
+            vec![
+                Value::Ref(instance),
+                Value::Ref(name_ref),
+                Value::Int(ordinal as i32),
+            ],
+        )?;
+        vm.set_static_value(
+            class,
+            name,
+            "Ljavax/tools/DocumentationTool$Location;",
+            Value::Ref(instance),
+        );
+        built.push(Value::Ref(instance));
+    }
+    let array = vm.allocate_array_of(ArrayComponent::Reference, built.len())?;
+    for (i, v) in built.into_iter().enumerate() {
+        vm.array_set(array, i as i32, v, false)?;
+    }
+    vm.set_static_value(
+        class,
+        "$VALUES",
+        "[Ljavax/tools/DocumentationTool$Location;",
+        Value::Ref(array),
+    );
+    Ok(())
+}
