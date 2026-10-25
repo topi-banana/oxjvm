@@ -395,7 +395,7 @@ fn simple_date_format_millis(vm: &mut Vm<'_>, date: ObjectRef) -> Result<i64, Vm
     }
 }
 
-const SIMPLE_DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const SIMPLE_DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let (declaring, field) =
@@ -475,6 +475,20 @@ const SIMPLE_DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         "(Ljava/lang/String;)V",
         ACC_PUBLIC,
         |vm, _, args| simple_date_format_init(vm, args),
+    ),
+    method(
+        "parse",
+        "(Ljava/lang/String;)Ljava/util/Date;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            // Actually arg is string ref
+            let input = vm.string_or_empty(ref_arg(args, 1));
+            let millis = crate::format::parse_date_text(&input);
+            let class = vm.resolve_class("java/util/Date")?;
+            let instance = vm.new_instance(class)?;
+            crate::lang::write_long_field(vm, instance, "time", millis);
+            object(instance)
+        },
     ),
 ];
 

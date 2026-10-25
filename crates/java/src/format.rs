@@ -1629,7 +1629,7 @@ fn parse_number_text(text: &str) -> Option<f64> {
 }
 
 /// The milliseconds a date text holds, read with the patterns the runtime writes.
-fn parse_date_text(text: &str) -> i64 {
+pub(crate) fn parse_date_text(text: &str) -> i64 {
     let cleaned: String = text
         .chars()
         .filter(|ch| ch.is_ascii_digit() || *ch == '/' || *ch == ':' || *ch == ',' || *ch == '.')
