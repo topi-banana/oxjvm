@@ -817,7 +817,7 @@ pub(crate) const OJVM_NUMBER_FORMAT: oxjvm_vm::NativeClass = class(
 // DateFormat
 // -------------------------------------------------------------------------------------------
 
-const DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method(
         "getInstance",
         "()Ljava/text/DateFormat;",
@@ -841,6 +841,18 @@ const DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "(Ljava/util/Locale;)Ljava/text/DateFormat;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _| date_format(vm, date_pattern("medium")),
+    ),
+    method(
+        "getDateInstance",
+        "(I)Ljava/text/DateFormat;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| date_format(vm, date_pattern(date_style_name(crate::int_arg(args, 0)))),
+    ),
+    method(
+        "getDateInstance",
+        "(ILjava/util/Locale;)Ljava/text/DateFormat;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| date_format(vm, date_pattern(date_style_name(crate::int_arg(args, 0)))),
     ),
     method(
         "getTimeInstance",
@@ -907,6 +919,16 @@ const DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         },
     ),
 ];
+
+fn date_style_name(style: i32) -> &'static str {
+    match style {
+        0 => "full",
+        1 => "long",
+        2 => "medium",
+        3 => "short",
+        _ => "medium",
+    }
+}
 
 /// A date format that carries a pattern.
 fn date_format(vm: &mut Vm<'_>, pattern: &str) -> Result<Value, VmError> {
