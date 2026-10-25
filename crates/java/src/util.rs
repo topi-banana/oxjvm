@@ -9462,7 +9462,7 @@ pub(crate) const TIME_ZONE: oxjvm_vm::NativeClass = class(
 // Scanner (string sources)
 // -------------------------------------------------------------------------------------------
 
-const SCANNER_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+const SCANNER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -9475,6 +9475,22 @@ const SCANNER_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
             void()
         },
     ),
+    method("<init>", "(Ljava/io/File;)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let file = ref_arg(args, 1);
+        let path = crate::file::file_path(vm, file);
+        let bytes = vm
+            .host
+            .filesystem()
+            .and_then(|fs| fs.read(&path))
+            .unwrap_or_default();
+        let content = String::from_utf8_lossy(&bytes).into_owned();
+        let class = vm.class_of(this);
+        let (declaring, field) = vm.find_field(class, "input", "Ljava/lang/String;")?;
+        let value = vm.make_string(&content)?;
+        vm.set_instance_ref(this, declaring, field, value);
+        void()
+    }),
     method(
         "findInLine",
         "(Ljava/lang/String;)Ljava/lang/String;",
