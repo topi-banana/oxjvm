@@ -753,6 +753,11 @@ exception!(
     "java/lang/Exception"
 );
 exception!(
+    CANCELLATION_EXCEPTION,
+    "java/util/concurrent/CancellationException",
+    "java/lang/RuntimeException"
+);
+exception!(
     MISSING_RESOURCE_EXCEPTION,
     "java/util/MissingResourceException",
     "java/lang/RuntimeException"
