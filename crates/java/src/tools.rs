@@ -241,6 +241,7 @@ const SOURCE_VERSION_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _args| {
             let class = vm.resolve_class("javax/lang/model/SourceVersion")?;
+            vm.ensure_initialized(class)?;
             let value = vm
                 .read_static_ref(class, "$VALUES", "[Ljavax/lang/model/SourceVersion;")
                 .ok_or_else(|| VmError::internal("no $VALUES"))?;
@@ -254,6 +255,7 @@ const SOURCE_VERSION_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _args| {
             let class = vm.resolve_class("javax/lang/model/SourceVersion")?;
+            vm.ensure_initialized(class)?;
             let value = vm
                 .read_static_ref(class, "$VALUES", "[Ljavax/lang/model/SourceVersion;")
                 .ok_or_else(|| VmError::internal("no $VALUES"))?;
@@ -267,6 +269,7 @@ const SOURCE_VERSION_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _args| {
             let class = vm.resolve_class("javax/lang/model/SourceVersion")?;
+            vm.ensure_initialized(class)?;
             let value = vm
                 .read_static_ref(class, "$VALUES", "[Ljavax/lang/model/SourceVersion;")
                 .ok_or_else(|| VmError::internal("no $VALUES"))?;
@@ -281,6 +284,7 @@ const SOURCE_VERSION_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         |vm, _, args| {
             let name = vm.string_or_empty(ref_arg(args, 0));
             let class = vm.resolve_class("javax/lang/model/SourceVersion")?;
+            vm.ensure_initialized(class)?;
             let values = vm
                 .read_static_ref(class, "$VALUES", "[Ljavax/lang/model/SourceVersion;")
                 .ok_or_else(|| VmError::internal("no $VALUES"))?;
@@ -302,6 +306,7 @@ const SOURCE_VERSION_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
 
 fn source_version_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     let class = vm.resolve_class("javax/lang/model/SourceVersion")?;
+    vm.ensure_initialized(class)?;
     let mut values = Vec::with_capacity(SOURCE_VERSIONS.len());
     for (ordinal, name) in SOURCE_VERSIONS.iter().enumerate() {
         let instance = vm.new_instance(class)?;
@@ -873,13 +878,28 @@ macro_rules! interface {
     };
 }
 
+const TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "run",
+        "(Ljava/io/InputStream;Ljava/io/OutputStream;Ljava/io/OutputStream;[Ljava/lang/String;)I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getSourceVersions",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
 pub(crate) const TOOL: oxjvm_vm::NativeClass = class(
     "javax/tools/Tool",
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
     &[],
-    &[],
+    &TOOL_METHODS,
     None,
 );
 
@@ -1066,12 +1086,15 @@ const TOOL_PROVIDER_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
         "()Ljavax/tools/DocumentationTool;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _args| {
-            let class = vm.resolve_class("com/sun/tools/javac/api/JavacTool")?;
-            // fall back: use a DocumentationTool shim class
-            Err(vm.throw_new(
-                "java/lang/UnsupportedOperationException",
-                Some("javadoc tool not available"),
-            ))
+            let class = vm.resolve_class("jdk/javadoc/internal/api/JavadocTool")?;
+            let (c, m) = vm
+                .find_method(
+                    class,
+                    "instance",
+                    "()Ljdk/javadoc/internal/api/JavadocTool;",
+                )
+                .ok_or_else(|| VmError::internal("no instance method"))?;
+            vm.invoke_method(c, m, vec![])
         },
     ),
 ];
@@ -1115,6 +1138,7 @@ const JAVAC_TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         |vm, _, _args| {
             // EnumSet.range(SourceVersion.RELEASE_3, latest)
             let sv = vm.resolve_class("javax/lang/model/SourceVersion")?;
+            vm.ensure_initialized(sv)?;
             let values = vm
                 .read_static_ref(sv, "$VALUES", "[Ljavax/lang/model/SourceVersion;")
                 .ok_or_else(|| VmError::internal("no $VALUES"))?;
@@ -1276,3 +1300,85 @@ pub(crate) const JAVAC_CONTEXT: oxjvm_vm::NativeClass = class(
 // registration helper (called from lib.rs)
 // --------------------------------------------------------------------------
 // (registration happens in lib.rs's REGISTRY array)
+
+// --------------------------------------------------------------------------
+// jdk.javadoc.internal.api.JavadocTool (also serves as the DocumentationTool
+// returned by ToolProvider so the metadata tests stop being blocked on NCDFE).
+// --------------------------------------------------------------------------
+
+pub(crate) const JAVADOC_TOOL: oxjvm_vm::NativeClass = class(
+    "jdk/javadoc/internal/api/JavadocTool",
+    Some("java/lang/Object"),
+    &["javax/tools/DocumentationTool", "javax/tools/OptionChecker"],
+    ACC_PUBLIC,
+    &[],
+    &JAVADOC_TOOL_METHODS,
+    None,
+);
+
+const JAVADOC_TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method(
+        "instance",
+        "()Ljdk/javadoc/internal/api/JavadocTool;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _args| {
+            let class = vm.resolve_class("jdk/javadoc/internal/api/JavadocTool")?;
+            let instance = vm.new_instance(class)?;
+            object(instance)
+        },
+    ),
+    method(
+        "name",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _args| object(vm.make_string("javadoc")?),
+    ),
+    method(
+        "getSourceVersions",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC,
+        |vm, _, _args| {
+            let sv = vm.resolve_class("javax/lang/model/SourceVersion")?;
+            vm.ensure_initialized(sv)?;
+            let values = vm
+                .read_static_ref(sv, "$VALUES", "[Ljavax/lang/model/SourceVersion;")
+                .ok_or_else(|| VmError::internal("no $VALUES"))?;
+            let length = vm.array_length(values)?;
+            let hash_set = vm.resolve_class("java/util/HashSet")?;
+            let set_instance = vm.new_instance(hash_set)?;
+            let (decl, ctor) = vm
+                .find_method(hash_set, "<init>", "()V")
+                .ok_or_else(|| VmError::internal("HashSet lacks ctor"))?;
+            vm.invoke_method(decl, ctor, vec![Value::Ref(set_instance)])?;
+            let from_index = 3usize;
+            for index in from_index..length {
+                let element = vm.array_get(values, index as i32)?.as_ref();
+                let (c, m) =
+                    vm.resolve_virtual_method(set_instance, "add", "(Ljava/lang/Object;)Z")?;
+                let _ =
+                    vm.invoke_method(c, m, vec![Value::Ref(set_instance), Value::Ref(element)])?;
+            }
+            object(set_instance)
+        },
+    ),
+    method(
+        "getSupportedOptions",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC,
+        |vm, _, _args| {
+            let hash_set = vm.resolve_class("java/util/HashSet")?;
+            let set_instance = vm.new_instance(hash_set)?;
+            let (decl, ctor) = vm
+                .find_method(hash_set, "<init>", "()V")
+                .ok_or_else(|| VmError::internal("HashSet lacks ctor"))?;
+            vm.invoke_method(decl, ctor, vec![Value::Ref(set_instance)])?;
+            object(set_instance)
+        },
+    ),
+    method(
+        "isSupportedOption",
+        "(Ljava/lang/String;)Z",
+        ACC_PUBLIC,
+        |_vm, _, _args| boolean(false),
+    ),
+];

@@ -9058,7 +9058,7 @@ fn enum_set_add(vm: &mut Vm<'_>, this: ObjectRef, element: ObjectRef) -> Result<
     boolean(true)
 }
 
-const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
     method(
         "noneOf",
         "(Ljava/lang/Class;)Ljava/util/EnumSet;",
@@ -9125,6 +9125,44 @@ const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
                 for index in 0..length {
                     let element = vm.array_get(constants, index as i32)?.as_ref();
                     enum_set_add(vm, set, element)?;
+                }
+            }
+            object(set)
+        },
+    ),
+    method(
+        "range",
+        "(Ljava/lang/Enum;Ljava/lang/Enum;)Ljava/util/EnumSet;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let from = ref_arg(args, 0);
+            let to = ref_arg(args, 1);
+            let set = new_enum_set(vm)?;
+            let from_type = vm.class_object(vm.class_of(from))?;
+            enum_set_set_type(vm, set, from_type);
+            let (class, method) =
+                vm.resolve_virtual_method(from_type, "getEnumConstants", "()[Ljava/lang/Object;")?;
+            let constants = vm
+                .invoke_method(class, method, vec![Value::Ref(from_type)])?
+                .as_ref();
+            if !constants.is_null() {
+                let from_ord = crate::lang::read_int_field(vm, from, "ordinal");
+                let to_ord = crate::lang::read_int_field(vm, to, "ordinal");
+                if from_ord <= to_ord {
+                    for index in from_ord..=to_ord {
+                        let element = vm.array_get(constants, index)?.as_ref();
+                        enum_set_add(vm, set, element)?;
+                    }
+                } else {
+                    let length = vm.array_length(constants)?;
+                    for index in from_ord..length as i32 {
+                        let element = vm.array_get(constants, index)?.as_ref();
+                        enum_set_add(vm, set, element)?;
+                    }
+                    for index in 0..=to_ord {
+                        let element = vm.array_get(constants, index)?.as_ref();
+                        enum_set_add(vm, set, element)?;
+                    }
                 }
             }
             object(set)
@@ -9300,6 +9338,49 @@ const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
             }
             text.push(']');
             object(vm.make_string(&text)?)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let map = enum_set_map(vm, this);
+        let mut hash: i32 = 0;
+        for (key, _) in hash_map_pairs(vm, map) {
+            // Enum.hashCode not implemented specially; reuse object_hash
+            hash = hash.wrapping_add(object_hash(vm, key)?);
+        }
+        int(hash)
+    }),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if this.raw() == other.raw() {
+                return boolean(true);
+            }
+            let set_class = vm.resolve_class("java/util/Set")?;
+            if other.is_null() || !vm.is_instance(other, set_class) {
+                return boolean(false);
+            }
+            let other_size = vm
+                .resolve_virtual_method(other, "size", "()I")
+                .and_then(|(c, m)| {
+                    vm.invoke_method(c, m, vec![Value::Ref(other)])
+                        .map(|v| v.as_int())
+                })
+                .unwrap_or(0);
+            if invoke_int(vm, this, "size")? != other_size {
+                return boolean(false);
+            }
+            let map = enum_set_map(vm, this);
+            for (key, _) in hash_map_pairs(vm, map) {
+                if !set_contains(vm, other, key)? {
+                    return boolean(false);
+                }
+            }
+            boolean(true)
         },
     ),
 ];
