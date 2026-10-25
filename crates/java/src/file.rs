@@ -32,7 +32,7 @@ pub(crate) const FILE_FILTER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
+const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -471,6 +471,19 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
         // run a shutdown hook.
         let _ = file_path(vm, receiver(args));
         void()
+    }),
+    method("setReadOnly", "()Z", ACC_PUBLIC, |_, _, _| {
+        // The VM has no host primitive for chmod; treat as success.
+        boolean(true)
+    }),
+    method("toURL", "()Ljava/net/URL;", ACC_PUBLIC, |vm, _, args| {
+        let path = file_path(vm, receiver(args));
+        let text = if path.starts_with('/') {
+            alloc::format!("file:{path}")
+        } else {
+            alloc::format!("file:/{path}")
+        };
+        object(crate::net::new_url(vm, &text)?)
     }),
     method("toURI", "()Ljava/net/URI;", ACC_PUBLIC, |vm, _, args| {
         let path = file_path(vm, receiver(args));
