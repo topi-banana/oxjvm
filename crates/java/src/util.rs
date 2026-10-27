@@ -9568,7 +9568,7 @@ pub(crate) const TIME_ZONE: oxjvm_vm::NativeClass = class(
 // Scanner (string sources)
 // -------------------------------------------------------------------------------------------
 
-const SCANNER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+const SCANNER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -9602,6 +9602,57 @@ const SCANNER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         "(Ljava/lang/String;)Ljava/lang/String;",
         ACC_PUBLIC,
         scanner_find_in_line,
+    ),
+    method("hasNextLine", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let input = vm
+            .read_string_field(this, vm.class_of(this), "input")
+            .unwrap_or_default();
+        let position = crate::lang::read_int_field(vm, this, "position").max(0) as usize;
+        boolean(position < input.encode_utf16().count())
+    }),
+    method(
+        "nextLine",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let input = vm
+                .read_string_field(this, class, "input")
+                .unwrap_or_default();
+            let units: Vec<u16> = input.encode_utf16().collect();
+            let position = crate::lang::read_int_field(vm, this, "position").max(0) as usize;
+            if position >= units.len() {
+                return Err(vm.throw_new("java/util/NoSuchElementException", Some("No line found")));
+            }
+            let mut line_end = units.len();
+            let mut next = units.len();
+            for (offset, unit) in units[position..].iter().enumerate() {
+                if *unit == u16::from(b'\n') {
+                    line_end = position + offset;
+                    next = line_end + 1;
+                    break;
+                }
+                if *unit == u16::from(b'\r') {
+                    line_end = position + offset;
+                    next = line_end + 1;
+                    if units.get(next) == Some(&u16::from(b'\n')) {
+                        next += 1;
+                    }
+                    break;
+                }
+            }
+            crate::lang::write_int_field(vm, this, "position", next as i32);
+            let line = String::from_utf16_lossy(&units[position..line_end]);
+            object(vm.make_string(&line)?)
+        },
+    ),
+    method(
+        "findWithinHorizon",
+        "(Ljava/lang/String;I)Ljava/lang/String;",
+        ACC_PUBLIC,
+        scanner_find_within_horizon,
     ),
     method(
         "match",
@@ -9687,6 +9738,59 @@ fn scanner_find_in_line(
     let (declaring, field) = vm.find_field(class, "match", "Ljava/util/regex/MatchResult;")?;
     vm.set_instance_ref(this, declaring, field, matcher);
     Ok(text)
+}
+
+/// `Scanner.findWithinHorizon`: the first match of `pattern` within `horizon`
+/// characters of the current position (0 means no limit), or null.
+fn scanner_find_within_horizon(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let class = vm.class_of(this);
+    let pattern_text = string_arg(vm, args[1])?;
+    let horizon = crate::int_arg(args, 2);
+    if horizon < 0 {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("horizon is negative"),
+        ));
+    }
+    let input = vm
+        .read_string_field(this, class, "input")
+        .unwrap_or_default();
+    let units: Vec<u16> = input.encode_utf16().collect();
+    let position = crate::lang::read_int_field(vm, this, "position").max(0) as usize;
+    let position = position.min(units.len());
+    let end = if horizon == 0 {
+        units.len()
+    } else {
+        units.len().min(position.saturating_add(horizon as usize))
+    };
+    let text = String::from_utf16_lossy(&units[position..end]);
+    let text_value = vm.make_string(&text)?;
+    let pattern = crate::regex::compile_pattern(vm, &pattern_text)?;
+    let matcher = crate::regex::matcher_for(vm, pattern, text_value)?;
+    let (matcher_class, find) = vm.resolve_virtual_method(matcher, "find", "()Z")?;
+    let found = vm
+        .invoke_method(matcher_class, find, vec![Value::Ref(matcher)])?
+        .as_int()
+        != 0;
+    if !found {
+        return object(ObjectRef::NULL);
+    }
+    let (group_class, group) =
+        vm.resolve_virtual_method(matcher, "group", "()Ljava/lang/String;")?;
+    let matched = vm.invoke_method(group_class, group, vec![Value::Ref(matcher)])?;
+    let (end_class, end_method) = vm.resolve_virtual_method(matcher, "end", "()I")?;
+    let consumed = vm
+        .invoke_method(end_class, end_method, vec![Value::Ref(matcher)])?
+        .as_int();
+    crate::lang::write_int_field(vm, this, "position", position as i32 + consumed);
+    let (declaring, field) = vm.find_field(class, "match", "Ljava/util/regex/MatchResult;")?;
+    vm.set_instance_ref(this, declaring, field, matcher);
+    Ok(matched)
 }
 
 // -------------------------------------------------------------------------------------------
