@@ -10296,7 +10296,7 @@ fn calendar_add(vm: &mut Vm<'_>, this: ObjectRef, field: i32, amount: i32) {
             );
         }
         // DATE / DAY_OF_MONTH / DAY_OF_YEAR / DAY_OF_WEEK
-        5 | 6 | 7 => {
+        5..=7 => {
             calendar_set_time(
                 vm,
                 this,
@@ -10782,8 +10782,8 @@ fn calendar_minimum(field: i32) -> i32 {
         1 => 1,
         2 | 8 | 9 | 10 => 0,
         3 | 4 => 1,
-        5 | 6 | 7 => 1,
-        11 | 12 | 13 | 14 => 0,
+        5..=7 => 1,
+        11..=14 => 0,
         15 => -50400000,
         16 => 0,
         17 => 17,
