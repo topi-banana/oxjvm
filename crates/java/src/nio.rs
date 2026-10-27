@@ -2248,6 +2248,243 @@ pub(crate) const FILE_VISIT_OPTION: oxjvm_vm::NativeClass = class(
 );
 
 // -------------------------------------------------------------------------------------------
+// FileVisitor / SimpleFileVisitor / FileVisitResult
+// -------------------------------------------------------------------------------------------
+
+fn file_visit_result_constant(
+    vm: &mut Vm<'_>,
+    name: &str,
+    ordinal: i32,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/nio/file/FileVisitResult")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "ordinal", "I")?;
+    vm.set_instance_int(instance, declaring, field, ordinal);
+    let (declaring, field) = vm.find_field(class, "name", "Ljava/lang/String;")?;
+    let text = vm.make_string(name)?;
+    vm.set_instance_ref(instance, declaring, field, text);
+    Ok(instance)
+}
+
+const FILE_VISIT_RESULT_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method("ordinal", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "ordinal"))
+    }),
+    method("name", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let name = vm.read_string_field_any(this, "name").unwrap_or_default();
+        object(vm.make_string(&name)?)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let name = vm.read_string_field_any(this, "name").unwrap_or_default();
+            object(vm.make_string(&name)?)
+        },
+    ),
+    method(
+        "values",
+        "()[Ljava/nio/file/FileVisitResult;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/nio/file/FileVisitResult")?;
+            vm.ensure_initialized(class)?;
+            let array = vm.allocate_object_array(class, 4)?;
+            for (index, name) in ["CONTINUE", "TERMINATE", "SKIP_SUBTREE", "SKIP_SIBLINGS"]
+                .iter()
+                .enumerate()
+            {
+                if let Some(value) =
+                    vm.read_static_ref_if_set(class, name, "Ljava/nio/file/FileVisitResult;")
+                {
+                    vm.array_set_ref(array, index, value)?;
+                }
+            }
+            object(array)
+        },
+    ),
+    method(
+        "valueOf",
+        "(Ljava/lang/String;)Ljava/nio/file/FileVisitResult;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = vm.string_or_empty(ref_arg(args, 0));
+            let class = vm.resolve_class("java/nio/file/FileVisitResult")?;
+            vm.ensure_initialized(class)?;
+            if ["CONTINUE", "TERMINATE", "SKIP_SUBTREE", "SKIP_SIBLINGS"].contains(&name.as_str()) {
+                if let Some(value) =
+                    vm.read_static_ref_if_set(class, &name, "Ljava/nio/file/FileVisitResult;")
+                {
+                    return object(value);
+                }
+            }
+            Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some(&alloc::format!(
+                    "No enum constant java.nio.file.FileVisitResult.{name}"
+                )),
+            ))
+        },
+    ),
+];
+
+fn file_visit_result_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/nio/file/FileVisitResult")?;
+    for (ordinal, name) in ["CONTINUE", "TERMINATE", "SKIP_SUBTREE", "SKIP_SIBLINGS"]
+        .iter()
+        .enumerate()
+    {
+        let value = file_visit_result_constant(vm, name, ordinal as i32)?;
+        vm.set_static_value(
+            class,
+            name,
+            "Ljava/nio/file/FileVisitResult;",
+            Value::Ref(value),
+        );
+    }
+    Ok(())
+}
+
+pub(crate) const FILE_VISIT_RESULT: oxjvm_vm::NativeClass = class(
+    "java/nio/file/FileVisitResult",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field(
+            "CONTINUE",
+            "Ljava/nio/file/FileVisitResult;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "TERMINATE",
+            "Ljava/nio/file/FileVisitResult;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "SKIP_SUBTREE",
+            "Ljava/nio/file/FileVisitResult;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "SKIP_SIBLINGS",
+            "Ljava/nio/file/FileVisitResult;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field("ordinal", "I", ACC_PRIVATE, None),
+        field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
+    ],
+    &FILE_VISIT_RESULT_METHODS,
+    Some(file_visit_result_clinit),
+);
+
+const FILE_VISITOR_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "preVisitDirectory",
+        "(Ljava/lang/Object;Ljava/nio/file/attribute/BasicFileAttributes;)Ljava/nio/file/FileVisitResult;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "visitFile",
+        "(Ljava/lang/Object;Ljava/nio/file/attribute/BasicFileAttributes;)Ljava/nio/file/FileVisitResult;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "visitFileFailed",
+        "(Ljava/lang/Object;Ljava/io/IOException;)Ljava/nio/file/FileVisitResult;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "postVisitDirectory",
+        "(Ljava/lang/Object;Ljava/io/IOException;)Ljava/nio/file/FileVisitResult;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
+pub(crate) const FILE_VISITOR: oxjvm_vm::NativeClass = class(
+    "java/nio/file/FileVisitor",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &FILE_VISITOR_METHODS,
+    None,
+);
+
+fn file_visit_result_continue(vm: &mut Vm<'_>) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/nio/file/FileVisitResult")?;
+    vm.ensure_initialized(class)?;
+    match vm.read_static_ref_if_set(class, "CONTINUE", "Ljava/nio/file/FileVisitResult;") {
+        Some(value) => object(value),
+        None => Err(vm.throw_new(
+            "java/lang/IllegalStateException",
+            Some("FileVisitResult.CONTINUE is not initialized"),
+        )),
+    }
+}
+
+const SIMPLE_FILE_VISITOR_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "preVisitDirectory",
+        "(Ljava/lang/Object;Ljava/nio/file/attribute/BasicFileAttributes;)Ljava/nio/file/FileVisitResult;",
+        ACC_PUBLIC,
+        |vm, _, _| file_visit_result_continue(vm),
+    ),
+    method(
+        "visitFile",
+        "(Ljava/lang/Object;Ljava/nio/file/attribute/BasicFileAttributes;)Ljava/nio/file/FileVisitResult;",
+        ACC_PUBLIC,
+        |vm, _, _| file_visit_result_continue(vm),
+    ),
+    method(
+        "visitFileFailed",
+        "(Ljava/lang/Object;Ljava/io/IOException;)Ljava/nio/file/FileVisitResult;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let error = ref_arg(args, 2);
+            if error.is_null() {
+                return file_visit_result_continue(vm);
+            }
+            Err(VmError::Thrown(error))
+        },
+    ),
+    method(
+        "postVisitDirectory",
+        "(Ljava/lang/Object;Ljava/io/IOException;)Ljava/nio/file/FileVisitResult;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let error = ref_arg(args, 2);
+            if error.is_null() {
+                return file_visit_result_continue(vm);
+            }
+            Err(VmError::Thrown(error))
+        },
+    ),
+];
+
+pub(crate) const SIMPLE_FILE_VISITOR: oxjvm_vm::NativeClass = class(
+    "java/nio/file/SimpleFileVisitor",
+    Some("java/lang/Object"),
+    &["java/nio/file/FileVisitor"],
+    ACC_PUBLIC,
+    &[],
+    &SIMPLE_FILE_VISITOR_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
 // DirectoryStream / DirectoryStream$Filter / FilenameFilter
 // -------------------------------------------------------------------------------------------
 

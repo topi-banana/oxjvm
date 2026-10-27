@@ -138,7 +138,7 @@ pub fn is_non_writable_property(key: &str) -> bool {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 676] = [
+static REGISTRY: [NativeClass; 679] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -715,6 +715,9 @@ static REGISTRY: [NativeClass; 676] = [
     nio::BASIC_FILE_ATTRIBUTES,
     nio::OJVM_BASIC_FILE_ATTRIBUTES,
     nio::FILE_VISIT_OPTION,
+    nio::FILE_VISIT_RESULT,
+    nio::FILE_VISITOR,
+    nio::SIMPLE_FILE_VISITOR,
     nio::DIRECTORY_STREAM,
     nio::DIRECTORY_STREAM_FILTER,
     nio::FILENAME_FILTER,
