@@ -1333,13 +1333,227 @@ pub(crate) const SOCKET_ADDRESS: oxjvm_vm::NativeClass = class(
     None,
 );
 
+fn inet_socket_address_port(vm: &Vm<'_>, this: ObjectRef) -> i32 {
+    crate::lang::read_int_field(vm, this, "port")
+}
+
+fn inet_socket_address_address(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field_any(this, "addr").unwrap_or(ObjectRef::NULL)
+}
+
+fn validate_port(vm: &mut Vm<'_>, port: i32) -> Result<(), VmError> {
+    if !(0..=65535).contains(&port) {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("port out of range:"),
+        ));
+    }
+    Ok(())
+}
+
+fn init_inet_socket_address(
+    vm: &mut Vm<'_>,
+    instance: ObjectRef,
+    address: ObjectRef,
+    port: i32,
+) -> Result<(), VmError> {
+    validate_port(vm, port)?;
+    let class = vm.class_of(instance);
+    let (declaring, field) = vm.find_field(class, "addr", "Ljava/net/InetAddress;")?;
+    vm.set_instance_ref(instance, declaring, field, address);
+    let (declaring, field) = vm.find_field(class, "port", "I")?;
+    vm.set_instance_int(instance, declaring, field, port);
+    Ok(())
+}
+
+fn wildcard_address(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    Ok(new_address(vm, "java/net/InetAddress", [0, 0, 0, 0], None)?.as_ref())
+}
+
+fn inet_socket_address_host(vm: &Vm<'_>, this: ObjectRef) -> String {
+    if let Some(host) = vm.read_string_field_any(this, "hostname") {
+        return host;
+    }
+    let address = inet_socket_address_address(vm, this);
+    if address.is_null() {
+        return String::from("0.0.0.0");
+    }
+    vm.read_string_field_any(address, "hostName")
+        .or_else(|| vm.read_string_field_any(address, "hostAddress"))
+        .unwrap_or_else(|| String::from("0.0.0.0"))
+}
+
+const INET_SOCKET_ADDRESS_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let wildcard = wildcard_address(vm)?;
+        init_inet_socket_address(vm, receiver(args), wildcard, 0)?;
+        void()
+    }),
+    method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let port = crate::int_arg(args, 1);
+        let wildcard = wildcard_address(vm)?;
+        init_inet_socket_address(vm, receiver(args), wildcard, port)?;
+        void()
+    }),
+    method(
+        "<init>",
+        "(Ljava/net/InetAddress;I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let port = crate::int_arg(args, 2);
+            let mut address = ref_arg(args, 1);
+            if address.is_null() {
+                address = wildcard_address(vm)?;
+            }
+            init_inet_socket_address(vm, receiver(args), address, port)?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = string_arg(vm, args[1])?;
+            let port = crate::int_arg(args, 2);
+            validate_port(vm, port)?;
+            let address = resolve_address(vm, "java/net/InetAddress", &text)?.as_ref();
+            init_inet_socket_address(vm, receiver(args), address, port)?;
+            void()
+        },
+    ),
+    method("getPort", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(inet_socket_address_port(vm, receiver(args)))
+    }),
+    method(
+        "getAddress",
+        "()Ljava/net/InetAddress;",
+        ACC_PUBLIC,
+        |vm, _, args| object(inet_socket_address_address(vm, receiver(args))),
+    ),
+    method(
+        "getHostName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let address = inet_socket_address_address(vm, this);
+            let host = if address.is_null() {
+                inet_socket_address_host(vm, this)
+            } else {
+                let (class, method) =
+                    vm.resolve_virtual_method(address, "getHostName", "()Ljava/lang/String;")?;
+                let value = vm.invoke_method(class, method, vec![Value::Ref(address)])?;
+                vm.string_value(value.as_ref())
+                    .unwrap_or_else(|| inet_socket_address_host(vm, this))
+            };
+            object(vm.make_string(&host)?)
+        },
+    ),
+    method(
+        "getHostString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let host = inet_socket_address_host(vm, receiver(args));
+            object(vm.make_string(&host)?)
+        },
+    ),
+    method("isUnresolved", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(inet_socket_address_address(vm, receiver(args)).is_null())
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let address = inet_socket_address_address(vm, this);
+            let port = inet_socket_address_port(vm, this);
+            let text = if address.is_null() {
+                alloc::format!("{}:{port}", inet_socket_address_host(vm, this))
+            } else {
+                let (class, method) =
+                    vm.resolve_virtual_method(address, "toString", "()Ljava/lang/String;")?;
+                let value = vm.invoke_method(class, method, vec![Value::Ref(address)])?;
+                let address_text = vm
+                    .string_value(value.as_ref())
+                    .unwrap_or_else(|| inet_socket_address_host(vm, this));
+                alloc::format!("{address_text}:{port}")
+            };
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if other.is_null() || vm.class_name(vm.class_of(other)) != "java/net/InetSocketAddress" {
+                return boolean(false);
+            }
+            if inet_socket_address_port(vm, this) != inet_socket_address_port(vm, other) {
+                return boolean(false);
+            }
+            let left = inet_socket_address_address(vm, this);
+            let right = inet_socket_address_address(vm, other);
+            if left.is_null() || right.is_null() {
+                return boolean(left.is_null() && right.is_null());
+            }
+            let (class, method) = vm.resolve_virtual_method(
+                left,
+                "equals",
+                "(Ljava/lang/Object;)Z",
+            )?;
+            let result = vm.invoke_method(class, method, vec![Value::Ref(left), Value::Ref(right)])?;
+            boolean(result.as_int() != 0)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let address = inet_socket_address_address(vm, this);
+        let address_hash = if address.is_null() {
+            0
+        } else {
+            let (class, method) = vm.resolve_virtual_method(address, "hashCode", "()I")?;
+            vm.invoke_method(class, method, vec![Value::Ref(address)])?
+                .as_int()
+        };
+        int(address_hash.wrapping_add(inet_socket_address_port(vm, this)))
+    }),
+    method(
+        "createUnresolved",
+        "(Ljava/lang/String;I)Ljava/net/InetSocketAddress;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let host = string_arg(vm, args[0])?;
+            let port = crate::int_arg(args, 1);
+            validate_port(vm, port)?;
+            let class = vm.resolve_class("java/net/InetSocketAddress")?;
+            let instance = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "port", "I")?;
+            vm.set_instance_int(instance, declaring, field, port);
+            let (declaring, field) = vm.find_field(class, "hostname", "Ljava/lang/String;")?;
+            let value = vm.make_string(&host)?;
+            vm.set_instance_ref(instance, declaring, field, value);
+            object(instance)
+        },
+    ),
+];
+
 pub(crate) const INET_SOCKET_ADDRESS: oxjvm_vm::NativeClass = class(
     "java/net/InetSocketAddress",
     Some("java/net/SocketAddress"),
     &[],
     ACC_PUBLIC,
-    &[],
-    &[],
+    &[
+        field("addr", "Ljava/net/InetAddress;", ACC_PRIVATE, None),
+        field("port", "I", ACC_PRIVATE, None),
+        field("hostname", "Ljava/lang/String;", ACC_PRIVATE, None),
+    ],
+    &INET_SOCKET_ADDRESS_METHODS,
     None,
 );
 
