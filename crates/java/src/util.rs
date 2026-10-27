@@ -7675,7 +7675,7 @@ pub(crate) const HASHTABLE: oxjvm_vm::NativeClass = class(
 // Vector (ArrayList plus the legacy element API)
 // -------------------------------------------------------------------------------------------
 
-const VECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
+const VECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
     method("<init>", "()V", ACC_PUBLIC, array_list_init),
     method("<init>", "(I)V", ACC_PUBLIC, array_list_init),
     method("<init>", "(II)V", ACC_PUBLIC, array_list_init),
@@ -7747,6 +7747,88 @@ const VECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
             elements[index as usize] = ref_arg(args, 1);
             array_list_store(vm, this, &elements)?;
             void()
+        },
+    ),
+    method(
+        "copyInto",
+        "([Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let destination = ref_arg(args, 1);
+            if destination.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let elements = array_list_elements(vm, this);
+            let capacity = vm.array_length(destination)?;
+            if elements.len() > capacity {
+                return Err(vm.throw_new("java/lang/ArrayIndexOutOfBoundsException", None));
+            }
+            for (index, element) in elements.iter().enumerate() {
+                vm.array_set_ref(destination, index, *element)?;
+            }
+            void()
+        },
+    ),
+    method("removeAllElements", "()V", ACC_PUBLIC, |vm, _, args| {
+        array_list_store(vm, receiver(args), &[])?;
+        void()
+    }),
+    method(
+        "lastIndexOf",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let needle = ref_arg(args, 1);
+            let elements = array_list_elements(vm, this);
+            for (offset, element) in elements.iter().rev().enumerate() {
+                if keys_equal(vm, *element, needle)? {
+                    return int(elements.len() as i32 - 1 - offset as i32);
+                }
+            }
+            int(-1)
+        },
+    ),
+    method(
+        "lastIndexOf",
+        "(Ljava/lang/Object;I)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let needle = ref_arg(args, 1);
+            let elements = array_list_elements(vm, this);
+            let mut index = crate::int_arg(args, 2);
+            if index >= elements.len() as i32 {
+                return Err(vm.throw_new(
+                    "java/lang/IndexOutOfBoundsException",
+                    Some(&index.to_string()),
+                ));
+            }
+            while index >= 0 {
+                if keys_equal(vm, elements[index as usize], needle)? {
+                    return int(index);
+                }
+                index -= 1;
+            }
+            int(-1)
+        },
+    ),
+    method(
+        "indexOf",
+        "(Ljava/lang/Object;I)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let needle = ref_arg(args, 1);
+            let elements = array_list_elements(vm, this);
+            let start = crate::int_arg(args, 2).max(0);
+            for index in start..elements.len() as i32 {
+                if keys_equal(vm, elements[index as usize], needle)? {
+                    return int(index);
+                }
+            }
+            int(-1)
         },
     ),
     method(
