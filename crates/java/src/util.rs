@@ -10043,8 +10043,681 @@ pub(crate) const CURRENCY: oxjvm_vm::NativeClass = class(
 );
 
 // -------------------------------------------------------------------------------------------
-// Calendar / GregorianCalendar (shell)
+// Calendar / GregorianCalendar
 // -------------------------------------------------------------------------------------------
+
+const MILLIS_PER_DAY: i64 = 86_400_000;
+const MILLIS_PER_HOUR: i64 = 3_600_000;
+
+fn calendar_is_leap(year: i64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+fn calendar_days_in_month(year: i64, month: i64) -> i64 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if calendar_is_leap(year) => 29,
+        2 => 28,
+        _ => 30,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CalendarFields {
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+    minute: i64,
+    second: i64,
+    millisecond: i64,
+}
+
+fn calendar_fields_from_millis(time: i64) -> CalendarFields {
+    let days = time.div_euclid(MILLIS_PER_DAY);
+    let of_day = time.rem_euclid(MILLIS_PER_DAY);
+    let (year, month, day) = civil_from_days(days);
+    CalendarFields {
+        year,
+        month: i64::from(month),
+        day: i64::from(day),
+        hour: of_day / MILLIS_PER_HOUR,
+        minute: of_day / 60_000 % 60,
+        second: of_day / 1_000 % 60,
+        millisecond: of_day % 1_000,
+    }
+}
+
+fn calendar_millis_from_fields(fields: CalendarFields) -> i64 {
+    days_from_civil(fields.year, fields.month, fields.day)
+        .saturating_mul(MILLIS_PER_DAY)
+        .saturating_add(fields.hour * MILLIS_PER_HOUR)
+        .saturating_add(fields.minute * 60_000)
+        .saturating_add(fields.second * 1_000)
+        .saturating_add(fields.millisecond)
+}
+
+fn calendar_day_of_week(time: i64) -> i64 {
+    let days = time.div_euclid(MILLIS_PER_DAY);
+    ((days + 4).rem_euclid(7)) + 1
+}
+
+fn calendar_day_of_year(time: i64) -> i64 {
+    let fields = calendar_fields_from_millis(time);
+    let first = days_from_civil(fields.year, 1, 1);
+    let days = time.div_euclid(MILLIS_PER_DAY);
+    days - first + 1
+}
+
+fn calendar_init(vm: &mut Vm<'_>, this: ObjectRef, time: i64) -> Result<(), VmError> {
+    crate::lang::write_long_field(vm, this, "time", time);
+    if let Some((declaring, field)) = vm.find_field_opt(vm.class_of(this), "lenient", "Z") {
+        vm.set_instance_int(this, declaring, field, 1);
+    }
+    for (name, value) in [("firstDayOfWeek", 1), ("minimalDaysInFirstWeek", 1)] {
+        if let Some((declaring, field)) = vm.find_field_opt(vm.class_of(this), name, "I") {
+            vm.set_instance_int(this, declaring, field, value);
+        }
+    }
+    let zone_class = vm.resolve_class("java/util/TimeZone")?;
+    let zone = vm.new_instance(zone_class)?;
+    let (declaring, field) = vm.find_field(zone_class, "id", "Ljava/lang/String;")?;
+    let id = vm.make_string("GMT")?;
+    vm.set_instance_ref(zone, declaring, field, id);
+    if let Some((declaring, field)) =
+        vm.find_field_opt(vm.class_of(this), "timeZone", "Ljava/util/TimeZone;")
+    {
+        vm.set_instance_ref(this, declaring, field, zone);
+    }
+    Ok(())
+}
+
+fn calendar_time(vm: &Vm<'_>, this: ObjectRef) -> i64 {
+    crate::lang::read_long_field(vm, this, "time")
+}
+
+fn calendar_set_time(vm: &mut Vm<'_>, this: ObjectRef, time: i64) {
+    crate::lang::write_long_field(vm, this, "time", time);
+}
+
+fn calendar_is_lenient(vm: &Vm<'_>, this: ObjectRef) -> bool {
+    vm.read_instance_int_named(this, vm.class_of(this), "lenient", "Z")
+        .unwrap_or(1)
+        != 0
+}
+
+fn calendar_set_lenient(vm: &mut Vm<'_>, this: ObjectRef, value: bool) {
+    if let Some((declaring, field)) = vm.find_field_opt(vm.class_of(this), "lenient", "Z") {
+        vm.set_instance_int(this, declaring, field, i32::from(value));
+    }
+}
+
+fn calendar_field_int(vm: &Vm<'_>, this: ObjectRef, name: &str) -> i32 {
+    crate::lang::read_int_field(vm, this, name)
+}
+
+fn calendar_set_field_int(vm: &mut Vm<'_>, this: ObjectRef, name: &str, value: i32) {
+    crate::lang::write_int_field(vm, this, name, value);
+}
+
+fn calendar_add(vm: &mut Vm<'_>, this: ObjectRef, field: i32, amount: i32) {
+    let time = calendar_time(vm, this);
+    let mut fields = calendar_fields_from_millis(time);
+    match field {
+        // ERA
+        0 => {}
+        // YEAR
+        1 => {
+            fields.year += i64::from(amount);
+            let max_day = calendar_days_in_month(fields.year, fields.month);
+            fields.day = fields.day.min(max_day);
+            calendar_set_time(vm, this, calendar_millis_from_fields(fields));
+        }
+        // MONTH
+        2 => {
+            let total = fields.year * 12 + (fields.month - 1) + i64::from(amount);
+            fields.year = total.div_euclid(12);
+            fields.month = total.rem_euclid(12) + 1;
+            let max_day = calendar_days_in_month(fields.year, fields.month);
+            fields.day = fields.day.min(max_day);
+            calendar_set_time(vm, this, calendar_millis_from_fields(fields));
+        }
+        // WEEK_OF_YEAR / WEEK_OF_MONTH / DAY_OF_WEEK_IN_MONTH
+        3 | 4 | 8 => {
+            calendar_set_time(
+                vm,
+                this,
+                time.saturating_add(i64::from(amount) * 7 * MILLIS_PER_DAY),
+            );
+        }
+        // DATE / DAY_OF_MONTH / DAY_OF_YEAR / DAY_OF_WEEK
+        5 | 6 | 7 => {
+            calendar_set_time(
+                vm,
+                this,
+                time.saturating_add(i64::from(amount) * MILLIS_PER_DAY),
+            );
+        }
+        // AM_PM
+        9 => {
+            calendar_set_time(
+                vm,
+                this,
+                time.saturating_add(i64::from(amount) * 12 * MILLIS_PER_HOUR),
+            );
+        }
+        // HOUR / HOUR_OF_DAY
+        10 | 11 => {
+            calendar_set_time(
+                vm,
+                this,
+                time.saturating_add(i64::from(amount) * MILLIS_PER_HOUR),
+            );
+        }
+        // MINUTE
+        12 => {
+            calendar_set_time(vm, this, time.saturating_add(i64::from(amount) * 60_000));
+        }
+        // SECOND
+        13 => {
+            calendar_set_time(vm, this, time.saturating_add(i64::from(amount) * 1_000));
+        }
+        // MILLISECOND
+        14 => {
+            calendar_set_time(vm, this, time.saturating_add(i64::from(amount)));
+        }
+        _ => {}
+    }
+}
+
+fn calendar_get(vm: &Vm<'_>, this: ObjectRef, field: i32) -> i32 {
+    let time = calendar_time(vm, this);
+    let fields = calendar_fields_from_millis(time);
+    match field {
+        0 => i32::from(fields.year > 0),
+        1 => fields.year as i32,
+        2 => fields.month as i32 - 1,
+        3 => ((calendar_day_of_year(time) - 1) / 7 + 1) as i32,
+        4 => ((fields.day - 1) / 7 + 1) as i32,
+        5 => fields.day as i32,
+        6 => calendar_day_of_year(time) as i32,
+        7 => calendar_day_of_week(time) as i32,
+        8 => ((fields.day - 1) / 7 + 1) as i32,
+        9 => i32::from(fields.hour >= 12),
+        10 => {
+            let hour = fields.hour % 12;
+            if hour == 0 { 12 } else { hour as i32 }
+        }
+        11 => fields.hour as i32,
+        12 => fields.minute as i32,
+        13 => fields.second as i32,
+        14 => fields.millisecond as i32,
+        15 | 16 => 0,
+        17 => 17,
+        _ => 0,
+    }
+}
+
+fn calendar_set_components(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+    minute: i64,
+    second: i64,
+) {
+    let max_day = calendar_days_in_month(year, month);
+    let fields = CalendarFields {
+        year,
+        month,
+        day: day.clamp(1, max_day),
+        hour,
+        minute,
+        second,
+        millisecond: 0,
+    };
+    calendar_set_time(vm, this, calendar_millis_from_fields(fields));
+}
+
+fn calendar_get_time_value(vm: &mut Vm<'_>, time: i64) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/util/Date")?;
+    let instance = vm.new_instance(class)?;
+    if let Some((declaring, field)) = vm.find_field_opt(class, "time", "J") {
+        vm.set_instance_long(instance, declaring, field, time);
+    }
+    object(instance)
+}
+
+fn calendar_instance(vm: &mut Vm<'_>) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/util/GregorianCalendar")?;
+    let instance = vm.new_instance(class)?;
+    let now = vm.host_time_millis();
+    calendar_init(vm, instance, now)?;
+    object(instance)
+}
+
+const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
+    method(
+        "getInstance",
+        "()Ljava/util/Calendar;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| calendar_instance(vm),
+    ),
+    method(
+        "getInstance",
+        "(Ljava/util/Locale;)Ljava/util/Calendar;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| calendar_instance(vm),
+    ),
+    method(
+        "getInstance",
+        "(Ljava/util/TimeZone;)Ljava/util/Calendar;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| calendar_instance(vm),
+    ),
+    method(
+        "getInstance",
+        "(Ljava/util/TimeZone;Ljava/util/Locale;)Ljava/util/Calendar;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| calendar_instance(vm),
+    ),
+    method("getTimeInMillis", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(calendar_time(vm, receiver(args)))
+    }),
+    method("setTimeInMillis", "(J)V", ACC_PUBLIC, |vm, _, args| {
+        let time = long_arg(args, 1);
+        calendar_set_time(vm, receiver(args), time);
+        void()
+    }),
+    method("get", "(I)I", ACC_PUBLIC, |vm, _, args| {
+        int(calendar_get(vm, receiver(args), crate::int_arg(args, 1)))
+    }),
+    method("set", "(II)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let field = crate::int_arg(args, 1);
+        let value = crate::int_arg(args, 2);
+        if field == 1 || field == 2 || field == 5 || field == 6 {
+            let time = calendar_time(vm, this);
+            let mut fields = calendar_fields_from_millis(time);
+            match field {
+                1 => fields.year = i64::from(value),
+                2 => fields.month = i64::from(value) + 1,
+                5 => fields.day = i64::from(value),
+                6 => {
+                    let first = days_from_civil(fields.year, 1, 1);
+                    let day = first + i64::from(value) - 1;
+                    let (year, month, day_of_month) = civil_from_days(day);
+                    fields.year = year;
+                    fields.month = i64::from(month);
+                    fields.day = i64::from(day_of_month);
+                }
+                _ => {}
+            }
+            let max_day = calendar_days_in_month(fields.year, fields.month);
+            fields.day = fields.day.clamp(1, max_day);
+            calendar_set_time(vm, this, calendar_millis_from_fields(fields));
+        } else {
+            let time = calendar_time(vm, this);
+            let mut fields = calendar_fields_from_millis(time);
+            match field {
+                9 => fields.hour = (fields.hour % 12) + i64::from(value) * 12,
+                10 => fields.hour = i64::from(value % 12),
+                11 => fields.hour = i64::from(value),
+                12 => fields.minute = i64::from(value),
+                13 => fields.second = i64::from(value),
+                14 => fields.millisecond = i64::from(value),
+                _ => {}
+            }
+            calendar_set_time(vm, this, calendar_millis_from_fields(fields));
+        }
+        void()
+    }),
+    method("set", "(III)V", ACC_PUBLIC, |vm, _, args| {
+        calendar_set_components(
+            vm,
+            receiver(args),
+            i64::from(crate::int_arg(args, 1)),
+            i64::from(crate::int_arg(args, 2)) + 1,
+            i64::from(crate::int_arg(args, 3)),
+            0,
+            0,
+            0,
+        );
+        void()
+    }),
+    method("set", "(IIIII)V", ACC_PUBLIC, |vm, _, args| {
+        calendar_set_components(
+            vm,
+            receiver(args),
+            i64::from(crate::int_arg(args, 1)),
+            i64::from(crate::int_arg(args, 2)) + 1,
+            i64::from(crate::int_arg(args, 3)),
+            i64::from(crate::int_arg(args, 4)),
+            i64::from(crate::int_arg(args, 5)),
+            0,
+        );
+        void()
+    }),
+    method("set", "(IIIIII)V", ACC_PUBLIC, |vm, _, args| {
+        calendar_set_components(
+            vm,
+            receiver(args),
+            i64::from(crate::int_arg(args, 1)),
+            i64::from(crate::int_arg(args, 2)) + 1,
+            i64::from(crate::int_arg(args, 3)),
+            i64::from(crate::int_arg(args, 4)),
+            i64::from(crate::int_arg(args, 5)),
+            i64::from(crate::int_arg(args, 6)),
+        );
+        void()
+    }),
+    method(
+        "getTime",
+        "()Ljava/util/Date;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let time = calendar_time(vm, receiver(args));
+            calendar_get_time_value(vm, time)
+        },
+    ),
+    method(
+        "setTime",
+        "(Ljava/util/Date;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let date = ref_arg(args, 1);
+            let time = crate::lang::read_long_field(vm, date, "time");
+            calendar_set_time(vm, receiver(args), time);
+            void()
+        },
+    ),
+    method(
+        "getTimeZone",
+        "()Ljava/util/TimeZone;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let zone = vm
+                .read_ref_field_any(this, "timeZone")
+                .unwrap_or(ObjectRef::NULL);
+            if zone.is_null() {
+                new_time_zone(vm, "GMT")
+            } else {
+                object(zone)
+            }
+        },
+    ),
+    method(
+        "setTimeZone",
+        "(Ljava/util/TimeZone;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if let Some((declaring, field)) =
+                vm.find_field_opt(vm.class_of(this), "timeZone", "Ljava/util/TimeZone;")
+            {
+                vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            }
+            void()
+        },
+    ),
+    method("add", "(II)V", ACC_PUBLIC, |vm, _, args| {
+        calendar_add(
+            vm,
+            receiver(args),
+            crate::int_arg(args, 1),
+            crate::int_arg(args, 2),
+        );
+        void()
+    }),
+    method("roll", "(II)V", ACC_PUBLIC, |vm, _, args| {
+        calendar_add(
+            vm,
+            receiver(args),
+            crate::int_arg(args, 1),
+            crate::int_arg(args, 2),
+        );
+        void()
+    }),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        calendar_set_time(vm, this, 0);
+        void()
+    }),
+    method("clear", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let field = crate::int_arg(args, 1);
+        if field == 2 || field == 5 {
+            let mut fields = calendar_fields_from_millis(calendar_time(vm, this));
+            if field == 2 {
+                fields.month = 1;
+            } else {
+                fields.day = 1;
+            }
+            calendar_set_time(vm, this, calendar_millis_from_fields(fields));
+        }
+        void()
+    }),
+    method("isLenient", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(calendar_is_lenient(vm, receiver(args)))
+    }),
+    method("setLenient", "(Z)V", ACC_PUBLIC, |vm, _, args| {
+        calendar_set_lenient(vm, receiver(args), crate::bool_arg(args, 1));
+        void()
+    }),
+    method("getFirstDayOfWeek", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(calendar_field_int(vm, receiver(args), "firstDayOfWeek"))
+    }),
+    method("setFirstDayOfWeek", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        calendar_set_field_int(
+            vm,
+            receiver(args),
+            "firstDayOfWeek",
+            crate::int_arg(args, 1),
+        );
+        void()
+    }),
+    method(
+        "getMinimalDaysInFirstWeek",
+        "()I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            int(calendar_field_int(
+                vm,
+                receiver(args),
+                "minimalDaysInFirstWeek",
+            ))
+        },
+    ),
+    method(
+        "setMinimalDaysInFirstWeek",
+        "(I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            calendar_set_field_int(
+                vm,
+                receiver(args),
+                "minimalDaysInFirstWeek",
+                crate::int_arg(args, 1),
+            );
+            void()
+        },
+    ),
+    method("getActualMaximum", "(I)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let field = crate::int_arg(args, 1);
+        let fields = calendar_fields_from_millis(calendar_time(vm, this));
+        let value = match field {
+            5 => calendar_days_in_month(fields.year, fields.month),
+            6 => {
+                if calendar_is_leap(fields.year) {
+                    366
+                } else {
+                    365
+                }
+            }
+            2 => 11,
+            1 => 292_278_993,
+            _ => 0,
+        };
+        int(if value == 0 {
+            calendar_maximum(field)
+        } else {
+            value as i32
+        })
+    }),
+    method("getActualMinimum", "(I)I", ACC_PUBLIC, |_vm, _, args| {
+        int(calendar_minimum(crate::int_arg(args, 1)))
+    }),
+    method("getMinimum", "(I)I", ACC_PUBLIC, |_vm, _, args| {
+        int(calendar_minimum(crate::int_arg(args, 1)))
+    }),
+    method("getMaximum", "(I)I", ACC_PUBLIC, |_vm, _, args| {
+        int(calendar_maximum(crate::int_arg(args, 1)))
+    }),
+    method("getGreatestMinimum", "(I)I", ACC_PUBLIC, |_vm, _, args| {
+        int(calendar_minimum(crate::int_arg(args, 1)))
+    }),
+    method("getLeastMaximum", "(I)I", ACC_PUBLIC, |_vm, _, args| {
+        int(calendar_maximum(crate::int_arg(args, 1)))
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let time = calendar_time(vm, this);
+            let fields = calendar_fields_from_millis(time);
+            let text = alloc::format!(
+                "java.util.GregorianCalendar[time={time},lenient={},firstDayOfWeek={},minimalDaysInFirstWeek={},YEAR={},MONTH={},DATE={},HOUR_OF_DAY={},MINUTE={},SECOND={},MILLISECOND={}]",
+                calendar_is_lenient(vm, this),
+                calendar_field_int(vm, this, "firstDayOfWeek"),
+                calendar_field_int(vm, this, "minimalDaysInFirstWeek"),
+                fields.year,
+                fields.month - 1,
+                fields.day,
+                fields.hour,
+                fields.minute,
+                fields.second,
+                fields.millisecond,
+            );
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if other.is_null() {
+                return boolean(false);
+            }
+            let calendar = vm.resolve_class("java/util/Calendar")?;
+            if !vm.is_instance(other, calendar) {
+                return boolean(false);
+            }
+            boolean(calendar_time(vm, this) == calendar_time(vm, other))
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let time = calendar_time(vm, receiver(args));
+        int((time as i32) ^ ((time >> 32) as i32))
+    }),
+    method(
+        "compareTo",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = calendar_time(vm, receiver(args));
+            let other = calendar_time(vm, ref_arg(args, 1));
+            int(if this < other {
+                -1
+            } else if this == other {
+                0
+            } else {
+                1
+            })
+        },
+    ),
+    method(
+        "before",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            boolean(calendar_time(vm, receiver(args)) < calendar_time(vm, ref_arg(args, 1)))
+        },
+    ),
+    method(
+        "after",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            boolean(calendar_time(vm, receiver(args)) > calendar_time(vm, ref_arg(args, 1)))
+        },
+    ),
+    method(
+        "getAvailableLocales",
+        "()[Ljava/util/Locale;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/util/Locale")?;
+            object(vm.allocate_object_array(class, 0)?)
+        },
+    ),
+];
+
+fn calendar_minimum(field: i32) -> i32 {
+    match field {
+        0 => 0,
+        1 => 1,
+        2 | 8 | 9 | 10 => 0,
+        3 | 4 => 1,
+        5 | 6 | 7 => 1,
+        11 | 12 | 13 | 14 => 0,
+        15 => -50400000,
+        16 => 0,
+        17 => 17,
+        _ => 0,
+    }
+}
+
+fn calendar_maximum(field: i32) -> i32 {
+    match field {
+        0 => 1,
+        1 => 292_278_993,
+        2 => 11,
+        3 => 54,
+        4 => 6,
+        5 => 31,
+        6 => 366,
+        7 => 7,
+        8 => 6,
+        9 => 1,
+        10 => 11,
+        11 => 23,
+        12 | 13 => 59,
+        14 => 999,
+        15 => 50400000,
+        16 => 7200000,
+        17 => 17,
+        _ => 0,
+    }
+}
+
+const fn calendar_constant(name: &'static str, value: i32) -> oxjvm_vm::NativeFieldDef {
+    field(
+        name,
+        "I",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        Some(oxjvm_vm::NativeConstant::Int(value)),
+    )
+}
 
 pub(crate) const CALENDAR: oxjvm_vm::NativeClass = class(
     "java/util/Calendar",
@@ -10055,10 +10728,151 @@ pub(crate) const CALENDAR: oxjvm_vm::NativeClass = class(
         "java/lang/Comparable",
     ],
     ACC_PUBLIC | ACC_ABSTRACT,
-    &[],
-    &[],
+    &[
+        calendar_constant("ERA", 0),
+        calendar_constant("YEAR", 1),
+        calendar_constant("MONTH", 2),
+        calendar_constant("WEEK_OF_YEAR", 3),
+        calendar_constant("WEEK_OF_MONTH", 4),
+        calendar_constant("DATE", 5),
+        calendar_constant("DAY_OF_MONTH", 5),
+        calendar_constant("DAY_OF_YEAR", 6),
+        calendar_constant("DAY_OF_WEEK", 7),
+        calendar_constant("DAY_OF_WEEK_IN_MONTH", 8),
+        calendar_constant("AM_PM", 9),
+        calendar_constant("HOUR", 10),
+        calendar_constant("HOUR_OF_DAY", 11),
+        calendar_constant("MINUTE", 12),
+        calendar_constant("SECOND", 13),
+        calendar_constant("MILLISECOND", 14),
+        calendar_constant("ZONE_OFFSET", 15),
+        calendar_constant("DST_OFFSET", 16),
+        calendar_constant("FIELD_COUNT", 17),
+        calendar_constant("SUNDAY", 1),
+        calendar_constant("MONDAY", 2),
+        calendar_constant("TUESDAY", 3),
+        calendar_constant("WEDNESDAY", 4),
+        calendar_constant("THURSDAY", 5),
+        calendar_constant("FRIDAY", 6),
+        calendar_constant("SATURDAY", 7),
+        calendar_constant("JANUARY", 0),
+        calendar_constant("FEBRUARY", 1),
+        calendar_constant("MARCH", 2),
+        calendar_constant("APRIL", 3),
+        calendar_constant("MAY", 4),
+        calendar_constant("JUNE", 5),
+        calendar_constant("JULY", 6),
+        calendar_constant("AUGUST", 7),
+        calendar_constant("SEPTEMBER", 8),
+        calendar_constant("OCTOBER", 9),
+        calendar_constant("NOVEMBER", 10),
+        calendar_constant("DECEMBER", 11),
+        calendar_constant("AM", 0),
+        calendar_constant("PM", 1),
+        calendar_constant("ALL_STYLES", 0),
+        calendar_constant("SHORT", 1),
+        calendar_constant("LONG", 2),
+        field("time", "J", ACC_PRIVATE | ACC_TRANSIENT, None),
+        field("lenient", "Z", ACC_PRIVATE, None),
+        field("firstDayOfWeek", "I", ACC_PRIVATE, None),
+        field("minimalDaysInFirstWeek", "I", ACC_PRIVATE, None),
+        field("timeZone", "Ljava/util/TimeZone;", ACC_PRIVATE, None),
+    ],
+    &CALENDAR_METHODS,
     None,
 );
+
+const GREGORIAN_CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let now = vm.host_time_millis();
+        calendar_init(vm, receiver(args), now)?;
+        void()
+    }),
+    method(
+        "<init>",
+        "(Ljava/util/TimeZone;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let now = vm.host_time_millis();
+            let this = receiver(args);
+            calendar_init(vm, this, now)?;
+            if let Some((declaring, field)) =
+                vm.find_field_opt(vm.class_of(this), "timeZone", "Ljava/util/TimeZone;")
+            {
+                vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            }
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/util/Locale;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let now = vm.host_time_millis();
+            calendar_init(vm, receiver(args), now)?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/util/TimeZone;Ljava/util/Locale;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let now = vm.host_time_millis();
+            let this = receiver(args);
+            calendar_init(vm, this, now)?;
+            if let Some((declaring, field)) =
+                vm.find_field_opt(vm.class_of(this), "timeZone", "Ljava/util/TimeZone;")
+            {
+                vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            }
+            void()
+        },
+    ),
+    method("<init>", "(III)V", ACC_PUBLIC, |vm, _, args| {
+        calendar_init(vm, receiver(args), 0)?;
+        calendar_set_components(
+            vm,
+            receiver(args),
+            i64::from(crate::int_arg(args, 1)),
+            i64::from(crate::int_arg(args, 2)) + 1,
+            i64::from(crate::int_arg(args, 3)),
+            0,
+            0,
+            0,
+        );
+        void()
+    }),
+    method("<init>", "(IIIII)V", ACC_PUBLIC, |vm, _, args| {
+        calendar_init(vm, receiver(args), 0)?;
+        calendar_set_components(
+            vm,
+            receiver(args),
+            i64::from(crate::int_arg(args, 1)),
+            i64::from(crate::int_arg(args, 2)) + 1,
+            i64::from(crate::int_arg(args, 3)),
+            i64::from(crate::int_arg(args, 4)),
+            i64::from(crate::int_arg(args, 5)),
+            0,
+        );
+        void()
+    }),
+    method("<init>", "(IIIIII)V", ACC_PUBLIC, |vm, _, args| {
+        calendar_init(vm, receiver(args), 0)?;
+        calendar_set_components(
+            vm,
+            receiver(args),
+            i64::from(crate::int_arg(args, 1)),
+            i64::from(crate::int_arg(args, 2)) + 1,
+            i64::from(crate::int_arg(args, 3)),
+            i64::from(crate::int_arg(args, 4)),
+            i64::from(crate::int_arg(args, 5)),
+            i64::from(crate::int_arg(args, 6)),
+        );
+        void()
+    }),
+];
 
 pub(crate) const GREGORIAN_CALENDAR: oxjvm_vm::NativeClass = class(
     "java/util/GregorianCalendar",
@@ -10066,6 +10880,6 @@ pub(crate) const GREGORIAN_CALENDAR: oxjvm_vm::NativeClass = class(
     &[],
     ACC_PUBLIC,
     &[],
-    &[],
+    &GREGORIAN_CALENDAR_METHODS,
     None,
 );
