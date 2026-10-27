@@ -1293,13 +1293,323 @@ pub(crate) const URL_CONNECTION: oxjvm_vm::NativeClass = class(
 // Tier 2.1 shells: networking types not yet fully implemented
 // -------------------------------------------------------------------------------------------
 
+fn server_socket_bool(vm: &Vm<'_>, this: ObjectRef, name: &str) -> bool {
+    vm.read_instance_int_named(this, vm.class_of(this), name, "Z")
+        .unwrap_or(0)
+        != 0
+}
+
+fn server_socket_set_bool(vm: &mut Vm<'_>, this: ObjectRef, name: &str, value: bool) {
+    if let Some((declaring, field)) = vm.find_field_opt(vm.class_of(this), name, "Z") {
+        vm.set_instance_int(this, declaring, field, i32::from(value));
+    }
+}
+
+fn server_socket_int(vm: &Vm<'_>, this: ObjectRef, name: &str) -> i32 {
+    vm.read_instance_int_named(this, vm.class_of(this), name, "I")
+        .unwrap_or(0)
+}
+
+fn server_socket_set_int(vm: &mut Vm<'_>, this: ObjectRef, name: &str, value: i32) {
+    if let Some((declaring, field)) = vm.find_field_opt(vm.class_of(this), name, "I") {
+        vm.set_instance_int(this, declaring, field, value);
+    }
+}
+
+fn server_socket_address(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field_any(this, "localAddr")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn new_inet_socket_address(
+    vm: &mut Vm<'_>,
+    address: ObjectRef,
+    port: i32,
+) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/net/InetSocketAddress")?;
+    let instance = vm.new_instance(class)?;
+    init_inet_socket_address(vm, instance, address, port)?;
+    object(instance)
+}
+
+fn server_socket_bind(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    endpoint: ObjectRef,
+    backlog: i32,
+) -> Result<(), VmError> {
+    if server_socket_bool(vm, this, "bound") {
+        return Err(vm.throw_new("java/net/SocketException", Some("Already bound")));
+    }
+    if server_socket_bool(vm, this, "closed") {
+        return Err(vm.throw_new("java/net/SocketException", Some("Socket is closed!")));
+    }
+    if !endpoint.is_null() {
+        let class = vm.resolve_class("java/net/InetSocketAddress")?;
+        if !vm.is_instance(endpoint, class) {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("Unsupported address type"),
+            ));
+        }
+        let port = inet_socket_address_port(vm, endpoint);
+        let address = inet_socket_address_address(vm, endpoint);
+        server_socket_set_int(vm, this, "localPort", port);
+        let (declaring, field) =
+            vm.find_field(vm.class_of(this), "localAddr", "Ljava/net/InetAddress;")?;
+        vm.set_instance_ref(this, declaring, field, address);
+    } else {
+        server_socket_set_int(vm, this, "localPort", 0);
+    }
+    if server_socket_int(vm, this, "localPort") == 0 {
+        let ephemeral = 20000 + (this.raw() as i32 % 20000);
+        server_socket_set_int(vm, this, "localPort", ephemeral);
+    }
+    server_socket_set_int(vm, this, "backlog", backlog);
+    server_socket_set_bool(vm, this, "bound", true);
+    Ok(())
+}
+
+fn server_socket_init(vm: &mut Vm<'_>, this: ObjectRef, port: i32) -> Result<(), VmError> {
+    server_socket_set_int(vm, this, "localPort", -1);
+    server_socket_set_int(vm, this, "soTimeout", 0);
+    server_socket_set_int(vm, this, "receiveBufferSize", 65536);
+    let wildcard = wildcard_address(vm)?;
+    let (declaring, field) =
+        vm.find_field(vm.class_of(this), "localAddr", "Ljava/net/InetAddress;")?;
+    vm.set_instance_ref(this, declaring, field, wildcard);
+    if port >= 0 {
+        validate_port(vm, port)?;
+        server_socket_set_int(vm, this, "localPort", port);
+        if port == 0 {
+            let ephemeral = 20000 + (this.raw() as i32 % 20000);
+            server_socket_set_int(vm, this, "localPort", ephemeral);
+        }
+        server_socket_set_bool(vm, this, "bound", true);
+    }
+    Ok(())
+}
+
+const SERVER_SOCKET_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        server_socket_init(vm, receiver(args), -1)?;
+        void()
+    }),
+    method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        server_socket_init(vm, receiver(args), crate::int_arg(args, 1))?;
+        void()
+    }),
+    method("<init>", "(II)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        server_socket_init(vm, this, crate::int_arg(args, 1))?;
+        server_socket_set_int(vm, this, "backlog", crate::int_arg(args, 2));
+        void()
+    }),
+    method(
+        "<init>",
+        "(IILjava/net/InetAddress;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            server_socket_init(vm, this, crate::int_arg(args, 1))?;
+            server_socket_set_int(vm, this, "backlog", crate::int_arg(args, 2));
+            let address = ref_arg(args, 3);
+            if !address.is_null() {
+                let (declaring, field) =
+                    vm.find_field(vm.class_of(this), "localAddr", "Ljava/net/InetAddress;")?;
+                vm.set_instance_ref(this, declaring, field, address);
+            }
+            void()
+        },
+    ),
+    method(
+        "bind",
+        "(Ljava/net/SocketAddress;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            server_socket_bind(vm, receiver(args), ref_arg(args, 1), 50)?;
+            void()
+        },
+    ),
+    method(
+        "bind",
+        "(Ljava/net/SocketAddress;I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            server_socket_bind(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                crate::int_arg(args, 2),
+            )?;
+            void()
+        },
+    ),
+    method("getLocalPort", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if server_socket_bool(vm, this, "bound") {
+            int(server_socket_int(vm, this, "localPort"))
+        } else {
+            int(-1)
+        }
+    }),
+    method(
+        "getInetAddress",
+        "()Ljava/net/InetAddress;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if server_socket_bool(vm, this, "bound") {
+                object(server_socket_address(vm, this))
+            } else {
+                object(ObjectRef::NULL)
+            }
+        },
+    ),
+    method(
+        "getLocalSocketAddress",
+        "()Ljava/net/SocketAddress;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if !server_socket_bool(vm, this, "bound") || server_socket_bool(vm, this, "closed") {
+                return object(ObjectRef::NULL);
+            }
+            let address = server_socket_address(vm, this);
+            new_inet_socket_address(vm, address, server_socket_int(vm, this, "localPort"))
+        },
+    ),
+    method("isBound", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(server_socket_bool(vm, receiver(args), "bound"))
+    }),
+    method("isClosed", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(server_socket_bool(vm, receiver(args), "closed"))
+    }),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        server_socket_set_bool(vm, this, "closed", true);
+        void()
+    }),
+    method("setReuseAddress", "(Z)V", ACC_PUBLIC, |vm, _, args| {
+        server_socket_set_bool(vm, receiver(args), "reuseAddress", crate::bool_arg(args, 1));
+        void()
+    }),
+    method("getReuseAddress", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(server_socket_bool(vm, receiver(args), "reuseAddress"))
+    }),
+    method("setSoTimeout", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let timeout = crate::int_arg(args, 1);
+        if timeout < 0 {
+            return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("timeout < 0")));
+        }
+        server_socket_set_int(vm, receiver(args), "soTimeout", timeout);
+        void()
+    }),
+    method("getSoTimeout", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(server_socket_int(vm, receiver(args), "soTimeout"))
+    }),
+    method("setReceiveBufferSize", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let size = crate::int_arg(args, 1);
+        if size <= 0 {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("negative receive size"),
+            ));
+        }
+        server_socket_set_int(vm, receiver(args), "receiveBufferSize", size);
+        void()
+    }),
+    method("getReceiveBufferSize", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(server_socket_int(vm, receiver(args), "receiveBufferSize"))
+    }),
+    method("accept", "()Ljava/net/Socket;", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new(
+            "java/net/SocketException",
+            Some("accept is not supported by oxjvm"),
+        ))
+    }),
+    method(
+        "getChannel",
+        "()Ljava/nio/channels/ServerSocketChannel;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "setPerformancePreferences",
+        "(III)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let address = server_socket_address(vm, this);
+            let address_text = if address.is_null() {
+                String::from("0.0.0.0")
+            } else {
+                vm.read_string_field_any(address, "hostAddress")
+                    .unwrap_or_else(|| dotted(&address_bytes(vm, address)))
+            };
+            let text = alloc::format!(
+                "ServerSocket[addr={address_text},localport={}]",
+                server_socket_int(vm, this, "localPort")
+            );
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "setOption",
+        "(Ljava/net/SocketOption;Ljava/lang/Object;)Ljava/net/ServerSocket;",
+        ACC_PUBLIC,
+        |_, _, args| object(receiver(args)),
+    ),
+    method(
+        "getOption",
+        "(Ljava/net/SocketOption;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "supportedOptions",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/util/HashSet")?;
+            let instance = vm.new_instance(class)?;
+            if let Some((declaring, ctor)) = vm.find_method(class, "<init>", "()V") {
+                vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
+            }
+            object(instance)
+        },
+    ),
+    method("setSoReuseAddress", "(Z)V", ACC_PUBLIC, |vm, _, args| {
+        server_socket_set_bool(vm, receiver(args), "reuseAddress", crate::bool_arg(args, 1));
+        void()
+    }),
+    method("getSoReuseAddress", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(server_socket_bool(vm, receiver(args), "reuseAddress"))
+    }),
+];
+
 pub(crate) const SERVER_SOCKET: oxjvm_vm::NativeClass = class(
     "java/net/ServerSocket",
     Some("java/lang/Object"),
     &["java/io/Closeable"],
     ACC_PUBLIC,
-    &[],
-    &[],
+    &[
+        field("bound", "Z", ACC_PRIVATE, None),
+        field("closed", "Z", ACC_PRIVATE, None),
+        field("reuseAddress", "Z", ACC_PRIVATE, None),
+        field("localPort", "I", ACC_PRIVATE, None),
+        field("backlog", "I", ACC_PRIVATE, None),
+        field("soTimeout", "I", ACC_PRIVATE, None),
+        field("receiveBufferSize", "I", ACC_PRIVATE, None),
+        field("localAddr", "Ljava/net/InetAddress;", ACC_PRIVATE, None),
+    ],
+    &SERVER_SOCKET_METHODS,
     None,
 );
 
@@ -1338,7 +1648,8 @@ fn inet_socket_address_port(vm: &Vm<'_>, this: ObjectRef) -> i32 {
 }
 
 fn inet_socket_address_address(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
-    vm.read_ref_field_any(this, "addr").unwrap_or(ObjectRef::NULL)
+    vm.read_ref_field_any(this, "addr")
+        .unwrap_or(ObjectRef::NULL)
 }
 
 fn validate_port(vm: &mut Vm<'_>, port: i32) -> Result<(), VmError> {
@@ -1491,7 +1802,8 @@ const INET_SOCKET_ADDRESS_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
         |vm, _, args| {
             let this = receiver(args);
             let other = ref_arg(args, 1);
-            if other.is_null() || vm.class_name(vm.class_of(other)) != "java/net/InetSocketAddress" {
+            if other.is_null() || vm.class_name(vm.class_of(other)) != "java/net/InetSocketAddress"
+            {
                 return boolean(false);
             }
             if inet_socket_address_port(vm, this) != inet_socket_address_port(vm, other) {
@@ -1502,12 +1814,10 @@ const INET_SOCKET_ADDRESS_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
             if left.is_null() || right.is_null() {
                 return boolean(left.is_null() && right.is_null());
             }
-            let (class, method) = vm.resolve_virtual_method(
-                left,
-                "equals",
-                "(Ljava/lang/Object;)Z",
-            )?;
-            let result = vm.invoke_method(class, method, vec![Value::Ref(left), Value::Ref(right)])?;
+            let (class, method) =
+                vm.resolve_virtual_method(left, "equals", "(Ljava/lang/Object;)Z")?;
+            let result =
+                vm.invoke_method(class, method, vec![Value::Ref(left), Value::Ref(right)])?;
             boolean(result.as_int() != 0)
         },
     ),
