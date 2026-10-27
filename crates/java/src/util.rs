@@ -7675,7 +7675,7 @@ pub(crate) const HASHTABLE: oxjvm_vm::NativeClass = class(
 // Vector (ArrayList plus the legacy element API)
 // -------------------------------------------------------------------------------------------
 
-const VECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
+const VECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
     method("<init>", "()V", ACC_PUBLIC, array_list_init),
     method("<init>", "(I)V", ACC_PUBLIC, array_list_init),
     method("<init>", "(II)V", ACC_PUBLIC, array_list_init),
@@ -7729,6 +7729,25 @@ const VECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
         "(ILjava/lang/Object;)Ljava/lang/Object;",
         ACC_PUBLIC,
         array_list_set,
+    ),
+    method(
+        "setElementAt",
+        "(Ljava/lang/Object;I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let mut elements = array_list_elements(vm, this);
+            let index = crate::int_arg(args, 2);
+            if index < 0 || index as usize >= elements.len() {
+                return Err(vm.throw_new(
+                    "java/lang/ArrayIndexOutOfBoundsException",
+                    Some(&index.to_string()),
+                ));
+            }
+            elements[index as usize] = ref_arg(args, 1);
+            array_list_store(vm, this, &elements)?;
+            void()
+        },
     ),
     method(
         "firstElement",
