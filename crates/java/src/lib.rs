@@ -35,6 +35,7 @@ pub(crate) mod locale;
 pub(crate) mod logging;
 pub(crate) mod management;
 pub(crate) mod math;
+pub(crate) mod module;
 pub(crate) mod net;
 pub(crate) mod nio;
 pub(crate) mod optional;
@@ -138,7 +139,7 @@ pub fn is_non_writable_property(key: &str) -> bool {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 679] = [
+static REGISTRY: [NativeClass; 687] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -182,7 +183,8 @@ static REGISTRY: [NativeClass; 679] = [
     lang::ZONE_ID,
     lang::CIPHER,
     lang::SSL_CONTEXT,
-    lang::MODULE_DESCRIPTOR,
+    module::MODULE_DESCRIPTOR,
+    module::BUILDER,
     lang::HTTP_CLIENT,
     lang::HTTP_RESPONSE,
     lang::HTTP_CLIENT_VERSION,
@@ -715,6 +717,13 @@ static REGISTRY: [NativeClass; 679] = [
     nio::BASIC_FILE_ATTRIBUTES,
     nio::OJVM_BASIC_FILE_ATTRIBUTES,
     nio::FILE_VISIT_OPTION,
+    module::REQUIRES,
+    module::EXPORTS,
+    module::OPENS,
+    module::PROVIDES,
+    module::REQUIRES_MODIFIER,
+    module::DESCRIPTOR_MODIFIER,
+    module::VERSION,
     nio::FILE_VISIT_RESULT,
     nio::FILE_VISITOR,
     nio::SIMPLE_FILE_VISITOR,
