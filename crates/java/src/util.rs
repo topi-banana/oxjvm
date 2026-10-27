@@ -10298,6 +10298,8 @@ fn calendar_day_of_year(time: i64) -> i64 {
 
 fn calendar_init(vm: &mut Vm<'_>, this: ObjectRef, time: i64) -> Result<(), VmError> {
     crate::lang::write_long_field(vm, this, "time", time);
+    calendar_mark_all(vm, this);
+    calendar_set_time_set(vm, this);
     if let Some((declaring, field)) = vm.find_field_opt(vm.class_of(this), "lenient", "Z") {
         vm.set_instance_int(this, declaring, field, 1);
     }
@@ -10325,6 +10327,31 @@ fn calendar_time(vm: &Vm<'_>, this: ObjectRef) -> i64 {
 
 fn calendar_set_time(vm: &mut Vm<'_>, this: ObjectRef, time: i64) {
     crate::lang::write_long_field(vm, this, "time", time);
+}
+
+fn calendar_mark(vm: &mut Vm<'_>, this: ObjectRef, field: i32) {
+    if !(0..17).contains(&field) {
+        return;
+    }
+    let bits = crate::lang::read_int_field(vm, this, "setFields");
+    crate::lang::write_int_field(vm, this, "setFields", bits | (1 << field));
+}
+
+fn calendar_mark_all(vm: &mut Vm<'_>, this: ObjectRef) {
+    crate::lang::write_int_field(vm, this, "setFields", (1 << 17) - 1);
+}
+
+fn calendar_is_set(vm: &Vm<'_>, this: ObjectRef, field: i32) -> bool {
+    if !(0..17).contains(&field) {
+        return false;
+    }
+    crate::lang::read_int_field(vm, this, "setFields") & (1 << field) != 0
+}
+
+fn calendar_set_time_set(vm: &mut Vm<'_>, this: ObjectRef) {
+    if let Some((declaring, field)) = vm.find_field_opt(vm.class_of(this), "isTimeSet", "Z") {
+        vm.set_instance_int(this, declaring, field, 1);
+    }
 }
 
 fn calendar_is_lenient(vm: &Vm<'_>, this: ObjectRef) -> bool {
@@ -10485,7 +10512,7 @@ fn calendar_instance(vm: &mut Vm<'_>) -> Result<Value, VmError> {
     object(instance)
 }
 
-const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
+const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
     method(
         "getInstance",
         "()Ljava/util/Calendar;",
@@ -10519,7 +10546,11 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
         void()
     }),
     method("get", "(I)I", ACC_PUBLIC, |vm, _, args| {
-        int(calendar_get(vm, receiver(args), crate::int_arg(args, 1)))
+        let this = receiver(args);
+        let field = crate::int_arg(args, 1);
+        let value = calendar_get(vm, this, field);
+        calendar_mark_all(vm, this);
+        int(value)
     }),
     method("set", "(II)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
@@ -10559,6 +10590,7 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
             }
             calendar_set_time(vm, this, calendar_millis_from_fields(fields));
         }
+        calendar_mark(vm, this, field);
         void()
     }),
     method("set", "(III)V", ACC_PUBLIC, |vm, _, args| {
@@ -10572,6 +10604,7 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
             0,
             0,
         );
+        calendar_mark_all(vm, receiver(args));
         void()
     }),
     method("set", "(IIIII)V", ACC_PUBLIC, |vm, _, args| {
@@ -10585,6 +10618,7 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
             i64::from(crate::int_arg(args, 5)),
             0,
         );
+        calendar_mark_all(vm, receiver(args));
         void()
     }),
     method("set", "(IIIIII)V", ACC_PUBLIC, |vm, _, args| {
@@ -10598,6 +10632,7 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
             i64::from(crate::int_arg(args, 5)),
             i64::from(crate::int_arg(args, 6)),
         );
+        calendar_mark_all(vm, receiver(args));
         void()
     }),
     method(
@@ -10651,26 +10686,23 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
         },
     ),
     method("add", "(II)V", ACC_PUBLIC, |vm, _, args| {
-        calendar_add(
-            vm,
-            receiver(args),
-            crate::int_arg(args, 1),
-            crate::int_arg(args, 2),
-        );
+        let this = receiver(args);
+        let field = crate::int_arg(args, 1);
+        calendar_add(vm, this, field, crate::int_arg(args, 2));
+        calendar_mark(vm, this, field);
         void()
     }),
     method("roll", "(II)V", ACC_PUBLIC, |vm, _, args| {
-        calendar_add(
-            vm,
-            receiver(args),
-            crate::int_arg(args, 1),
-            crate::int_arg(args, 2),
-        );
+        let this = receiver(args);
+        let field = crate::int_arg(args, 1);
+        calendar_add(vm, this, field, crate::int_arg(args, 2));
+        calendar_mark(vm, this, field);
         void()
     }),
     method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         calendar_set_time(vm, this, 0);
+        crate::lang::write_int_field(vm, this, "setFields", 0);
         void()
     }),
     method("clear", "(I)V", ACC_PUBLIC, |vm, _, args| {
@@ -10684,6 +10716,10 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
                 fields.day = 1;
             }
             calendar_set_time(vm, this, calendar_millis_from_fields(fields));
+        }
+        if (0..17).contains(&field) {
+            let bits = crate::lang::read_int_field(vm, this, "setFields");
+            crate::lang::write_int_field(vm, this, "setFields", bits & !(1 << field));
         }
         void()
     }),
@@ -10847,6 +10883,18 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
             boolean(calendar_time(vm, receiver(args)) > calendar_time(vm, ref_arg(args, 1)))
         },
     ),
+    method("isSet", "(I)Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(calendar_is_set(vm, receiver(args), crate::int_arg(args, 1)))
+    }),
+    method("computeTime", "()V", ACC_PROTECTED, |vm, _, args| {
+        let this = receiver(args);
+        calendar_set_time_set(vm, this);
+        void()
+    }),
+    method("computeFields", "()V", ACC_PROTECTED, |vm, _, args| {
+        calendar_mark_all(vm, receiver(args));
+        void()
+    }),
     method(
         "getAvailableLocales",
         "()[Ljava/util/Locale;",
@@ -10959,6 +11007,8 @@ pub(crate) const CALENDAR: oxjvm_vm::NativeClass = class(
         calendar_constant("SHORT", 1),
         calendar_constant("LONG", 2),
         field("time", "J", ACC_PRIVATE | ACC_TRANSIENT, None),
+        field("isTimeSet", "Z", ACC_PROTECTED, None),
+        field("setFields", "I", ACC_PRIVATE, None),
         field("lenient", "Z", ACC_PRIVATE, None),
         field("firstDayOfWeek", "I", ACC_PRIVATE, None),
         field("minimalDaysInFirstWeek", "I", ACC_PRIVATE, None),
