@@ -6686,7 +6686,12 @@ const CLASS_LOADER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         "getParent",
         "()Ljava/lang/ClassLoader;",
         ACC_PUBLIC | ACC_FINAL,
-        |_, _, _| object(ObjectRef::NULL),
+        |vm, _, args| {
+            object(
+                vm.read_ref_field_any(receiver(args), "parent")
+                    .unwrap_or(ObjectRef::NULL),
+            )
+        },
     ),
     method(
         "loadClass",
@@ -6723,13 +6728,29 @@ const CLASS_LOADER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         "<init>",
         "(Ljava/lang/ClassLoader;)V",
         ACC_PUBLIC,
-        |_, _, _| void(),
+        |vm, _, args| {
+            let this = receiver(args);
+            if let Some((declaring, field)) =
+                vm.find_field_opt(vm.class_of(this), "parent", "Ljava/lang/ClassLoader;")
+            {
+                vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            }
+            void()
+        },
     ),
     method(
         "<init>",
         "(Ljava/lang/String;Ljava/lang/ClassLoader;)V",
         ACC_PUBLIC,
-        |_, _, _| void(),
+        |vm, _, args| {
+            let this = receiver(args);
+            if let Some((declaring, field)) =
+                vm.find_field_opt(vm.class_of(this), "parent", "Ljava/lang/ClassLoader;")
+            {
+                vm.set_instance_ref(this, declaring, field, ref_arg(args, 2));
+            }
+            void()
+        },
     ),
     method(
         "defineClass",
@@ -6811,12 +6832,15 @@ pub(crate) const CLASS_LOADER: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC,
-    &[field(
-        "systemLoader",
-        "Ljava/lang/ClassLoader;",
-        ACC_PRIVATE | ACC_STATIC,
-        None,
-    )],
+    &[
+        field(
+            "systemLoader",
+            "Ljava/lang/ClassLoader;",
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
+        field("parent", "Ljava/lang/ClassLoader;", ACC_PRIVATE, None),
+    ],
     &CLASS_LOADER_METHODS,
     None,
 );

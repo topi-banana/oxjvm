@@ -1907,13 +1907,96 @@ pub(crate) const MULTICAST_SOCKET: oxjvm_vm::NativeClass = class(
     None,
 );
 
+fn init_url_class_loader(
+    vm: &mut Vm<'_>,
+    instance: ObjectRef,
+    urls: ObjectRef,
+    parent: ObjectRef,
+) -> Result<(), VmError> {
+    let class = vm.class_of(instance);
+    let urls = if urls.is_null() {
+        let url_class = vm.resolve_class("java/net/URL")?;
+        vm.allocate_object_array(url_class, 0)?
+    } else {
+        urls
+    };
+    if let Some((declaring, field)) = vm.find_field_opt(class, "urls", "[Ljava/net/URL;") {
+        vm.set_instance_ref(instance, declaring, field, urls);
+    }
+    if let Some((declaring, field)) = vm.find_field_opt(class, "parent", "Ljava/lang/ClassLoader;")
+    {
+        vm.set_instance_ref(instance, declaring, field, parent);
+    }
+    Ok(())
+}
+
+fn new_url_class_loader_value(
+    vm: &mut Vm<'_>,
+    urls: ObjectRef,
+    parent: ObjectRef,
+) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/net/URLClassLoader")?;
+    let instance = vm.new_instance(class)?;
+    init_url_class_loader(vm, instance, urls, parent)?;
+    object(instance)
+}
+
+const URL_CLASS_LOADER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method("<init>", "([Ljava/net/URL;)V", ACC_PUBLIC, |vm, _, args| {
+        let parent = crate::lang::system_class_loader(vm)?;
+        init_url_class_loader(vm, receiver(args), ref_arg(args, 1), parent)?;
+        void()
+    }),
+    method(
+        "<init>",
+        "([Ljava/net/URL;Ljava/lang/ClassLoader;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            init_url_class_loader(vm, receiver(args), ref_arg(args, 1), ref_arg(args, 2))?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;[Ljava/net/URL;Ljava/lang/ClassLoader;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            init_url_class_loader(vm, receiver(args), ref_arg(args, 2), ref_arg(args, 3))?;
+            void()
+        },
+    ),
+    method("getURLs", "()[Ljava/net/URL;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let urls = vm
+            .read_ref_field(this, vm.class_of(this), "urls", "[Ljava/net/URL;")
+            .unwrap_or(ObjectRef::NULL);
+        object(urls)
+    }),
+    method(
+        "newInstance",
+        "([Ljava/net/URL;)Ljava/net/URLClassLoader;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let parent = crate::lang::system_class_loader(vm)?;
+            new_url_class_loader_value(vm, ref_arg(args, 0), parent)
+        },
+    ),
+    method(
+        "newInstance",
+        "([Ljava/net/URL;Ljava/lang/ClassLoader;)Ljava/net/URLClassLoader;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| new_url_class_loader_value(vm, ref_arg(args, 0), ref_arg(args, 1)),
+    ),
+    method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+];
+
 pub(crate) const URL_CLASS_LOADER: oxjvm_vm::NativeClass = class(
     "java/net/URLClassLoader",
     Some("java/lang/ClassLoader"),
     &[],
     ACC_PUBLIC,
-    &[],
-    &[],
+    &[field("urls", "[Ljava/net/URL;", ACC_PRIVATE, None)],
+    &URL_CLASS_LOADER_METHODS,
     None,
 );
 
