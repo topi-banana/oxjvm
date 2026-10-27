@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use oxjvm_classfile::flags::*;
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError, format};
 
-use crate::{class, field, int, int_arg, method, object, receiver, ref_arg, void};
+use crate::{boolean, class, field, int, int_arg, long, method, object, receiver, ref_arg, void};
 
 // -------------------------------------------------------------------------------------------
 // Exceptions
@@ -848,13 +848,76 @@ pub(crate) const BYTE_ARRAY_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
 // Reader / Writer / PrintWriter (minimal)
 // -------------------------------------------------------------------------------------------
 
-const READER_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+fn reader_read_chars(
+    vm: &mut Vm<'_>,
+    args: &[Value],
+    offset: i32,
+    length: Option<i32>,
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let array = ref_arg(args, 1);
+    if array.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let capacity = vm.array_length(array)? as i32;
+    let length = length.unwrap_or(capacity - offset);
+    let end = i64::from(offset) + i64::from(length);
+    if offset < 0 || length < 0 || end > i64::from(capacity) {
+        return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+    }
+    if length == 0 {
+        return int(0);
+    }
+    let mut count = 0;
+    while count < length {
+        let (class, method) = vm.resolve_virtual_method(this, "read", "()I")?;
+        let value = vm.invoke_method(class, method, vec![Value::Ref(this)])?;
+        let unit = value.as_int();
+        if unit < 0 {
+            break;
+        }
+        vm.array_set(array, offset + count, Value::Int(unit), false)?;
+        count += 1;
+    }
+    int(if count == 0 && length > 0 { -1 } else { count })
+}
+
+const READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method(
         "read",
         "()I",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
+    method("read", "([C)I", ACC_PUBLIC, |vm, _, args| {
+        reader_read_chars(vm, args, 0, None)
+    }),
+    method("read", "([CII)I", ACC_PUBLIC, |vm, _, args| {
+        reader_read_chars(vm, args, int_arg(args, 2), Some(int_arg(args, 3)))
+    }),
+    method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let remaining = crate::long_arg(args, 1);
+        if remaining <= 0 {
+            return long(0);
+        }
+        let mut skipped = 0i64;
+        while skipped < remaining {
+            let (class, method) = vm.resolve_virtual_method(this, "read", "()I")?;
+            let value = vm.invoke_method(class, method, vec![Value::Ref(this)])?;
+            if value.as_int() < 0 {
+                break;
+            }
+            skipped += 1;
+        }
+        long(skipped)
+    }),
+    method("ready", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method("markSupported", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method("mark", "(I)V", ACC_PUBLIC, |_, _, _| void()),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/io/IOException", Some("mark/reset not supported")))
+    }),
     method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
 ];
 
@@ -1111,9 +1174,7 @@ const PRINT_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
             print_writer_text(vm, receiver(args), &alloc::format!("{text}\n"))
         },
     ),
-    method("checkError", "()Z", ACC_PUBLIC, |_, _, _| {
-        crate::boolean(false)
-    }),
+    method("checkError", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
     method(
         "println",
         "(Ljava/lang/String;)V",
@@ -2466,7 +2527,7 @@ const OBJECT_STREAM_FIELD_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         },
     ),
     method("isPrimitive", "()Z", ACC_PUBLIC, |vm, _, args| {
-        crate::boolean(crate::lang::read_int_field(vm, receiver(args), "primitive") != 0)
+        boolean(crate::lang::read_int_field(vm, receiver(args), "primitive") != 0)
     }),
     method(
         "compareTo",
