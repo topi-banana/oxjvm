@@ -5560,7 +5560,7 @@ pub(crate) const RUNTIME: oxjvm_vm::NativeClass = class(
 // Thread
 // -------------------------------------------------------------------------------------------
 
-const THREAD_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
+const THREAD_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
     method("<init>", "()V", ACC_PUBLIC, thread_init),
     method("<init>", "(Ljava/lang/Runnable;)V", ACC_PUBLIC, thread_init),
     method("<init>", "(Ljava/lang/String;)V", ACC_PUBLIC, thread_init),
@@ -5585,6 +5585,12 @@ const THREAD_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
     method(
         "<init>",
         "(Ljava/lang/ThreadGroup;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        thread_init,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/ThreadGroup;Ljava/lang/Runnable;Ljava/lang/String;J)V",
         ACC_PUBLIC,
         thread_init,
     ),
