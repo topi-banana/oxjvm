@@ -622,6 +622,7 @@ const INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         let array = ref_arg(args, 1);
         let offset = int_arg(args, 2);
         let length = int_arg(args, 3);
+        reader_check_range(vm, array, offset, length)?;
         if length == 0 {
             return int(0);
         }
@@ -880,6 +881,23 @@ fn reader_read_chars(
         count += 1;
     }
     int(if count == 0 && length > 0 { -1 } else { count })
+}
+
+fn reader_check_range(
+    vm: &mut Vm<'_>,
+    array: ObjectRef,
+    offset: i32,
+    length: i32,
+) -> Result<(), VmError> {
+    if array.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let capacity = vm.array_length(array)? as i32;
+    let end = i64::from(offset) + i64::from(length);
+    if offset < 0 || length < 0 || end > i64::from(capacity) {
+        return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+    }
+    Ok(())
 }
 
 const READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
@@ -1915,6 +1933,7 @@ const FILE_READER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         let offset = int_arg(args, 2);
         let length = int_arg(args, 3);
         let array = ref_arg(args, 1);
+        reader_check_range(vm, array, offset, length)?;
         let mut count = 0;
         while count < length && (pos as usize) < units.len() {
             vm.array_set(
@@ -2018,6 +2037,7 @@ const BUFFERED_READER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         let array = ref_arg(args, 1);
         let offset = int_arg(args, 2);
         let length = int_arg(args, 3);
+        reader_check_range(vm, array, offset, length)?;
         let mut count = 0;
         while count < length {
             let value = buffered_reader_read_char(vm, this)?;
@@ -2147,6 +2167,7 @@ const INPUT_STREAM_READER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         let offset = int_arg(args, 2);
         let length = int_arg(args, 3);
         let array = ref_arg(args, 1);
+        reader_check_range(vm, array, offset, length)?;
         let mut count = 0;
         while count < length && (pos as usize) < units.len() {
             vm.array_set(
@@ -2592,6 +2613,7 @@ const STRING_READER_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         let array = ref_arg(args, 1);
         let offset = int_arg(args, 2);
         let length = int_arg(args, 3);
+        reader_check_range(vm, array, offset, length)?;
         if length == 0 {
             return int(0);
         }
