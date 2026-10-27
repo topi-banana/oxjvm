@@ -7688,6 +7688,116 @@ pub(crate) const SSL_CONTEXT: oxjvm_vm::NativeClass = class(
 );
 
 // -------------------------------------------------------------------------------------------
+// IO (JEP 512)
+// -------------------------------------------------------------------------------------------
+
+fn system_stream(vm: &mut Vm<'_>, name: &str, descriptor: &str) -> Result<ObjectRef, VmError> {
+    let system = vm.resolve_class("java/lang/System")?;
+    vm.ensure_initialized(system)?;
+    Ok(vm
+        .read_static_ref(system, name, descriptor)
+        .unwrap_or(ObjectRef::NULL))
+}
+
+fn io_readln(vm: &mut Vm<'_>) -> Result<Value, VmError> {
+    let input = system_stream(vm, "in", "Ljava/io/InputStream;")?;
+    let mut bytes: Vec<u8> = Vec::new();
+    loop {
+        let (class, method) = vm.resolve_virtual_method(input, "read", "()I")?;
+        let byte = vm
+            .invoke_method(class, method, vec![Value::Ref(input)])?
+            .as_int();
+        if byte < 0 {
+            if bytes.is_empty() {
+                return object(ObjectRef::NULL);
+            }
+            break;
+        }
+        match byte as u8 {
+            b'\n' => break,
+            b'\r' => break,
+            value => bytes.push(value),
+        }
+    }
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    object(vm.make_string(&text)?)
+}
+
+const IO_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method(
+        "println",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let out = system_stream(vm, "out", "Ljava/io/PrintStream;")?;
+            let (class, method) =
+                vm.resolve_virtual_method(out, "println", "(Ljava/lang/Object;)V")?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![Value::Ref(out), Value::Ref(ref_arg(args, 0))],
+            )?;
+            void()
+        },
+    ),
+    method("println", "()V", ACC_PUBLIC | ACC_STATIC, |vm, _, _| {
+        let out = system_stream(vm, "out", "Ljava/io/PrintStream;")?;
+        let (class, method) = vm.resolve_virtual_method(out, "println", "()V")?;
+        vm.invoke_method(class, method, vec![Value::Ref(out)])?;
+        void()
+    }),
+    method(
+        "print",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let out = system_stream(vm, "out", "Ljava/io/PrintStream;")?;
+            let (class, method) =
+                vm.resolve_virtual_method(out, "print", "(Ljava/lang/Object;)V")?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![Value::Ref(out), Value::Ref(ref_arg(args, 0))],
+            )?;
+            void()
+        },
+    ),
+    method(
+        "readln",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| io_readln(vm),
+    ),
+    method(
+        "readln",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let out = system_stream(vm, "out", "Ljava/io/PrintStream;")?;
+            let (class, method) =
+                vm.resolve_virtual_method(out, "print", "(Ljava/lang/String;)V")?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![Value::Ref(out), Value::Ref(ref_arg(args, 0))],
+            )?;
+            io_readln(vm)
+        },
+    ),
+    method("<init>", "()V", ACC_PRIVATE, |_, _, _| void()),
+];
+
+pub(crate) const IO: oxjvm_vm::NativeClass = class(
+    "java/lang/IO",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[],
+    &IO_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
 // HttpClient / HttpResponse (shell)
 // -------------------------------------------------------------------------------------------
 
