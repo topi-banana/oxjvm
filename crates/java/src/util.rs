@@ -1160,7 +1160,7 @@ pub(crate) const MAP: oxjvm_vm::NativeClass = class(
 // Objects
 // -------------------------------------------------------------------------------------------
 
-const OBJECTS_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const OBJECTS_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method(
         "equals",
         "(Ljava/lang/Object;Ljava/lang/Object;)Z",
@@ -1263,6 +1263,16 @@ const OBJECTS_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
                 ));
             }
             object(reference)
+        },
+    ),
+    method(
+        "deepEquals",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let a = ref_arg(args, 0);
+            let b = ref_arg(args, 1);
+            boolean(objects_deep_equals(vm, a, b)?)
         },
     ),
     method(
