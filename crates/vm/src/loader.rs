@@ -115,6 +115,10 @@ fn whitebox_dispatch(
         "getVMPageSize" => whitebox_get_vm_page_size(vm, ctx, args),
         "getHeapOopSize" => whitebox_get_heap_oop_size(vm, ctx, args),
         "getObjectSize0" => whitebox_get_object_size(vm, ctx, args),
+        // The test counts calls that successfully read a thread's monitors; a cooperative VM
+        // has them on one host thread, so a read always succeeds. Returning false makes the
+        // caller loop forever.
+        "handshakeReadMonitors" => Ok(Value::Int(1)),
         "countAliveClasses0" => {
             let internal = match args.get(1) {
                 Some(Value::Ref(r)) if *r != ObjectRef::NULL => {
