@@ -1789,7 +1789,7 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 84] = [
         "copyOf",
         "([Ljava/lang/Object;ILjava/lang/Class;)[Ljava/lang/Object;",
         ACC_PUBLIC | ACC_STATIC,
-        arrays_copy_of_objects,
+        arrays_copy_of_objects_typed,
     ),
     array_copy_of_range!("([BII)[B"),
     array_copy_of_range!("([CII)[C"),
@@ -1803,7 +1803,7 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 84] = [
         "copyOfRange",
         "([Ljava/lang/Object;IILjava/lang/Class;)[Ljava/lang/Object;",
         ACC_PUBLIC | ACC_STATIC,
-        arrays_copy_of_range_objects,
+        arrays_copy_of_range_objects_typed,
     ),
     array_mismatch!("([B[B)I"),
     array_mismatch!("([C[C)I"),
@@ -2191,6 +2191,74 @@ fn arrays_copy_of_objects(
     for index in 0..length.min(requested as usize) {
         let value = vm.array_get(source, index as i32)?;
         vm.array_set(result, index as i32, value, true)?;
+    }
+    object(result)
+}
+
+/// `Arrays.copyOf(Object[], int, Class)`: like the two-argument form, but the result has the
+/// runtime type of `new_type` (for example `String[].class`).
+fn arrays_copy_of_objects_typed(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let source = ref_arg(args, 0);
+    if source.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let requested = crate::int_arg(args, 1);
+    if requested < 0 {
+        return Err(vm.throw_new(
+            "java/lang/NegativeArraySizeException",
+            Some(&alloc::format!("{requested}")),
+        ));
+    }
+    let new_type = crate::lang::class_argument(vm, ref_arg(args, 2))?;
+    let length = vm.array_length(source)?;
+    let result = vm.allocate_array(new_type, requested as usize)?;
+    for index in 0..length.min(requested as usize) {
+        let value = vm.array_get(source, index as i32)?;
+        vm.array_set(result, index as i32, value, true)?;
+    }
+    object(result)
+}
+
+/// `Arrays.copyOfRange(Object[], int, int, Class)`: the typed form of `copyOfRange`.
+fn arrays_copy_of_range_objects_typed(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let source = ref_arg(args, 0);
+    if source.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let from = crate::int_arg(args, 1);
+    let to = crate::int_arg(args, 2);
+    let new_type = crate::lang::class_argument(vm, ref_arg(args, 3))?;
+    let length = vm.array_length(source)? as i32;
+    if from < 0 || from > length {
+        return Err(vm.throw_new(
+            "java/lang/ArrayIndexOutOfBoundsException",
+            Some(&alloc::format!(
+                "arraycopy: source index {from} out of bounds for object array[{length}]"
+            )),
+        ));
+    }
+    if from > to {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some(&alloc::format!("from({from}) > to({to})")),
+        ));
+    }
+    let count = (to - from) as usize;
+    let result = vm.allocate_array(new_type, count)?;
+    for offset in 0..count {
+        let index = from as usize + offset;
+        if index < length as usize {
+            let value = vm.array_get(source, index as i32)?;
+            vm.array_set(result, offset as i32, value, true)?;
+        }
     }
     object(result)
 }
