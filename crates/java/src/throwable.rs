@@ -874,6 +874,51 @@ exception!(
     "java/io/IOException"
 );
 exception!(
+    NOSUCH_PADDING_EXCEPTION,
+    "javax/crypto/NoSuchPaddingException",
+    "java/security/GeneralSecurityException"
+);
+exception!(
+    ILLEGAL_BLOCK_SIZE_EXCEPTION,
+    "javax/crypto/IllegalBlockSizeException",
+    "java/security/GeneralSecurityException"
+);
+exception!(
+    BAD_PADDING_EXCEPTION,
+    "javax/crypto/BadPaddingException",
+    "java/security/GeneralSecurityException"
+);
+exception!(
+    SHORT_BUFFER_EXCEPTION,
+    "javax/crypto/ShortBufferException",
+    "java/security/GeneralSecurityException"
+);
+exception!(
+    AEAD_BAD_TAG_EXCEPTION,
+    "javax/crypto/AEADBadTagException",
+    "javax/crypto/BadPaddingException"
+);
+exception!(
+    CERTIFICATE_PARSING_EXCEPTION,
+    "java/security/cert/CertificateParsingException",
+    "java/security/cert/CertificateException"
+);
+exception!(
+    CRL_EXCEPTION,
+    "java/security/cert/CRLException",
+    "java/security/cert/CertificateException"
+);
+exception!(
+    INVALID_KEY_SPEC_EXCEPTION,
+    "java/security/spec/InvalidKeySpecException",
+    "java/security/GeneralSecurityException"
+);
+exception!(
+    INVALID_PARAMETER_SPEC_EXCEPTION,
+    "java/security/spec/InvalidParameterSpecException",
+    "java/security/GeneralSecurityException"
+);
+exception!(
     UNKNOWN_HOST_EXCEPTION,
     "java/net/UnknownHostException",
     "java/io/IOException"
