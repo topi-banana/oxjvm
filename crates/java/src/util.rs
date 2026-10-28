@@ -3341,6 +3341,28 @@ fn array_list_to_array_into(
     object(target)
 }
 
+/// `Collection.toArray(T[])`: reuse `target` when it is large enough, otherwise allocate an
+/// array with `target`'s runtime component type, and null-terminate as the JDK does.
+pub(crate) fn collection_to_array_into(
+    vm: &mut Vm<'_>,
+    elements: &[ObjectRef],
+    target: ObjectRef,
+) -> Result<Value, VmError> {
+    let length = vm.array_length(target)?;
+    let array = if length >= elements.len() {
+        target
+    } else {
+        vm.allocate_array(vm.class_of(target), elements.len())?
+    };
+    for (index, element) in elements.iter().enumerate() {
+        vm.array_set_ref(array, index, *element)?;
+    }
+    if length > elements.len() {
+        vm.array_set_ref(array, elements.len(), ObjectRef::NULL)?;
+    }
+    object(array)
+}
+
 fn array_list_to_string(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
@@ -4380,18 +4402,7 @@ const ABSTRACT_SET_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let elements = collection_elements(vm, receiver(args))?;
-            let given = ref_arg(args, 1);
-            let length = vm.array_length(given)?;
-            let object_class = vm.resolve_class("java/lang/Object")?;
-            let array = if length >= elements.len() {
-                given
-            } else {
-                vm.allocate_object_array(object_class, elements.len())?
-            };
-            for (index, element) in elements.iter().enumerate() {
-                vm.array_set_ref(array, index, *element)?;
-            }
-            object(array)
+            collection_to_array_into(vm, &elements, ref_arg(args, 1))
         },
     ),
 ];
@@ -7100,7 +7111,6 @@ const HASH_SET_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
             let keys = map_keys(vm, map);
             let object_class = vm.resolve_class("java/lang/Object")?;
             let array = vm.allocate_object_array(object_class, keys.len())?;
-            vm.protect(array);
             for (index, key) in keys.iter().enumerate() {
                 vm.array_set_ref(array, index, *key)?;
             }
@@ -7114,18 +7124,7 @@ const HASH_SET_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
         |vm, _, args| {
             let map = hash_set_map(vm, receiver(args));
             let keys = map_keys(vm, map);
-            let given = ref_arg(args, 1);
-            let length = vm.array_length(given)?;
-            let object_class = vm.resolve_class("java/lang/Object")?;
-            let array = if length >= keys.len() {
-                given
-            } else {
-                vm.allocate_object_array(object_class, keys.len())?
-            };
-            for (index, key) in keys.iter().enumerate() {
-                vm.array_set_ref(array, index, *key)?;
-            }
-            object(array)
+            collection_to_array_into(vm, &keys, ref_arg(args, 1))
         },
     ),
     method(

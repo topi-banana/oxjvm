@@ -18,7 +18,8 @@ use oxjvm_vm::{ClassId, ObjectRef, Value, Vm, VmError};
 
 use crate::util::{
     array_list_from, collection_elements, collection_remove_all, collection_retain_all,
-    hash_set_present, keys_equal, new_entry, object_hash, value_to_string,
+    collection_to_array_into, hash_set_present, keys_equal, new_entry, object_hash,
+    value_to_string,
 };
 use crate::{boolean, class, field, int, method, object, receiver, ref_arg, void};
 
@@ -1958,19 +1959,8 @@ const TREE_SET_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
         "([Ljava/lang/Object;)[Ljava/lang/Object;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let given = ref_arg(args, 1);
-            let length = vm.array_length(given)?;
             let elements = keys(vm, receiver(args));
-            let object_class = vm.resolve_class("java/lang/Object")?;
-            let array = if length >= elements.len() {
-                given
-            } else {
-                vm.allocate_object_array(object_class, elements.len())?
-            };
-            for (index, element) in elements.iter().enumerate() {
-                vm.array_set_ref(array, index, *element)?;
-            }
-            object(array)
+            collection_to_array_into(vm, &elements, ref_arg(args, 1))
         },
     ),
     method(
