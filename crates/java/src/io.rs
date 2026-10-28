@@ -583,7 +583,7 @@ pub(crate) const PRINT_STREAM: oxjvm_vm::NativeClass = class(
 // InputStream / ByteArray streams
 // -------------------------------------------------------------------------------------------
 
-const INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+const INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method(
         "read",
         "()I",
@@ -635,6 +635,61 @@ const INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         }
     }),
     method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let mut remaining = args[1].as_long().max(0);
+        let mut skipped: i64 = 0;
+        while remaining > 0 {
+            let (declaring, method) = vm.resolve_virtual_method(this, "read", "()I")?;
+            let value = vm.invoke_method(declaring, method, vec![Value::Ref(this)])?.as_int();
+            if value < 0 {
+                break;
+            }
+            skipped += 1;
+            remaining -= 1;
+        }
+        Ok(Value::Long(skipped))
+    }),
+    method("available", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method("mark", "(I)V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "reset",
+        "()V",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/io/IOException", Some("mark/reset not supported"))),
+    ),
+    method("markSupported", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method("readNBytes", "(I)[B", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let limit = int_arg(args, 1).max(0) as usize;
+        let mut bytes = Vec::new();
+        while bytes.len() < limit {
+            let (declaring, method) = vm.resolve_virtual_method(this, "read", "()I")?;
+            let value = vm.invoke_method(declaring, method, vec![Value::Ref(this)])?.as_int();
+            if value < 0 {
+                break;
+            }
+            bytes.push(value as u8);
+        }
+        object(write_bytes_array(vm, &bytes)?)
+    }),
+    method("readNBytes", "([BII)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let array = ref_arg(args, 1);
+        let offset = int_arg(args, 2);
+        let length = int_arg(args, 3);
+        let mut read = 0;
+        while read < length {
+            let (declaring, method) = vm.resolve_virtual_method(this, "read", "()I")?;
+            let value = vm.invoke_method(declaring, method, vec![Value::Ref(this)])?.as_int();
+            if value < 0 {
+                break;
+            }
+            vm.array_set(array, offset + read, Value::Int(value), false)?;
+            read += 1;
+        }
+        int(read)
+    }),
 ];
 
 pub(crate) const INPUT_STREAM: oxjvm_vm::NativeClass = class(
@@ -647,7 +702,7 @@ pub(crate) const INPUT_STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const BYTE_ARRAY_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const BYTE_ARRAY_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     method("<init>", "([B)V", ACC_PUBLIC, byte_array_input_init),
     method(
         "read",
@@ -658,10 +713,52 @@ const BYTE_ARRAY_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
             Some(byte) => int(byte),
         },
     ),
+    method("read", "([BII)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let buf = vm
+            .read_ref_field(this, class, "buf", "[B")
+            .unwrap_or(ObjectRef::NULL);
+        let pos = vm
+            .read_instance_int_named(this, class, "pos", "I")
+            .unwrap_or(0);
+        if buf.is_null() {
+            return int(-1);
+        }
+        let length = vm.array_length(buf)? as i32;
+        if pos >= length {
+            return int(-1);
+        }
+        let target = ref_arg(args, 1);
+        let offset = int_arg(args, 2);
+        let count = int_arg(args, 3)
+            .min(length - pos)
+            .min(vm.array_length(target)? as i32 - offset);
+        if count <= 0 {
+            return int(0);
+        }
+        for index in 0..count {
+            let byte = vm.array_get(buf, pos + index)?;
+            vm.array_set(target, offset + index, byte, false)?;
+        }
+        let (declaring, field) = vm.find_field(class, "pos", "I")?;
+        vm.set_instance_int(this, declaring, field, pos + count);
+        int(count)
+    }),
     method("available", "()I", ACC_PUBLIC, |vm, _, args| {
-        let count = vm.array_length(ref_arg(args, 1)).unwrap_or(0);
-        let _ = count;
-        int(0)
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let buf = vm
+            .read_ref_field(this, class, "buf", "[B")
+            .unwrap_or(ObjectRef::NULL);
+        let pos = vm
+            .read_instance_int_named(this, class, "pos", "I")
+            .unwrap_or(0);
+        if buf.is_null() {
+            return int(0);
+        }
+        let length = vm.array_length(buf)? as i32;
+        int((length - pos).max(0))
     }),
     method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
     method("mark", "(I)V", ACC_PUBLIC, |_, _, _| void()),
@@ -2668,5 +2765,229 @@ pub(crate) const RANDOM_ACCESS_FILE: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC,
     &[],
     &[],
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// FilterInputStream / BufferedInputStream / BufferedOutputStream
+//
+// The buffered streams delegate every operation to the wrapped stream.  Buffering would only
+// change host I/O scheduling, not observable Java semantics, and delegation keeps the
+// mark/reset contract of the wrapped stream intact.
+// -------------------------------------------------------------------------------------------
+
+fn filter_input_stream_in(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field_any(this, "in").unwrap_or(ObjectRef::NULL)
+}
+
+fn delegate_input(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    args: Vec<Value>,
+) -> Result<Value, VmError> {
+    let stream = filter_input_stream_in(vm, this);
+    let (class, method) = vm.resolve_virtual_method(stream, name, descriptor)?;
+    vm.invoke_method(class, method, args)
+}
+
+const FILTER_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+    method(
+        "<init>",
+        "(Ljava/io/InputStream;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) = vm.find_field(vm.class_of(this), "in", "Ljava/io/InputStream;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method("read", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        delegate_input(vm, this, "read", "()I", vec![Value::Ref(filter_input_stream_in(vm, this))])
+    }),
+    method("read", "([B)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        delegate_input(
+            vm,
+            this,
+            "read",
+            "([B)I",
+            vec![Value::Ref(filter_input_stream_in(vm, this)), Value::Ref(ref_arg(args, 1))],
+        )
+    }),
+    method("read", "([BII)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        delegate_input(
+            vm,
+            this,
+            "read",
+            "([BII)I",
+            vec![
+                Value::Ref(filter_input_stream_in(vm, this)),
+                Value::Ref(ref_arg(args, 1)),
+                Value::Int(int_arg(args, 2)),
+                Value::Int(int_arg(args, 3)),
+            ],
+        )
+    }),
+    method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        delegate_input(
+            vm,
+            this,
+            "skip",
+            "(J)J",
+            vec![Value::Ref(filter_input_stream_in(vm, this)), args[1]],
+        )
+    }),
+    method("available", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        delegate_input(
+            vm,
+            this,
+            "available",
+            "()I",
+            vec![Value::Ref(filter_input_stream_in(vm, this))],
+        )
+    }),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let stream = filter_input_stream_in(vm, this);
+        let (class, method) = vm.resolve_virtual_method(stream, "close", "()V")?;
+        vm.invoke_method(class, method, vec![Value::Ref(stream)])?;
+        void()
+    }),
+    method("mark", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let stream = filter_input_stream_in(vm, this);
+        let (class, method) = vm.resolve_virtual_method(stream, "mark", "(I)V")?;
+        vm.invoke_method(class, method, vec![Value::Ref(stream), Value::Int(int_arg(args, 1))])?;
+        void()
+    }),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let stream = filter_input_stream_in(vm, this);
+        let (class, method) = vm.resolve_virtual_method(stream, "reset", "()V")?;
+        vm.invoke_method(class, method, vec![Value::Ref(stream)])?;
+        void()
+    }),
+];
+
+pub(crate) const FILTER_INPUT_STREAM: oxjvm_vm::NativeClass = class(
+    "java/io/FilterInputStream",
+    Some("java/io/InputStream"),
+    &[],
+    ACC_PUBLIC,
+    &[field("in", "Ljava/io/InputStream;", ACC_PROTECTED, None)],
+    &FILTER_INPUT_METHODS,
+    None,
+);
+
+const BUFFERED_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "<init>",
+        "(Ljava/io/InputStream;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) = vm.find_field(vm.class_of(this), "in", "Ljava/io/InputStream;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/InputStream;I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if int_arg(args, 2) <= 0 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("size <= 0")));
+            }
+            let (declaring, field) = vm.find_field(vm.class_of(this), "in", "Ljava/io/InputStream;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+];
+
+pub(crate) const BUFFERED_INPUT_STREAM: oxjvm_vm::NativeClass = class(
+    "java/io/BufferedInputStream",
+    Some("java/io/FilterInputStream"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &BUFFERED_INPUT_STREAM_METHODS,
+    None,
+);
+
+const BUFFERED_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) = vm.find_field(vm.class_of(this), "out", "Ljava/io/OutputStream;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if int_arg(args, 2) <= 0 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("size <= 0")));
+            }
+            let (declaring, field) = vm.find_field(vm.class_of(this), "out", "Ljava/io/OutputStream;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method("write", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let out = vm.read_ref_field_any(this, "out").unwrap_or(ObjectRef::NULL);
+        let (class, method) = vm.resolve_virtual_method(out, "write", "(I)V")?;
+        vm.invoke_method(class, method, vec![Value::Ref(out), Value::Int(int_arg(args, 1))])?;
+        void()
+    }),
+    method("write", "([BII)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let out = vm.read_ref_field_any(this, "out").unwrap_or(ObjectRef::NULL);
+        let (class, method) = vm.resolve_virtual_method(out, "write", "([BII)V")?;
+        vm.invoke_method(
+            class,
+            method,
+            vec![
+                Value::Ref(out),
+                Value::Ref(ref_arg(args, 1)),
+                Value::Int(int_arg(args, 2)),
+                Value::Int(int_arg(args, 3)),
+            ],
+        )?;
+        void()
+    }),
+    method("flush", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let out = vm.read_ref_field_any(this, "out").unwrap_or(ObjectRef::NULL);
+        let (class, method) = vm.resolve_virtual_method(out, "flush", "()V")?;
+        vm.invoke_method(class, method, vec![Value::Ref(out)])?;
+        void()
+    }),
+];
+
+pub(crate) const BUFFERED_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
+    "java/io/BufferedOutputStream",
+    Some("java/io/FilterOutputStream"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &BUFFERED_OUTPUT_STREAM_METHODS,
     None,
 );

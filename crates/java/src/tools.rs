@@ -2734,3 +2734,261 @@ fn documentation_tool_location_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     );
     Ok(())
 }
+
+// --------------------------------------------------------------------------
+// java.util.spi.ToolProvider + javac/javadoc/javap main entry points
+// --------------------------------------------------------------------------
+
+const TOOL_PROVIDER_SPI_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "findFirst",
+        "(Ljava/lang/String;)Ljava/util/Optional;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = vm.string_or_empty(ref_arg(args, 0));
+            if matches!(name.as_str(), "javac" | "javadoc" | "javap") {
+                let provider = new_tool_provider(vm, &name)?;
+                crate::optional::optional_new(vm, provider)
+            } else {
+                crate::optional::optional_empty_value(vm)
+            }
+        },
+    ),
+    method(
+        "findFirst",
+        "(Ljava/lang/String;Ljava/lang/ClassLoader;)Ljava/util/Optional;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = vm.string_or_empty(ref_arg(args, 0));
+            if matches!(name.as_str(), "javac" | "javadoc" | "javap") {
+                let provider = new_tool_provider(vm, &name)?;
+                crate::optional::optional_new(vm, provider)
+            } else {
+                crate::optional::optional_empty_value(vm)
+            }
+        },
+    ),
+    method(
+        "name",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "run",
+        "(Ljava/io/PrintWriter;Ljava/io/PrintWriter;[Ljava/lang/String;)I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
+pub(crate) const TOOL_PROVIDER_SPI: oxjvm_vm::NativeClass = class(
+    "java/util/spi/ToolProvider",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &TOOL_PROVIDER_SPI_METHODS,
+    None,
+);
+
+fn new_tool_provider(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/spi/OjvmToolProvider")?;
+    let provider = vm.new_instance(class)?;
+    let text = vm.make_string(name)?;
+    let (declaring, field) = vm.find_field(class, "name", "Ljava/lang/String;")?;
+    vm.set_instance_ref(provider, declaring, field, text);
+    Ok(provider)
+}
+
+fn tool_provider_run(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let class = vm.class_of(this);
+    let name = vm
+        .read_string_field(this, class, "name")
+        .unwrap_or_else(|| String::from("javac"));
+    let arguments = ref_arg(args, 3);
+    let mut cmd: Vec<String> = vec![match name.as_str() {
+        "javadoc" => javadoc_program(vm),
+        "javap" => String::from("javap"),
+        _ => javac_program(vm),
+    }];
+    if !arguments.is_null() {
+        let length = vm.array_length(arguments)?;
+        for index in 0..length {
+            let element = vm.array_get(arguments, index as i32)?.as_ref();
+            cmd.push(vm.string_or_empty(element));
+        }
+    }
+    match vm.host.run_process(&cmd[0], &cmd[1..], None) {
+        Ok(result) => {
+            for (index, stream) in [(1usize, result.stdout), (2usize, result.stderr)] {
+                let writer = ref_arg(args, index);
+                if writer.is_null() || stream.is_empty() {
+                    continue;
+                }
+                let text = String::from_utf8_lossy(&stream).to_string();
+                if let Ok((c, m)) = vm.resolve_virtual_method(
+                    writer,
+                    "write",
+                    "(Ljava/lang/String;)V",
+                ) {
+                    let string = vm.make_string(&text)?;
+                    vm.invoke_method(c, m, vec![Value::Ref(writer), Value::Ref(string)])?;
+                }
+            }
+            Ok(Value::Int(result.status))
+        }
+        Err(_) => Ok(Value::Int(1)),
+    }
+}
+
+const OJVM_TOOL_PROVIDER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("name", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        object(
+            vm.read_ref_field(this, class, "name", "Ljava/lang/String;")
+                .unwrap_or(ObjectRef::NULL),
+        )
+    }),
+    method(
+        "run",
+        "(Ljava/io/PrintWriter;Ljava/io/PrintWriter;[Ljava/lang/String;)I",
+        ACC_PUBLIC,
+        |vm, _, args| tool_provider_run(vm, args),
+    ),
+];
+
+pub(crate) const OJVM_TOOL_PROVIDER: oxjvm_vm::NativeClass = class(
+    "java/util/spi/OjvmToolProvider",
+    Some("java/lang/Object"),
+    &["java/util/spi/ToolProvider"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[field("name", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &OJVM_TOOL_PROVIDER_METHODS,
+    None,
+);
+
+// javadoc / javap / doclint entry points -----------------------------------
+
+const JAVADOC_MAIN_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method(
+        "main",
+        "([Ljava/lang/String;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            let mut cmd: Vec<String> = vec![javadoc_program(vm)];
+            if !array.is_null() {
+                let length = vm.array_length(array)?;
+                for index in 0..length {
+                    let element = vm.array_get(array, index as i32)?.as_ref();
+                    cmd.push(vm.string_or_empty(element));
+                }
+            }
+            let _ = vm.host.run_process(&cmd[0], &cmd[1..], None);
+            void()
+        },
+    ),
+    method(
+        "execute",
+        "([Ljava/lang/String;)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            let mut cmd: Vec<String> = vec![javadoc_program(vm)];
+            if !array.is_null() {
+                let length = vm.array_length(array)?;
+                for index in 0..length {
+                    let element = vm.array_get(array, index as i32)?.as_ref();
+                    cmd.push(vm.string_or_empty(element));
+                }
+            }
+            match vm.host.run_process(&cmd[0], &cmd[1..], None) {
+                Ok(result) => Ok(Value::Int(result.status)),
+                Err(_) => Ok(Value::Int(1)),
+            }
+        },
+    ),
+    method(
+        "run",
+        "(Ljava/io/PrintWriter;Ljava/io/PrintWriter;[Ljava/lang/String;)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 2);
+            let mut cmd: Vec<String> = vec![javadoc_program(vm)];
+            if !array.is_null() {
+                let length = vm.array_length(array)?;
+                for index in 0..length {
+                    let element = vm.array_get(array, index as i32)?.as_ref();
+                    cmd.push(vm.string_or_empty(element));
+                }
+            }
+            match vm.host.run_process(&cmd[0], &cmd[1..], None) {
+                Ok(result) => Ok(Value::Int(result.status)),
+                Err(_) => Ok(Value::Int(1)),
+            }
+        },
+    ),
+];
+
+pub(crate) const JAVADOC_MAIN: oxjvm_vm::NativeClass = class(
+    "jdk/javadoc/internal/tool/Main",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &JAVADOC_MAIN_METHODS,
+    None,
+);
+
+pub(crate) const DOCLINT: oxjvm_vm::NativeClass = class(
+    "jdk/javadoc/internal/doclint/DocLint",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const DOCLINT_BAD_ARGS: oxjvm_vm::NativeClass = class(
+    "jdk/javadoc/internal/doclint/DocLint$BadArgs",
+    Some("java/lang/Exception"),
+    &[],
+    ACC_PUBLIC | ACC_STATIC,
+    &[],
+    &[],
+    None,
+);
+
+const JAVAP_MAIN_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "main",
+    "([Ljava/lang/String;)V",
+    ACC_PUBLIC | ACC_STATIC,
+    |vm, _, args| {
+        let array = ref_arg(args, 0);
+        let mut cmd: Vec<String> = vec![String::from("javap")];
+        if !array.is_null() {
+            let length = vm.array_length(array)?;
+            for index in 0..length {
+                let element = vm.array_get(array, index as i32)?.as_ref();
+                cmd.push(vm.string_or_empty(element));
+            }
+        }
+        let _ = vm.host.run_process(&cmd[0], &cmd[1..], None);
+        void()
+    },
+)];
+
+pub(crate) const JAVAP_MAIN: oxjvm_vm::NativeClass = class(
+    "com/sun/tools/javap/Main",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &JAVAP_MAIN_METHODS,
+    None,
+);

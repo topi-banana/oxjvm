@@ -2614,7 +2614,7 @@ pub(crate) const OJVM_FILE_SYSTEM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const FILE_SYSTEMS_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+const FILE_SYSTEMS_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     method(
         "getDefault",
         "()Ljava/nio/file/FileSystem;",
@@ -2635,6 +2635,64 @@ const FILE_SYSTEMS_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
                 object(new_file_system(vm)?)
             } else {
                 Err(vm.throw_new("java/nio/file/FileSystemNotFoundException", Some(&text)))
+            }
+        },
+    ),
+    method(
+        "newFileSystem",
+        "(Ljava/nio/file/Path;)Ljava/nio/file/FileSystem;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(new_file_system(vm)?),
+    ),
+    method(
+        "newFileSystem",
+        "(Ljava/nio/file/Path;Ljava/util/Map;)Ljava/nio/file/FileSystem;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(new_file_system(vm)?),
+    ),
+    method(
+        "newFileSystem",
+        "(Ljava/nio/file/Path;Ljava/util/Map;Ljava/lang/ClassLoader;)Ljava/nio/file/FileSystem;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(new_file_system(vm)?),
+    ),
+    method(
+        "newFileSystem",
+        "(Ljava/net/URI;Ljava/util/Map;)Ljava/nio/file/FileSystem;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let uri = ref_arg(args, 0);
+            let (class, method) =
+                vm.resolve_virtual_method(uri, "toString", "()Ljava/lang/String;")?;
+            let value = vm.invoke_method(class, method, vec![Value::Ref(uri)])?;
+            let text = vm.string_or_empty(value.as_ref());
+            if text.starts_with("file:") {
+                object(new_file_system(vm)?)
+            } else {
+                Err(vm.throw_new(
+                    "java/nio/file/ProviderNotFoundException",
+                    Some(&alloc::format!("provider for {text} not found")),
+                ))
+            }
+        },
+    ),
+    method(
+        "newFileSystem",
+        "(Ljava/net/URI;Ljava/util/Map;Ljava/lang/ClassLoader;)Ljava/nio/file/FileSystem;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let uri = ref_arg(args, 0);
+            let (class, method) =
+                vm.resolve_virtual_method(uri, "toString", "()Ljava/lang/String;")?;
+            let value = vm.invoke_method(class, method, vec![Value::Ref(uri)])?;
+            let text = vm.string_or_empty(value.as_ref());
+            if text.starts_with("file:") {
+                object(new_file_system(vm)?)
+            } else {
+                Err(vm.throw_new(
+                    "java/nio/file/ProviderNotFoundException",
+                    Some(&alloc::format!("provider for {text} not found")),
+                ))
             }
         },
     ),
@@ -2707,7 +2765,7 @@ pub(crate) const OJVM_FILE_STORE: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const FILE_SYSTEM_PROVIDER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+const FILE_SYSTEM_PROVIDER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     method(
         "getScheme",
         "()Ljava/lang/String;",
@@ -2717,6 +2775,18 @@ const FILE_SYSTEM_PROVIDER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
     method(
         "getFileSystem",
         "(Ljava/net/URI;)Ljava/nio/file/FileSystem;",
+        ACC_PUBLIC,
+        |vm, _, _| object(new_file_system(vm)?),
+    ),
+    method(
+        "newFileSystem",
+        "(Ljava/nio/file/Path;Ljava/util/Map;)Ljava/nio/file/FileSystem;",
+        ACC_PUBLIC,
+        |vm, _, _| object(new_file_system(vm)?),
+    ),
+    method(
+        "newFileSystem",
+        "(Ljava/net/URI;Ljava/util/Map;)Ljava/nio/file/FileSystem;",
         ACC_PUBLIC,
         |vm, _, _| object(new_file_system(vm)?),
     ),

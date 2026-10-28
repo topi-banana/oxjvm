@@ -22,6 +22,7 @@ pub(crate) mod boxed;
 pub(crate) mod buffer;
 pub(crate) mod channels;
 pub(crate) mod charset;
+pub(crate) mod classfile_api;
 pub(crate) mod concurrent;
 pub(crate) mod encoding;
 pub(crate) mod executor;
@@ -141,7 +142,7 @@ pub fn is_non_writable_property(key: &str) -> bool {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 806] = [
+static REGISTRY: [NativeClass; 834] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -214,6 +215,25 @@ static REGISTRY: [NativeClass; 806] = [
     http::FLOW_SUBSCRIBER,
     http::FLOW_SUBSCRIPTION,
     http::FLOW_PROCESSOR,
+    classfile_api::CLASS_DESC,
+    classfile_api::OJVM_CLASS_DESC,
+    classfile_api::CONSTANT_DESC,
+    classfile_api::CLASS_FILE_INTERFACE,
+    classfile_api::CLASS_FILE_OPTION,
+    classfile_api::OJVM_CLASS_FILE,
+    classfile_api::CLASS_MODEL_INTERFACE,
+    classfile_api::OJVM_CLASS_MODEL,
+    classfile_api::METHOD_MODEL_INTERFACE,
+    classfile_api::OJVM_METHOD_MODEL,
+    classfile_api::ACCESS_FLAGS_INTERFACE,
+    classfile_api::OJVM_ACCESS_FLAGS,
+    classfile_api::CLASS_ENTRY_INTERFACE,
+    classfile_api::OJVM_CLASS_ENTRY,
+    classfile_api::UTF8_ENTRY_INTERFACE,
+    classfile_api::OJVM_UTF8_ENTRY,
+    classfile_api::CONSTANT_POOL_BUILDER,
+    classfile_api::CLASS_TRANSFORM,
+    classfile_api::METHOD_TYPE_DESC,
     lang::DATA_FLAVOR,
     lang::THREAD,
     lang::THREAD_GROUP,
@@ -372,6 +392,9 @@ static REGISTRY: [NativeClass; 806] = [
     io::RANDOM_ACCESS_FILE,
     io::BUFFERED_READER,
     io::BUFFERED_WRITER,
+    io::FILTER_INPUT_STREAM,
+    io::BUFFERED_INPUT_STREAM,
+    io::BUFFERED_OUTPUT_STREAM,
     io::OBJECT_STREAM_CLASS,
     serialization::OBJECT_OUTPUT_STREAM,
     serialization::OBJECT_INPUT_STREAM,
@@ -634,6 +657,12 @@ static REGISTRY: [NativeClass; 806] = [
     tools::JAVAC_TASK_IMPL,
     tools::TASK_LISTENER,
     tools::TASK_EVENT,
+    tools::TOOL_PROVIDER_SPI,
+    tools::OJVM_TOOL_PROVIDER,
+    tools::JAVADOC_MAIN,
+    tools::DOCLINT,
+    tools::DOCLINT_BAD_ARGS,
+    tools::JAVAP_MAIN,
     tools::JAVADOC_TASK_IMPL,
     tools::JAVA_FILE_MANAGER_LOCATION,
     tools::DOCUMENTATION_TOOL_LOCATION,
