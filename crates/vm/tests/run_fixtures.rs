@@ -1977,3 +1977,33 @@ fn keeps_multidimensional_arrays_alive_across_collections() {
         .expect("fill");
     assert_eq!(result.as_int(), 190 * 300);
 }
+
+#[test]
+fn runs_phase0_collection_and_array_fixes() {
+    let mut host = fixture_host();
+    let mut vm = Vm::new(&mut host, oxjvm_java::natives());
+    let class = vm.resolve_class("demo/P0Arrays").expect("P0Arrays");
+    for (method, expected) in [
+        ("setToArrayType", "[Ljava.lang.String;"),
+        ("copyOfType", "[Ljava.lang.String;"),
+    ] {
+        let (declaring, index) = vm
+            .find_method(class, method, "()Ljava/lang/String;")
+            .expect(method);
+        let value = vm
+            .invoke_method(declaring, index, Vec::new())
+            .expect(method);
+        assert_eq!(
+            vm.string_value(value.as_ref()).as_deref(),
+            Some(expected),
+            "{method}"
+        );
+    }
+    for method in ["objectsDeepEquals", "incompatibleMapKeys"] {
+        let (declaring, index) = vm.find_method(class, method, "()Z").expect(method);
+        let value = vm
+            .invoke_method(declaring, index, Vec::new())
+            .expect(method);
+        assert_eq!(value.as_int(), 1, "{method}");
+    }
+}
