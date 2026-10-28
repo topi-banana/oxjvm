@@ -739,38 +739,47 @@ fn tree_map_equals(
     if other.is_null() || !vm.is_instance(other, map_class) {
         return boolean(false);
     }
-    let this_entries = entries(vm, this);
-    let other_size = call(vm, other, "size", "()I", &[])?.as_int();
-    if other_size != this_entries.len() as i32 {
-        return boolean(false);
-    }
-    for (key, value) in this_entries {
-        let other_value = call(
-            vm,
-            other,
-            "get",
-            "(Ljava/lang/Object;)Ljava/lang/Object;",
-            &[Value::Ref(key)],
-        )?
-        .as_ref();
-        if value.is_null() {
-            // A null value only matches a key the other map knows about.
-            let contains = call(
+    let equal = (|| -> Result<bool, VmError> {
+        let this_entries = entries(vm, this);
+        let other_size = call(vm, other, "size", "()I", &[])?.as_int();
+        if other_size != this_entries.len() as i32 {
+            return Ok(false);
+        }
+        for (key, value) in this_entries {
+            let other_value = call(
                 vm,
                 other,
-                "containsKey",
-                "(Ljava/lang/Object;)Z",
+                "get",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
                 &[Value::Ref(key)],
             )?
-            .as_int();
-            if contains == 0 {
-                return boolean(false);
+            .as_ref();
+            if value.is_null() {
+                // A null value only matches a key the other map knows about.
+                let contains = call(
+                    vm,
+                    other,
+                    "containsKey",
+                    "(Ljava/lang/Object;)Z",
+                    &[Value::Ref(key)],
+                )?
+                .as_int();
+                if contains == 0 {
+                    return Ok(false);
+                }
+            } else if other_value.is_null() || !keys_equal(vm, value, other_value)? {
+                return Ok(false);
             }
-        } else if other_value.is_null() || !keys_equal(vm, value, other_value)? {
-            return boolean(false);
+        }
+        Ok(true)
+    })();
+    match equal {
+        Ok(equal) => boolean(equal),
+        Err(error) => {
+            crate::util::swallow_map_equality_error(vm, error)?;
+            boolean(false)
         }
     }
-    boolean(true)
 }
 
 /// `TreeMap.firstKey()`.
@@ -1617,25 +1626,34 @@ fn tree_set_equals(
     if other.is_null() || !vm.is_instance(other, set_class) {
         return boolean(false);
     }
-    let this_keys = keys(vm, this);
-    let other_size = call(vm, other, "size", "()I", &[])?.as_int();
-    if other_size != this_keys.len() as i32 {
-        return boolean(false);
-    }
-    for element in this_keys {
-        let found = call(
-            vm,
-            other,
-            "contains",
-            "(Ljava/lang/Object;)Z",
-            &[Value::Ref(element)],
-        )?
-        .as_int();
-        if found == 0 {
-            return boolean(false);
+    let equal = (|| -> Result<bool, VmError> {
+        let this_keys = keys(vm, this);
+        let other_size = call(vm, other, "size", "()I", &[])?.as_int();
+        if other_size != this_keys.len() as i32 {
+            return Ok(false);
+        }
+        for element in this_keys {
+            let found = call(
+                vm,
+                other,
+                "contains",
+                "(Ljava/lang/Object;)Z",
+                &[Value::Ref(element)],
+            )?
+            .as_int();
+            if found == 0 {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    })();
+    match equal {
+        Ok(equal) => boolean(equal),
+        Err(error) => {
+            crate::util::swallow_map_equality_error(vm, error)?;
+            boolean(false)
         }
     }
-    boolean(true)
 }
 
 /// `TreeSet.hashCode()`: the sum of the elements' hash codes.

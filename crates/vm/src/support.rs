@@ -270,6 +270,14 @@ impl<'a> Vm<'a> {
         self.backtraces.insert(throwable, frames);
     }
 
+    /// Drop a throwable's captured frames when the guest discards the exception.
+    ///
+    /// The backtrace map is a GC root, so an exception that a native catches and ignores has to
+    /// be removed from it or the throwable stays alive for the rest of the run.
+    pub fn discard_backtrace(&mut self, throwable: ObjectRef) {
+        self.backtraces.remove(&throwable);
+    }
+
     /// The raw method handle stored in a `java.lang.invoke.MethodHandle` object.
     #[must_use]
     pub fn method_handle_of(&self, object: ObjectRef) -> Option<MethodHandleValue> {

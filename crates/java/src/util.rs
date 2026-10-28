@@ -4110,6 +4110,22 @@ fn concurrent_queue_remove(
 // AbstractMap
 // -------------------------------------------------------------------------------------------
 
+/// Swallow a `ClassCastException`/`NullPointerException` raised while comparing map keys, the way
+/// `AbstractMap.equals` does, and drop its backtrace (which is otherwise a GC root).
+pub(crate) fn swallow_map_equality_error(vm: &mut Vm<'_>, error: VmError) -> Result<(), VmError> {
+    let VmError::Thrown(exception) = error else {
+        return Err(error);
+    };
+    let class_cast = vm.resolve_class("java/lang/ClassCastException")?;
+    let null_pointer = vm.resolve_class("java/lang/NullPointerException")?;
+    if vm.is_instance(exception, class_cast) || vm.is_instance(exception, null_pointer) {
+        vm.discard_backtrace(exception);
+        Ok(())
+    } else {
+        Err(VmError::Thrown(exception))
+    }
+}
+
 /// Collect a map's `(key, value)` pairs through `entrySet`, the contract subclasses implement.
 fn abstract_map_entries(
     vm: &mut Vm<'_>,
@@ -4213,42 +4229,54 @@ const ABSTRACT_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
             if other.is_null() || !vm.is_instance(other, map_class) {
                 return boolean(false);
             }
-            let entries = abstract_map_entries(vm, this)?;
-            let (size_class, size_method) = vm.resolve_virtual_method(other, "size", "()I")?;
-            let other_size = vm
-                .invoke_method(size_class, size_method, vec![Value::Ref(other)])?
-                .as_int();
-            if entries.len() as i32 != other_size {
-                return boolean(false);
-            }
-            let (contains_class, contains_method) =
-                vm.resolve_virtual_method(other, "containsKey", "(Ljava/lang/Object;)Z")?;
-            let (get_class, get_method) =
-                vm.resolve_virtual_method(other, "get", "(Ljava/lang/Object;)Ljava/lang/Object;")?;
-            for (key, value) in entries {
-                let present = vm
-                    .invoke_method(
-                        contains_class,
-                        contains_method,
-                        vec![Value::Ref(other), Value::Ref(key)],
-                    )?
-                    .as_int()
-                    != 0;
-                if !present {
-                    return boolean(false);
+            let equal = (|| -> Result<bool, VmError> {
+                let entries = abstract_map_entries(vm, this)?;
+                let (size_class, size_method) = vm.resolve_virtual_method(other, "size", "()I")?;
+                let other_size = vm
+                    .invoke_method(size_class, size_method, vec![Value::Ref(other)])?
+                    .as_int();
+                if entries.len() as i32 != other_size {
+                    return Ok(false);
                 }
-                let other_value = vm
-                    .invoke_method(
-                        get_class,
-                        get_method,
-                        vec![Value::Ref(other), Value::Ref(key)],
-                    )?
-                    .as_ref();
-                if !keys_equal(vm, value, other_value)? {
-                    return boolean(false);
+                let (contains_class, contains_method) =
+                    vm.resolve_virtual_method(other, "containsKey", "(Ljava/lang/Object;)Z")?;
+                let (get_class, get_method) = vm.resolve_virtual_method(
+                    other,
+                    "get",
+                    "(Ljava/lang/Object;)Ljava/lang/Object;",
+                )?;
+                for (key, value) in entries {
+                    let present = vm
+                        .invoke_method(
+                            contains_class,
+                            contains_method,
+                            vec![Value::Ref(other), Value::Ref(key)],
+                        )?
+                        .as_int()
+                        != 0;
+                    if !present {
+                        return Ok(false);
+                    }
+                    let other_value = vm
+                        .invoke_method(
+                            get_class,
+                            get_method,
+                            vec![Value::Ref(other), Value::Ref(key)],
+                        )?
+                        .as_ref();
+                    if !keys_equal(vm, value, other_value)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            })();
+            match equal {
+                Ok(equal) => boolean(equal),
+                Err(error) => {
+                    swallow_map_equality_error(vm, error)?;
+                    boolean(false)
                 }
             }
-            boolean(true)
         },
     ),
     method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
@@ -4428,19 +4456,28 @@ const ABSTRACT_SET_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
             if other.is_null() || !vm.is_instance(other, set_class) {
                 return boolean(false);
             }
-            let (size_class, size_method) = vm.resolve_virtual_method(other, "size", "()I")?;
-            let other_size = vm
-                .invoke_method(size_class, size_method, vec![Value::Ref(other)])?
-                .as_int();
-            if invoke_int(vm, this, "size")? != other_size {
-                return boolean(false);
-            }
-            for element in collection_elements(vm, this)? {
-                if !set_contains(vm, other, element)? {
-                    return boolean(false);
+            let equal = (|| -> Result<bool, VmError> {
+                let (size_class, size_method) = vm.resolve_virtual_method(other, "size", "()I")?;
+                let other_size = vm
+                    .invoke_method(size_class, size_method, vec![Value::Ref(other)])?
+                    .as_int();
+                if invoke_int(vm, this, "size")? != other_size {
+                    return Ok(false);
+                }
+                for element in collection_elements(vm, this)? {
+                    if !set_contains(vm, other, element)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            })();
+            match equal {
+                Ok(equal) => boolean(equal),
+                Err(error) => {
+                    swallow_map_equality_error(vm, error)?;
+                    boolean(false)
                 }
             }
-            boolean(true)
         },
     ),
     method(
