@@ -541,6 +541,138 @@ pub(crate) const STANDARD_LOCATION: oxjvm_vm::NativeClass = class(
         field("name", "Ljava/lang/String;", ACC_PRIVATE | ACC_FINAL, None),
         field("ordinal", "I", ACC_PRIVATE | ACC_FINAL, None),
         field(
+            "CLASS_OUTPUT",
+            "Ljavax/tools/StandardLocation;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "SOURCE_OUTPUT",
+            "Ljavax/tools/StandardLocation;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "CLASS_PATH",
+            "Ljavax/tools/StandardLocation;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "SOURCE_PATH",
+            "Ljavax/tools/StandardLocation;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "ANNOTATION_PROCESSOR_PATH",
+            "Ljavax/tools/StandardLocation;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "ANNOTATION_PROCESSOR_MODULE_PATH",
+            "Ljavax/tools/StandardLocation;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "MODULE_SOURCE_PATH",
+            "Ljavax/tools/StandardLocation;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "MODULE_PATH",
+            "Ljavax/tools/StandardLocation;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "PATCH_MODULE_PATH",
+            "Ljavax/tools/StandardLocation;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "SYSTEM_MODULES",
+            "Ljavax/tools/StandardLocation;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "UPGRADE_MODULE_PATH",
+            "Ljavax/tools/StandardLocation;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "NATIVE_HEADER_OUTPUT",
+            "Ljavax/tools/StandardLocation;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "DOCUMENTATION",
+            "Ljavax/tools/StandardLocation;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "PLATFORM_CLASS_PATH",
+            "Ljavax/tools/StandardLocation;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "OUTPUT_DIRECTORY",
+            "Ljavax/tools/StandardLocation;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "GENERIC",
+            "Ljavax/tools/StandardLocation;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "MODULE_EXPORTS",
+            "Ljavax/tools/StandardLocation;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "RELEASE",
+            "Ljavax/tools/StandardLocation;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "OTHER",
+            "Ljavax/tools/StandardLocation;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "SNIPPET_PATH",
+            "Ljavax/tools/StandardLocation;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "SOURCE_VERSION",
+            "Ljavax/tools/StandardLocation;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "DOCLET_PATH",
+            "Ljavax/tools/StandardLocation;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
             "$VALUES",
             "[Ljavax/tools/StandardLocation;",
             ACC_PRIVATE | ACC_STATIC | ACC_FINAL | ACC_SYNTHETIC,
@@ -958,7 +1090,7 @@ const SIMPLE_JAVA_FILE_OBJECT_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
 // Pure interface shells (remove NoClassDefFoundError)
 // --------------------------------------------------------------------------
 
-const TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+const TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
     method(
         "run",
         "(Ljava/io/InputStream;Ljava/io/OutputStream;Ljava/io/OutputStream;[Ljava/lang/String;)I",
@@ -968,6 +1100,12 @@ const TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
     method(
         "getSourceVersions",
         "()Ljava/util/Set;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "name",
+        "()Ljava/lang/String;",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
@@ -1140,9 +1278,24 @@ pub(crate) const JAVA_COMPILER: oxjvm_vm::NativeClass = class(
     &["javax/tools/Tool", "javax/tools/OptionChecker"],
     ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
     &[],
-    &[],
+    &JAVA_COMPILER_METHODS,
     None,
 );
+
+const JAVA_COMPILER_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "getStandardFileManager",
+        "(Ljavax/tools/DiagnosticListener;Ljava/util/Locale;Ljava/nio/charset/Charset;)Ljavax/tools/StandardJavaFileManager;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getTask",
+        "(Ljava/io/Writer;Ljavax/tools/JavaFileManager;Ljavax/tools/DiagnosticListener;Ljava/lang/Iterable;Ljava/lang/Iterable;Ljava/lang/Iterable;)Ljavax/tools/JavaCompiler$CompilationTask;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
 
 const DOCUMENTATION_TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
     method(
@@ -1242,6 +1395,53 @@ pub(crate) const JAVA_COMPILER_COMPILATION_TASK: oxjvm_vm::NativeClass = class(
     &["java/util/concurrent/Callable"],
     ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
     &[],
+    &JAVA_COMPILER_COMPILATION_TASK_METHODS,
+    None,
+);
+
+const JAVA_COMPILER_COMPILATION_TASK_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "call",
+        "()Ljava/lang/Boolean;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "setProcessors",
+        "(Ljava/lang/Iterable;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "addTaskListener",
+        "(Lcom/sun/source/util/TaskListener;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "setTaskListener",
+        "(Lcom/sun/source/util/TaskListener;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
+pub(crate) const TASK_LISTENER: oxjvm_vm::NativeClass = class(
+    "com/sun/source/util/TaskListener",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const TASK_EVENT: oxjvm_vm::NativeClass = class(
+    "com/sun/source/util/TaskEvent",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[],
     &[],
     None,
 );
@@ -1333,7 +1533,49 @@ pub(crate) const JAVAC_TOOL: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const JAVAC_TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+fn javac_program(vm: &mut Vm<'_>) -> String {
+    if let Some(jdk) = vm
+        .host_property("test.boot.jdk")
+        .or_else(|| vm.get_property("test.boot.jdk"))
+    {
+        if !jdk.is_empty() {
+            return alloc::format!("{jdk}/bin/javac");
+        }
+    }
+    if let Some(home) = vm.host_property("java.home") {
+        if !home.is_empty() && home != "/oxjvm" {
+            return alloc::format!("{home}/bin/javac");
+        }
+    }
+    String::from("javac")
+}
+
+fn javadoc_program(vm: &mut Vm<'_>) -> String {
+    if let Some(jdk) = vm
+        .host_property("test.boot.jdk")
+        .or_else(|| vm.get_property("test.boot.jdk"))
+    {
+        if !jdk.is_empty() {
+            return alloc::format!("{jdk}/bin/javadoc");
+        }
+    }
+    String::from("javadoc")
+}
+
+fn set_task_field(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    value: ObjectRef,
+) -> Result<(), VmError> {
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, name, descriptor)?;
+    vm.set_instance_ref(this, declaring, field, value);
+    Ok(())
+}
+
+const JAVAC_TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method(
         "instance",
         "()Lcom/sun/tools/javac/api/JavacTool;",
@@ -1397,30 +1639,126 @@ const JAVAC_TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     ),
     method(
         "isSupportedOption",
-        "(Ljava/lang/String;)Z",
+        "(Ljava/lang/String;)I",
         ACC_PUBLIC,
-        |_vm, _, _args| boolean(false),
+        |vm, _, args| {
+            let option = vm.string_or_empty(ref_arg(args, 1));
+            if option.starts_with('-') {
+                int(0)
+            } else {
+                int(-1)
+            }
+        },
+    ),
+    method(
+        "create",
+        "()Lcom/sun/tools/javac/api/JavacTool;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("com/sun/tools/javac/api/JavacTool")?;
+            object(vm.new_instance(class)?)
+        },
+    ),
+    method(
+        "getStandardFileManager",
+        "(Ljavax/tools/DiagnosticListener;Ljava/util/Locale;Ljava/nio/charset/Charset;)Ljavax/tools/StandardJavaFileManager;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("com/sun/tools/javac/file/JavacFileManager")?;
+            let instance = vm.new_instance(class)?;
+            if let Some((declaring, ctor)) = vm.find_method(class, "<init>", "()V") {
+                vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
+            }
+            object(instance)
+        },
     ),
     method(
         "run",
         "(Ljava/io/InputStream;Ljava/io/OutputStream;Ljava/io/OutputStream;[Ljava/lang/String;)I",
         ACC_PUBLIC,
-        |vm, _, _args| {
-            // delegate to host javac
-            let args_array = ref_arg(_args, 3);
-            let mut cmd: Vec<String> = vec!["javac".to_string()];
+        |vm, _, args| {
+            let args_array = ref_arg(args, 4);
+            let mut cmd: Vec<String> = vec![javac_program(vm)];
             if !args_array.is_null() {
                 let length = vm.array_length(args_array)?;
-                for i in 0..length {
-                    let element = vm.array_get(args_array, i as i32)?.as_ref();
+                for index in 0..length {
+                    let element = vm.array_get(args_array, index as i32)?.as_ref();
                     cmd.push(vm.string_or_empty(element));
                 }
             }
-            let result = vm.host.run_process(&cmd[0], &cmd[1..], None);
-            match result {
-                Ok(r) => Ok(Value::Int(r.status)),
+            match vm.host.run_process(&cmd[0], &cmd[1..], None) {
+                Ok(result) => {
+                    let out = ref_arg(args, 2);
+                    let err = ref_arg(args, 3);
+                    if !out.is_null() && !result.stdout.is_empty() {
+                        if let Ok((c, m)) = vm.resolve_virtual_method(out, "write", "([B)V") {
+                            let bytes = vm.allocate_array_of(
+                                oxjvm_vm::ArrayComponent::Byte,
+                                result.stdout.len(),
+                            )?;
+                            for (index, byte) in result.stdout.iter().enumerate() {
+                                vm.array_set(
+                                    bytes,
+                                    index as i32,
+                                    Value::Int(i32::from(*byte)),
+                                    false,
+                                )?;
+                            }
+                            vm.invoke_method(c, m, vec![Value::Ref(out), Value::Ref(bytes)])?;
+                        }
+                    }
+                    if !err.is_null() && !result.stderr.is_empty() {
+                        if let Ok((c, m)) = vm.resolve_virtual_method(err, "write", "([B)V") {
+                            let bytes = vm.allocate_array_of(
+                                oxjvm_vm::ArrayComponent::Byte,
+                                result.stderr.len(),
+                            )?;
+                            for (index, byte) in result.stderr.iter().enumerate() {
+                                vm.array_set(
+                                    bytes,
+                                    index as i32,
+                                    Value::Int(i32::from(*byte)),
+                                    false,
+                                )?;
+                            }
+                            vm.invoke_method(c, m, vec![Value::Ref(err), Value::Ref(bytes)])?;
+                        }
+                    }
+                    Ok(Value::Int(result.status))
+                }
                 Err(_) => Ok(Value::Int(1)),
             }
+        },
+    ),
+    method(
+        "getTask",
+        "(Ljava/io/Writer;Ljavax/tools/JavaFileManager;Ljavax/tools/DiagnosticListener;Ljava/lang/Iterable;Ljava/lang/Iterable;Ljava/lang/Iterable;)Ljavax/tools/JavaCompiler$CompilationTask;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = vm.resolve_class("com/sun/tools/javac/api/JavacTaskImpl")?;
+            let instance = vm.new_instance(class)?;
+            if let Some((declaring, ctor)) = vm.find_method(class, "<init>", "()V") {
+                vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
+            }
+            set_task_field(vm, instance, "writer", "Ljava/io/Writer;", ref_arg(args, 1))?;
+            set_task_field(vm, instance, "fileManager", "Ljava/lang/Object;", ref_arg(args, 2))?;
+            set_task_field(
+                vm,
+                instance,
+                "diagnosticListener",
+                "Ljava/lang/Object;",
+                ref_arg(args, 3),
+            )?;
+            set_task_field(vm, instance, "options", "Ljava/lang/Object;", ref_arg(args, 4))?;
+            set_task_field(vm, instance, "classes", "Ljava/lang/Object;", ref_arg(args, 5))?;
+            set_task_field(
+                vm,
+                instance,
+                "compilationUnits",
+                "Ljava/lang/Object;",
+                ref_arg(args, 6),
+            )?;
+            object(instance)
         },
     ),
 ];
@@ -1446,7 +1784,7 @@ const JAVAC_MAIN_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let args_array = ref_arg(args, 0);
-            let mut cmd: Vec<String> = vec!["javac".to_string()];
+            let mut cmd: Vec<String> = vec![javac_program(vm)];
             if !args_array.is_null() {
                 let length = vm.array_length(args_array)?;
                 for i in 0..length {
@@ -1467,7 +1805,7 @@ const JAVAC_MAIN_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let args_array = ref_arg(args, 0);
-            let mut cmd: Vec<String> = vec!["javac".to_string()];
+            let mut cmd: Vec<String> = vec![javac_program(vm)];
             if !args_array.is_null() {
                 let length = vm.array_length(args_array)?;
                 for i in 0..length {
@@ -1488,7 +1826,7 @@ const JAVAC_MAIN_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let args_array = ref_arg(args, 0);
-            let mut cmd: Vec<String> = vec!["javac".to_string()];
+            let mut cmd: Vec<String> = vec![javac_program(vm)];
             if !args_array.is_null() {
                 let length = vm.array_length(args_array)?;
                 for i in 0..length {
@@ -1597,9 +1935,16 @@ const JAVADOC_TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     ),
     method(
         "isSupportedOption",
-        "(Ljava/lang/String;)Z",
+        "(Ljava/lang/String;)I",
         ACC_PUBLIC,
-        |_vm, _, _args| boolean(false),
+        |vm, _, args| {
+            let option = vm.string_or_empty(ref_arg(args, 1));
+            if option.starts_with('-') {
+                int(0)
+            } else {
+                int(-1)
+            }
+        },
     ),
     method(
         "getStandardFileManager",
@@ -1724,6 +2069,49 @@ const JAVADOC_TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
 // -------------------------------------------------------------------------- (a concrete StandardJavaFileManager)
 // --------------------------------------------------------------------------
 
+fn new_array_list(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/ArrayList")?;
+    let list = vm.new_instance(class)?;
+    let (declaring, ctor) = vm
+        .find_method(class, "<init>", "()V")
+        .ok_or_else(|| VmError::internal("ArrayList lacks <init>"))?;
+    vm.invoke_method(declaring, ctor, vec![Value::Ref(list)])?;
+    Ok(list)
+}
+
+fn list_add_value(vm: &mut Vm<'_>, list: ObjectRef, value: ObjectRef) -> Result<(), VmError> {
+    let (class, method) = vm.resolve_virtual_method(list, "add", "(Ljava/lang/Object;)Z")?;
+    vm.invoke_method(class, method, vec![Value::Ref(list), Value::Ref(value)])?;
+    Ok(())
+}
+
+fn simple_java_file_object(vm: &mut Vm<'_>, file: ObjectRef) -> Result<ObjectRef, VmError> {
+    let (tc, tm) = vm.resolve_virtual_method(file, "toURI", "()Ljava/net/URI;")?;
+    let uri_ref = vm.invoke_method(tc, tm, vec![Value::Ref(file)])?.as_ref();
+    let uri_text = vm
+        .read_string_field(uri_ref, vm.class_of(uri_ref), "string")
+        .unwrap_or_default();
+    let kind_class = vm.resolve_class("javax/tools/JavaFileObject$Kind")?;
+    vm.ensure_initialized(kind_class)?;
+    let kind_name = if uri_text.ends_with(".class") {
+        "CLASS"
+    } else if uri_text.ends_with(".java") {
+        "SOURCE"
+    } else {
+        "OTHER"
+    };
+    let kind_ref = vm
+        .read_static_ref_if_set(kind_class, kind_name, "Ljavax/tools/JavaFileObject$Kind;")
+        .ok_or_else(|| VmError::internal("no JavaFileObject kind"))?;
+    let sfo_class = vm.resolve_class("javax/tools/SimpleJavaFileObject")?;
+    let sfo = vm.new_instance(sfo_class)?;
+    let (d, f) = vm.find_field(sfo_class, "uri", "Ljava/net/URI;")?;
+    vm.set_instance_ref(sfo, d, f, uri_ref);
+    let (d, f) = vm.find_field(sfo_class, "kind", "Ljavax/tools/JavaFileObject$Kind;")?;
+    vm.set_instance_ref(sfo, d, f, kind_ref);
+    Ok(sfo)
+}
+
 pub(crate) const JAVAC_FILE_MANAGER: oxjvm_vm::NativeClass = class(
     "com/sun/tools/javac/file/JavacFileManager",
     Some("java/lang/Object"),
@@ -1734,7 +2122,7 @@ pub(crate) const JAVAC_FILE_MANAGER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const JAVAC_FILE_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const JAVAC_FILE_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "setLocation",
@@ -1824,7 +2212,233 @@ const JAVAC_FILE_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     ),
     method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
     method("flush", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "preRegister",
+        "(Lcom/sun/tools/javac/util/Context;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, _| void(),
+    ),
+    method(
+        "getJavaFileObjectsFromStrings",
+        "(Ljava/lang/Iterable;)Ljava/lang/Iterable;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let strings = crate::util::collection_elements(vm, ref_arg(args, 1))?;
+            let list = new_array_list(vm)?;
+            for item in strings {
+                let text = vm.string_or_empty(item);
+                let file = crate::file::new_file(vm, &text)?.as_ref();
+                let sfo = simple_java_file_object(vm, file)?;
+                list_add_value(vm, list, sfo)?;
+            }
+            object(list)
+        },
+    ),
+    method(
+        "getJavaFileObjects",
+        "([Ljava/lang/String;)Ljava/lang/Iterable;",
+        ACC_PUBLIC | ACC_VARARGS,
+        |vm, _, args| {
+            let strings = ref_arg(args, 1);
+            let list = new_array_list(vm)?;
+            if !strings.is_null() {
+                let length = vm.array_length(strings)?;
+                for index in 0..length {
+                    let text = vm
+                        .array_get(strings, index as i32)
+                        .map(|value| vm.string_or_empty(value.as_ref()))?;
+                    let file = crate::file::new_file(vm, &text)?.as_ref();
+                    let sfo = simple_java_file_object(vm, file)?;
+                    list_add_value(vm, list, sfo)?;
+                }
+            }
+            object(list)
+        },
+    ),
+    method(
+        "getJavaFileObjectsFromFiles",
+        "(Ljava/lang/Iterable;)Ljava/lang/Iterable;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let files = crate::util::collection_elements(vm, ref_arg(args, 1))?;
+            let list = new_array_list(vm)?;
+            for file in files {
+                let sfo = simple_java_file_object(vm, file)?;
+                list_add_value(vm, list, sfo)?;
+            }
+            object(list)
+        },
+    ),
 ];
+
+// --------------------------------------------------------------------------
+// com.sun.tools.javac.api.JavacTaskImpl
+// --------------------------------------------------------------------------
+
+fn javac_task_call(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let class = vm.class_of(this);
+    let writer = vm
+        .read_ref_field(this, class, "writer", "Ljava/io/Writer;")
+        .unwrap_or(ObjectRef::NULL);
+    let file_manager = vm
+        .read_ref_field(this, class, "fileManager", "Ljava/lang/Object;")
+        .unwrap_or(ObjectRef::NULL);
+    let options_ref = vm
+        .read_ref_field(this, class, "options", "Ljava/lang/Object;")
+        .unwrap_or(ObjectRef::NULL);
+    let units_ref = vm
+        .read_ref_field(this, class, "compilationUnits", "Ljava/lang/Object;")
+        .unwrap_or(ObjectRef::NULL);
+
+    let mut cmd: Vec<String> = vec![javac_program(vm)];
+    if !file_manager.is_null() {
+        let fm_class = vm.class_of(file_manager);
+        if let Some(output) = vm.read_ref_field(file_manager, fm_class, "output", "Ljava/io/File;") {
+            if !output.is_null() {
+                cmd.push("-d".to_string());
+                cmd.push(crate::file::file_path(vm, output));
+            }
+        }
+    }
+    let options = if options_ref.is_null() {
+        Vec::new()
+    } else {
+        crate::util::collection_elements(vm, options_ref).unwrap_or_default()
+    };
+    for option in options {
+        if !option.is_null() {
+            cmd.push(vm.string_or_empty(option));
+        }
+    }
+
+    let mut sources: Vec<String> = Vec::new();
+    let units = if units_ref.is_null() {
+        Vec::new()
+    } else {
+        crate::util::collection_elements(vm, units_ref).unwrap_or_default()
+    };
+    if !units.is_empty() {
+        let base = alloc::format!("/tmp/opencode/oxjvm-javac-{}", vm.host.nano_time());
+        if let Some(fs) = vm.host.filesystem() {
+            let _ = fs.create_dir_all(&base);
+        }
+        for (index, unit) in units.into_iter().enumerate() {
+            if unit.is_null() {
+                continue;
+            }
+            let content = match vm.resolve_virtual_method(
+                unit,
+                "getCharContent",
+                "(Z)Ljava/lang/CharSequence;",
+            ) {
+                Ok((c, m)) => vm
+                    .invoke_method(c, m, vec![Value::Ref(unit), Value::Int(1)])
+                    .ok()
+                    .map(|value| vm.string_or_empty(value.as_ref()))
+                    .unwrap_or_default(),
+                Err(_) => String::new(),
+            };
+            let name = match vm.resolve_virtual_method(unit, "getName", "()Ljava/lang/String;") {
+                Ok((c, m)) => vm
+                    .invoke_method(c, m, vec![Value::Ref(unit)])
+                    .ok()
+                    .map(|value| vm.string_or_empty(value.as_ref()))
+                    .unwrap_or_default(),
+                Err(_) => String::new(),
+            };
+            let basename = name.rsplit('/').next().unwrap_or("");
+            let basename = if basename.ends_with(".java") {
+                basename.to_string()
+            } else {
+                alloc::format!("Source{}.java", index)
+            };
+            let path = alloc::format!("{base}/{basename}");
+            if let Some(fs) = vm.host.filesystem() {
+                let _ = fs.write(&path, content.as_bytes(), false);
+            }
+            sources.push(path);
+        }
+    }
+    cmd.extend(sources);
+
+    let result = vm.host.run_process(&cmd[0], &cmd[1..], None);
+    let (status, stdout, stderr) = match result {
+        Ok(result) => (result.status, result.stdout, result.stderr),
+        Err(_) => (1, Vec::new(), Vec::new()),
+    };
+    if !writer.is_null() {
+        let text = alloc::format!(
+            "{}{}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        );
+        if !text.is_empty() {
+            let message = vm.make_string(&text)?;
+            let (wc, wm) =
+                vm.resolve_virtual_method(writer, "write", "(Ljava/lang/String;)V")?;
+            vm.invoke_method(wc, wm, vec![Value::Ref(writer), Value::Ref(message)])?;
+        }
+    }
+    let bool_class = vm.resolve_class("java/lang/Boolean")?;
+    vm.ensure_initialized(bool_class)?;
+    let name = if status == 0 { "TRUE" } else { "FALSE" };
+    let instance = vm
+        .read_static_ref(bool_class, name, "Ljava/lang/Boolean;")
+        .ok_or_else(|| VmError::internal("no Boolean constant"))?;
+    Ok(Value::Ref(instance))
+}
+
+pub(crate) const JAVAC_TASK_IMPL: oxjvm_vm::NativeClass = class(
+    "com/sun/tools/javac/api/JavacTaskImpl",
+    Some("java/lang/Object"),
+    &[
+        "javax/tools/JavaCompiler$CompilationTask",
+        "java/util/concurrent/Callable",
+    ],
+    ACC_PUBLIC,
+    &[
+        field("writer", "Ljava/io/Writer;", ACC_PRIVATE, None),
+        field("fileManager", "Ljava/lang/Object;", ACC_PRIVATE, None),
+        field(
+            "diagnosticListener",
+            "Ljava/lang/Object;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field("options", "Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("classes", "Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("compilationUnits", "Ljava/lang/Object;", ACC_PRIVATE, None),
+    ],
+    &[
+        method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
+        method(
+            "call",
+            "()Ljava/lang/Boolean;",
+            ACC_PUBLIC,
+            |vm, _, args| javac_task_call(vm, args),
+        ),
+        method(
+            "setProcessors",
+            "(Ljava/lang/Iterable;)V",
+            ACC_PUBLIC,
+            |_, _, _| void(),
+        ),
+        method(
+            "addTaskListener",
+            "(Lcom/sun/source/util/TaskListener;)V",
+            ACC_PUBLIC,
+            |_, _, _| void(),
+        ),
+        method(
+            "setTaskListener",
+            "(Lcom/sun/source/util/TaskListener;)V",
+            ACC_PUBLIC,
+            |_, _, _| void(),
+        ),
+    ],
+    None,
+);
 
 // --------------------------------------------------------------------------
 // jdk.javadoc.internal.api.JavadocTaskImpl
@@ -1944,8 +2558,7 @@ const JAVADOC_TASK_IMPL_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
             }
 
             // build command
-            let mut cmd: Vec<String> =
-                vec!["/home/topi/oxjvm-jtreg/downloads/jdk-27+35/bin/javadoc".to_string()];
+            let mut cmd: Vec<String> = vec![javadoc_program(vm)];
             if let Some(dir) = &output_dir {
                 cmd.push("-d".to_string());
                 cmd.push(dir.clone());
