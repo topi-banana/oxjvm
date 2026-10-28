@@ -1693,7 +1693,7 @@ const JAVAC_TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
                     if !out.is_null() && !result.stdout.is_empty() {
                         if let Ok((c, m)) = vm.resolve_virtual_method(out, "write", "([B)V") {
                             let bytes = vm.allocate_array_of(
-                                oxjvm_vm::ArrayComponent::Byte,
+                                ArrayComponent::Byte,
                                 result.stdout.len(),
                             )?;
                             for (index, byte) in result.stdout.iter().enumerate() {
@@ -1710,7 +1710,7 @@ const JAVAC_TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
                     if !err.is_null() && !result.stderr.is_empty() {
                         if let Ok((c, m)) = vm.resolve_virtual_method(err, "write", "([B)V") {
                             let bytes = vm.allocate_array_of(
-                                oxjvm_vm::ArrayComponent::Byte,
+                                ArrayComponent::Byte,
                                 result.stderr.len(),
                             )?;
                             for (index, byte) in result.stderr.iter().enumerate() {

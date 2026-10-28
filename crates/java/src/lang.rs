@@ -7770,40 +7770,6 @@ pub(crate) const IO: oxjvm_vm::NativeClass = class(
 );
 
 // -------------------------------------------------------------------------------------------
-// HttpClient / HttpResponse (shell)
-// -------------------------------------------------------------------------------------------
-
-pub(crate) const HTTP_CLIENT: oxjvm_vm::NativeClass = class(
-    "java/net/http/HttpClient",
-    Some("java/lang/Object"),
-    &[],
-    ACC_PUBLIC | ACC_ABSTRACT,
-    &[],
-    &[],
-    None,
-);
-
-pub(crate) const HTTP_RESPONSE: oxjvm_vm::NativeClass = class(
-    "java/net/http/HttpResponse",
-    Some("java/lang/Object"),
-    &[],
-    ACC_PUBLIC | ACC_INTERFACE,
-    &[],
-    &[],
-    None,
-);
-
-pub(crate) const HTTP_CLIENT_VERSION: oxjvm_vm::NativeClass = class(
-    "java/net/http/HttpClient$Version",
-    Some("java/lang/Enum"),
-    &[],
-    ACC_PUBLIC | ACC_ENUM,
-    &[],
-    &[],
-    None,
-);
-
-// -------------------------------------------------------------------------------------------
 // DataFlavor (shell)
 // -------------------------------------------------------------------------------------------
 

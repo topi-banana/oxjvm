@@ -20,11 +20,13 @@ pub(crate) mod atomic;
 pub(crate) mod beans;
 pub(crate) mod boxed;
 pub(crate) mod buffer;
+pub(crate) mod channels;
 pub(crate) mod charset;
 pub(crate) mod concurrent;
 pub(crate) mod encoding;
 pub(crate) mod executor;
 pub(crate) mod file;
+pub(crate) mod http;
 pub(crate) mod format;
 pub(crate) mod intstream;
 pub(crate) mod invoke;
@@ -139,7 +141,7 @@ pub fn is_non_writable_property(key: &str) -> bool {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 761] = [
+static REGISTRY: [NativeClass; 806] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -184,9 +186,34 @@ static REGISTRY: [NativeClass; 761] = [
     lang::ZONE_ID,
     module::MODULE_DESCRIPTOR,
     module::BUILDER,
-    lang::HTTP_CLIENT,
-    lang::HTTP_RESPONSE,
-    lang::HTTP_CLIENT_VERSION,
+    http::HTTP_CLIENT,
+    http::HTTP_CLIENT_VERSION,
+    http::HTTP_CLIENT_REDIRECT,
+    http::HTTP_CLIENT_BUILDER,
+    http::HTTP_REQUEST,
+    http::HTTP_REQUEST_BUILDER,
+    http::HTTP_RESPONSE,
+    http::HTTP_HEADERS,
+    http::HTTP_TIMEOUT_EXCEPTION,
+    http::HTTP_CONNECT_TIMEOUT_EXCEPTION,
+    http::BODY_PUBLISHER,
+    http::BODY_PUBLISHERS,
+    http::BODY_HANDLER,
+    http::BODY_HANDLERS,
+    http::BODY_SUBSCRIBER,
+    http::RESPONSE_INFO,
+    http::OJVM_HTTP_CLIENT,
+    http::OJVM_HTTP_CLIENT_BUILDER,
+    http::OJVM_HTTP_REQUEST,
+    http::OJVM_HTTP_REQUEST_BUILDER,
+    http::OJVM_HTTP_RESPONSE,
+    http::OJVM_BODY_PUBLISHER,
+    http::OJVM_BODY_HANDLER,
+    http::FLOW,
+    http::FLOW_PUBLISHER,
+    http::FLOW_SUBSCRIBER,
+    http::FLOW_SUBSCRIPTION,
+    http::FLOW_PROCESSOR,
     lang::DATA_FLAVOR,
     lang::THREAD,
     lang::THREAD_GROUP,
@@ -783,6 +810,26 @@ static REGISTRY: [NativeClass; 761] = [
     nio::READABLE_BYTE_CHANNEL,
     nio::WRITABLE_BYTE_CHANNEL,
     nio::CHANNEL,
+    channels::SELECTABLE_CHANNEL,
+    channels::ABSTRACT_SELECTABLE_CHANNEL,
+    channels::ABSTRACT_INTERRUPTIBLE_CHANNEL,
+    channels::SOCKET_CHANNEL,
+    channels::OJVM_SOCKET_CHANNEL,
+    channels::SERVER_SOCKET_CHANNEL,
+    channels::OJVM_SERVER_SOCKET_CHANNEL,
+    channels::SELECTOR,
+    channels::OJVM_SELECTOR,
+    channels::SELECTION_KEY,
+    channels::INPUT_STREAM_CHANNEL,
+    channels::OUTPUT_STREAM_CHANNEL,
+    channels::CHANNEL_INPUT_STREAM,
+    channels::CHANNEL_OUTPUT_STREAM,
+    channels::CHANNELS,
+    channels::GATHERING_BYTE_CHANNEL,
+    channels::SCATTERING_BYTE_CHANNEL,
+    channels::NETWORK_CHANNEL,
+    channels::SELECTOR_PROVIDER,
+    channels::SELECTION_KEY_IMPL,
     nio::COPY_OPTION,
     nio::OPEN_OPTION,
     nio::LINK_OPTION,
