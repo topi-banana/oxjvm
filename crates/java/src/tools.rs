@@ -1692,10 +1692,8 @@ const JAVAC_TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
                     let err = ref_arg(args, 3);
                     if !out.is_null() && !result.stdout.is_empty() {
                         if let Ok((c, m)) = vm.resolve_virtual_method(out, "write", "([B)V") {
-                            let bytes = vm.allocate_array_of(
-                                ArrayComponent::Byte,
-                                result.stdout.len(),
-                            )?;
+                            let bytes =
+                                vm.allocate_array_of(ArrayComponent::Byte, result.stdout.len())?;
                             for (index, byte) in result.stdout.iter().enumerate() {
                                 vm.array_set(
                                     bytes,
@@ -1709,10 +1707,8 @@ const JAVAC_TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
                     }
                     if !err.is_null() && !result.stderr.is_empty() {
                         if let Ok((c, m)) = vm.resolve_virtual_method(err, "write", "([B)V") {
-                            let bytes = vm.allocate_array_of(
-                                ArrayComponent::Byte,
-                                result.stderr.len(),
-                            )?;
+                            let bytes =
+                                vm.allocate_array_of(ArrayComponent::Byte, result.stderr.len())?;
                             for (index, byte) in result.stderr.iter().enumerate() {
                                 vm.array_set(
                                     bytes,
@@ -1741,7 +1737,13 @@ const JAVAC_TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
                 vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
             }
             set_task_field(vm, instance, "writer", "Ljava/io/Writer;", ref_arg(args, 1))?;
-            set_task_field(vm, instance, "fileManager", "Ljava/lang/Object;", ref_arg(args, 2))?;
+            set_task_field(
+                vm,
+                instance,
+                "fileManager",
+                "Ljava/lang/Object;",
+                ref_arg(args, 2),
+            )?;
             set_task_field(
                 vm,
                 instance,
@@ -1749,8 +1751,20 @@ const JAVAC_TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
                 "Ljava/lang/Object;",
                 ref_arg(args, 3),
             )?;
-            set_task_field(vm, instance, "options", "Ljava/lang/Object;", ref_arg(args, 4))?;
-            set_task_field(vm, instance, "classes", "Ljava/lang/Object;", ref_arg(args, 5))?;
+            set_task_field(
+                vm,
+                instance,
+                "options",
+                "Ljava/lang/Object;",
+                ref_arg(args, 4),
+            )?;
+            set_task_field(
+                vm,
+                instance,
+                "classes",
+                "Ljava/lang/Object;",
+                ref_arg(args, 5),
+            )?;
             set_task_field(
                 vm,
                 instance,
@@ -2294,7 +2308,8 @@ fn javac_task_call(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
     let mut cmd: Vec<String> = vec![javac_program(vm)];
     if !file_manager.is_null() {
         let fm_class = vm.class_of(file_manager);
-        if let Some(output) = vm.read_ref_field(file_manager, fm_class, "output", "Ljava/io/File;") {
+        if let Some(output) = vm.read_ref_field(file_manager, fm_class, "output", "Ljava/io/File;")
+        {
             if !output.is_null() {
                 cmd.push("-d".to_string());
                 cmd.push(crate::file::file_path(vm, output));
@@ -2375,8 +2390,7 @@ fn javac_task_call(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
         );
         if !text.is_empty() {
             let message = vm.make_string(&text)?;
-            let (wc, wm) =
-                vm.resolve_virtual_method(writer, "write", "(Ljava/lang/String;)V")?;
+            let (wc, wm) = vm.resolve_virtual_method(writer, "write", "(Ljava/lang/String;)V")?;
             vm.invoke_method(wc, wm, vec![Value::Ref(writer), Value::Ref(message)])?;
         }
     }
@@ -2828,11 +2842,9 @@ fn tool_provider_run(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> 
                     continue;
                 }
                 let text = String::from_utf8_lossy(&stream).to_string();
-                if let Ok((c, m)) = vm.resolve_virtual_method(
-                    writer,
-                    "write",
-                    "(Ljava/lang/String;)V",
-                ) {
+                if let Ok((c, m)) =
+                    vm.resolve_virtual_method(writer, "write", "(Ljava/lang/String;)V")
+                {
                     let string = vm.make_string(&text)?;
                     vm.invoke_method(c, m, vec![Value::Ref(writer), Value::Ref(string)])?;
                 }

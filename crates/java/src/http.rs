@@ -86,11 +86,7 @@ fn string_value(vm: &Vm<'_>, reference: ObjectRef) -> String {
     vm.string_value(reference).unwrap_or_default()
 }
 
-fn enum_constant_clinit(
-    vm: &mut Vm<'_>,
-    class_name: &str,
-    names: &[&str],
-) -> Result<(), VmError> {
+fn enum_constant_clinit(vm: &mut Vm<'_>, class_name: &str, names: &[&str]) -> Result<(), VmError> {
     let class = vm.resolve_class(class_name)?;
     let descriptor = alloc::format!("L{class_name};");
     for (ordinal, name) in names.iter().enumerate() {
@@ -107,11 +103,7 @@ fn enum_constant_clinit(
     Ok(())
 }
 
-fn enum_strings_clinit(
-    vm: &mut Vm<'_>,
-    class_name: &str,
-    names: &[&str],
-) -> Result<(), VmError> {
+fn enum_strings_clinit(vm: &mut Vm<'_>, class_name: &str, names: &[&str]) -> Result<(), VmError> {
     let class = vm.resolve_class(class_name)?;
     let descriptor = alloc::format!("L{class_name};");
     for (ordinal, name) in names.iter().enumerate() {
@@ -179,7 +171,13 @@ pub(crate) const HTTP_CLIENT_VERSION: oxjvm_vm::NativeClass = class(
         ),
     ],
     &ENUM_STRING_METHODS,
-    Some(|vm| enum_strings_clinit(vm, "java/net/http/HttpClient$Version", &["HTTP_1_1", "HTTP_2"])),
+    Some(|vm| {
+        enum_strings_clinit(
+            vm,
+            "java/net/http/HttpClient$Version",
+            &["HTTP_1_1", "HTTP_2"],
+        )
+    }),
 );
 
 fn redirect_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
@@ -242,21 +240,16 @@ fn version_constant(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
 // -------------------------------------------------------------------------------------------
 
 const HTTP_HEADERS_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
-    method(
-        "<init>",
-        "(Ljava/util/Map;)V",
-        ACC_PUBLIC,
-        |vm, _, args| {
-            set_ref(
-                vm,
-                receiver(args),
-                "map",
-                "Ljava/util/Map;",
-                ref_arg(args, 1),
-            )?;
-            void()
-        },
-    ),
+    method("<init>", "(Ljava/util/Map;)V", ACC_PUBLIC, |vm, _, args| {
+        set_ref(
+            vm,
+            receiver(args),
+            "map",
+            "Ljava/util/Map;",
+            ref_arg(args, 1),
+        )?;
+        void()
+    }),
     method(
         "of",
         "(Ljava/util/Map;Ljava/util/function/BiPredicate;)Ljava/net/http/HttpHeaders;",
@@ -325,11 +318,14 @@ const HTTP_HEADERS_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let map = ref_field(vm, receiver(args), "map", "Ljava/util/Map;");
-            let (class, method) = vm.resolve_virtual_method(map, "toString", "()Ljava/lang/String;")?;
+            let (class, method) =
+                vm.resolve_virtual_method(map, "toString", "()Ljava/lang/String;")?;
             vm.invoke_method(class, method, vec![Value::Ref(map)])
         },
     ),
-    method("equals", "(Ljava/lang/Object;)Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method("equals", "(Ljava/lang/Object;)Z", ACC_PUBLIC, |_, _, _| {
+        boolean(false)
+    }),
     method("hashCode", "()I", ACC_PUBLIC, |_, _, _| int(0)),
 ];
 
@@ -393,7 +389,10 @@ pub(crate) const HTTP_REQUEST: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const fn abstract_method(name: &'static str, descriptor: &'static str) -> oxjvm_vm::NativeMethodDef {
+const fn abstract_method(
+    name: &'static str,
+    descriptor: &'static str,
+) -> oxjvm_vm::NativeMethodDef {
     method(
         name,
         descriptor,
@@ -403,12 +402,7 @@ const fn abstract_method(name: &'static str, descriptor: &'static str) -> oxjvm_
 }
 
 const OJVM_HTTP_REQUEST_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
-    method(
-        "<init>",
-        "()V",
-        ACC_PUBLIC,
-        |_, _, _| void(),
-    ),
+    method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "bodyPublisher",
         "()Ljava/util/Optional;",
@@ -423,13 +417,28 @@ const OJVM_HTTP_REQUEST_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
             optional_of(vm, body)
         },
     ),
-    method("method", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
-        object(ref_field(vm, receiver(args), "method", "Ljava/lang/String;"))
-    }),
-    method("timeout", "()Ljava/util/Optional;", ACC_PUBLIC, |vm, _, args| {
-        let timeout = ref_field(vm, receiver(args), "timeout", "Ljava/time/Duration;");
-        optional_of(vm, timeout)
-    }),
+    method(
+        "method",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "method",
+                "Ljava/lang/String;",
+            ))
+        },
+    ),
+    method(
+        "timeout",
+        "()Ljava/util/Optional;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let timeout = ref_field(vm, receiver(args), "timeout", "Ljava/time/Duration;");
+            optional_of(vm, timeout)
+        },
+    ),
     method("expectContinue", "()Z", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let class = vm.class_of(this);
@@ -442,13 +451,33 @@ const OJVM_HTTP_REQUEST_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method("uri", "()Ljava/net/URI;", ACC_PUBLIC, |vm, _, args| {
         object(ref_field(vm, receiver(args), "uri", "Ljava/net/URI;"))
     }),
-    method("version", "()Ljava/util/Optional;", ACC_PUBLIC, |vm, _, args| {
-        let version = ref_field(vm, receiver(args), "version", "Ljava/net/http/HttpClient$Version;");
-        optional_of(vm, version)
-    }),
-    method("headers", "()Ljava/net/http/HttpHeaders;", ACC_PUBLIC, |vm, _, args| {
-        object(ref_field(vm, receiver(args), "headers", "Ljava/net/http/HttpHeaders;"))
-    }),
+    method(
+        "version",
+        "()Ljava/util/Optional;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let version = ref_field(
+                vm,
+                receiver(args),
+                "version",
+                "Ljava/net/http/HttpClient$Version;",
+            );
+            optional_of(vm, version)
+        },
+    ),
+    method(
+        "headers",
+        "()Ljava/net/http/HttpHeaders;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "headers",
+                "Ljava/net/http/HttpHeaders;",
+            ))
+        },
+    ),
     method(
         "toString",
         "()Ljava/lang/String;",
@@ -472,7 +501,12 @@ pub(crate) const OJVM_HTTP_REQUEST: oxjvm_vm::NativeClass = class(
         field("method", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("headers", "Ljava/net/http/HttpHeaders;", ACC_PRIVATE, None),
         field("timeout", "Ljava/time/Duration;", ACC_PRIVATE, None),
-        field("version", "Ljava/net/http/HttpClient$Version;", ACC_PRIVATE, None),
+        field(
+            "version",
+            "Ljava/net/http/HttpClient$Version;",
+            ACC_PRIVATE,
+            None,
+        ),
         field(
             "bodyPublisher",
             "Ljava/net/http/HttpRequest$BodyPublisher;",
@@ -505,17 +539,32 @@ fn request_builder_set_method(
 
 const HTTP_REQUEST_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     abstract_method("uri", "(Ljava/net/URI;)Ljava/net/http/HttpRequest$Builder;"),
+    abstract_method("expectContinue", "(Z)Ljava/net/http/HttpRequest$Builder;"),
     abstract_method(
-        "expectContinue",
-        "(Z)Ljava/net/http/HttpRequest$Builder;",
+        "version",
+        "(Ljava/net/http/HttpClient$Version;)Ljava/net/http/HttpRequest$Builder;",
     ),
-    abstract_method("version", "(Ljava/net/http/HttpClient$Version;)Ljava/net/http/HttpRequest$Builder;"),
-    abstract_method("header", "(Ljava/lang/String;Ljava/lang/String;)Ljava/net/http/HttpRequest$Builder;"),
-    abstract_method("headers", "([Ljava/lang/String;)Ljava/net/http/HttpRequest$Builder;"),
-    abstract_method("timeout", "(Ljava/time/Duration;)Ljava/net/http/HttpRequest$Builder;"),
-    abstract_method("setHeader", "(Ljava/lang/String;Ljava/lang/String;)Ljava/net/http/HttpRequest$Builder;"),
+    abstract_method(
+        "header",
+        "(Ljava/lang/String;Ljava/lang/String;)Ljava/net/http/HttpRequest$Builder;",
+    ),
+    abstract_method(
+        "headers",
+        "([Ljava/lang/String;)Ljava/net/http/HttpRequest$Builder;",
+    ),
+    abstract_method(
+        "timeout",
+        "(Ljava/time/Duration;)Ljava/net/http/HttpRequest$Builder;",
+    ),
+    abstract_method(
+        "setHeader",
+        "(Ljava/lang/String;Ljava/lang/String;)Ljava/net/http/HttpRequest$Builder;",
+    ),
     abstract_method("GET", "()Ljava/net/http/HttpRequest$Builder;"),
-    abstract_method("POST", "(Ljava/net/http/HttpRequest$BodyPublisher;)Ljava/net/http/HttpRequest$Builder;"),
+    abstract_method(
+        "POST",
+        "(Ljava/net/http/HttpRequest$BodyPublisher;)Ljava/net/http/HttpRequest$Builder;",
+    ),
     abstract_method(
         "method",
         "(Ljava/lang/String;Ljava/net/http/HttpRequest$BodyPublisher;)Ljava/net/http/HttpRequest$Builder;",
@@ -540,7 +589,12 @@ fn new_empty_headers(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
     Ok(headers)
 }
 
-fn header_add(vm: &mut Vm<'_>, headers: ObjectRef, name: ObjectRef, value: ObjectRef) -> Result<(), VmError> {
+fn header_add(
+    vm: &mut Vm<'_>,
+    headers: ObjectRef,
+    name: ObjectRef,
+    value: ObjectRef,
+) -> Result<(), VmError> {
     let map = ref_field(vm, headers, "map", "Ljava/util/Map;");
     let existing = map_call(
         vm,
@@ -664,7 +718,13 @@ const OJVM_HTTP_REQUEST_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            set_ref(vm, this, "timeout", "Ljava/time/Duration;", ref_arg(args, 1))?;
+            set_ref(
+                vm,
+                this,
+                "timeout",
+                "Ljava/time/Duration;",
+                ref_arg(args, 1),
+            )?;
             object(this)
         },
     ),
@@ -679,10 +739,15 @@ const OJVM_HTTP_REQUEST_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
             object(this)
         },
     ),
-    method("GET", "()Ljava/net/http/HttpRequest$Builder;", ACC_PUBLIC, |vm, _, args| {
-        request_builder_set_method(vm, receiver(args), "GET", ObjectRef::NULL)?;
-        object(receiver(args))
-    }),
+    method(
+        "GET",
+        "()Ljava/net/http/HttpRequest$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            request_builder_set_method(vm, receiver(args), "GET", ObjectRef::NULL)?;
+            object(receiver(args))
+        },
+    ),
     method(
         "POST",
         "(Ljava/net/http/HttpRequest$BodyPublisher;)Ljava/net/http/HttpRequest$Builder;",
@@ -720,10 +785,7 @@ const OJVM_HTTP_REQUEST_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
                 ("headers", "Ljava/net/http/HttpHeaders;"),
                 ("timeout", "Ljava/time/Duration;"),
                 ("version", "Ljava/net/http/HttpClient$Version;"),
-                (
-                    "bodyPublisher",
-                    "Ljava/net/http/HttpRequest$BodyPublisher;",
-                ),
+                ("bodyPublisher", "Ljava/net/http/HttpRequest$BodyPublisher;"),
             ] {
                 let value = ref_field(vm, this, name, descriptor);
                 if !value.is_null() {
@@ -755,7 +817,12 @@ pub(crate) const OJVM_HTTP_REQUEST_BUILDER: oxjvm_vm::NativeClass = class(
         field("method", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("headers", "Ljava/net/http/HttpHeaders;", ACC_PRIVATE, None),
         field("timeout", "Ljava/time/Duration;", ACC_PRIVATE, None),
-        field("version", "Ljava/net/http/HttpClient$Version;", ACC_PRIVATE, None),
+        field(
+            "version",
+            "Ljava/net/http/HttpClient$Version;",
+            ACC_PRIVATE,
+            None,
+        ),
         field(
             "bodyPublisher",
             "Ljava/net/http/HttpRequest$BodyPublisher;",
@@ -763,7 +830,12 @@ pub(crate) const OJVM_HTTP_REQUEST_BUILDER: oxjvm_vm::NativeClass = class(
             None,
         ),
         field("expectContinue", "Z", ACC_PRIVATE, None),
-        field("redirect", "Ljava/net/http/HttpClient$Redirect;", ACC_PRIVATE, None),
+        field(
+            "redirect",
+            "Ljava/net/http/HttpClient$Redirect;",
+            ACC_PRIVATE,
+            None,
+        ),
     ],
     &OJVM_HTTP_REQUEST_BUILDER_METHODS,
     None,
@@ -1061,23 +1133,42 @@ pub(crate) const HTTP_RESPONSE: oxjvm_vm::NativeClass = class(
 const OJVM_HTTP_RESPONSE_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method("statusCode", "()I", ACC_PUBLIC, |vm, _, args| {
-        int(
-            vm.read_instance_int_named(receiver(args), vm.class_of(receiver(args)), "status", "I")
-                .unwrap_or(0),
-        )
+        int(vm
+            .read_instance_int_named(receiver(args), vm.class_of(receiver(args)), "status", "I")
+            .unwrap_or(0))
     }),
-    method("request", "()Ljava/net/http/HttpRequest;", ACC_PUBLIC, |vm, _, args| {
-        object(ref_field(vm, receiver(args), "request", "Ljava/net/http/HttpRequest;"))
-    }),
+    method(
+        "request",
+        "()Ljava/net/http/HttpRequest;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "request",
+                "Ljava/net/http/HttpRequest;",
+            ))
+        },
+    ),
     method(
         "previousResponse",
         "()Ljava/util/Optional;",
         ACC_PUBLIC,
         |vm, _, _| empty_optional(vm),
     ),
-    method("headers", "()Ljava/net/http/HttpHeaders;", ACC_PUBLIC, |vm, _, args| {
-        object(ref_field(vm, receiver(args), "headers", "Ljava/net/http/HttpHeaders;"))
-    }),
+    method(
+        "headers",
+        "()Ljava/net/http/HttpHeaders;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "headers",
+                "Ljava/net/http/HttpHeaders;",
+            ))
+        },
+    ),
     method("body", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
         object(ref_field(vm, receiver(args), "body", "Ljava/lang/Object;"))
     }),
@@ -1107,7 +1198,14 @@ const OJVM_HTTP_RESPONSE_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         "trailers",
         "()Ljava/net/http/HttpHeaders;",
         ACC_PUBLIC,
-        |vm, _, args| object(ref_field(vm, receiver(args), "headers", "Ljava/net/http/HttpHeaders;")),
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "headers",
+                "Ljava/net/http/HttpHeaders;",
+            ))
+        },
     ),
 ];
 
@@ -1122,7 +1220,12 @@ pub(crate) const OJVM_HTTP_RESPONSE: oxjvm_vm::NativeClass = class(
         field("headers", "Ljava/net/http/HttpHeaders;", ACC_PRIVATE, None),
         field("request", "Ljava/net/http/HttpRequest;", ACC_PRIVATE, None),
         field("uri", "Ljava/net/URI;", ACC_PRIVATE, None),
-        field("version", "Ljava/net/http/HttpClient$Version;", ACC_PRIVATE, None),
+        field(
+            "version",
+            "Ljava/net/http/HttpClient$Version;",
+            ACC_PRIVATE,
+            None,
+        ),
     ],
     &OJVM_HTTP_RESPONSE_METHODS,
     None,
@@ -1303,12 +1406,8 @@ const OJVM_HTTP_CLIENT_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         "()Ljava/util/Optional;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let value = client_field_ref(
-                vm,
-                receiver(args),
-                "connectTimeout",
-                "Ljava/time/Duration;",
-            );
+            let value =
+                client_field_ref(vm, receiver(args), "connectTimeout", "Ljava/time/Duration;");
             optional_of(vm, value)
         },
     ),
@@ -1330,10 +1429,15 @@ const OJVM_HTTP_CLIENT_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
             }
         },
     ),
-    method("proxy", "()Ljava/util/Optional;", ACC_PUBLIC, |vm, _, args| {
-        let value = client_field_ref(vm, receiver(args), "proxy", "Ljava/net/ProxySelector;");
-        optional_of(vm, value)
-    }),
+    method(
+        "proxy",
+        "()Ljava/util/Optional;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let value = client_field_ref(vm, receiver(args), "proxy", "Ljava/net/ProxySelector;");
+            optional_of(vm, value)
+        },
+    ),
     method(
         "sslContext",
         "()Ljavax/net/ssl/SSLContext;",
@@ -1405,15 +1509,20 @@ const OJVM_HTTP_CLIENT_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
             }
         },
     ),
-    method("executor", "()Ljava/util/Optional;", ACC_PUBLIC, |vm, _, args| {
-        let value = client_field_ref(
-            vm,
-            receiver(args),
-            "executor",
-            "Ljava/util/concurrent/Executor;",
-        );
-        optional_of(vm, value)
-    }),
+    method(
+        "executor",
+        "()Ljava/util/Optional;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let value = client_field_ref(
+                vm,
+                receiver(args),
+                "executor",
+                "Ljava/util/concurrent/Executor;",
+            );
+            optional_of(vm, value)
+        },
+    ),
     method(
         "send",
         "(Ljava/net/http/HttpRequest;Ljava/net/http/HttpResponse$BodyHandler;)Ljava/net/http/HttpResponse;",
@@ -1472,15 +1581,30 @@ pub(crate) const OJVM_HTTP_CLIENT: oxjvm_vm::NativeClass = class(
             None,
         ),
         field("proxy", "Ljava/net/ProxySelector;", ACC_PRIVATE, None),
-        field("sslContext", "Ljavax/net/ssl/SSLContext;", ACC_PRIVATE, None),
+        field(
+            "sslContext",
+            "Ljavax/net/ssl/SSLContext;",
+            ACC_PRIVATE,
+            None,
+        ),
         field(
             "sslParameters",
             "Ljavax/net/ssl/SSLParameters;",
             ACC_PRIVATE,
             None,
         ),
-        field("authenticator", "Ljava/net/Authenticator;", ACC_PRIVATE, None),
-        field("cookieHandler", "Ljava/net/CookieHandler;", ACC_PRIVATE, None),
+        field(
+            "authenticator",
+            "Ljava/net/Authenticator;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field(
+            "cookieHandler",
+            "Ljava/net/CookieHandler;",
+            ACC_PRIVATE,
+            None,
+        ),
         field(
             "version",
             "Ljava/net/http/HttpClient$Version;",
@@ -1503,14 +1627,26 @@ pub(crate) const OJVM_HTTP_CLIENT: oxjvm_vm::NativeClass = class(
 // -------------------------------------------------------------------------------------------
 
 const HTTP_CLIENT_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
-    abstract_method("cookieHandler", "(Ljava/net/CookieHandler;)Ljava/net/http/HttpClient$Builder;"),
-    abstract_method("connectTimeout", "(Ljava/time/Duration;)Ljava/net/http/HttpClient$Builder;"),
+    abstract_method(
+        "cookieHandler",
+        "(Ljava/net/CookieHandler;)Ljava/net/http/HttpClient$Builder;",
+    ),
+    abstract_method(
+        "connectTimeout",
+        "(Ljava/time/Duration;)Ljava/net/http/HttpClient$Builder;",
+    ),
     abstract_method(
         "followRedirects",
         "(Ljava/net/http/HttpClient$Redirect;)Ljava/net/http/HttpClient$Builder;",
     ),
-    abstract_method("proxy", "(Ljava/net/ProxySelector;)Ljava/net/http/HttpClient$Builder;"),
-    abstract_method("sslContext", "(Ljavax/net/ssl/SSLContext;)Ljava/net/http/HttpClient$Builder;"),
+    abstract_method(
+        "proxy",
+        "(Ljava/net/ProxySelector;)Ljava/net/http/HttpClient$Builder;",
+    ),
+    abstract_method(
+        "sslContext",
+        "(Ljavax/net/ssl/SSLContext;)Ljava/net/http/HttpClient$Builder;",
+    ),
     abstract_method(
         "sslParameters",
         "(Ljavax/net/ssl/SSLParameters;)Ljava/net/http/HttpClient$Builder;",
@@ -1528,11 +1664,11 @@ const HTTP_CLIENT_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
         "(Ljava/util/concurrent/Executor;)Ljava/net/http/HttpClient$Builder;",
     ),
     abstract_method("build", "()Ljava/net/http/HttpClient;"),
-    abstract_method("localAddress", "(Ljava/net/InetAddress;)Ljava/net/http/HttpClient$Builder;"),
     abstract_method(
-        "priority",
-        "(I)Ljava/net/http/HttpClient$Builder;",
+        "localAddress",
+        "(Ljava/net/InetAddress;)Ljava/net/http/HttpClient$Builder;",
     ),
+    abstract_method("priority", "(I)Ljava/net/http/HttpClient$Builder;"),
     abstract_method(
         "proxy",
         "(Ljava/net/ProxySelector;)Ljava/net/http/HttpClient$Builder;",
@@ -1567,70 +1703,139 @@ const OJVM_HTTP_CLIENT_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         "cookieHandler",
         "(Ljava/net/CookieHandler;)Ljava/net/http/HttpClient$Builder;",
         ACC_PUBLIC,
-        |vm, _, args| builder_set(vm, receiver(args), "cookieHandler", "Ljava/net/CookieHandler;", ref_arg(args, 1)),
+        |vm, _, args| {
+            builder_set(
+                vm,
+                receiver(args),
+                "cookieHandler",
+                "Ljava/net/CookieHandler;",
+                ref_arg(args, 1),
+            )
+        },
     ),
     method(
         "connectTimeout",
         "(Ljava/time/Duration;)Ljava/net/http/HttpClient$Builder;",
         ACC_PUBLIC,
-        |vm, _, args| builder_set(vm, receiver(args), "connectTimeout", "Ljava/time/Duration;", ref_arg(args, 1)),
+        |vm, _, args| {
+            builder_set(
+                vm,
+                receiver(args),
+                "connectTimeout",
+                "Ljava/time/Duration;",
+                ref_arg(args, 1),
+            )
+        },
     ),
     method(
         "followRedirects",
         "(Ljava/net/http/HttpClient$Redirect;)Ljava/net/http/HttpClient$Builder;",
         ACC_PUBLIC,
-        |vm, _, args| builder_set(vm, receiver(args), "followRedirects", "Ljava/net/http/HttpClient$Redirect;", ref_arg(args, 1)),
+        |vm, _, args| {
+            builder_set(
+                vm,
+                receiver(args),
+                "followRedirects",
+                "Ljava/net/http/HttpClient$Redirect;",
+                ref_arg(args, 1),
+            )
+        },
     ),
     method(
         "proxy",
         "(Ljava/net/ProxySelector;)Ljava/net/http/HttpClient$Builder;",
         ACC_PUBLIC,
-        |vm, _, args| builder_set(vm, receiver(args), "proxy", "Ljava/net/ProxySelector;", ref_arg(args, 1)),
+        |vm, _, args| {
+            builder_set(
+                vm,
+                receiver(args),
+                "proxy",
+                "Ljava/net/ProxySelector;",
+                ref_arg(args, 1),
+            )
+        },
     ),
     method(
         "sslContext",
         "(Ljavax/net/ssl/SSLContext;)Ljava/net/http/HttpClient$Builder;",
         ACC_PUBLIC,
-        |vm, _, args| builder_set(vm, receiver(args), "sslContext", "Ljavax/net/ssl/SSLContext;", ref_arg(args, 1)),
+        |vm, _, args| {
+            builder_set(
+                vm,
+                receiver(args),
+                "sslContext",
+                "Ljavax/net/ssl/SSLContext;",
+                ref_arg(args, 1),
+            )
+        },
     ),
     method(
         "authenticator",
         "(Ljava/net/Authenticator;)Ljava/net/http/HttpClient$Builder;",
         ACC_PUBLIC,
-        |vm, _, args| builder_set(vm, receiver(args), "authenticator", "Ljava/net/Authenticator;", ref_arg(args, 1)),
+        |vm, _, args| {
+            builder_set(
+                vm,
+                receiver(args),
+                "authenticator",
+                "Ljava/net/Authenticator;",
+                ref_arg(args, 1),
+            )
+        },
     ),
     method(
         "version",
         "(Ljava/net/http/HttpClient$Version;)Ljava/net/http/HttpClient$Builder;",
         ACC_PUBLIC,
-        |vm, _, args| builder_set(vm, receiver(args), "version", "Ljava/net/http/HttpClient$Version;", ref_arg(args, 1)),
+        |vm, _, args| {
+            builder_set(
+                vm,
+                receiver(args),
+                "version",
+                "Ljava/net/http/HttpClient$Version;",
+                ref_arg(args, 1),
+            )
+        },
     ),
     method(
         "executor",
         "(Ljava/util/concurrent/Executor;)Ljava/net/http/HttpClient$Builder;",
         ACC_PUBLIC,
-        |vm, _, args| builder_set(vm, receiver(args), "executor", "Ljava/util/concurrent/Executor;", ref_arg(args, 1)),
+        |vm, _, args| {
+            builder_set(
+                vm,
+                receiver(args),
+                "executor",
+                "Ljava/util/concurrent/Executor;",
+                ref_arg(args, 1),
+            )
+        },
     ),
-    method("build", "()Ljava/net/http/HttpClient;", ACC_PUBLIC, |vm, _, args| {
-        let this = receiver(args);
-        let client = new_instance(vm, "java/net/http/OjvmHttpClient")?;
-        for (name, descriptor) in [
-            ("connectTimeout", "Ljava/time/Duration;"),
-            ("followRedirects", "Ljava/net/http/HttpClient$Redirect;"),
-            ("proxy", "Ljava/net/ProxySelector;"),
-            ("sslContext", "Ljavax/net/ssl/SSLContext;"),
-            ("authenticator", "Ljava/net/Authenticator;"),
-            ("cookieHandler", "Ljava/net/CookieHandler;"),
-            ("version", "Ljava/net/http/HttpClient$Version;"),
-            ("executor", "Ljava/util/concurrent/Executor;"),
-        ] {
-            let value = ref_field(vm, this, name, descriptor);
-            if !value.is_null() {
-                set_ref(vm, client, name, descriptor, value)?;
+    method(
+        "build",
+        "()Ljava/net/http/HttpClient;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let client = new_instance(vm, "java/net/http/OjvmHttpClient")?;
+            for (name, descriptor) in [
+                ("connectTimeout", "Ljava/time/Duration;"),
+                ("followRedirects", "Ljava/net/http/HttpClient$Redirect;"),
+                ("proxy", "Ljava/net/ProxySelector;"),
+                ("sslContext", "Ljavax/net/ssl/SSLContext;"),
+                ("authenticator", "Ljava/net/Authenticator;"),
+                ("cookieHandler", "Ljava/net/CookieHandler;"),
+                ("version", "Ljava/net/http/HttpClient$Version;"),
+                ("executor", "Ljava/util/concurrent/Executor;"),
+            ] {
+                let value = ref_field(vm, this, name, descriptor);
+                if !value.is_null() {
+                    set_ref(vm, client, name, descriptor, value)?;
+                }
             }
-        }
-        object(client)
-    }),
+            object(client)
+        },
+    ),
 ];
 
 pub(crate) const OJVM_HTTP_CLIENT_BUILDER: oxjvm_vm::NativeClass = class(
@@ -1647,9 +1852,24 @@ pub(crate) const OJVM_HTTP_CLIENT_BUILDER: oxjvm_vm::NativeClass = class(
             None,
         ),
         field("proxy", "Ljava/net/ProxySelector;", ACC_PRIVATE, None),
-        field("sslContext", "Ljavax/net/ssl/SSLContext;", ACC_PRIVATE, None),
-        field("authenticator", "Ljava/net/Authenticator;", ACC_PRIVATE, None),
-        field("cookieHandler", "Ljava/net/CookieHandler;", ACC_PRIVATE, None),
+        field(
+            "sslContext",
+            "Ljavax/net/ssl/SSLContext;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field(
+            "authenticator",
+            "Ljava/net/Authenticator;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field(
+            "cookieHandler",
+            "Ljava/net/CookieHandler;",
+            ACC_PRIVATE,
+            None,
+        ),
         field(
             "version",
             "Ljava/net/http/HttpClient$Version;",
@@ -1673,19 +1893,24 @@ pub(crate) const HTTP_TIMEOUT_EXCEPTION: oxjvm_vm::NativeClass = class(
     &[],
     ACC_PUBLIC,
     &[],
-    &[method("<init>", "(Ljava/lang/String;)V", ACC_PUBLIC, |vm, _, args| {
-        let message = ref_arg(args, 1);
-        let exception = vm.resolve_class("java/io/IOException")?;
-        let (declaring, ctor) = vm
-            .find_method(exception, "<init>", "(Ljava/lang/String;)V")
-            .ok_or_else(|| VmError::internal("IOException ctor"))?;
-        vm.invoke_method(
-            declaring,
-            ctor,
-            vec![Value::Ref(receiver(args)), Value::Ref(message)],
-        )?;
-        void()
-    })],
+    &[method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let message = ref_arg(args, 1);
+            let exception = vm.resolve_class("java/io/IOException")?;
+            let (declaring, ctor) = vm
+                .find_method(exception, "<init>", "(Ljava/lang/String;)V")
+                .ok_or_else(|| VmError::internal("IOException ctor"))?;
+            vm.invoke_method(
+                declaring,
+                ctor,
+                vec![Value::Ref(receiver(args)), Value::Ref(message)],
+            )?;
+            void()
+        },
+    )],
     None,
 );
 

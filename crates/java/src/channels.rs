@@ -45,7 +45,13 @@ fn ref_field(vm: &Vm<'_>, this: ObjectRef, name: &str, descriptor: &str) -> Obje
         .unwrap_or(ObjectRef::NULL)
 }
 
-fn set_ref(vm: &mut Vm<'_>, this: ObjectRef, name: &str, descriptor: &str, value: ObjectRef) -> Result<(), VmError> {
+fn set_ref(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    value: ObjectRef,
+) -> Result<(), VmError> {
     let class = vm.class_of(this);
     let (declaring, field) = vm.find_field(class, name, descriptor)?;
     vm.set_instance_ref(this, declaring, field, value);
@@ -58,29 +64,40 @@ fn new_empty_set(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
 
 fn buffer_remaining(vm: &mut Vm<'_>, buffer: ObjectRef) -> Result<i32, VmError> {
     let (class, method) = vm.resolve_virtual_method(buffer, "remaining", "()I")?;
-    Ok(vm.invoke_method(class, method, vec![Value::Ref(buffer)])?.as_int())
+    Ok(vm
+        .invoke_method(class, method, vec![Value::Ref(buffer)])?
+        .as_int())
 }
 
 fn buffer_position(vm: &mut Vm<'_>, buffer: ObjectRef) -> Result<i32, VmError> {
     let (class, method) = vm.resolve_virtual_method(buffer, "position", "()I")?;
-    Ok(vm.invoke_method(class, method, vec![Value::Ref(buffer)])?.as_int())
+    Ok(vm
+        .invoke_method(class, method, vec![Value::Ref(buffer)])?
+        .as_int())
 }
 
 fn buffer_limit(vm: &mut Vm<'_>, buffer: ObjectRef) -> Result<i32, VmError> {
     let (class, method) = vm.resolve_virtual_method(buffer, "limit", "()I")?;
-    Ok(vm.invoke_method(class, method, vec![Value::Ref(buffer)])?.as_int())
+    Ok(vm
+        .invoke_method(class, method, vec![Value::Ref(buffer)])?
+        .as_int())
 }
 
 fn buffer_put_byte(vm: &mut Vm<'_>, buffer: ObjectRef, byte: u8) -> Result<(), VmError> {
-    let (class, method) =
-        vm.resolve_virtual_method(buffer, "put", "(B)Ljava/nio/ByteBuffer;")?;
-    vm.invoke_method(class, method, vec![Value::Ref(buffer), Value::Int(i32::from(byte))])?;
+    let (class, method) = vm.resolve_virtual_method(buffer, "put", "(B)Ljava/nio/ByteBuffer;")?;
+    vm.invoke_method(
+        class,
+        method,
+        vec![Value::Ref(buffer), Value::Int(i32::from(byte))],
+    )?;
     Ok(())
 }
 
 fn buffer_get_byte(vm: &mut Vm<'_>, buffer: ObjectRef) -> Result<u8, VmError> {
     let (class, method) = vm.resolve_virtual_method(buffer, "get", "()B")?;
-    Ok(vm.invoke_method(class, method, vec![Value::Ref(buffer)])?.as_int() as u8)
+    Ok(vm
+        .invoke_method(class, method, vec![Value::Ref(buffer)])?
+        .as_int() as u8)
 }
 
 // -------------------------------------------------------------------------------------------
@@ -110,7 +127,10 @@ const SELECTABLE_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     abstract_method("blockingLock", "()Ljava/lang/Object;"),
 ];
 
-const fn abstract_method(name: &'static str, descriptor: &'static str) -> oxjvm_vm::NativeMethodDef {
+const fn abstract_method(
+    name: &'static str,
+    descriptor: &'static str,
+) -> oxjvm_vm::NativeMethodDef {
     method(
         name,
         descriptor,
@@ -201,12 +221,9 @@ const SOCKET_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
             object(channel)
         },
     ),
-    method(
-        "read",
-        "(Ljava/nio/ByteBuffer;)I",
-        ACC_PUBLIC,
-        |_, _, _| int(-1),
-    ),
+    method("read", "(Ljava/nio/ByteBuffer;)I", ACC_PUBLIC, |_, _, _| {
+        int(-1)
+    }),
     method(
         "read",
         "([Ljava/nio/ByteBuffer;II)J",
@@ -224,11 +241,8 @@ const SOCKET_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
             }
             let count = buffer_remaining(vm, buffer)?;
             let limit = buffer_limit(vm, buffer)?;
-            let (class, method) = vm.resolve_virtual_method(
-                buffer,
-                "position",
-                "(I)Ljava/nio/Buffer;",
-            )?;
+            let (class, method) =
+                vm.resolve_virtual_method(buffer, "position", "(I)Ljava/nio/Buffer;")?;
             vm.invoke_method(class, method, vec![Value::Ref(buffer), Value::Int(limit)])?;
             int(count)
         },
@@ -252,11 +266,8 @@ const SOCKET_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
                 }
                 let count = buffer_remaining(vm, buffer)?;
                 let limit = buffer_limit(vm, buffer)?;
-                let (class, method) = vm.resolve_virtual_method(
-                    buffer,
-                    "position",
-                    "(I)Ljava/nio/Buffer;",
-                )?;
+                let (class, method) =
+                    vm.resolve_virtual_method(buffer, "position", "(I)Ljava/nio/Buffer;")?;
                 vm.invoke_method(class, method, vec![Value::Ref(buffer), Value::Int(limit)])?;
                 total += i64::from(count);
             }
@@ -284,12 +295,9 @@ const SOCKET_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
     method("isConnected", "()Z", ACC_PUBLIC, |vm, _, args| {
         boolean(bool_field(vm, receiver(args), "connected"))
     }),
-    method(
-        "isConnectionPending",
-        "()Z",
-        ACC_PUBLIC,
-        |vm, _, args| boolean(bool_field(vm, receiver(args), "connectionPending")),
-    ),
+    method("isConnectionPending", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(bool_field(vm, receiver(args), "connectionPending"))
+    }),
     method(
         "getRemoteAddress",
         "()Ljava/net/SocketAddress;",
@@ -316,12 +324,9 @@ const SOCKET_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
             ))
         },
     ),
-    method(
-        "socket",
-        "()Ljava/net/Socket;",
-        ACC_PUBLIC,
-        |vm, _, _| object(new_instance(vm, "java/net/Socket")?),
-    ),
+    method("socket", "()Ljava/net/Socket;", ACC_PUBLIC, |vm, _, _| {
+        object(new_instance(vm, "java/net/Socket")?)
+    }),
     method("isOpen", "()Z", ACC_PUBLIC, |vm, _, args| {
         boolean(bool_field(vm, receiver(args), "open"))
     }),
@@ -387,30 +392,33 @@ const SOCKET_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
         ACC_PUBLIC,
         |_, _, _| object(ObjectRef::NULL),
     ),
-    method("blockingLock", "()Ljava/lang/Object;", ACC_PUBLIC, |_, _, args| {
-        object(receiver(args))
-    }),
+    method(
+        "blockingLock",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |_, _, args| object(receiver(args)),
+    ),
 ];
 
 pub(crate) const SOCKET_CHANNEL: oxjvm_vm::NativeClass = class(
     "java/nio/channels/SocketChannel",
     Some("java/nio/channels/spi/AbstractSelectableChannel"),
-    &["java/nio/channels/ByteChannel", "java/nio/channels/GatheringByteChannel", "java/nio/channels/ScatteringByteChannel"],
+    &[
+        "java/nio/channels/ByteChannel",
+        "java/nio/channels/GatheringByteChannel",
+        "java/nio/channels/ScatteringByteChannel",
+    ],
     ACC_PUBLIC | ACC_ABSTRACT,
     &[],
     &SOCKET_CHANNEL_METHODS,
     None,
 );
 
-const OJVM_SOCKET_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
-    "<init>",
-    "()V",
-    ACC_PUBLIC,
-    |vm, _, args| {
+const OJVM_SOCKET_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 1] =
+    [method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         socket_channel_init(vm, receiver(args))?;
         void()
-    },
-)];
+    })];
 
 pub(crate) const OJVM_SOCKET_CHANNEL: oxjvm_vm::NativeClass = class(
     "java/nio/channels/OjvmSocketChannel",
@@ -446,13 +454,23 @@ const SERVER_SOCKET_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
         "open",
         "()Ljava/nio/channels/ServerSocketChannel;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| object(new_instance(vm, "java/nio/channels/OjvmServerSocketChannel")?),
+        |vm, _, _| {
+            object(new_instance(
+                vm,
+                "java/nio/channels/OjvmServerSocketChannel",
+            )?)
+        },
     ),
     method(
         "open",
         "(Ljava/net/ProtocolFamily;)Ljava/nio/channels/ServerSocketChannel;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| object(new_instance(vm, "java/nio/channels/OjvmServerSocketChannel")?),
+        |vm, _, _| {
+            object(new_instance(
+                vm,
+                "java/nio/channels/OjvmServerSocketChannel",
+            )?)
+        },
     ),
     method(
         "bind",
@@ -463,8 +481,7 @@ const SERVER_SOCKET_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
             if ref_arg(args, 1).is_null() {
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
-            let (class, method) =
-                vm.resolve_virtual_method(ref_arg(args, 1), "getPort", "()I")?;
+            let (class, method) = vm.resolve_virtual_method(ref_arg(args, 1), "getPort", "()I")?;
             let port = vm
                 .invoke_method(class, method, vec![Value::Ref(ref_arg(args, 1))])?
                 .as_int();
@@ -508,7 +525,14 @@ const SERVER_SOCKET_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
         "getLocalAddress",
         "()Ljava/net/SocketAddress;",
         ACC_PUBLIC,
-        |vm, _, args| object(ref_field(vm, receiver(args), "local", "Ljava/net/SocketAddress;")),
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "local",
+                "Ljava/net/SocketAddress;",
+            ))
+        },
     ),
     method("isOpen", "()Z", ACC_PUBLIC, |vm, _, args| {
         boolean(bool_field(vm, receiver(args), "open"))
@@ -549,9 +573,12 @@ const SERVER_SOCKET_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
         ACC_PUBLIC,
         |_, _, _| object(ObjectRef::NULL),
     ),
-    method("blockingLock", "()Ljava/lang/Object;", ACC_PUBLIC, |_, _, args| {
-        object(receiver(args))
-    }),
+    method(
+        "blockingLock",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |_, _, args| object(receiver(args)),
+    ),
     method(
         "setOption",
         "(Ljava/net/SocketOption;Ljava/lang/Object;)Ljava/nio/channels/ServerSocketChannel;",
@@ -613,12 +640,9 @@ pub(crate) const SELECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         ACC_PUBLIC,
         |vm, _, _| object(new_empty_set(vm)?),
     ),
-    method(
-        "keys",
-        "()Ljava/util/Set;",
-        ACC_PUBLIC,
-        |vm, _, _| object(new_empty_set(vm)?),
-    ),
+    method("keys", "()Ljava/util/Set;", ACC_PUBLIC, |vm, _, _| {
+        object(new_empty_set(vm)?)
+    }),
     method(
         "wakeup",
         "()Ljava/nio/channels/Selector;",
@@ -661,10 +685,30 @@ pub(crate) const SELECTION_KEY: oxjvm_vm::NativeClass = class(
     &[],
     ACC_PUBLIC | ACC_ABSTRACT,
     &[
-        field("OP_READ", "I", ACC_PUBLIC | ACC_STATIC | ACC_FINAL, Some(oxjvm_vm::NativeConstant::Int(1))),
-        field("OP_WRITE", "I", ACC_PUBLIC | ACC_STATIC | ACC_FINAL, Some(oxjvm_vm::NativeConstant::Int(4))),
-        field("OP_CONNECT", "I", ACC_PUBLIC | ACC_STATIC | ACC_FINAL, Some(oxjvm_vm::NativeConstant::Int(8))),
-        field("OP_ACCEPT", "I", ACC_PUBLIC | ACC_STATIC | ACC_FINAL, Some(oxjvm_vm::NativeConstant::Int(16))),
+        field(
+            "OP_READ",
+            "I",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            Some(oxjvm_vm::NativeConstant::Int(1)),
+        ),
+        field(
+            "OP_WRITE",
+            "I",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            Some(oxjvm_vm::NativeConstant::Int(4)),
+        ),
+        field(
+            "OP_CONNECT",
+            "I",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            Some(oxjvm_vm::NativeConstant::Int(8)),
+        ),
+        field(
+            "OP_ACCEPT",
+            "I",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            Some(oxjvm_vm::NativeConstant::Int(16)),
+        ),
     ],
     &[
         abstract_method("channel", "()Ljava/nio/channels/SelectableChannel;"),
@@ -712,7 +756,9 @@ const INPUT_STREAM_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
             }
             let stream = ref_field(vm, this, "in", "Ljava/io/InputStream;");
             let (class, method) = vm.resolve_virtual_method(stream, "read", "()I")?;
-            let value = vm.invoke_method(class, method, vec![Value::Ref(stream)])?.as_int();
+            let value = vm
+                .invoke_method(class, method, vec![Value::Ref(stream)])?
+                .as_int();
             if value < 0 {
                 return int(-1);
             }
@@ -774,7 +820,11 @@ const OUTPUT_STREAM_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
             for _ in 0..remaining {
                 let byte = buffer_get_byte(vm, buffer)?;
                 let (class, method) = vm.resolve_virtual_method(stream, "write", "(I)V")?;
-                vm.invoke_method(class, method, vec![Value::Ref(stream), Value::Int(i32::from(byte))])?;
+                vm.invoke_method(
+                    class,
+                    method,
+                    vec![Value::Ref(stream), Value::Int(i32::from(byte))],
+                )?;
             }
             let _ = position;
             int(remaining)
@@ -852,7 +902,12 @@ pub(crate) const CHANNEL_INPUT_STREAM: oxjvm_vm::NativeClass = class(
     Some("java/io/InputStream"),
     &[],
     ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
-    &[field("ch", "Ljava/nio/channels/ReadableByteChannel;", ACC_PRIVATE, None)],
+    &[field(
+        "ch",
+        "Ljava/nio/channels/ReadableByteChannel;",
+        ACC_PRIVATE,
+        None,
+    )],
     &CHANNEL_INPUT_STREAM_METHODS,
     None,
 );
@@ -896,11 +951,7 @@ const CHANNEL_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         let buffer = vm
             .invoke_method(declaring, method, vec![Value::Ref(array)])?
             .as_ref();
-        let (cc, cm) = vm.resolve_virtual_method(
-            channel,
-            "write",
-            "(Ljava/nio/ByteBuffer;)I",
-        )?;
+        let (cc, cm) = vm.resolve_virtual_method(channel, "write", "(Ljava/nio/ByteBuffer;)I")?;
         vm.invoke_method(cc, cm, vec![Value::Ref(channel), Value::Ref(buffer)])?;
         void()
     }),
@@ -922,7 +973,12 @@ pub(crate) const CHANNEL_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
     Some("java/io/OutputStream"),
     &[],
     ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
-    &[field("ch", "Ljava/nio/channels/WritableByteChannel;", ACC_PRIVATE, None)],
+    &[field(
+        "ch",
+        "Ljava/nio/channels/WritableByteChannel;",
+        ACC_PRIVATE,
+        None,
+    )],
     &CHANNEL_OUTPUT_STREAM_METHODS,
     None,
 );
@@ -934,13 +990,7 @@ const CHANNELS_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let channel = new_instance(vm, "java/nio/channels/OjvmInputStreamChannel")?;
-            set_ref(
-                vm,
-                channel,
-                "in",
-                "Ljava/io/InputStream;",
-                ref_arg(args, 0),
-            )?;
+            set_ref(vm, channel, "in", "Ljava/io/InputStream;", ref_arg(args, 0))?;
             object(channel)
         },
     ),
@@ -1010,10 +1060,7 @@ pub(crate) const GATHERING_BYTE_CHANNEL: oxjvm_vm::NativeClass = class(
     &["java/nio/channels/WritableByteChannel"],
     ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
     &[],
-    &[abstract_method(
-        "write",
-        "([Ljava/nio/ByteBuffer;II)J",
-    )],
+    &[abstract_method("write", "([Ljava/nio/ByteBuffer;II)J")],
     None,
 );
 
@@ -1023,10 +1070,7 @@ pub(crate) const SCATTERING_BYTE_CHANNEL: oxjvm_vm::NativeClass = class(
     &["java/nio/channels/ReadableByteChannel"],
     ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
     &[],
-    &[abstract_method(
-        "read",
-        "([Ljava/nio/ByteBuffer;II)J",
-    )],
+    &[abstract_method("read", "([Ljava/nio/ByteBuffer;II)J")],
     None,
 );
 
@@ -1041,18 +1085,12 @@ pub(crate) const NETWORK_CHANNEL: oxjvm_vm::NativeClass = class(
             "bind",
             "(Ljava/net/SocketAddress;)Ljava/nio/channels/NetworkChannel;",
         ),
-        abstract_method(
-            "getLocalAddress",
-            "()Ljava/net/SocketAddress;",
-        ),
+        abstract_method("getLocalAddress", "()Ljava/net/SocketAddress;"),
         abstract_method(
             "setOption",
             "(Ljava/net/SocketOption;Ljava/lang/Object;)Ljava/nio/channels/NetworkChannel;",
         ),
-        abstract_method(
-            "getOption",
-            "(Ljava/net/SocketOption;)Ljava/lang/Object;",
-        ),
+        abstract_method("getOption", "(Ljava/net/SocketOption;)Ljava/lang/Object;"),
         abstract_method("supportedOptions", "()Ljava/util/Set;"),
     ],
     None,

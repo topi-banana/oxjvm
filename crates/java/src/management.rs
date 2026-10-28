@@ -109,13 +109,8 @@ fn map_size(vm: &mut Vm<'_>, map: ObjectRef) -> Result<i32, VmError> {
         .as_int())
 }
 
-fn map_contains_key(
-    vm: &mut Vm<'_>,
-    map: ObjectRef,
-    key: ObjectRef,
-) -> Result<bool, VmError> {
-    let (class, method) =
-        vm.resolve_virtual_method(map, "containsKey", "(Ljava/lang/Object;)Z")?;
+fn map_contains_key(vm: &mut Vm<'_>, map: ObjectRef, key: ObjectRef) -> Result<bool, VmError> {
+    let (class, method) = vm.resolve_virtual_method(map, "containsKey", "(Ljava/lang/Object;)Z")?;
     Ok(vm
         .invoke_method(class, method, vec![Value::Ref(map), Value::Ref(key)])?
         .as_int()
@@ -260,18 +255,15 @@ fn platform_bean_for_class(vm: &mut Vm<'_>, class: ObjectRef) -> Result<ObjectRe
     // Class.getName() for the requested interface.
     let (name_class, name_method) =
         vm.resolve_virtual_method(class, "getName", "()Ljava/lang/String;")?;
-    let name = vm
-        .invoke_method(name_class, name_method, vec![Value::Ref(class)])?;
+    let name = vm.invoke_method(name_class, name_method, vec![Value::Ref(class)])?;
     let name = vm.string_or_empty(name.as_ref());
     match name.as_str() {
-        "java.lang.management.ThreadMXBean" | "com.sun.management.ThreadMXBean" => {
-            bean_singleton(
-                vm,
-                "threadBean",
-                "Ljava/lang/management/ThreadMXBean;",
-                "java/lang/management/OjvmThreadMXBean",
-            )
-        }
+        "java.lang.management.ThreadMXBean" | "com.sun.management.ThreadMXBean" => bean_singleton(
+            vm,
+            "threadBean",
+            "Ljava/lang/management/ThreadMXBean;",
+            "java/lang/management/OjvmThreadMXBean",
+        ),
         "java.lang.management.MemoryMXBean" => bean_singleton(
             vm,
             "memoryBean",
@@ -284,14 +276,13 @@ fn platform_bean_for_class(vm: &mut Vm<'_>, class: ObjectRef) -> Result<ObjectRe
             "Ljava/lang/management/RuntimeMXBean;",
             "java/lang/management/OjvmRuntimeMXBean",
         ),
-        "java.lang.management.OperatingSystemMXBean" | "com.sun.management.OperatingSystemMXBean" => {
-            bean_singleton(
-                vm,
-                "osBean",
-                "Ljava/lang/management/OperatingSystemMXBean;",
-                "java/lang/management/OjvmOperatingSystemMXBean",
-            )
-        }
+        "java.lang.management.OperatingSystemMXBean"
+        | "com.sun.management.OperatingSystemMXBean" => bean_singleton(
+            vm,
+            "osBean",
+            "Ljava/lang/management/OperatingSystemMXBean;",
+            "java/lang/management/OjvmOperatingSystemMXBean",
+        ),
         "java.lang.management.ClassLoadingMXBean" => bean_singleton(
             vm,
             "classLoadingBean",
@@ -304,14 +295,12 @@ fn platform_bean_for_class(vm: &mut Vm<'_>, class: ObjectRef) -> Result<ObjectRe
             "Ljava/lang/management/CompilationMXBean;",
             "java/lang/management/OjvmCompilationMXBean",
         ),
-        "com.sun.management.HotSpotDiagnosticMXBean" => {
-            bean_singleton(
-                vm,
-                "hotspotBean",
-                "Lcom/sun/management/HotSpotDiagnosticMXBean;",
-                "java/lang/management/OjvmHotSpotDiagnosticMXBean",
-            )
-        }
+        "com.sun.management.HotSpotDiagnosticMXBean" => bean_singleton(
+            vm,
+            "hotspotBean",
+            "Lcom/sun/management/HotSpotDiagnosticMXBean;",
+            "java/lang/management/OjvmHotSpotDiagnosticMXBean",
+        ),
         "java.lang.management.GarbageCollectorMXBean"
         | "java.lang.management.MemoryPoolMXBean"
         | "java.lang.management.MemoryManagerMXBean" => Err(vm.throw_new(
@@ -332,13 +321,14 @@ fn register_platform_bean(
     name: &str,
 ) -> Result<(), VmError> {
     let object_name = new_object_name(vm, name)?.as_ref();
-    let (class, method) = vm.resolve_virtual_method(
-        server,
-        "isRegistered",
-        "(Ljavax/management/ObjectName;)Z",
-    )?;
+    let (class, method) =
+        vm.resolve_virtual_method(server, "isRegistered", "(Ljavax/management/ObjectName;)Z")?;
     if vm
-        .invoke_method(class, method, vec![Value::Ref(server), Value::Ref(object_name)])?
+        .invoke_method(
+            class,
+            method,
+            vec![Value::Ref(server), Value::Ref(object_name)],
+        )?
         .as_int()
         != 0
     {
@@ -352,16 +342,17 @@ fn register_platform_bean(
         let _ = vm.invoke_method(
             class,
             method,
-            vec![Value::Ref(server), Value::Ref(bean), Value::Ref(object_name)],
+            vec![
+                Value::Ref(server),
+                Value::Ref(bean),
+                Value::Ref(object_name),
+            ],
         );
     }
     Ok(())
 }
 
-fn platform_beans_for_class(
-    vm: &mut Vm<'_>,
-    class: ObjectRef,
-) -> Result<ObjectRef, VmError> {
+fn platform_beans_for_class(vm: &mut Vm<'_>, class: ObjectRef) -> Result<ObjectRef, VmError> {
     if class.is_null() {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
@@ -542,11 +533,7 @@ const MANAGEMENT_FACTORY_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
             let factory = vm.resolve_class("java/lang/management/ManagementFactory")?;
             vm.ensure_initialized(factory)?;
             let server = vm
-                .read_static_ref(
-                    factory,
-                    "server",
-                    "Ljavax/management/MBeanServer;",
-                )
+                .read_static_ref(factory, "server", "Ljavax/management/MBeanServer;")
                 .unwrap_or(ObjectRef::NULL);
             let beans = [
                 (
@@ -787,11 +774,7 @@ pub(crate) const PLATFORM_MANAGED_OBJECT: oxjvm_vm::NativeClass = class(
 fn new_object_name(vm: &mut Vm<'_>, text: &str) -> Result<Value, VmError> {
     let class = vm.resolve_class("javax/management/ObjectName")?;
     let (declaring, method) = vm
-        .find_method(
-            class,
-            "<init>",
-            "(Ljava/lang/String;)V",
-        )
+        .find_method(class, "<init>", "(Ljava/lang/String;)V")
         .ok_or_else(|| VmError::internal("ObjectName ctor"))?;
     let instance = vm.new_instance(class)?;
     let text = vm.make_string(text)?;
@@ -834,21 +817,37 @@ const VM_OPTION_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
             void()
         },
     ),
-    method("getName", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
-        object(ref_field(vm, receiver(args), "name", "Ljava/lang/String;"))
-    }),
-    method("getValue", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
-        object(ref_field(vm, receiver(args), "value", "Ljava/lang/String;"))
-    }),
+    method(
+        "getName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| object(ref_field(vm, receiver(args), "name", "Ljava/lang/String;")),
+    ),
+    method(
+        "getValue",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| object(ref_field(vm, receiver(args), "value", "Ljava/lang/String;")),
+    ),
     method("isWriteable", "()Z", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let class = vm.class_of(this);
         let (declaring, field) = vm.find_field(class, "writeable", "Z")?;
         boolean(vm.read_instance_int(this, declaring, field).unwrap_or(0) != 0)
     }),
-    method("getOrigin", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
-        object(ref_field(vm, receiver(args), "origin", "Ljava/lang/String;"))
-    }),
+    method(
+        "getOrigin",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "origin",
+                "Ljava/lang/String;",
+            ))
+        },
+    ),
 ];
 
 pub(crate) const THREAD_INFO: oxjvm_vm::NativeClass = class(
@@ -897,13 +896,27 @@ const THREAD_INFO_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         "getThreadName",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
-        |vm, _, args| object(ref_field(vm, receiver(args), "threadName", "Ljava/lang/String;")),
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "threadName",
+                "Ljava/lang/String;",
+            ))
+        },
     ),
     method(
         "getThreadState",
         "()Ljava/lang/Thread$State;",
         ACC_PUBLIC,
-        |vm, _, args| object(ref_field(vm, receiver(args), "threadState", "Ljava/lang/Thread$State;")),
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "threadState",
+                "Ljava/lang/Thread$State;",
+            ))
+        },
     ),
     method(
         "toString",
@@ -922,24 +935,19 @@ const THREAD_INFO_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
             object(vm.make_string(&text)?)
         },
     ),
-];// -------------------------------------------------------------------------------------------
+]; // -------------------------------------------------------------------------------------------
 // java.lang.management.MemoryUsage
 // -------------------------------------------------------------------------------------------
 
 const MEMORY_USAGE_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
-    method(
-        "<init>",
-        "(JJJJ)V",
-        ACC_PUBLIC,
-        |vm, _, args| {
-            let this = receiver(args);
-            set_long_field(vm, this, "init", args[1].as_long())?;
-            set_long_field(vm, this, "used", args[2].as_long())?;
-            set_long_field(vm, this, "committed", args[3].as_long())?;
-            set_long_field(vm, this, "max", args[4].as_long())?;
-            void()
-        },
-    ),
+    method("<init>", "(JJJJ)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        set_long_field(vm, this, "init", args[1].as_long())?;
+        set_long_field(vm, this, "used", args[2].as_long())?;
+        set_long_field(vm, this, "committed", args[3].as_long())?;
+        set_long_field(vm, this, "max", args[4].as_long())?;
+        void()
+    }),
     method("getInit", "()J", ACC_PUBLIC, |vm, _, args| {
         long(long_field(vm, receiver(args), "init"))
     }),
@@ -1043,9 +1051,12 @@ const MEMORY_TYPE_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
             object(value)
         },
     ),
-    method("toString", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
-        object(ref_field(vm, receiver(args), "name", "Ljava/lang/String;"))
-    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| object(ref_field(vm, receiver(args), "name", "Ljava/lang/String;")),
+    ),
 ];
 
 pub(crate) const MEMORY_TYPE: oxjvm_vm::NativeClass = class(
@@ -1145,14 +1156,8 @@ const THREAD_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
     abstract_method("getAllThreadIds", "()[J"),
     abstract_method("getThreadInfo", "(J)Ljava/lang/management/ThreadInfo;"),
     abstract_method("getThreadInfo", "(JI)Ljava/lang/management/ThreadInfo;"),
-    abstract_method(
-        "getThreadInfo",
-        "([JZZ)[Ljava/lang/management/ThreadInfo;",
-    ),
-    abstract_method(
-        "dumpAllThreads",
-        "(ZZ)[Ljava/lang/management/ThreadInfo;",
-    ),
+    abstract_method("getThreadInfo", "([JZZ)[Ljava/lang/management/ThreadInfo;"),
+    abstract_method("dumpAllThreads", "(ZZ)[Ljava/lang/management/ThreadInfo;"),
     abstract_method("findDeadlockedThreads", "()[J"),
     abstract_method("findMonitorDeadlockedThreads", "()[J"),
     abstract_method("isThreadCpuTimeSupported", "()Z"),
@@ -1170,7 +1175,10 @@ const THREAD_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
     abstract_method("isSynchronizerUsageSupported", "()Z"),
 ];
 
-const fn abstract_method(name: &'static str, descriptor: &'static str) -> oxjvm_vm::NativeMethodDef {
+const fn abstract_method(
+    name: &'static str,
+    descriptor: &'static str,
+) -> oxjvm_vm::NativeMethodDef {
     method(
         name,
         descriptor,
@@ -1248,12 +1256,9 @@ const THREAD_MX_BEAN_IMPL_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
             object(vm.allocate_object_array(class, 0)?)
         },
     ),
-    method(
-        "findDeadlockedThreads",
-        "()[J",
-        ACC_PUBLIC,
-        |_, _, _| object(ObjectRef::NULL),
-    ),
+    method("findDeadlockedThreads", "()[J", ACC_PUBLIC, |_, _, _| {
+        object(ObjectRef::NULL)
+    }),
     method(
         "findMonitorDeadlockedThreads",
         "()[J",
@@ -1272,12 +1277,9 @@ const THREAD_MX_BEAN_IMPL_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
     method("isThreadCpuTimeEnabled", "()Z", ACC_PUBLIC, |_, _, _| {
         boolean(true)
     }),
-    method(
-        "setThreadCpuTimeEnabled",
-        "(Z)V",
-        ACC_PUBLIC,
-        |_, _, _| void(),
-    ),
+    method("setThreadCpuTimeEnabled", "(Z)V", ACC_PUBLIC, |_, _, _| {
+        void()
+    }),
     method("getCurrentThreadCpuTime", "()J", ACC_PUBLIC, |_, _, _| {
         long(0)
     }),
@@ -1304,13 +1306,21 @@ const THREAD_MX_BEAN_IMPL_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
         ACC_PUBLIC,
         |_, _, _| void(),
     ),
-    method("isObjectMonitorUsageSupported", "()Z", ACC_PUBLIC, |_, _, _| {
-        boolean(false)
+    method(
+        "isObjectMonitorUsageSupported",
+        "()Z",
+        ACC_PUBLIC,
+        |_, _, _| boolean(false),
+    ),
+    method(
+        "isSynchronizerUsageSupported",
+        "()Z",
+        ACC_PUBLIC,
+        |_, _, _| boolean(false),
+    ),
+    method("getThreadAllocatedBytes", "(J)J", ACC_PUBLIC, |_, _, _| {
+        long(-1)
     }),
-    method("isSynchronizerUsageSupported", "()Z", ACC_PUBLIC, |_, _, _| {
-        boolean(false)
-    }),
-    method("getThreadAllocatedBytes", "(J)J", ACC_PUBLIC, |_, _, _| long(-1)),
     method(
         "getThreadAllocatedBytes",
         "([J)[J",
@@ -1359,10 +1369,7 @@ pub(crate) const OJVM_THREAD_MX_BEAN: oxjvm_vm::NativeClass = class(
 );
 
 const MEMORY_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
-    abstract_method(
-        "getHeapMemoryUsage",
-        "()Ljava/lang/management/MemoryUsage;",
-    ),
+    abstract_method("getHeapMemoryUsage", "()Ljava/lang/management/MemoryUsage;"),
     abstract_method(
         "getNonHeapMemoryUsage",
         "()Ljava/lang/management/MemoryUsage;",
@@ -1484,9 +1491,12 @@ const OJVM_RUNTIME_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method("getName", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, _| {
         object(vm.make_string("1@localhost")?)
     }),
-    method("getVmName", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, _| {
-        object(vm.make_string("oxjvm")?)
-    }),
+    method(
+        "getVmName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| object(vm.make_string("oxjvm")?),
+    ),
     method(
         "getVmVendor",
         "()Ljava/lang/String;",
@@ -1523,10 +1533,15 @@ const OJVM_RUNTIME_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         ACC_PUBLIC,
         |vm, _, _| object(vm.make_string("1.4")?),
     ),
-    method("getClassPath", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, _| {
-        let text = system_property_str(vm, "java.class.path");
-        object(vm.make_string(&text)?)
-    }),
+    method(
+        "getClassPath",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let text = system_property_str(vm, "java.class.path");
+            object(vm.make_string(&text)?)
+        },
+    ),
     method(
         "getLibraryPath",
         "()Ljava/lang/String;",
@@ -1565,12 +1580,8 @@ const OJVM_RUNTIME_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
             let system = vm.resolve_class("java/lang/System")?;
             vm.ensure_initialized(system)?;
             object(
-                vm.read_static_ref_if_set(
-                    system,
-                    "props",
-                    "Ljava/util/Properties;",
-                )
-                .unwrap_or(ObjectRef::NULL),
+                vm.read_static_ref_if_set(system, "props", "Ljava/util/Properties;")
+                    .unwrap_or(ObjectRef::NULL),
             )
         },
     ),
@@ -1645,22 +1656,21 @@ const OJVM_OS_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         let text = system_property_str(vm, "os.arch");
         object(vm.make_string(&text)?)
     }),
-    method("getVersion", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, _| {
-        let text = system_property_str(vm, "os.version");
-        object(vm.make_string(&text)?)
+    method(
+        "getVersion",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let text = system_property_str(vm, "os.version");
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method("getAvailableProcessors", "()I", ACC_PUBLIC, |_, _, _| {
+        int(1)
     }),
-    method(
-        "getAvailableProcessors",
-        "()I",
-        ACC_PUBLIC,
-        |_, _, _| int(1),
-    ),
-    method(
-        "getSystemLoadAverage",
-        "()D",
-        ACC_PUBLIC,
-        |_, _, _| crate::double(-1.0),
-    ),
+    method("getSystemLoadAverage", "()D", ACC_PUBLIC, |_, _, _| {
+        crate::double(-1.0)
+    }),
     method(
         "getCommittedVirtualMemorySize",
         "()J",
@@ -1670,9 +1680,7 @@ const OJVM_OS_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method("getTotalSwapSpaceSize", "()J", ACC_PUBLIC, |_, _, _| {
         long(0)
     }),
-    method("getFreeSwapSpaceSize", "()J", ACC_PUBLIC, |_, _, _| {
-        long(0)
-    }),
+    method("getFreeSwapSpaceSize", "()J", ACC_PUBLIC, |_, _, _| long(0)),
     method("getProcessCpuTime", "()J", ACC_PUBLIC, |_, _, _| long(0)),
     method("getFreeMemorySize", "()J", ACC_PUBLIC, |_, _, _| {
         long(1 << 31)
@@ -1680,12 +1688,9 @@ const OJVM_OS_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method("getTotalMemorySize", "()J", ACC_PUBLIC, |_, _, _| {
         long(1 << 33)
     }),
-    method(
-        "getFreePhysicalMemorySize",
-        "()J",
-        ACC_PUBLIC,
-        |_, _, _| long(1 << 31),
-    ),
+    method("getFreePhysicalMemorySize", "()J", ACC_PUBLIC, |_, _, _| {
+        long(1 << 31)
+    }),
     method(
         "getTotalPhysicalMemorySize",
         "()J",
@@ -1741,21 +1746,15 @@ const OJVM_CLASS_LOADING_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         ACC_PUBLIC,
         |vm, _, _| new_object_name(vm, "java.lang:type=ClassLoading"),
     ),
-    method(
-        "getTotalLoadedClassCount",
-        "()J",
-        ACC_PUBLIC,
-        |vm, _, _| long(vm.classes.len() as i64),
-    ),
+    method("getTotalLoadedClassCount", "()J", ACC_PUBLIC, |vm, _, _| {
+        long(vm.classes.len() as i64)
+    }),
     method("getLoadedClassCount", "()I", ACC_PUBLIC, |vm, _, _| {
         int(vm.classes.len() as i32)
     }),
-    method(
-        "getUnloadedClassCount",
-        "()J",
-        ACC_PUBLIC,
-        |_, _, _| long(0),
-    ),
+    method("getUnloadedClassCount", "()J", ACC_PUBLIC, |_, _, _| {
+        long(0)
+    }),
     method("isVerbose", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
     method("setVerbose", "(Z)V", ACC_PUBLIC, |_, _, _| void()),
 ];
@@ -1802,12 +1801,9 @@ const OJVM_COMPILATION_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         ACC_PUBLIC,
         |_, _, _| boolean(false),
     ),
-    method(
-        "getTotalCompilationTime",
-        "()J",
-        ACC_PUBLIC,
-        |_, _, _| long(0),
-    ),
+    method("getTotalCompilationTime", "()J", ACC_PUBLIC, |_, _, _| {
+        long(0)
+    }),
 ];
 
 pub(crate) const OJVM_COMPILATION_MX_BEAN: oxjvm_vm::NativeClass = class(
@@ -1844,7 +1840,12 @@ const OJVM_GC_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         "getObjectName",
         "()Ljavax/management/ObjectName;",
         ACC_PUBLIC,
-        |vm, _, _| new_object_name(vm, "java.lang:type=GarbageCollector,name=G1 Young Generation"),
+        |vm, _, _| {
+            new_object_name(
+                vm,
+                "java.lang:type=GarbageCollector,name=G1 Young Generation",
+            )
+        },
     ),
     method("getName", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, _| {
         object(vm.make_string("G1 Young Generation")?)
@@ -1907,7 +1908,12 @@ const OJVM_MEMORY_MANAGER_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         "getObjectName",
         "()Ljavax/management/ObjectName;",
         ACC_PUBLIC,
-        |vm, _, _| new_object_name(vm, "java.lang:type=MemoryManager,name=G1 Young Generation Manager"),
+        |vm, _, _| {
+            new_object_name(
+                vm,
+                "java.lang:type=MemoryManager,name=G1 Young Generation Manager",
+            )
+        },
     ),
     method("getName", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, _| {
         object(vm.make_string("G1 Young Generation Manager")?)
@@ -1937,10 +1943,7 @@ const MEMORY_POOL_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     abstract_method("getUsage", "()Ljava/lang/management/MemoryUsage;"),
     abstract_method("getPeakUsage", "()Ljava/lang/management/MemoryUsage;"),
     abstract_method("resetPeakUsage", "()V"),
-    abstract_method(
-        "getCollectionUsage",
-        "()Ljava/lang/management/MemoryUsage;",
-    ),
+    abstract_method("getCollectionUsage", "()Ljava/lang/management/MemoryUsage;"),
     abstract_method("isValid", "()Z"),
     abstract_method("getMemoryManagerNames", "()[Ljava/lang/String;"),
     abstract_method("isUsageThresholdSupported", "()Z"),
@@ -2026,12 +2029,9 @@ const OJVM_MEMORY_POOL_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
     }),
     method("getUsageThreshold", "()J", ACC_PUBLIC, |_, _, _| long(0)),
     method("setUsageThreshold", "(J)V", ACC_PUBLIC, |_, _, _| void()),
-    method(
-        "isUsageThresholdExceeded",
-        "()Z",
-        ACC_PUBLIC,
-        |_, _, _| boolean(false),
-    ),
+    method("isUsageThresholdExceeded", "()Z", ACC_PUBLIC, |_, _, _| {
+        boolean(false)
+    }),
     method(
         "isCollectionUsageThresholdSupported",
         "()Z",
@@ -2082,11 +2082,7 @@ pub(crate) const HOTSPOT_MX_BEAN_DEF: oxjvm_vm::NativeClass = class(
     None,
 );
 
-fn new_vm_option(
-    vm: &mut Vm<'_>,
-    name: &str,
-    value: &str,
-) -> Result<ObjectRef, VmError> {
+fn new_vm_option(vm: &mut Vm<'_>, name: &str, value: &str) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class("com/sun/management/VMOption")?;
     let option = vm.new_instance(class)?;
     let (declaring, ctor) = vm
@@ -2238,7 +2234,7 @@ const OBJECT_NAME_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
                     return Err(vm.throw_new(
                         "javax/management/MalformedObjectNameException",
                         Some("missing domain"),
-                    ))
+                    ));
                 }
             };
             if domain.is_empty() {
@@ -2275,16 +2271,40 @@ const OBJECT_NAME_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
         "getCanonicalName",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
-        |vm, _, args| object(ref_field(vm, receiver(args), "canonicalName", "Ljava/lang/String;")),
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "canonicalName",
+                "Ljava/lang/String;",
+            ))
+        },
     ),
-    method("getDomain", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
-        object(ref_field(vm, receiver(args), "domain", "Ljava/lang/String;"))
-    }),
+    method(
+        "getDomain",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "domain",
+                "Ljava/lang/String;",
+            ))
+        },
+    ),
     method(
         "getKeyPropertyListString",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
-        |vm, _, args| object(ref_field(vm, receiver(args), "keyList", "Ljava/lang/String;")),
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "keyList",
+                "Ljava/lang/String;",
+            ))
+        },
     ),
     method(
         "getKeyProperty",
@@ -2315,7 +2335,14 @@ const OBJECT_NAME_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
         "toString",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
-        |vm, _, args| object(ref_field(vm, receiver(args), "canonicalName", "Ljava/lang/String;")),
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "canonicalName",
+                "Ljava/lang/String;",
+            ))
+        },
     ),
     method(
         "equals",
@@ -2359,7 +2386,7 @@ const OBJECT_NAME_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
                     return Err(vm.throw_new(
                         "javax/management/MalformedObjectNameException",
                         Some("missing domain"),
-                    ))
+                    ));
                 }
             };
             let class = vm.resolve_class("javax/management/ObjectName")?;
@@ -2370,16 +2397,26 @@ const OBJECT_NAME_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
             object(instance)
         },
     ),
-    method("quote", "(Ljava/lang/String;)Ljava/lang/String;", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
-        let text = vm.string_or_empty(ref_arg(args, 0));
-        let quoted = alloc::format!("\"{}\"", text.replace('"', "\\\""));
-        object(vm.make_string(&quoted)?)
-    }),
-    method("unquote", "(Ljava/lang/String;)Ljava/lang/String;", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
-        let text = vm.string_or_empty(ref_arg(args, 0));
-        let unquoted = text.trim_matches('"').replace("\\\"", "\"");
-        object(vm.make_string(&unquoted)?)
-    }),
+    method(
+        "quote",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = vm.string_or_empty(ref_arg(args, 0));
+            let quoted = alloc::format!("\"{}\"", text.replace('"', "\\\""));
+            object(vm.make_string(&quoted)?)
+        },
+    ),
+    method(
+        "unquote",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = vm.string_or_empty(ref_arg(args, 0));
+            let unquoted = text.trim_matches('"').replace("\\\"", "\"");
+            object(vm.make_string(&unquoted)?)
+        },
+    ),
 ];
 
 fn set_string_field_value(
@@ -2398,9 +2435,8 @@ trait StringArgValue {
 
 impl StringArgValue for Vm<'_> {
     fn string_arg_value(&self, value: Value) -> Result<String, VmError> {
-        self.string_value(value.as_ref()).ok_or_else(|| {
-            VmError::internal("string argument expected")
-        })
+        self.string_value(value.as_ref())
+            .ok_or_else(|| VmError::internal("string argument expected"))
     }
 }
 
@@ -2432,7 +2468,13 @@ const OBJECT_INSTANCE_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
                 "Ljavax/management/ObjectName;",
                 ref_arg(args, 1),
             )?;
-            set_ref_field(vm, this, "className", "Ljava/lang/String;", ref_arg(args, 2))?;
+            set_ref_field(
+                vm,
+                this,
+                "className",
+                "Ljava/lang/String;",
+                ref_arg(args, 2),
+            )?;
             void()
         },
     ),
@@ -2440,13 +2482,27 @@ const OBJECT_INSTANCE_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         "getObjectName",
         "()Ljavax/management/ObjectName;",
         ACC_PUBLIC,
-        |vm, _, args| object(ref_field(vm, receiver(args), "name", "Ljavax/management/ObjectName;")),
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "name",
+                "Ljavax/management/ObjectName;",
+            ))
+        },
     ),
     method(
         "getClassName",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
-        |vm, _, args| object(ref_field(vm, receiver(args), "className", "Ljava/lang/String;")),
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "className",
+                "Ljava/lang/String;",
+            ))
+        },
     ),
     method(
         "toString",
@@ -2491,12 +2547,18 @@ const ATTRIBUTE_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
             void()
         },
     ),
-    method("getName", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
-        object(ref_field(vm, receiver(args), "name", "Ljava/lang/String;"))
-    }),
-    method("getValue", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
-        object(ref_field(vm, receiver(args), "value", "Ljava/lang/Object;"))
-    }),
+    method(
+        "getName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| object(ref_field(vm, receiver(args), "name", "Ljava/lang/String;")),
+    ),
+    method(
+        "getValue",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| object(ref_field(vm, receiver(args), "value", "Ljava/lang/Object;")),
+    ),
 ];
 
 pub(crate) const ATTRIBUTE: oxjvm_vm::NativeClass = class(
@@ -2549,8 +2611,20 @@ const MBEAN_INFO_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            set_ref_field(vm, this, "className", "Ljava/lang/String;", ref_arg(args, 1))?;
-            set_ref_field(vm, this, "description", "Ljava/lang/String;", ref_arg(args, 2))?;
+            set_ref_field(
+                vm,
+                this,
+                "className",
+                "Ljava/lang/String;",
+                ref_arg(args, 1),
+            )?;
+            set_ref_field(
+                vm,
+                this,
+                "description",
+                "Ljava/lang/String;",
+                ref_arg(args, 2),
+            )?;
             void()
         },
     ),
@@ -2558,13 +2632,27 @@ const MBEAN_INFO_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         "getClassName",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
-        |vm, _, args| object(ref_field(vm, receiver(args), "className", "Ljava/lang/String;")),
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "className",
+                "Ljava/lang/String;",
+            ))
+        },
     ),
     method(
         "getDescription",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
-        |vm, _, args| object(ref_field(vm, receiver(args), "description", "Ljava/lang/String;")),
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "description",
+                "Ljava/lang/String;",
+            ))
+        },
     ),
     method(
         "getAttributes",
@@ -2663,12 +2751,18 @@ pub(crate) const NOTIFICATION_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
             void()
         },
     ),
-    method("getType", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
-        object(ref_field(vm, receiver(args), "type", "Ljava/lang/String;"))
-    }),
-    method("getMessage", "()Ljava/lang/String;", ACC_PUBLIC, |_, _, _| {
-        object(ObjectRef::NULL)
-    }),
+    method(
+        "getType",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| object(ref_field(vm, receiver(args), "type", "Ljava/lang/String;")),
+    ),
+    method(
+        "getMessage",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
     method("getTimeStamp", "()J", ACC_PUBLIC, |vm, _, args| {
         long(long_field(vm, receiver(args), "timeStamp"))
     }),
@@ -2788,10 +2882,7 @@ const MBEAN_SERVER_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
         "getClassLoaderFor",
         "(Ljavax/management/ObjectName;)Ljava/lang/ClassLoader;",
     ),
-    abstract_method(
-        "instantiate",
-        "(Ljava/lang/String;)Ljava/lang/Object;",
-    ),
+    abstract_method("instantiate", "(Ljava/lang/String;)Ljava/lang/Object;"),
     abstract_method(
         "getClassLoaderRepository",
         "()Ljavax/management/loading/ClassLoaderRepository;",
@@ -2911,17 +3002,12 @@ fn object_name_matches(pattern: &str, actual: &str) -> bool {
 }
 
 const OJVM_MBEAN_SERVER_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
-    method(
-        "<init>",
-        "()V",
-        ACC_PUBLIC,
-        |vm, _, args| {
-            let this = receiver(args);
-            let entries = new_hash_map(vm)?;
-            set_ref_field(vm, this, "entries", "Ljava/util/HashMap;", entries)?;
-            void()
-        },
-    ),
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let entries = new_hash_map(vm)?;
+        set_ref_field(vm, this, "entries", "Ljava/util/HashMap;", entries)?;
+        void()
+    }),
     method(
         "registerMBean",
         "(Ljava/lang/Object;Ljavax/management/ObjectName;)Ljavax/management/ObjectInstance;",
@@ -2937,11 +3023,8 @@ const OJVM_MBEAN_SERVER_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
             map_put(vm, entries, name, target)?;
             let (get_class, get_class_method) =
                 vm.resolve_virtual_method(target, "getClass", "()Ljava/lang/Class;")?;
-            let class_ref = vm.invoke_method(
-                get_class,
-                get_class_method,
-                vec![Value::Ref(target)],
-            )?;
+            let class_ref =
+                vm.invoke_method(get_class, get_class_method, vec![Value::Ref(target)])?;
             let (nclass, nmethod) =
                 vm.resolve_virtual_method(class_ref.as_ref(), "getName", "()Ljava/lang/String;")?;
             let text = vm.invoke_method(nclass, nmethod, vec![Value::Ref(class_ref.as_ref())])?;
@@ -3046,18 +3129,28 @@ const OJVM_MBEAN_SERVER_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
             let pattern = object_name_text(vm, pattern_ref);
             let (class, method) =
                 vm.resolve_virtual_method(entries, "keySet", "()Ljava/util/Set;")?;
-            let keys = vm.invoke_method(class, method, vec![Value::Ref(entries)])?.as_ref();
+            let keys = vm
+                .invoke_method(class, method, vec![Value::Ref(entries)])?
+                .as_ref();
             let (iclass, it) =
                 vm.resolve_virtual_method(keys, "iterator", "()Ljava/util/Iterator;")?;
-            let iterator = vm.invoke_method(iclass, it, vec![Value::Ref(keys)])?.as_ref();
+            let iterator = vm
+                .invoke_method(iclass, it, vec![Value::Ref(keys)])?
+                .as_ref();
             loop {
                 let (hc, hm) = vm.resolve_virtual_method(iterator, "hasNext", "()Z")?;
-                if vm.invoke_method(hc, hm, vec![Value::Ref(iterator)])?.as_int() == 0 {
+                if vm
+                    .invoke_method(hc, hm, vec![Value::Ref(iterator)])?
+                    .as_int()
+                    == 0
+                {
                     break;
                 }
                 let (nc, nm) =
                     vm.resolve_virtual_method(iterator, "next", "()Ljava/lang/Object;")?;
-                let name = vm.invoke_method(nc, nm, vec![Value::Ref(iterator)])?.as_ref();
+                let name = vm
+                    .invoke_method(nc, nm, vec![Value::Ref(iterator)])?
+                    .as_ref();
                 if object_name_matches(&pattern, &object_name_text(vm, name)) {
                     set_add(vm, set, name)?;
                 }
@@ -3074,19 +3167,29 @@ const OJVM_MBEAN_SERVER_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
             let entries = ref_field(vm, this, "entries", "Ljava/util/HashMap;");
             let (class, method) =
                 vm.resolve_virtual_method(entries, "keySet", "()Ljava/util/Set;")?;
-            let keys = vm.invoke_method(class, method, vec![Value::Ref(entries)])?.as_ref();
+            let keys = vm
+                .invoke_method(class, method, vec![Value::Ref(entries)])?
+                .as_ref();
             let set = new_hash_set(vm)?;
             let (iclass, it) =
                 vm.resolve_virtual_method(keys, "iterator", "()Ljava/util/Iterator;")?;
-            let iterator = vm.invoke_method(iclass, it, vec![Value::Ref(keys)])?.as_ref();
+            let iterator = vm
+                .invoke_method(iclass, it, vec![Value::Ref(keys)])?
+                .as_ref();
             loop {
                 let (hc, hm) = vm.resolve_virtual_method(iterator, "hasNext", "()Z")?;
-                if vm.invoke_method(hc, hm, vec![Value::Ref(iterator)])?.as_int() == 0 {
+                if vm
+                    .invoke_method(hc, hm, vec![Value::Ref(iterator)])?
+                    .as_int()
+                    == 0
+                {
                     break;
                 }
                 let (nc, nm) =
                     vm.resolve_virtual_method(iterator, "next", "()Ljava/lang/Object;")?;
-                let name = vm.invoke_method(nc, nm, vec![Value::Ref(iterator)])?.as_ref();
+                let name = vm
+                    .invoke_method(nc, nm, vec![Value::Ref(iterator)])?
+                    .as_ref();
                 let target = map_get(vm, entries, name)?;
                 let (cc, cm) =
                     vm.resolve_virtual_method(target, "getClass", "()Ljava/lang/Class;")?;
@@ -3190,9 +3293,12 @@ const OJVM_MBEAN_SERVER_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
         ACC_PUBLIC,
         |vm, _, _| object(vm.make_string("DefaultDomain")?),
     ),
-    method("getDomains", "()[Ljava/lang/String;", ACC_PUBLIC, |vm, _, _| {
-        object(new_string_array(vm, &["DefaultDomain"])?)
-    }),
+    method(
+        "getDomains",
+        "()[Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| object(new_string_array(vm, &["DefaultDomain"])?),
+    ),
     method(
         "addNotificationListener",
         "(Ljavax/management/ObjectName;Ljavax/management/NotificationListener;Ljavax/management/NotificationFilter;Ljava/lang/Object;)V",

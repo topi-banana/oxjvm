@@ -251,7 +251,10 @@ const CLASS_DESC_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let name = string_field(vm, receiver(args), "name");
-            let package = name.rsplit_once('.').map(|(p, _)| p.to_string()).unwrap_or_default();
+            let package = name
+                .rsplit_once('.')
+                .map(|(p, _)| p.to_string())
+                .unwrap_or_default();
             object(vm.make_string(&package)?)
         },
     ),
@@ -307,20 +310,28 @@ const CLASS_DESC_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
             object(new_class_desc(vm, &alloc::format!("{name}${nested}"))?)
         },
     ),
-    method("toString", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
-        let name = string_field(vm, receiver(args), "name");
-        object(vm.make_string(&name)?)
-    }),
-    method("equals", "(Ljava/lang/Object;)Z", ACC_PUBLIC, |vm, _, args| {
-        let this = receiver(args);
-        let other = ref_arg(args, 1);
-        if other.is_null() || vm.class_of(other) != vm.class_of(this) {
-            return boolean(false);
-        }
-        boolean(
-            string_field(vm, this, "descriptor") == string_field(vm, other, "descriptor"),
-        )
-    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = string_field(vm, receiver(args), "name");
+            object(vm.make_string(&name)?)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if other.is_null() || vm.class_of(other) != vm.class_of(this) {
+                return boolean(false);
+            }
+            boolean(string_field(vm, this, "descriptor") == string_field(vm, other, "descriptor"))
+        },
+    ),
     method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
         let descriptor = string_field(vm, receiver(args), "descriptor");
         let mut hash: i32 = 0;
@@ -346,10 +357,7 @@ pub(crate) const OJVM_CLASS_DESC: oxjvm_vm::NativeClass = class(
 
 const CLASS_DESC_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     abstract_method("arrayType", "()Ljava/lang/constant/ClassDesc;"),
-    abstract_method(
-        "arrayType",
-        "(I)Ljava/lang/constant/ClassDesc;",
-    ),
+    abstract_method("arrayType", "(I)Ljava/lang/constant/ClassDesc;"),
     abstract_method(
         "nested",
         "(Ljava/lang/String;)Ljava/lang/constant/ClassDesc;",
@@ -432,7 +440,9 @@ const ACCESS_FLAGS_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
             let (class, method) = vm.resolve_virtual_method(flag, "mask", "()I")?;
-            let mask = vm.invoke_method(class, method, vec![Value::Ref(flag)])?.as_int();
+            let mask = vm
+                .invoke_method(class, method, vec![Value::Ref(flag)])?
+                .as_int();
             boolean(int_field(vm, this, "flags") & mask != 0)
         },
     ),
@@ -443,7 +453,12 @@ const ACCESS_FLAGS_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         "toString",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
-        |vm, _, args| object(vm.make_string(&alloc::format!("flags=0x{:x}", int_field(vm, receiver(args), "flags")))?),
+        |vm, _, args| {
+            object(vm.make_string(&alloc::format!(
+                "flags=0x{:x}",
+                int_field(vm, receiver(args), "flags")
+            ))?)
+        },
     ),
 ];
 
@@ -468,15 +483,28 @@ const UTF8_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
             object(vm.make_string(&value)?)
         },
     ),
-    method("equalsString", "(Ljava/lang/String;)Z", ACC_PUBLIC, |vm, _, args| {
-        boolean(string_field(vm, receiver(args), "value") == vm.string_or_empty(ref_arg(args, 1)))
-    }),
-    method("isFieldType", "(Ljava/lang/constant/ClassDesc;)Z", ACC_PUBLIC, |_, _, _| {
-        boolean(true)
-    }),
-    method("isMethodType", "(Ljava/lang/constant/MethodTypeDesc;)Z", ACC_PUBLIC, |_, _, _| {
-        boolean(false)
-    }),
+    method(
+        "equalsString",
+        "(Ljava/lang/String;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            boolean(
+                string_field(vm, receiver(args), "value") == vm.string_or_empty(ref_arg(args, 1)),
+            )
+        },
+    ),
+    method(
+        "isFieldType",
+        "(Ljava/lang/constant/ClassDesc;)Z",
+        ACC_PUBLIC,
+        |_, _, _| boolean(true),
+    ),
+    method(
+        "isMethodType",
+        "(Ljava/lang/constant/MethodTypeDesc;)Z",
+        ACC_PUBLIC,
+        |_, _, _| boolean(false),
+    ),
 ];
 
 pub(crate) const OJVM_UTF8_ENTRY: oxjvm_vm::NativeClass = class(
@@ -533,9 +561,7 @@ const CLASS_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
             let descriptor = vm
                 .read_string_field_any(symbol, "descriptor")
                 .unwrap_or_default();
-            boolean(
-                descriptor == alloc::format!("L{};", string_field(vm, this, "internalName")),
-            )
+            boolean(descriptor == alloc::format!("L{};", string_field(vm, this, "internalName")))
         },
     ),
 ];
@@ -545,7 +571,12 @@ pub(crate) const OJVM_CLASS_ENTRY: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &["java/lang/classfile/constantpool/ClassEntry"],
     ACC_PUBLIC,
-    &[field("internalName", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &[field(
+        "internalName",
+        "Ljava/lang/String;",
+        ACC_PRIVATE,
+        None,
+    )],
     &CLASS_ENTRY_METHODS,
     None,
 );
@@ -572,17 +603,29 @@ fn new_method_model(
     let type_entry = new_instance(vm, "java/lang/classfile/constantpool/OjvmUtf8Entry")?;
     set_string_field(vm, type_entry, "value", descriptor)?;
     let class = vm.class_of(model);
-    let (declaring, field) = vm.find_field(class, "nameEntry", "Ljava/lang/classfile/constantpool/Utf8Entry;")?;
+    let (declaring, field) = vm.find_field(
+        class,
+        "nameEntry",
+        "Ljava/lang/classfile/constantpool/Utf8Entry;",
+    )?;
     vm.set_instance_ref(model, declaring, field, name_entry);
-    let (declaring, field) = vm.find_field(class, "typeEntry", "Ljava/lang/classfile/constantpool/Utf8Entry;")?;
+    let (declaring, field) = vm.find_field(
+        class,
+        "typeEntry",
+        "Ljava/lang/classfile/constantpool/Utf8Entry;",
+    )?;
     vm.set_instance_ref(model, declaring, field, type_entry);
     set_int_field(vm, model, "flags", flags)?;
     Ok(model)
 }
 
 fn parse_class_model(vm: &mut Vm<'_>, bytes: &[u8]) -> Result<ObjectRef, VmError> {
-    let parsed = oxjvm_classfile::ClassFile::read(bytes)
-        .map_err(|error| vm.throw_new("java/lang/IllegalArgumentException", Some(&alloc::format!("{error:?}"))))?;
+    let parsed = oxjvm_classfile::ClassFile::read(bytes).map_err(|error| {
+        vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some(&alloc::format!("{error:?}")),
+        )
+    })?;
     let internal = parsed
         .constant_pool
         .class_name(parsed.this_class)
@@ -594,7 +637,13 @@ fn parse_class_model(vm: &mut Vm<'_>, bytes: &[u8]) -> Result<ObjectRef, VmError
     set_int_field(vm, model, "minorVersion", i32::from(parsed.minor_version))?;
     let flags = new_instance(vm, "java/lang/classfile/OjvmAccessFlags")?;
     set_int_field(vm, flags, "flags", i32::from(parsed.access_flags))?;
-    set_ref_field(vm, model, "flags", "Ljava/lang/classfile/AccessFlags;", flags)?;
+    set_ref_field(
+        vm,
+        model,
+        "flags",
+        "Ljava/lang/classfile/AccessFlags;",
+        flags,
+    )?;
     let methods = new_array_list(vm)?;
     for method in &parsed.methods {
         let name = parsed
@@ -749,12 +798,9 @@ const CLASS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
             ))
         },
     ),
-    method(
-        "verify",
-        "([B)Ljava/util/List;",
-        ACC_PUBLIC,
-        |vm, _, _| object(new_array_list(vm)?),
-    ),
+    method("verify", "([B)Ljava/util/List;", ACC_PUBLIC, |vm, _, _| {
+        object(new_array_list(vm)?)
+    }),
     method(
         "latestMajorVersion",
         "()I",
@@ -778,10 +824,7 @@ const CLASS_FILE_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "withOptions",
         "([Ljava/lang/classfile/ClassFile$Option;)Ljava/lang/classfile/ClassFile;",
     ),
-    abstract_method(
-        "parse",
-        "([B)Ljava/lang/classfile/ClassModel;",
-    ),
+    abstract_method("parse", "([B)Ljava/lang/classfile/ClassModel;"),
     abstract_method(
         "build",
         "(Ljava/lang/constant/ClassDesc;Ljava/util/function/Consumer;)[B",
@@ -865,7 +908,12 @@ const CLASS_MODEL_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "thisClass",
         "()Ljava/lang/classfile/constantpool/ClassEntry;",
         ACC_PUBLIC,
-        |vm, _, args| object(new_class_entry(vm, &string_field(vm, receiver(args), "internalName"))?),
+        |vm, _, args| {
+            object(new_class_entry(
+                vm,
+                &string_field(vm, receiver(args), "internalName"),
+            )?)
+        },
     ),
     method(
         "superclass",
@@ -887,7 +935,10 @@ const CLASS_MODEL_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "()Ljava/lang/classfile/AccessFlags;",
         ACC_PUBLIC,
         |vm, _, args| {
-            object(vm.read_ref_field_any(receiver(args), "flags").unwrap_or(ObjectRef::NULL))
+            object(
+                vm.read_ref_field_any(receiver(args), "flags")
+                    .unwrap_or(ObjectRef::NULL),
+            )
         },
     ),
     method(
@@ -895,15 +946,21 @@ const CLASS_MODEL_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "()Ljava/util/List;",
         ACC_PUBLIC,
         |vm, _, args| {
-            object(vm.read_ref_field_any(receiver(args), "methods").unwrap_or(ObjectRef::NULL))
+            object(
+                vm.read_ref_field_any(receiver(args), "methods")
+                    .unwrap_or(ObjectRef::NULL),
+            )
         },
     ),
     method("fields", "()Ljava/util/List;", ACC_PUBLIC, |vm, _, _| {
         object(new_array_list(vm)?)
     }),
-    method("interfaces", "()Ljava/util/List;", ACC_PUBLIC, |vm, _, _| {
-        object(new_array_list(vm)?)
-    }),
+    method(
+        "interfaces",
+        "()Ljava/util/List;",
+        ACC_PUBLIC,
+        |vm, _, _| object(new_array_list(vm)?),
+    ),
     method("isModuleInfo", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
     method(
         "thisClassInternalName",
@@ -914,13 +971,18 @@ const CLASS_MODEL_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
             object(vm.make_string(&internal)?)
         },
     ),
-    method("toString", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
-        let text = alloc::format!(
-            "ClassModel[{}]",
-            string_field(vm, receiver(args), "internalName")
-        );
-        object(vm.make_string(&text)?)
-    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = alloc::format!(
+                "ClassModel[{}]",
+                string_field(vm, receiver(args), "internalName")
+            );
+            object(vm.make_string(&text)?)
+        },
+    ),
 ];
 
 const CLASS_MODEL_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
@@ -1005,19 +1067,10 @@ pub(crate) const UTF8_ENTRY_INTERFACE: oxjvm_vm::NativeClass = class(
 );
 
 const CLASS_ENTRY_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
-    abstract_method(
-        "name",
-        "()Ljava/lang/classfile/constantpool/Utf8Entry;",
-    ),
+    abstract_method("name", "()Ljava/lang/classfile/constantpool/Utf8Entry;"),
     abstract_method("asInternalName", "()Ljava/lang/String;"),
-    abstract_method(
-        "asSymbol",
-        "()Ljava/lang/constant/ClassDesc;",
-    ),
-    abstract_method(
-        "matches",
-        "(Ljava/lang/constant/ClassDesc;)Z",
-    ),
+    abstract_method("asSymbol", "()Ljava/lang/constant/ClassDesc;"),
+    abstract_method("matches", "(Ljava/lang/constant/ClassDesc;)Z"),
 ];
 
 pub(crate) const CLASS_ENTRY_INTERFACE: oxjvm_vm::NativeClass = class(
@@ -1039,7 +1092,12 @@ pub(crate) const OJVM_CLASS_MODEL: oxjvm_vm::NativeClass = class(
         field("internalName", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("majorVersion", "I", ACC_PRIVATE, None),
         field("minorVersion", "I", ACC_PRIVATE, None),
-        field("flags", "Ljava/lang/classfile/AccessFlags;", ACC_PRIVATE, None),
+        field(
+            "flags",
+            "Ljava/lang/classfile/AccessFlags;",
+            ACC_PRIVATE,
+            None,
+        ),
         field("methods", "Ljava/util/List;", ACC_PRIVATE, None),
         field("bytes", "[B", ACC_PRIVATE, None),
     ],
@@ -1088,32 +1146,46 @@ const METHOD_MODEL_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         ACC_PUBLIC,
         |vm, _, _| empty_optional(vm),
     ),
+    method("code", "()Ljava/util/Optional;", ACC_PUBLIC, |vm, _, _| {
+        empty_optional(vm)
+    }),
     method(
-        "code",
-        "()Ljava/util/Optional;",
+        "toString",
+        "()Ljava/lang/String;",
         ACC_PUBLIC,
-        |vm, _, _| empty_optional(vm),
+        |vm, _, args| {
+            let this = receiver(args);
+            let name = vm
+                .read_ref_field_any(this, "nameEntry")
+                .unwrap_or(ObjectRef::NULL);
+            let name = vm.read_string_field_any(name, "value").unwrap_or_default();
+            object(vm.make_string(&name)?)
+        },
     ),
-    method("toString", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
-        let this = receiver(args);
-        let name = vm.read_ref_field_any(this, "nameEntry").unwrap_or(ObjectRef::NULL);
-        let name = vm.read_string_field_any(name, "value").unwrap_or_default();
-        object(vm.make_string(&name)?)
-    }),
-    method("methodNameString", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
-        let entry = vm
-            .read_ref_field_any(receiver(args), "nameEntry")
-            .unwrap_or(ObjectRef::NULL);
-        let name = vm.read_string_field_any(entry, "value").unwrap_or_default();
-        object(vm.make_string(&name)?)
-    }),
-    method("methodTypeString", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
-        let entry = vm
-            .read_ref_field_any(receiver(args), "typeEntry")
-            .unwrap_or(ObjectRef::NULL);
-        let descriptor = vm.read_string_field_any(entry, "value").unwrap_or_default();
-        object(vm.make_string(&descriptor)?)
-    }),
+    method(
+        "methodNameString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let entry = vm
+                .read_ref_field_any(receiver(args), "nameEntry")
+                .unwrap_or(ObjectRef::NULL);
+            let name = vm.read_string_field_any(entry, "value").unwrap_or_default();
+            object(vm.make_string(&name)?)
+        },
+    ),
+    method(
+        "methodTypeString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let entry = vm
+                .read_ref_field_any(receiver(args), "typeEntry")
+                .unwrap_or(ObjectRef::NULL);
+            let descriptor = vm.read_string_field_any(entry, "value").unwrap_or_default();
+            object(vm.make_string(&descriptor)?)
+        },
+    ),
     method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
         set_int_field(vm, receiver(args), "flags", crate::int_arg(args, 1))?;
         void()
@@ -1126,8 +1198,18 @@ pub(crate) const OJVM_METHOD_MODEL: oxjvm_vm::NativeClass = class(
     &["java/lang/classfile/MethodModel"],
     ACC_PUBLIC,
     &[
-        field("nameEntry", "Ljava/lang/classfile/constantpool/Utf8Entry;", ACC_PRIVATE, None),
-        field("typeEntry", "Ljava/lang/classfile/constantpool/Utf8Entry;", ACC_PRIVATE, None),
+        field(
+            "nameEntry",
+            "Ljava/lang/classfile/constantpool/Utf8Entry;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field(
+            "typeEntry",
+            "Ljava/lang/classfile/constantpool/Utf8Entry;",
+            ACC_PRIVATE,
+            None,
+        ),
         field("flags", "I", ACC_PRIVATE, None),
     ],
     &METHOD_MODEL_METHODS,

@@ -39,8 +39,7 @@ fn new_array_list(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
 }
 
 fn list_add(vm: &mut Vm<'_>, list: ObjectRef, value: ObjectRef) -> Result<(), VmError> {
-    let (class, method) =
-        vm.resolve_virtual_method(list, "add", "(Ljava/lang/Object;)Z")?;
+    let (class, method) = vm.resolve_virtual_method(list, "add", "(Ljava/lang/Object;)Z")?;
     vm.invoke_method(class, method, vec![Value::Ref(list), Value::Ref(value)])?;
     Ok(())
 }
@@ -60,7 +59,9 @@ fn read_all(vm: &mut Vm<'_>, stream: ObjectRef) -> Result<Vec<u8>, VmError> {
     }
     let (class, read) = vm.resolve_virtual_method(stream, "read", "()I")?;
     loop {
-        let value = vm.invoke_method(class, read, vec![Value::Ref(stream)])?.as_int();
+        let value = vm
+            .invoke_method(class, read, vec![Value::Ref(stream)])?
+            .as_int();
         if value < 0 {
             return Ok(bytes);
         }
@@ -370,8 +371,18 @@ pub(crate) const SECURITY: oxjvm_vm::NativeClass = class(
     &[],
     ACC_PUBLIC | ACC_FINAL,
     &[
-        field("props", "Ljava/util/Properties;", ACC_PRIVATE | ACC_STATIC, None),
-        field("extra", "Ljava/security/Provider;", ACC_PRIVATE | ACC_STATIC, None),
+        field(
+            "props",
+            "Ljava/util/Properties;",
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
+        field(
+            "extra",
+            "Ljava/security/Provider;",
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
     ],
     &SECURITY_METHODS,
     Some(security_clinit),
@@ -426,20 +437,31 @@ const PROVIDER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         ACC_PROTECTED,
         provider_init,
     ),
-    method("getName", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
-        object(ref_field(vm, receiver(args), "name", "Ljava/lang/String;"))
-    }),
-    method("getVersionStr", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
-        object(ref_field(
-            vm,
-            receiver(args),
-            "versionStr",
-            "Ljava/lang/String;",
-        ))
-    }),
-    method("getInfo", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
-        object(ref_field(vm, receiver(args), "info", "Ljava/lang/String;"))
-    }),
+    method(
+        "getName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| object(ref_field(vm, receiver(args), "name", "Ljava/lang/String;")),
+    ),
+    method(
+        "getVersionStr",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "versionStr",
+                "Ljava/lang/String;",
+            ))
+        },
+    ),
+    method(
+        "getInfo",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| object(ref_field(vm, receiver(args), "info", "Ljava/lang/String;")),
+    ),
     method("getVersion", "()D", ACC_PUBLIC, |vm, _, args| {
         let text = string_field(vm, receiver(args), "versionStr");
         double(text.parse::<f64>().unwrap_or(1.0))
@@ -464,9 +486,12 @@ const PROVIDER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         ACC_PUBLIC,
         |_, _, _| object(ObjectRef::NULL),
     ),
-    method("getServices", "()Ljava/util/Set;", ACC_PUBLIC, |vm, _, _| {
-        object(new_hash_set(vm)?)
-    }),
+    method(
+        "getServices",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC,
+        |vm, _, _| object(new_hash_set(vm)?),
+    ),
     method("isConfigured", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
 ];
 
@@ -591,9 +616,19 @@ const OJVM_KEY_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
             ))
         },
     ),
-    method("getFormat", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
-        object(ref_field(vm, receiver(args), "format", "Ljava/lang/String;"))
-    }),
+    method(
+        "getFormat",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "format",
+                "Ljava/lang/String;",
+            ))
+        },
+    ),
     method("getEncoded", "()[B", ACC_PUBLIC, |vm, _, args| {
         object(ref_field(vm, receiver(args), "encoded", "[B"))
     }),
@@ -653,17 +688,11 @@ fn new_key(
     Ok(key)
 }
 
-pub(crate) fn new_public_key(
-    vm: &mut Vm<'_>,
-    algorithm: &str,
-) -> Result<ObjectRef, VmError> {
+pub(crate) fn new_public_key(vm: &mut Vm<'_>, algorithm: &str) -> Result<ObjectRef, VmError> {
     new_key(vm, "java/security/OjvmPublicKey", algorithm, "X.509", &[])
 }
 
-pub(crate) fn new_private_key(
-    vm: &mut Vm<'_>,
-    algorithm: &str,
-) -> Result<ObjectRef, VmError> {
+pub(crate) fn new_private_key(vm: &mut Vm<'_>, algorithm: &str) -> Result<ObjectRef, VmError> {
     new_key(vm, "java/security/OjvmPrivateKey", algorithm, "PKCS#8", &[])
 }
 
@@ -730,7 +759,12 @@ pub(crate) const KEY_PAIR: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC | ACC_FINAL,
     &[
         field("publicKey", "Ljava/security/PublicKey;", ACC_PRIVATE, None),
-        field("privateKey", "Ljava/security/PrivateKey;", ACC_PRIVATE, None),
+        field(
+            "privateKey",
+            "Ljava/security/PrivateKey;",
+            ACC_PRIVATE,
+            None,
+        ),
     ],
     &KEY_PAIR_METHODS,
     None,
@@ -740,14 +774,20 @@ pub(crate) const KEY_PAIR: oxjvm_vm::NativeClass = class(
 // java.security.SecureRandom
 // -------------------------------------------------------------------------------------------
 
-fn secure_random_next_bytes(vm: &mut Vm<'_>, this: ObjectRef, array: ObjectRef) -> Result<(), VmError> {
+fn secure_random_next_bytes(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    array: ObjectRef,
+) -> Result<(), VmError> {
     if array.is_null() {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
     let length = vm.array_length(array)?;
     for index in 0..length {
         let (class, next) = vm.resolve_virtual_method(this, "nextInt", "()I")?;
-        let value = vm.invoke_method(class, next, vec![Value::Ref(this)])?.as_int();
+        let value = vm
+            .invoke_method(class, next, vec![Value::Ref(this)])?
+            .as_int();
         vm.array_set(array, index as i32, Value::Int(value & 0xFF), false)?;
     }
     Ok(())
@@ -778,33 +818,39 @@ const SECURE_RANDOM_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
             object(vm.new_instance(class)?)
         },
     ),
-    method("getAlgorithm", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, _| {
-        object(vm.make_string("NativePRNG")?)
-    }),
-    method("getProvider", "()Ljava/security/Provider;", ACC_PUBLIC, |vm, _, _| {
-        object(new_sun_provider(vm, "SUN")?)
-    }),
+    method(
+        "getAlgorithm",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| object(vm.make_string("NativePRNG")?),
+    ),
+    method(
+        "getProvider",
+        "()Ljava/security/Provider;",
+        ACC_PUBLIC,
+        |vm, _, _| object(new_sun_provider(vm, "SUN")?),
+    ),
     method("setSeed", "(J)V", ACC_PUBLIC, |_, _, _| void()),
     method("setSeed", "([B)V", ACC_PUBLIC, |_, _, _| void()),
-    method(
-        "nextBytes",
-        "([B)V",
-        ACC_PUBLIC,
-        |vm, _, args| {
-            secure_random_next_bytes(vm, receiver(args), ref_arg(args, 1))?;
-            void()
-        },
-    ),
+    method("nextBytes", "([B)V", ACC_PUBLIC, |vm, _, args| {
+        secure_random_next_bytes(vm, receiver(args), ref_arg(args, 1))?;
+        void()
+    }),
     method("generateSeed", "(I)[B", ACC_PUBLIC, |vm, _, args| {
         let length = int_arg(args, 1).max(0) as usize;
         let bytes = vec![0u8; length];
         object(new_byte_array(vm, &bytes)?)
     }),
-    method("getSeed", "(I)[B", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
-        let length = int_arg(args, 0).max(0) as usize;
-        let bytes = vec![0u8; length];
-        object(new_byte_array(vm, &bytes)?)
-    }),
+    method(
+        "getSeed",
+        "(I)[B",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let length = int_arg(args, 0).max(0) as usize;
+            let bytes = vec![0u8; length];
+            object(new_byte_array(vm, &bytes)?)
+        },
+    ),
 ];
 
 pub(crate) const SECURE_RANDOM: oxjvm_vm::NativeClass = class(
@@ -833,13 +879,7 @@ fn key_store_instance(vm: &mut Vm<'_>, store_type: &str) -> Result<ObjectRef, Vm
     let store = vm.new_instance(class)?;
     set_string_field(vm, store, "type", store_type)?;
     let provider = new_sun_provider(vm, "SUN")?;
-    set_ref_field(
-        vm,
-        store,
-        "provider",
-        "Ljava/security/Provider;",
-        provider,
-    )?;
+    set_ref_field(vm, store, "provider", "Ljava/security/Provider;", provider)?;
     Ok(store)
 }
 
@@ -875,13 +915,8 @@ const KEY_STORE_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
             }
             let text = vm.string_or_empty(name);
             let provider = vm.string_or_empty(provider);
-            if !provider.eq_ignore_ascii_case("SUN")
-                && !provider.eq_ignore_ascii_case("SUNW")
-            {
-                return Err(vm.throw_new(
-                    "java/security/NoSuchProviderException",
-                    Some(&provider),
-                ));
+            if !provider.eq_ignore_ascii_case("SUN") && !provider.eq_ignore_ascii_case("SUNW") {
+                return Err(vm.throw_new("java/security/NoSuchProviderException", Some(&provider)));
             }
             object(key_store_instance(vm, &text)?)
         },
@@ -915,14 +950,24 @@ const KEY_STORE_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _| object(vm.make_string("pkcs12")?),
     ),
-    method("getType", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
-        object(ref_field(vm, receiver(args), "type", "Ljava/lang/String;"))
-    }),
+    method(
+        "getType",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| object(ref_field(vm, receiver(args), "type", "Ljava/lang/String;")),
+    ),
     method(
         "getProvider",
         "()Ljava/security/Provider;",
         ACC_PUBLIC,
-        |vm, _, args| object(ref_field(vm, receiver(args), "provider", "Ljava/security/Provider;")),
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "provider",
+                "Ljava/security/Provider;",
+            ))
+        },
     ),
     method(
         "load",
@@ -989,12 +1034,18 @@ const KEY_STORE_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
         ACC_PUBLIC,
         |vm, _, _| empty_enumeration(vm),
     ),
-    method("containsAlias", "(Ljava/lang/String;)Z", ACC_PUBLIC, |_, _, _| {
-        boolean(false)
-    }),
-    method("isKeyEntry", "(Ljava/lang/String;)Z", ACC_PUBLIC, |_, _, _| {
-        boolean(false)
-    }),
+    method(
+        "containsAlias",
+        "(Ljava/lang/String;)Z",
+        ACC_PUBLIC,
+        |_, _, _| boolean(false),
+    ),
+    method(
+        "isKeyEntry",
+        "(Ljava/lang/String;)Z",
+        ACC_PUBLIC,
+        |_, _, _| boolean(false),
+    ),
     method(
         "isCertificateEntry",
         "(Ljava/lang/String;)Z",
@@ -1052,7 +1103,12 @@ const KEY_STORE_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
         ACC_PUBLIC,
         |_, _, _| void(),
     ),
-    method("deleteEntry", "(Ljava/lang/String;)V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "deleteEntry",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
     method(
         "getEntry",
         "(Ljava/lang/String;Ljava/security/KeyStore$ProtectionParameter;)Ljava/security/KeyStore$Entry;",
@@ -1180,7 +1236,12 @@ const KEY_PAIR_GENERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
         "(Ljava/lang/String;)V",
         ACC_PROTECTED,
         |vm, _, args| {
-            set_string_field(vm, receiver(args), "algorithm", &vm.string_or_empty(ref_arg(args, 1)))?;
+            set_string_field(
+                vm,
+                receiver(args),
+                "algorithm",
+                &vm.string_or_empty(ref_arg(args, 1)),
+            )?;
             void()
         },
     ),
@@ -1206,12 +1267,12 @@ const KEY_PAIR_GENERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
             }
             let provider = vm.string_or_empty(ref_arg(args, 1));
             if !provider.eq_ignore_ascii_case("SUN") && !provider.eq_ignore_ascii_case("SUNW") {
-                return Err(vm.throw_new(
-                    "java/security/NoSuchProviderException",
-                    Some(&provider),
-                ));
+                return Err(vm.throw_new("java/security/NoSuchProviderException", Some(&provider)));
             }
-            object(key_pair_generator_instance(vm, &vm.string_or_empty(ref_arg(args, 0)))?)
+            object(key_pair_generator_instance(
+                vm,
+                &vm.string_or_empty(ref_arg(args, 0)),
+            )?)
         },
     ),
     method(
@@ -1222,20 +1283,37 @@ const KEY_PAIR_GENERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
             if ref_arg(args, 0).is_null() || ref_arg(args, 1).is_null() {
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
-            object(key_pair_generator_instance(vm, &vm.string_or_empty(ref_arg(args, 0)))?)
+            object(key_pair_generator_instance(
+                vm,
+                &vm.string_or_empty(ref_arg(args, 0)),
+            )?)
         },
     ),
     method(
         "getAlgorithm",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
-        |vm, _, args| object(ref_field(vm, receiver(args), "algorithm", "Ljava/lang/String;")),
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "algorithm",
+                "Ljava/lang/String;",
+            ))
+        },
     ),
     method(
         "getProvider",
         "()Ljava/security/Provider;",
         ACC_PUBLIC,
-        |vm, _, args| object(ref_field(vm, receiver(args), "provider", "Ljava/security/Provider;")),
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "provider",
+                "Ljava/security/Provider;",
+            ))
+        },
     ),
     method("initialize", "(I)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
@@ -1289,11 +1367,7 @@ const KEY_PAIR_GENERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
             vm.invoke_method(
                 declaring,
                 ctor,
-                vec![
-                    Value::Ref(pair),
-                    Value::Ref(public),
-                    Value::Ref(private),
-                ],
+                vec![Value::Ref(pair), Value::Ref(public), Value::Ref(private)],
             )?;
             object(pair)
         },
@@ -1319,11 +1393,7 @@ const KEY_PAIR_GENERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
             vm.invoke_method(
                 declaring,
                 ctor,
-                vec![
-                    Value::Ref(pair),
-                    Value::Ref(public),
-                    Value::Ref(private),
-                ],
+                vec![Value::Ref(pair), Value::Ref(public), Value::Ref(private)],
             )?;
             object(pair)
         },
@@ -1429,12 +1499,12 @@ const CERTIFICATE_FACTORY_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
             }
             let provider = vm.string_or_empty(ref_arg(args, 1));
             if !provider.eq_ignore_ascii_case("SUN") && !provider.eq_ignore_ascii_case("SUNW") {
-                return Err(vm.throw_new(
-                    "java/security/NoSuchProviderException",
-                    Some(&provider),
-                ));
+                return Err(vm.throw_new("java/security/NoSuchProviderException", Some(&provider)));
             }
-            object(certificate_factory_instance(vm, &vm.string_or_empty(ref_arg(args, 0)))?)
+            object(certificate_factory_instance(
+                vm,
+                &vm.string_or_empty(ref_arg(args, 0)),
+            )?)
         },
     ),
     method(
@@ -1445,17 +1515,30 @@ const CERTIFICATE_FACTORY_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
             if ref_arg(args, 0).is_null() || ref_arg(args, 1).is_null() {
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
-            object(certificate_factory_instance(vm, &vm.string_or_empty(ref_arg(args, 0)))?)
+            object(certificate_factory_instance(
+                vm,
+                &vm.string_or_empty(ref_arg(args, 0)),
+            )?)
         },
     ),
-    method("getType", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
-        object(ref_field(vm, receiver(args), "type", "Ljava/lang/String;"))
-    }),
+    method(
+        "getType",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| object(ref_field(vm, receiver(args), "type", "Ljava/lang/String;")),
+    ),
     method(
         "getProvider",
         "()Ljava/security/Provider;",
         ACC_PUBLIC,
-        |vm, _, args| object(ref_field(vm, receiver(args), "provider", "Ljava/security/Provider;")),
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "provider",
+                "Ljava/security/Provider;",
+            ))
+        },
     ),
     method(
         "generateCertificate",
@@ -1570,7 +1653,10 @@ const CERTIFICATE_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
             if other.is_null() || vm.class_of(other) != vm.class_of(this) {
                 return boolean(false);
             }
-            boolean(ref_field(vm, this, "encoded", "[B").raw() == ref_field(vm, other, "encoded", "[B").raw())
+            boolean(
+                ref_field(vm, this, "encoded", "[B").raw()
+                    == ref_field(vm, other, "encoded", "[B").raw(),
+            )
         },
     ),
     method("hashCode", "()I", ACC_PUBLIC, |_, _, _| int(0)),
@@ -1591,13 +1677,15 @@ pub(crate) const CERTIFICATE: oxjvm_vm::NativeClass = class(
 );
 
 const X509_CERTIFICATE_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
+    method("getEncoded", "()[B", ACC_PUBLIC, |vm, _, args| {
+        object(ref_field(vm, receiver(args), "encoded", "[B"))
+    }),
     method(
-        "getEncoded",
-        "()[B",
+        "verify",
+        "(Ljava/security/PublicKey;)V",
         ACC_PUBLIC,
-        |vm, _, args| object(ref_field(vm, receiver(args), "encoded", "[B")),
+        |_, _, _| void(),
     ),
-    method("verify", "(Ljava/security/PublicKey;)V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "verify",
         "(Ljava/security/PublicKey;Ljava/lang/String;)V",
@@ -1622,12 +1710,7 @@ const X509_CERTIFICATE_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
         ACC_PUBLIC,
         |_, _, _| object(ObjectRef::NULL),
     ),
-    method(
-        "checkValidity",
-        "()V",
-        ACC_PUBLIC,
-        |_, _, _| void(),
-    ),
+    method("checkValidity", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "checkValidity",
         "(Ljava/util/Date;)V",
@@ -1645,11 +1728,7 @@ const X509_CERTIFICATE_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
             let (declaring, ctor) = vm
                 .find_method(big, "<init>", "(J)V")
                 .ok_or_else(|| VmError::internal("BigInteger lacks <init>"))?;
-            vm.invoke_method(
-                declaring,
-                ctor,
-                vec![Value::Ref(instance), Value::Long(0)],
-            )
+            vm.invoke_method(declaring, ctor, vec![Value::Ref(instance), Value::Long(0)])
         },
     ),
     method(
@@ -1694,12 +1773,9 @@ const X509_CERTIFICATE_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
             object(vm.new_instance(date)?)
         },
     ),
-    method(
-        "getTBSCertificate",
-        "()[B",
-        ACC_PUBLIC,
-        |vm, _, _| object(new_byte_array(vm, &[])?),
-    ),
+    method("getTBSCertificate", "()[B", ACC_PUBLIC, |vm, _, _| {
+        object(new_byte_array(vm, &[])?)
+    }),
     method("getSignature", "()[B", ACC_PUBLIC, |vm, _, _| {
         object(new_byte_array(vm, &[])?)
     }),
@@ -1715,36 +1791,19 @@ const X509_CERTIFICATE_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
         ACC_PUBLIC,
         |vm, _, _| object(vm.make_string("1.2.840.113549.1.1.11")?),
     ),
-    method(
-        "getSigAlgParams",
-        "()[B",
-        ACC_PUBLIC,
-        |_, _, _| object(ObjectRef::NULL),
-    ),
-    method(
-        "getIssuerUniqueID",
-        "()[Z",
-        ACC_PUBLIC,
-        |_, _, _| object(ObjectRef::NULL),
-    ),
-    method(
-        "getSubjectUniqueID",
-        "()[Z",
-        ACC_PUBLIC,
-        |_, _, _| object(ObjectRef::NULL),
-    ),
-    method(
-        "getKeyUsage",
-        "()[Z",
-        ACC_PUBLIC,
-        |_, _, _| object(ObjectRef::NULL),
-    ),
-    method(
-        "getBasicConstraints",
-        "()I",
-        ACC_PUBLIC,
-        |_, _, _| int(-1),
-    ),
+    method("getSigAlgParams", "()[B", ACC_PUBLIC, |_, _, _| {
+        object(ObjectRef::NULL)
+    }),
+    method("getIssuerUniqueID", "()[Z", ACC_PUBLIC, |_, _, _| {
+        object(ObjectRef::NULL)
+    }),
+    method("getSubjectUniqueID", "()[Z", ACC_PUBLIC, |_, _, _| {
+        object(ObjectRef::NULL)
+    }),
+    method("getKeyUsage", "()[Z", ACC_PUBLIC, |_, _, _| {
+        object(ObjectRef::NULL)
+    }),
+    method("getBasicConstraints", "()I", ACC_PUBLIC, |_, _, _| int(-1)),
     method(
         "getExtendedKeyUsage",
         "()Ljava/util/List;",
@@ -1832,9 +1891,12 @@ const CODE_SOURCE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
             void()
         },
     ),
-    method("getLocation", "()Ljava/net/URL;", ACC_PUBLIC, |vm, _, args| {
-        object(ref_field(vm, receiver(args), "location", "Ljava/net/URL;"))
-    }),
+    method(
+        "getLocation",
+        "()Ljava/net/URL;",
+        ACC_PUBLIC,
+        |vm, _, args| object(ref_field(vm, receiver(args), "location", "Ljava/net/URL;")),
+    ),
     method(
         "getCertificates",
         "()[Ljava/security/cert/Certificate;",
@@ -1861,17 +1923,18 @@ const CODE_SOURCE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
             ))
         },
     ),
-    method("implies", "(Ljava/security/CodeSource;)Z", ACC_PUBLIC, |_, _, _| {
-        boolean(true)
-    }),
+    method(
+        "implies",
+        "(Ljava/security/CodeSource;)Z",
+        ACC_PUBLIC,
+        |_, _, _| boolean(true),
+    ),
     method("hashCode", "()I", ACC_PUBLIC, |_, _, _| int(0)),
     method(
         "toString",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
-        |vm, _, args| {
-            via_code_source_to_string(vm, args)
-        },
+        |vm, _, args| via_code_source_to_string(vm, args),
     ),
 ];
 
@@ -1930,7 +1993,13 @@ const PROTECTION_DOMAIN_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            set_ref_field(vm, this, "codeSource", "Ljava/security/CodeSource;", ref_arg(args, 1))?;
+            set_ref_field(
+                vm,
+                this,
+                "codeSource",
+                "Ljava/security/CodeSource;",
+                ref_arg(args, 1),
+            )?;
             set_ref_field(
                 vm,
                 this,
@@ -1993,7 +2062,12 @@ pub(crate) const PROTECTION_DOMAIN: oxjvm_vm::NativeClass = class(
     &[],
     ACC_PUBLIC,
     &[
-        field("codeSource", "Ljava/security/CodeSource;", ACC_PRIVATE, None),
+        field(
+            "codeSource",
+            "Ljava/security/CodeSource;",
+            ACC_PRIVATE,
+            None,
+        ),
         field(
             "permissions",
             "Ljava/security/PermissionCollection;",
@@ -2047,8 +2121,7 @@ fn run_privileged_action(
     if action.is_null() {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
-    let (class, method) =
-        vm.resolve_virtual_method(action, "run", "()Ljava/lang/Object;")?;
+    let (class, method) = vm.resolve_virtual_method(action, "run", "()Ljava/lang/Object;")?;
     let _ = exception_action;
     vm.invoke_method(class, method, vec![Value::Ref(action)])
 }
@@ -2117,7 +2190,12 @@ pub(crate) const PRIVILEGED_ACTION_EXCEPTION: oxjvm_vm::NativeClass = class(
     Some("java/lang/Exception"),
     &[],
     ACC_PUBLIC,
-    &[field("exception", "Ljava/lang/Exception;", ACC_PRIVATE, None)],
+    &[field(
+        "exception",
+        "Ljava/lang/Exception;",
+        ACC_PRIVATE,
+        None,
+    )],
     &[
         method(
             "<init>",
@@ -2125,9 +2203,15 @@ pub(crate) const PRIVILEGED_ACTION_EXCEPTION: oxjvm_vm::NativeClass = class(
             ACC_PUBLIC,
             |vm, _, args| {
                 let this = receiver(args);
-                set_ref_field(vm, this, "exception", "Ljava/lang/Exception;", ref_arg(args, 1))?;
-                let exception_ctor = vm
-                    .find_method(vm.class_of(this), "<init>", "(Ljava/lang/Throwable;)V");
+                set_ref_field(
+                    vm,
+                    this,
+                    "exception",
+                    "Ljava/lang/Exception;",
+                    ref_arg(args, 1),
+                )?;
+                let exception_ctor =
+                    vm.find_method(vm.class_of(this), "<init>", "(Ljava/lang/Throwable;)V");
                 if let Some((declaring, ctor)) = exception_ctor {
                     vm.invoke_method(declaring, ctor, vec![Value::Ref(this)])?;
                 }
@@ -2173,18 +2257,20 @@ const PERMISSION_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         |vm, _, args| {
             let name = ref_arg(args, 1);
             if name.is_null() {
-                return Err(vm.throw_new(
-                    "java/lang/NullPointerException",
-                    Some("name can't be null"),
-                ));
+                return Err(
+                    vm.throw_new("java/lang/NullPointerException", Some("name can't be null"))
+                );
             }
             set_ref_field(vm, receiver(args), "name", "Ljava/lang/String;", name)?;
             void()
         },
     ),
-    method("getName", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
-        object(ref_field(vm, receiver(args), "name", "Ljava/lang/String;"))
-    }),
+    method(
+        "getName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| object(ref_field(vm, receiver(args), "name", "Ljava/lang/String;")),
+    ),
     method(
         "getActions",
         "()Ljava/lang/String;",
@@ -2260,11 +2346,7 @@ const BASIC_PERMISSION_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
             let (declaring, ctor) = vm
                 .find_method(parent, "<init>", "(Ljava/lang/String;)V")
                 .ok_or_else(|| VmError::internal("Permission lacks <init>"))?;
-            vm.invoke_method(
-                declaring,
-                ctor,
-                vec![Value::Ref(this), Value::Ref(name)],
-            )?;
+            vm.invoke_method(declaring, ctor, vec![Value::Ref(this), Value::Ref(name)])?;
             set_ref_field(vm, this, "actions", "Ljava/lang/String;", ref_arg(args, 2))?;
             void()
         },
@@ -2379,13 +2461,7 @@ fn cipher_instance(vm: &mut Vm<'_>, transformation: &str) -> Result<ObjectRef, V
     let cipher = vm.new_instance(class)?;
     set_string_field(vm, cipher, "transformation", transformation)?;
     let provider = new_sun_provider(vm, "SUN")?;
-    set_ref_field(
-        vm,
-        cipher,
-        "provider",
-        "Ljava/security/Provider;",
-        provider,
-    )?;
+    set_ref_field(vm, cipher, "provider", "Ljava/security/Provider;", provider)?;
     Ok(cipher)
 }
 
@@ -2412,10 +2488,7 @@ const CIPHER_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
             }
             let provider = vm.string_or_empty(ref_arg(args, 1));
             if !provider.eq_ignore_ascii_case("SUN") && !provider.eq_ignore_ascii_case("SUNW") {
-                return Err(vm.throw_new(
-                    "java/security/NoSuchProviderException",
-                    Some(&provider),
-                ));
+                return Err(vm.throw_new("java/security/NoSuchProviderException", Some(&provider)));
             }
             object(cipher_instance(vm, &vm.string_or_empty(ref_arg(args, 0)))?)
         },
@@ -2431,25 +2504,39 @@ const CIPHER_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
             object(cipher_instance(vm, &vm.string_or_empty(ref_arg(args, 0)))?)
         },
     ),
-    method("getAlgorithm", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
-        object(ref_field(
-            vm,
-            receiver(args),
-            "transformation",
-            "Ljava/lang/String;",
-        ))
-    }),
+    method(
+        "getAlgorithm",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "transformation",
+                "Ljava/lang/String;",
+            ))
+        },
+    ),
     method(
         "getProvider",
         "()Ljava/security/Provider;",
         ACC_PUBLIC,
-        |vm, _, args| object(ref_field(vm, receiver(args), "provider", "Ljava/security/Provider;")),
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "provider",
+                "Ljava/security/Provider;",
+            ))
+        },
     ),
     method("getBlockSize", "()I", ACC_PUBLIC, |_, _, _| int(16)),
     method("getOutputSize", "(I)I", ACC_PUBLIC, |_, _, args| {
         int(int_arg(args, 1).max(0))
     }),
-    method("getIV", "()[B", ACC_PUBLIC, |_, _, _| object(ObjectRef::NULL)),
+    method("getIV", "()[B", ACC_PUBLIC, |_, _, _| {
+        object(ObjectRef::NULL)
+    }),
     method(
         "getParameters",
         "()Ljava/security/AlgorithmParameters;",
@@ -2514,78 +2601,54 @@ const CIPHER_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
             void()
         },
     ),
-    method(
-        "update",
-        "([B)[B",
-        ACC_PUBLIC,
-        |_, _, args| object(ref_arg(args, 1)),
-    ),
-    method(
-        "update",
-        "([BII)[B",
-        ACC_PUBLIC,
-        |vm, _, args| {
-            let source = ref_arg(args, 1);
-            if source.is_null() {
-                return Err(vm.throw_new("java/lang/NullPointerException", None));
-            }
-            let offset = int_arg(args, 2).max(0) as usize;
-            let length = int_arg(args, 3).max(0) as usize;
-            let mut bytes = Vec::with_capacity(length);
-            for index in 0..length {
-                bytes.push(vm.array_get(source, (offset + index) as i32)?.as_int() as u8);
-            }
-            object(new_byte_array(vm, &bytes)?)
-        },
-    ),
-    method(
-        "doFinal",
-        "()[B",
-        ACC_PUBLIC,
-        |vm, _, _| object(new_byte_array(vm, &[])?),
-    ),
-    method(
-        "doFinal",
-        "([B)[B",
-        ACC_PUBLIC,
-        |_, _, args| object(ref_arg(args, 1)),
-    ),
-    method(
-        "doFinal",
-        "([BII)[B",
-        ACC_PUBLIC,
-        |vm, _, args| {
-            let source = ref_arg(args, 1);
-            if source.is_null() {
-                return Err(vm.throw_new("java/lang/NullPointerException", None));
-            }
-            let offset = int_arg(args, 2).max(0) as usize;
-            let length = int_arg(args, 3).max(0) as usize;
-            let mut bytes = Vec::with_capacity(length);
-            for index in 0..length {
-                bytes.push(vm.array_get(source, (offset + index) as i32)?.as_int() as u8);
-            }
-            object(new_byte_array(vm, &bytes)?)
-        },
-    ),
-    method(
-        "doFinal",
-        "([BI)I",
-        ACC_PUBLIC,
-        |vm, _, args| {
-            let source = ref_arg(args, 1);
-            if source.is_null() {
-                return Err(vm.throw_new("java/lang/NullPointerException", None));
-            }
-            let offset = int_arg(args, 2).max(0) as usize;
-            let length = vm.array_length(source)?.saturating_sub(offset);
-            for index in 0..length {
-                let byte = vm.array_get(source, (offset + index) as i32)?.as_int();
-                vm.array_set(source, (offset + index) as i32, Value::Int(byte), false)?;
-            }
-            int(length as i32)
-        },
-    ),
+    method("update", "([B)[B", ACC_PUBLIC, |_, _, args| {
+        object(ref_arg(args, 1))
+    }),
+    method("update", "([BII)[B", ACC_PUBLIC, |vm, _, args| {
+        let source = ref_arg(args, 1);
+        if source.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let offset = int_arg(args, 2).max(0) as usize;
+        let length = int_arg(args, 3).max(0) as usize;
+        let mut bytes = Vec::with_capacity(length);
+        for index in 0..length {
+            bytes.push(vm.array_get(source, (offset + index) as i32)?.as_int() as u8);
+        }
+        object(new_byte_array(vm, &bytes)?)
+    }),
+    method("doFinal", "()[B", ACC_PUBLIC, |vm, _, _| {
+        object(new_byte_array(vm, &[])?)
+    }),
+    method("doFinal", "([B)[B", ACC_PUBLIC, |_, _, args| {
+        object(ref_arg(args, 1))
+    }),
+    method("doFinal", "([BII)[B", ACC_PUBLIC, |vm, _, args| {
+        let source = ref_arg(args, 1);
+        if source.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let offset = int_arg(args, 2).max(0) as usize;
+        let length = int_arg(args, 3).max(0) as usize;
+        let mut bytes = Vec::with_capacity(length);
+        for index in 0..length {
+            bytes.push(vm.array_get(source, (offset + index) as i32)?.as_int() as u8);
+        }
+        object(new_byte_array(vm, &bytes)?)
+    }),
+    method("doFinal", "([BI)I", ACC_PUBLIC, |vm, _, args| {
+        let source = ref_arg(args, 1);
+        if source.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let offset = int_arg(args, 2).max(0) as usize;
+        let length = vm.array_length(source)?.saturating_sub(offset);
+        for index in 0..length {
+            let byte = vm.array_get(source, (offset + index) as i32)?.as_int();
+            vm.array_set(source, (offset + index) as i32, Value::Int(byte), false)?;
+        }
+        int(length as i32)
+    }),
     method(
         "wrap",
         "(Ljava/security/Key;)[B",
@@ -2672,10 +2735,7 @@ const SECRET_KEY_SPEC_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
             if vm.array_length(key)? == 0 {
-                return Err(vm.throw_new(
-                    "java/lang/IllegalArgumentException",
-                    Some("Empty key"),
-                ));
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("Empty key")));
             }
             set_ref_field(vm, this, "key", "[B", key)?;
             set_ref_field(
@@ -2720,11 +2780,21 @@ const SECRET_KEY_SPEC_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         "getAlgorithm",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
-        |vm, _, args| object(ref_field(vm, receiver(args), "algorithm", "Ljava/lang/String;")),
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "algorithm",
+                "Ljava/lang/String;",
+            ))
+        },
     ),
-    method("getFormat", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, _| {
-        object(vm.make_string("RAW")?)
-    }),
+    method(
+        "getFormat",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| object(vm.make_string("RAW")?),
+    ),
     method("getEncoded", "()[B", ACC_PUBLIC, |vm, _, args| {
         object(ref_field(vm, receiver(args), "key", "[B"))
     }),
@@ -2741,19 +2811,14 @@ pub(crate) const IV_PARAMETER_SPEC: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC,
     &[field("iv", "[B", ACC_PRIVATE, None)],
     &[
-        method(
-            "<init>",
-            "([B)V",
-            ACC_PUBLIC,
-            |vm, _, args| {
-                let iv = ref_arg(args, 1);
-                if iv.is_null() {
-                    return Err(vm.throw_new("java/lang/NullPointerException", None));
-                }
-                set_ref_field(vm, receiver(args), "iv", "[B", iv)?;
-                void()
-            },
-        ),
+        method("<init>", "([B)V", ACC_PUBLIC, |vm, _, args| {
+            let iv = ref_arg(args, 1);
+            if iv.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            set_ref_field(vm, receiver(args), "iv", "[B", iv)?;
+            void()
+        }),
         method("getIV", "()[B", ACC_PUBLIC, |vm, _, args| {
             object(ref_field(vm, receiver(args), "iv", "[B"))
         }),
@@ -2771,19 +2836,14 @@ pub(crate) const GCMPARAMETER_SPEC: oxjvm_vm::NativeClass = class(
         field("src", "[B", ACC_PRIVATE, None),
     ],
     &[
-        method(
-            "<init>",
-            "(I[B)V",
-            ACC_PUBLIC,
-            |vm, _, args| {
-                let this = receiver(args);
-                let class = vm.class_of(this);
-                let (declaring, field) = vm.find_field(class, "tLen", "I")?;
-                vm.set_instance_int(this, declaring, field, int_arg(args, 1));
-                set_ref_field(vm, this, "src", "[B", ref_arg(args, 2))?;
-                void()
-            },
-        ),
+        method("<init>", "(I[B)V", ACC_PUBLIC, |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "tLen", "I")?;
+            vm.set_instance_int(this, declaring, field, int_arg(args, 1));
+            set_ref_field(vm, this, "src", "[B", ref_arg(args, 2))?;
+            void()
+        }),
         method("getTLen", "()I", ACC_PUBLIC, |vm, _, args| {
             let this = receiver(args);
             let class = vm.class_of(this);
@@ -2871,12 +2931,12 @@ const SSL_CONTEXT_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
             }
             let provider = vm.string_or_empty(ref_arg(args, 1));
             if !provider.eq_ignore_ascii_case("SUN") && !provider.eq_ignore_ascii_case("SUNW") {
-                return Err(vm.throw_new(
-                    "java/security/NoSuchProviderException",
-                    Some(&provider),
-                ));
+                return Err(vm.throw_new("java/security/NoSuchProviderException", Some(&provider)));
             }
-            object(ssl_context_instance(vm, &vm.string_or_empty(ref_arg(args, 0)))?)
+            object(ssl_context_instance(
+                vm,
+                &vm.string_or_empty(ref_arg(args, 0)),
+            )?)
         },
     ),
     method(
@@ -2887,17 +2947,37 @@ const SSL_CONTEXT_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
             if ref_arg(args, 0).is_null() || ref_arg(args, 1).is_null() {
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
-            object(ssl_context_instance(vm, &vm.string_or_empty(ref_arg(args, 0)))?)
+            object(ssl_context_instance(
+                vm,
+                &vm.string_or_empty(ref_arg(args, 0)),
+            )?)
         },
     ),
-    method("getProtocol", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
-        object(ref_field(vm, receiver(args), "protocol", "Ljava/lang/String;"))
-    }),
+    method(
+        "getProtocol",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "protocol",
+                "Ljava/lang/String;",
+            ))
+        },
+    ),
     method(
         "getProvider",
         "()Ljava/security/Provider;",
         ACC_PUBLIC,
-        |vm, _, args| object(ref_field(vm, receiver(args), "provider", "Ljava/security/Provider;")),
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "provider",
+                "Ljava/security/Provider;",
+            ))
+        },
     ),
     method(
         "init",
@@ -3072,25 +3152,23 @@ pub(crate) const X509_ENCODED_KEY_SPEC: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC,
     &[field("encoded", "[B", ACC_PRIVATE, None)],
     &[
-        method(
-            "<init>",
-            "([B)V",
-            ACC_PUBLIC,
-            |vm, _, args| {
-                let encoded = ref_arg(args, 1);
-                if encoded.is_null() {
-                    return Err(vm.throw_new("java/lang/NullPointerException", None));
-                }
-                set_ref_field(vm, receiver(args), "encoded", "[B", encoded)?;
-                void()
-            },
-        ),
+        method("<init>", "([B)V", ACC_PUBLIC, |vm, _, args| {
+            let encoded = ref_arg(args, 1);
+            if encoded.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            set_ref_field(vm, receiver(args), "encoded", "[B", encoded)?;
+            void()
+        }),
         method("getEncoded", "()[B", ACC_PUBLIC, |vm, _, args| {
             object(ref_field(vm, receiver(args), "encoded", "[B"))
         }),
-        method("getFormat", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, _| {
-            object(vm.make_string("X.509")?)
-        }),
+        method(
+            "getFormat",
+            "()Ljava/lang/String;",
+            ACC_PUBLIC,
+            |vm, _, _| object(vm.make_string("X.509")?),
+        ),
     ],
     None,
 );
@@ -3102,25 +3180,23 @@ pub(crate) const PKCS8_ENCODED_KEY_SPEC: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC,
     &[field("encoded", "[B", ACC_PRIVATE, None)],
     &[
-        method(
-            "<init>",
-            "([B)V",
-            ACC_PUBLIC,
-            |vm, _, args| {
-                let encoded = ref_arg(args, 1);
-                if encoded.is_null() {
-                    return Err(vm.throw_new("java/lang/NullPointerException", None));
-                }
-                set_ref_field(vm, receiver(args), "encoded", "[B", encoded)?;
-                void()
-            },
-        ),
+        method("<init>", "([B)V", ACC_PUBLIC, |vm, _, args| {
+            let encoded = ref_arg(args, 1);
+            if encoded.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            set_ref_field(vm, receiver(args), "encoded", "[B", encoded)?;
+            void()
+        }),
         method("getEncoded", "()[B", ACC_PUBLIC, |vm, _, args| {
             object(ref_field(vm, receiver(args), "encoded", "[B"))
         }),
-        method("getFormat", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, _| {
-            object(vm.make_string("PKCS#8")?)
-        }),
+        method(
+            "getFormat",
+            "()Ljava/lang/String;",
+            ACC_PUBLIC,
+            |vm, _, _| object(vm.make_string("PKCS#8")?),
+        ),
     ],
     None,
 );

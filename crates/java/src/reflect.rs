@@ -4845,27 +4845,50 @@ pub(crate) const ACCESS_FLAG_LOCATION: oxjvm_vm::NativeClass = class(
         ),
     ],
     &[
-        method("values", "()[Ljava/lang/reflect/AccessFlag$Location;", ACC_PUBLIC | ACC_STATIC, |vm, _, _| {
-            let class = vm.resolve_class("java/lang/reflect/AccessFlag$Location")?;
-            vm.ensure_initialized(class)?;
-            let array = vm.allocate_object_array(class, 9)?;
-            for (index, name) in ["CLASS", "FIELD", "METHOD", "INNER_CLASS", "METHOD_PARAMETER", "MODULE", "MODULE_REQUIRES", "MODULE_EXPORTS", "MODULE_OPENS"].iter().enumerate() {
-                let value = vm
-                    .read_static_ref(class, name, "Ljava/lang/reflect/AccessFlag$Location;")
-                    .unwrap_or(ObjectRef::NULL);
-                vm.array_set_ref(array, index, value)?;
-            }
-            object(array)
-        }),
-        method("valueOf", "(Ljava/lang/String;)Ljava/lang/reflect/AccessFlag$Location;", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
-            let name = vm.string_or_empty(ref_arg(args, 0));
-            let class = vm.resolve_class("java/lang/reflect/AccessFlag$Location")?;
-            vm.ensure_initialized(class)?;
-            object(
-                vm.read_static_ref(class, &name, "Ljava/lang/reflect/AccessFlag$Location;")
-                    .unwrap_or(ObjectRef::NULL),
-            )
-        }),
+        method(
+            "values",
+            "()[Ljava/lang/reflect/AccessFlag$Location;",
+            ACC_PUBLIC | ACC_STATIC,
+            |vm, _, _| {
+                let class = vm.resolve_class("java/lang/reflect/AccessFlag$Location")?;
+                vm.ensure_initialized(class)?;
+                let array = vm.allocate_object_array(class, 9)?;
+                for (index, name) in [
+                    "CLASS",
+                    "FIELD",
+                    "METHOD",
+                    "INNER_CLASS",
+                    "METHOD_PARAMETER",
+                    "MODULE",
+                    "MODULE_REQUIRES",
+                    "MODULE_EXPORTS",
+                    "MODULE_OPENS",
+                ]
+                .iter()
+                .enumerate()
+                {
+                    let value = vm
+                        .read_static_ref(class, name, "Ljava/lang/reflect/AccessFlag$Location;")
+                        .unwrap_or(ObjectRef::NULL);
+                    vm.array_set_ref(array, index, value)?;
+                }
+                object(array)
+            },
+        ),
+        method(
+            "valueOf",
+            "(Ljava/lang/String;)Ljava/lang/reflect/AccessFlag$Location;",
+            ACC_PUBLIC | ACC_STATIC,
+            |vm, _, args| {
+                let name = vm.string_or_empty(ref_arg(args, 0));
+                let class = vm.resolve_class("java/lang/reflect/AccessFlag$Location")?;
+                vm.ensure_initialized(class)?;
+                object(
+                    vm.read_static_ref(class, &name, "Ljava/lang/reflect/AccessFlag$Location;")
+                        .unwrap_or(ObjectRef::NULL),
+                )
+            },
+        ),
         method("flagsMask", "()I", ACC_PUBLIC, |_, _, _| int(0)),
         method("name", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
             let text = vm
@@ -4873,12 +4896,17 @@ pub(crate) const ACCESS_FLAG_LOCATION: oxjvm_vm::NativeClass = class(
                 .unwrap_or_default();
             object(vm.make_string(&text)?)
         }),
-        method("toString", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
-            let text = vm
-                .read_string_field_any(receiver(args), "name")
-                .unwrap_or_default();
-            object(vm.make_string(&text)?)
-        }),
+        method(
+            "toString",
+            "()Ljava/lang/String;",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let text = vm
+                    .read_string_field_any(receiver(args), "name")
+                    .unwrap_or_default();
+                object(vm.make_string(&text)?)
+            },
+        ),
     ],
     Some(access_flag_location_clinit),
 );
