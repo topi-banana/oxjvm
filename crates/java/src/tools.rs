@@ -1235,10 +1235,16 @@ pub(crate) const JAVA_FILE_MANAGER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const STANDARD_JAVA_FILE_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+const STANDARD_JAVA_FILE_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     method(
         "setLocation",
         "(Ljavax/tools/JavaFileManager$Location;Ljava/lang/Iterable;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "setLocationFromPaths",
+        "(Ljavax/tools/JavaFileManager$Location;Ljava/util/Collection;)V",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
@@ -2136,7 +2142,7 @@ pub(crate) const JAVAC_FILE_MANAGER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const JAVAC_FILE_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const JAVAC_FILE_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "setLocation",
@@ -2152,6 +2158,33 @@ const JAVAC_FILE_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
                         let class = vm.class_of(this);
                         let (d, f) = vm.find_field(class, "output", "Ljava/io/File;")?;
                         vm.set_instance_ref(this, d, f, first);
+                    }
+                }
+            }
+            void()
+        },
+    ),
+    method(
+        "setLocationFromPaths",
+        "(Ljavax/tools/JavaFileManager$Location;Ljava/util/Collection;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let paths = ref_arg(args, 2);
+            if !paths.is_null() {
+                let elements = crate::util::collection_elements(vm, paths)?;
+                if let Some(&first) = elements.first() {
+                    if !first.is_null() {
+                        // The manager keeps the destination as a `File`, so convert the `Path`.
+                        let (class, to_file) =
+                            vm.resolve_virtual_method(first, "toFile", "()Ljava/io/File;")?;
+                        let file = vm
+                            .invoke_method(class, to_file, vec![Value::Ref(first)])?
+                            .as_ref();
+                        let class = vm.class_of(this);
+                        let (declaring, field) =
+                            vm.find_field(class, "output", "Ljava/io/File;")?;
+                        vm.set_instance_ref(this, declaring, field, file);
                     }
                 }
             }
