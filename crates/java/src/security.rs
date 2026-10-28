@@ -46,8 +46,7 @@ fn list_add(vm: &mut Vm<'_>, list: ObjectRef, value: ObjectRef) -> Result<(), Vm
 }
 
 fn new_byte_array(vm: &mut Vm<'_>, bytes: &[u8]) -> Result<ObjectRef, VmError> {
-    let byte_class = vm.primitive_class(oxjvm_classfile::BaseType::Byte)?;
-    let array = vm.allocate_object_array(byte_class, bytes.len())?;
+    let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, bytes.len())?;
     for (index, byte) in bytes.iter().enumerate() {
         vm.array_set(array, index as i32, Value::Int(i32::from(*byte)), false)?;
     }
