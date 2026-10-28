@@ -653,7 +653,7 @@ fn minimal_class_bytes(internal_name: &str) -> Vec<u8> {
     bytes
 }
 
-const CLASS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const CLASS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "of",
@@ -680,6 +680,48 @@ const CLASS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         |vm, _, args| {
             let bytes = read_byte_array(vm, ref_arg(args, 1))?;
             object(parse_class_model(vm, &bytes)?)
+        },
+    ),
+    method(
+        "build",
+        "(Ljava/lang/constant/ClassDesc;Ljava/util/function/Consumer;)[B",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let desc = ref_arg(args, 1);
+            if desc.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let descriptor = vm
+                .read_string_field_any(desc, "descriptor")
+                .unwrap_or_default();
+            let internal = descriptor
+                .strip_prefix('L')
+                .and_then(|value| value.strip_suffix(';'))
+                .unwrap_or(&descriptor)
+                .to_string();
+            object(new_byte_array(vm, &minimal_class_bytes(&internal))?)
+        },
+    ),
+    method(
+        "transformClass",
+        "(Ljava/lang/classfile/ClassModel;Ljava/lang/classfile/ClassTransform;)[B",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            Err(vm.throw_new(
+                "java/lang/UnsupportedOperationException",
+                Some("class transformation is not implemented"),
+            ))
+        },
+    ),
+    method(
+        "transformClass",
+        "(Ljava/lang/classfile/ClassModel;Ljava/lang/constant/ClassDesc;Ljava/lang/classfile/ClassTransform;)[B",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            Err(vm.throw_new(
+                "java/lang/UnsupportedOperationException",
+                Some("class transformation is not implemented"),
+            ))
         },
     ),
     method(
@@ -731,7 +773,7 @@ pub(crate) const OJVM_CLASS_FILE: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const CLASS_FILE_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const CLASS_FILE_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     abstract_method(
         "withOptions",
         "([Ljava/lang/classfile/ClassFile$Option;)Ljava/lang/classfile/ClassFile;",
@@ -739,6 +781,18 @@ const CLASS_FILE_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     abstract_method(
         "parse",
         "([B)Ljava/lang/classfile/ClassModel;",
+    ),
+    abstract_method(
+        "build",
+        "(Ljava/lang/constant/ClassDesc;Ljava/util/function/Consumer;)[B",
+    ),
+    abstract_method(
+        "transformClass",
+        "(Ljava/lang/classfile/ClassModel;Ljava/lang/classfile/ClassTransform;)[B",
+    ),
+    abstract_method(
+        "transformClass",
+        "(Ljava/lang/classfile/ClassModel;Ljava/lang/constant/ClassDesc;Ljava/lang/classfile/ClassTransform;)[B",
     ),
     abstract_method(
         "build",

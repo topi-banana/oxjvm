@@ -4732,14 +4732,155 @@ pub(crate) const ACCESS_FLAG: oxjvm_vm::NativeClass = class(
     Some(access_flag_clinit),
 );
 
+fn access_flag_location_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/lang/reflect/AccessFlag$Location")?;
+    let names = [
+        "CLASS",
+        "FIELD",
+        "METHOD",
+        "INNER_CLASS",
+        "METHOD_PARAMETER",
+        "MODULE",
+        "MODULE_REQUIRES",
+        "MODULE_EXPORTS",
+        "MODULE_OPENS",
+    ];
+    for (ordinal, name) in names.iter().enumerate() {
+        let instance = vm.new_instance(class)?;
+        let (declaring, field) = vm.find_field(class, "ordinal", "I")?;
+        vm.set_instance_int(instance, declaring, field, ordinal as i32);
+        let text = vm.make_string(name)?;
+        let (declaring, field) = vm.find_field(class, "name", "Ljava/lang/String;")?;
+        vm.set_instance_ref(instance, declaring, field, text);
+        vm.set_static_value(
+            class,
+            name,
+            "Ljava/lang/reflect/AccessFlag$Location;",
+            Value::Ref(instance),
+        );
+    }
+    let array = vm.allocate_object_array(class, names.len())?;
+    for (index, name) in names.iter().enumerate() {
+        let value = vm
+            .read_static_ref(class, name, "Ljava/lang/reflect/AccessFlag$Location;")
+            .unwrap_or(ObjectRef::NULL);
+        vm.array_set(array, index as i32, Value::Ref(value), false)?;
+    }
+    vm.set_static_value(
+        class,
+        "$VALUES",
+        "[Ljava/lang/reflect/AccessFlag$Location;",
+        Value::Ref(array),
+    );
+    Ok(())
+}
+
 pub(crate) const ACCESS_FLAG_LOCATION: oxjvm_vm::NativeClass = class(
     "java/lang/reflect/AccessFlag$Location",
-    Some("java/lang/Object"),
+    Some("java/lang/Enum"),
     &[],
-    ACC_PUBLIC | ACC_FINAL,
-    &[],
-    &[],
-    None,
+    ACC_PUBLIC | ACC_FINAL | ACC_ENUM,
+    &[
+        field("name", "Ljava/lang/String;", ACC_PRIVATE | ACC_FINAL, None),
+        field("ordinal", "I", ACC_PRIVATE | ACC_FINAL, None),
+        field(
+            "$VALUES",
+            "[Ljava/lang/reflect/AccessFlag$Location;",
+            ACC_PRIVATE | ACC_STATIC | ACC_FINAL | ACC_SYNTHETIC,
+            None,
+        ),
+        field(
+            "CLASS",
+            "Ljava/lang/reflect/AccessFlag$Location;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "FIELD",
+            "Ljava/lang/reflect/AccessFlag$Location;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "METHOD",
+            "Ljava/lang/reflect/AccessFlag$Location;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "INNER_CLASS",
+            "Ljava/lang/reflect/AccessFlag$Location;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "METHOD_PARAMETER",
+            "Ljava/lang/reflect/AccessFlag$Location;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "MODULE",
+            "Ljava/lang/reflect/AccessFlag$Location;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "MODULE_REQUIRES",
+            "Ljava/lang/reflect/AccessFlag$Location;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "MODULE_EXPORTS",
+            "Ljava/lang/reflect/AccessFlag$Location;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "MODULE_OPENS",
+            "Ljava/lang/reflect/AccessFlag$Location;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+    ],
+    &[
+        method("values", "()[Ljava/lang/reflect/AccessFlag$Location;", ACC_PUBLIC | ACC_STATIC, |vm, _, _| {
+            let class = vm.resolve_class("java/lang/reflect/AccessFlag$Location")?;
+            vm.ensure_initialized(class)?;
+            let array = vm.allocate_object_array(class, 9)?;
+            for (index, name) in ["CLASS", "FIELD", "METHOD", "INNER_CLASS", "METHOD_PARAMETER", "MODULE", "MODULE_REQUIRES", "MODULE_EXPORTS", "MODULE_OPENS"].iter().enumerate() {
+                let value = vm
+                    .read_static_ref(class, name, "Ljava/lang/reflect/AccessFlag$Location;")
+                    .unwrap_or(ObjectRef::NULL);
+                vm.array_set_ref(array, index, value)?;
+            }
+            object(array)
+        }),
+        method("valueOf", "(Ljava/lang/String;)Ljava/lang/reflect/AccessFlag$Location;", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+            let name = vm.string_or_empty(ref_arg(args, 0));
+            let class = vm.resolve_class("java/lang/reflect/AccessFlag$Location")?;
+            vm.ensure_initialized(class)?;
+            object(
+                vm.read_static_ref(class, &name, "Ljava/lang/reflect/AccessFlag$Location;")
+                    .unwrap_or(ObjectRef::NULL),
+            )
+        }),
+        method("flagsMask", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+        method("name", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
+            let text = vm
+                .read_string_field_any(receiver(args), "name")
+                .unwrap_or_default();
+            object(vm.make_string(&text)?)
+        }),
+        method("toString", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
+            let text = vm
+                .read_string_field_any(receiver(args), "name")
+                .unwrap_or_default();
+            object(vm.make_string(&text)?)
+        }),
+    ],
+    Some(access_flag_location_clinit),
 );
 
 pub(crate) const REFLECT_PERMISSION: oxjvm_vm::NativeClass = class(

@@ -312,8 +312,99 @@ fn platform_bean_for_class(vm: &mut Vm<'_>, class: ObjectRef) -> Result<ObjectRe
                 "java/lang/management/OjvmHotSpotDiagnosticMXBean",
             )
         }
-        _ => Ok(ObjectRef::NULL),
+        "java.lang.management.GarbageCollectorMXBean"
+        | "java.lang.management.MemoryPoolMXBean"
+        | "java.lang.management.MemoryManagerMXBean" => Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("not a singleton MXBean"),
+        )),
+        _ => Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("not a platform MXBean interface"),
+        )),
     }
+}
+
+fn register_platform_bean(
+    vm: &mut Vm<'_>,
+    server: ObjectRef,
+    bean: ObjectRef,
+    name: &str,
+) -> Result<(), VmError> {
+    let object_name = new_object_name(vm, name)?.as_ref();
+    let (class, method) = vm.resolve_virtual_method(
+        server,
+        "isRegistered",
+        "(Ljavax/management/ObjectName;)Z",
+    )?;
+    if vm
+        .invoke_method(class, method, vec![Value::Ref(server), Value::Ref(object_name)])?
+        .as_int()
+        != 0
+    {
+        return Ok(());
+    }
+    if let Ok((class, method)) = vm.resolve_virtual_method(
+        server,
+        "registerMBean",
+        "(Ljava/lang/Object;Ljavax/management/ObjectName;)Ljavax/management/ObjectInstance;",
+    ) {
+        let _ = vm.invoke_method(
+            class,
+            method,
+            vec![Value::Ref(server), Value::Ref(bean), Value::Ref(object_name)],
+        );
+    }
+    Ok(())
+}
+
+fn platform_beans_for_class(
+    vm: &mut Vm<'_>,
+    class: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    if class.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let list = new_array_list(vm)?;
+    let (nc, nm) = vm.resolve_virtual_method(class, "getName", "()Ljava/lang/String;")?;
+    let value = vm.invoke_method(nc, nm, vec![Value::Ref(class)])?;
+    let name = vm.string_or_empty(value.as_ref());
+    match name.as_str() {
+        "java.lang.management.GarbageCollectorMXBean" => {
+            let bean = bean_singleton(
+                vm,
+                "garbageCollectorBean",
+                "Ljava/lang/management/GarbageCollectorMXBean;",
+                "java/lang/management/OjvmGarbageCollectorMXBean",
+            )?;
+            list_add(vm, list, bean)?;
+        }
+        "java.lang.management.MemoryPoolMXBean" => {
+            let bean = bean_singleton(
+                vm,
+                "memoryPoolBean",
+                "Ljava/lang/management/MemoryPoolMXBean;",
+                "java/lang/management/OjvmMemoryPoolMXBean",
+            )?;
+            list_add(vm, list, bean)?;
+        }
+        "java.lang.management.MemoryManagerMXBean" => {
+            let bean = bean_singleton(
+                vm,
+                "memoryManagerBean",
+                "Ljava/lang/management/MemoryManagerMXBean;",
+                "java/lang/management/OjvmMemoryManagerMXBean",
+            )?;
+            list_add(vm, list, bean)?;
+        }
+        _ => {
+            let bean = platform_bean_for_class(vm, class)?;
+            if !bean.is_null() {
+                list_add(vm, list, bean)?;
+            }
+        }
+    }
+    Ok(list)
 }
 
 const MANAGEMENT_FACTORY_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
@@ -450,14 +541,74 @@ const MANAGEMENT_FACTORY_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         |vm, _, _| {
             let factory = vm.resolve_class("java/lang/management/ManagementFactory")?;
             vm.ensure_initialized(factory)?;
-            object(
-                vm.read_static_ref(
+            let server = vm
+                .read_static_ref(
                     factory,
                     "server",
                     "Ljavax/management/MBeanServer;",
                 )
-                .unwrap_or(ObjectRef::NULL),
-            )
+                .unwrap_or(ObjectRef::NULL);
+            let beans = [
+                (
+                    "threadBean",
+                    "Ljava/lang/management/ThreadMXBean;",
+                    "java/lang/management/OjvmThreadMXBean",
+                    "java.lang:type=Threading",
+                ),
+                (
+                    "memoryBean",
+                    "Ljava/lang/management/MemoryMXBean;",
+                    "java/lang/management/OjvmMemoryMXBean",
+                    "java.lang:type=Memory",
+                ),
+                (
+                    "runtimeBean",
+                    "Ljava/lang/management/RuntimeMXBean;",
+                    "java/lang/management/OjvmRuntimeMXBean",
+                    "java.lang:type=Runtime",
+                ),
+                (
+                    "osBean",
+                    "Ljava/lang/management/OperatingSystemMXBean;",
+                    "java/lang/management/OjvmOperatingSystemMXBean",
+                    "java.lang:type=OperatingSystem",
+                ),
+                (
+                    "classLoadingBean",
+                    "Ljava/lang/management/ClassLoadingMXBean;",
+                    "java/lang/management/OjvmClassLoadingMXBean",
+                    "java.lang:type=ClassLoading",
+                ),
+                (
+                    "compilationBean",
+                    "Ljava/lang/management/CompilationMXBean;",
+                    "java/lang/management/OjvmCompilationMXBean",
+                    "java.lang:type=Compilation",
+                ),
+                (
+                    "garbageCollectorBean",
+                    "Ljava/lang/management/GarbageCollectorMXBean;",
+                    "java/lang/management/OjvmGarbageCollectorMXBean",
+                    "java.lang:type=GarbageCollector,name=G1 Young Generation",
+                ),
+                (
+                    "memoryManagerBean",
+                    "Ljava/lang/management/MemoryManagerMXBean;",
+                    "java/lang/management/OjvmMemoryManagerMXBean",
+                    "java.lang:type=MemoryManager,name=G1 Young Generation Manager",
+                ),
+                (
+                    "memoryPoolBean",
+                    "Ljava/lang/management/MemoryPoolMXBean;",
+                    "java/lang/management/OjvmMemoryPoolMXBean",
+                    "java.lang:type=MemoryPool,name=G1 Eden Space",
+                ),
+            ];
+            for (field_name, descriptor, impl_class, object_name) in beans {
+                let bean = bean_singleton(vm, field_name, descriptor, impl_class)?;
+                register_platform_bean(vm, server, bean, object_name)?;
+            }
+            object(server)
         },
     ),
     method(
@@ -470,14 +621,7 @@ const MANAGEMENT_FACTORY_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         "getPlatformMXBeans",
         "(Ljava/lang/Class;)Ljava/util/List;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| {
-            let bean = platform_bean_for_class(vm, ref_arg(args, 0))?;
-            let list = new_array_list(vm)?;
-            if !bean.is_null() {
-                list_add(vm, list, bean)?;
-            }
-            object(list)
-        },
+        |vm, _, args| object(platform_beans_for_class(vm, ref_arg(args, 0))?),
     ),
     method(
         "getPlatformManagementInterfaces",
@@ -506,14 +650,7 @@ const MANAGEMENT_FACTORY_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         "getPlatformMXBeans",
         "(Ljavax/management/MBeanServerConnection;Ljava/lang/Class;)Ljava/util/List;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| {
-            let bean = platform_bean_for_class(vm, ref_arg(args, 1))?;
-            let list = new_array_list(vm)?;
-            if !bean.is_null() {
-                list_add(vm, list, bean)?;
-            }
-            object(list)
-        },
+        |vm, _, args| object(platform_beans_for_class(vm, ref_arg(args, 1))?),
     ),
     method(
         "getClassLoadingMXBean",
@@ -634,8 +771,37 @@ pub(crate) const BUFFER_POOL_MX_BEAN: oxjvm_vm::NativeClass =
     mxbean("java/lang/management/BufferPoolMXBean");
 pub(crate) const PLATFORM_LOGGING_MX_BEAN: oxjvm_vm::NativeClass =
     mxbean("java/lang/management/PlatformLoggingMXBean");
-pub(crate) const PLATFORM_MANAGED_OBJECT: oxjvm_vm::NativeClass =
-    mxbean("java/lang/management/PlatformManagedObject");
+pub(crate) const PLATFORM_MANAGED_OBJECT: oxjvm_vm::NativeClass = class(
+    "java/lang/management/PlatformManagedObject",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[abstract_method(
+        "getObjectName",
+        "()Ljavax/management/ObjectName;",
+    )],
+    None,
+);
+
+fn new_object_name(vm: &mut Vm<'_>, text: &str) -> Result<Value, VmError> {
+    let class = vm.resolve_class("javax/management/ObjectName")?;
+    let (declaring, method) = vm
+        .find_method(
+            class,
+            "<init>",
+            "(Ljava/lang/String;)V",
+        )
+        .ok_or_else(|| VmError::internal("ObjectName ctor"))?;
+    let instance = vm.new_instance(class)?;
+    let text = vm.make_string(text)?;
+    vm.invoke_method(
+        declaring,
+        method,
+        vec![Value::Ref(instance), Value::Ref(text)],
+    )
+    .map(|_| Value::Ref(instance))
+}
 
 pub(crate) const VM_OPTION: oxjvm_vm::NativeClass = class(
     "com/sun/management/VMOption",
@@ -1027,7 +1193,13 @@ const fn redefined_thread_mx_bean() -> oxjvm_vm::NativeClass {
 
 pub(crate) const THREAD_MX_BEAN_IMPL: oxjvm_vm::NativeClass = redefined_thread_mx_bean();
 
-const THREAD_MX_BEAN_IMPL_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
+const THREAD_MX_BEAN_IMPL_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
+    method(
+        "getObjectName",
+        "()Ljavax/management/ObjectName;",
+        ACC_PUBLIC,
+        |vm, _, _| new_object_name(vm, "java.lang:type=Threading"),
+    ),
     method("getThreadCount", "()I", ACC_PUBLIC, |vm, _, _| {
         int(vm.live_thread_count() as i32)
     }),
@@ -1211,7 +1383,13 @@ pub(crate) const MEMORY_MX_BEAN_DEF: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const OJVM_MEMORY_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const OJVM_MEMORY_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method(
+        "getObjectName",
+        "()Ljavax/management/ObjectName;",
+        ACC_PUBLIC,
+        |vm, _, _| new_object_name(vm, "java.lang:type=Memory"),
+    ),
     method(
         "getHeapMemoryUsage",
         "()Ljava/lang/management/MemoryUsage;",
@@ -1296,7 +1474,13 @@ fn runtime_uptime(vm: &mut Vm<'_>) -> i64 {
     (vm.host_time_millis() - start).max(0)
 }
 
-const OJVM_RUNTIME_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const OJVM_RUNTIME_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+    method(
+        "getObjectName",
+        "()Ljavax/management/ObjectName;",
+        ACC_PUBLIC,
+        |vm, _, _| new_object_name(vm, "java.lang:type=Runtime"),
+    ),
     method("getName", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, _| {
         object(vm.make_string("1@localhost")?)
     }),
@@ -1446,7 +1630,13 @@ pub(crate) const COM_SUN_OS_MX_BEAN_DEF: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const OJVM_OS_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const OJVM_OS_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+    method(
+        "getObjectName",
+        "()Ljavax/management/ObjectName;",
+        ACC_PUBLIC,
+        |vm, _, _| new_object_name(vm, "java.lang:type=OperatingSystem"),
+    ),
     method("getName", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, _| {
         let text = system_property_str(vm, "os.name");
         object(vm.make_string(&text)?)
@@ -1544,7 +1734,13 @@ pub(crate) const CLASS_LOADING_MX_BEAN_DEF: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const OJVM_CLASS_LOADING_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+const OJVM_CLASS_LOADING_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method(
+        "getObjectName",
+        "()Ljavax/management/ObjectName;",
+        ACC_PUBLIC,
+        |vm, _, _| new_object_name(vm, "java.lang:type=ClassLoading"),
+    ),
     method(
         "getTotalLoadedClassCount",
         "()J",
@@ -1590,7 +1786,13 @@ pub(crate) const COMPILATION_MX_BEAN_DEF: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const OJVM_COMPILATION_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+const OJVM_COMPILATION_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "getObjectName",
+        "()Ljavax/management/ObjectName;",
+        ACC_PUBLIC,
+        |vm, _, _| new_object_name(vm, "java.lang:type=Compilation"),
+    ),
     method("getName", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, _| {
         object(vm.make_string("oxjvm")?)
     }),
@@ -1637,7 +1839,13 @@ pub(crate) const GC_MX_BEAN_DEF: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const OJVM_GC_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const OJVM_GC_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method(
+        "getObjectName",
+        "()Ljavax/management/ObjectName;",
+        ACC_PUBLIC,
+        |vm, _, _| new_object_name(vm, "java.lang:type=GarbageCollector,name=G1 Young Generation"),
+    ),
     method("getName", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, _| {
         object(vm.make_string("G1 Young Generation")?)
     }),
@@ -1694,7 +1902,13 @@ pub(crate) const MEMORY_MANAGER_MX_BEAN_DEF: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const OJVM_MEMORY_MANAGER_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+const OJVM_MEMORY_MANAGER_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "getObjectName",
+        "()Ljavax/management/ObjectName;",
+        ACC_PUBLIC,
+        |vm, _, _| new_object_name(vm, "java.lang:type=MemoryManager,name=G1 Young Generation Manager"),
+    ),
     method("getName", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, _| {
         object(vm.make_string("G1 Young Generation Manager")?)
     }),
@@ -1755,7 +1969,13 @@ fn memory_type_value(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> 
         .unwrap_or(ObjectRef::NULL))
 }
 
-const OJVM_MEMORY_POOL_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+const OJVM_MEMORY_POOL_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+    method(
+        "getObjectName",
+        "()Ljavax/management/ObjectName;",
+        ACC_PUBLIC,
+        |vm, _, _| new_object_name(vm, "java.lang:type=MemoryPool,name=G1 Eden Space"),
+    ),
     method("getName", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, _| {
         object(vm.make_string("G1 Eden Space")?)
     }),
@@ -1893,7 +2113,13 @@ fn new_vm_option(
     Ok(option)
 }
 
-const OJVM_HOTSPOT_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+const OJVM_HOTSPOT_MX_BEAN_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method(
+        "getObjectName",
+        "()Ljavax/management/ObjectName;",
+        ACC_PUBLIC,
+        |vm, _, _| new_object_name(vm, "com.sun.management:type=HotSpotDiagnostic"),
+    ),
     method(
         "getDiagnosticOptions",
         "()Ljava/util/List;",
@@ -2500,7 +2726,7 @@ pub(crate) const NOTIFICATION_BROADCASTER_SUPPORT: oxjvm_vm::NativeClass = class
 // javax.management.MBeanServer
 // -------------------------------------------------------------------------------------------
 
-const MBEAN_SERVER_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
+const MBEAN_SERVER_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
     abstract_method(
         "createMBean",
         "(Ljava/lang/String;Ljavax/management/ObjectName;)Ljavax/management/ObjectInstance;",
@@ -2524,6 +2750,10 @@ const MBEAN_SERVER_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
     ),
     abstract_method("isRegistered", "(Ljavax/management/ObjectName;)Z"),
     abstract_method("getMBeanCount", "()Ljava/lang/Integer;"),
+    abstract_method(
+        "getMBeanInfo",
+        "(Ljavax/management/ObjectName;)Ljavax/management/MBeanInfo;",
+    ),
     abstract_method(
         "getAttribute",
         "(Ljavax/management/ObjectName;Ljava/lang/String;)Ljava/lang/Object;",
@@ -2601,7 +2831,86 @@ pub(crate) const MBEAN_SERVER_REGISTRATION_UTILITY: oxjvm_vm::NativeClass = clas
     None,
 );
 
-const OJVM_MBEAN_SERVER_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
+fn object_name_text(vm: &Vm<'_>, name: ObjectRef) -> String {
+    if name.is_null() {
+        return String::new();
+    }
+    vm.read_string_field_any(name, "canonicalName")
+        .unwrap_or_default()
+}
+
+fn wildcard_match(pattern: &str, text: &str) -> bool {
+    if pattern == "*" || pattern == "?" {
+        return true;
+    }
+    if !pattern.contains('*') && !pattern.contains('?') {
+        return pattern == text;
+    }
+    let pattern: Vec<char> = pattern.chars().collect();
+    let text: Vec<char> = text.chars().collect();
+    let (mut p, mut t) = (0usize, 0usize);
+    let mut star: Option<usize> = None;
+    let mut star_text = 0usize;
+    while t < text.len() {
+        if p < pattern.len() && (pattern[p] == '?' || pattern[p] == text[t]) {
+            p += 1;
+            t += 1;
+        } else if p < pattern.len() && pattern[p] == '*' {
+            star = Some(p);
+            star_text = t;
+            p += 1;
+        } else if let Some(star_pos) = star {
+            p = star_pos + 1;
+            star_text += 1;
+            t = star_text;
+        } else {
+            return false;
+        }
+    }
+    while p < pattern.len() && pattern[p] == '*' {
+        p += 1;
+    }
+    p == pattern.len()
+}
+
+fn object_name_matches(pattern: &str, actual: &str) -> bool {
+    let (pattern_domain, pattern_keys) = match pattern.split_once(':') {
+        Some(parts) => parts,
+        None => return pattern == actual,
+    };
+    let (actual_domain, actual_keys) = match actual.split_once(':') {
+        Some(parts) => parts,
+        None => return false,
+    };
+    if pattern_domain != "*" && pattern_domain != actual_domain {
+        return false;
+    }
+    for pair in pattern_keys.split(',') {
+        let pair = pair.trim();
+        if pair.is_empty() || pair == "*" {
+            continue;
+        }
+        let (key, value) = match pair.split_once('=') {
+            Some(parts) => parts,
+            None => return false,
+        };
+        let mut found = false;
+        for actual_pair in actual_keys.split(',') {
+            if let Some((actual_key, actual_value)) = actual_pair.trim().split_once('=') {
+                if actual_key == key && wildcard_match(value, actual_value) {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if !found {
+            return false;
+        }
+    }
+    true
+}
+
+const OJVM_MBEAN_SERVER_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
     method(
         "<init>",
         "()V",
@@ -2726,10 +3035,34 @@ const OJVM_MBEAN_SERVER_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
+            let pattern_ref = ref_arg(args, 1);
             let entries = ref_field(vm, this, "entries", "Ljava/util/HashMap;");
+            let set = new_hash_set(vm)?;
+            if pattern_ref.is_null() {
+                let (class, method) =
+                    vm.resolve_virtual_method(entries, "keySet", "()Ljava/util/Set;")?;
+                return vm.invoke_method(class, method, vec![Value::Ref(entries)]);
+            }
+            let pattern = object_name_text(vm, pattern_ref);
             let (class, method) =
                 vm.resolve_virtual_method(entries, "keySet", "()Ljava/util/Set;")?;
-            vm.invoke_method(class, method, vec![Value::Ref(entries)])
+            let keys = vm.invoke_method(class, method, vec![Value::Ref(entries)])?.as_ref();
+            let (iclass, it) =
+                vm.resolve_virtual_method(keys, "iterator", "()Ljava/util/Iterator;")?;
+            let iterator = vm.invoke_method(iclass, it, vec![Value::Ref(keys)])?.as_ref();
+            loop {
+                let (hc, hm) = vm.resolve_virtual_method(iterator, "hasNext", "()Z")?;
+                if vm.invoke_method(hc, hm, vec![Value::Ref(iterator)])?.as_int() == 0 {
+                    break;
+                }
+                let (nc, nm) =
+                    vm.resolve_virtual_method(iterator, "next", "()Ljava/lang/Object;")?;
+                let name = vm.invoke_method(nc, nm, vec![Value::Ref(iterator)])?.as_ref();
+                if object_name_matches(&pattern, &object_name_text(vm, name)) {
+                    set_add(vm, set, name)?;
+                }
+            }
+            object(set)
         },
     ),
     method(
@@ -2781,6 +3114,38 @@ const OJVM_MBEAN_SERVER_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
                 set_add(vm, set, instance)?;
             }
             object(set)
+        },
+    ),
+    method(
+        "getMBeanInfo",
+        "(Ljavax/management/ObjectName;)Ljavax/management/MBeanInfo;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("javax/management/MBeanInfo")?;
+            let instance = vm.new_instance(class)?;
+            let (declaring, ctor) = vm
+                .find_method(
+                    class,
+                    "<init>",
+                    "(Ljava/lang/String;Ljava/lang/String;[Ljavax/management/MBeanAttributeInfo;[Ljavax/management/MBeanOperationInfo;[Ljavax/management/MBeanConstructorInfo;[Ljavax/management/MBeanNotificationInfo;)V",
+                )
+                .ok_or_else(|| VmError::internal("MBeanInfo ctor"))?;
+            let name = vm.make_string("java.lang.Object")?;
+            let description = vm.make_string("")?;
+            vm.invoke_method(
+                declaring,
+                ctor,
+                vec![
+                    Value::Ref(instance),
+                    Value::Ref(name),
+                    Value::Ref(description),
+                    Value::Ref(ObjectRef::NULL),
+                    Value::Ref(ObjectRef::NULL),
+                    Value::Ref(ObjectRef::NULL),
+                    Value::Ref(ObjectRef::NULL),
+                ],
+            )?;
+            object(instance)
         },
     ),
     method(
