@@ -351,7 +351,9 @@ impl<'a> Vm<'a> {
             return Err(VmError::internal("call_native_fn on a non-native method"));
         };
         self.in_native += 1;
+        let base = self.native_allocations.len();
         let result = function(self, crate::class::NativeContext { class, method }, args);
+        self.native_allocations.truncate(base);
         self.in_native -= 1;
         result
     }

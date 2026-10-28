@@ -190,9 +190,15 @@ pub struct Vm<'a> {
     pub(crate) backtraces: BTreeMap<Ref, Vec<BacktraceFrame>>,
     /// Nested-call exception floor, per thread (see [`JavaThread::floor`]).
     pub(crate) return_slot: Option<Value>,
-    /// Depth of nested native frames, to suppress GC while a host function holds references on the
-    /// Rust stack.
+    /// Depth of nested native frames. While it is non-zero, every allocation is recorded in
+    /// [`Vm::native_allocations`] so a collection can still run without freeing an object the
+    /// host function only holds in a Rust local.
     pub(crate) in_native: u32,
+    /// Objects allocated by natives, kept as roots until the native returns.
+    ///
+    /// A native may allocate while it holds references in Rust locals; the collector must not
+    /// free those, so every allocation made during the call is rooted.
+    pub(crate) native_allocations: Vec<Ref>,
     /// Extra GC roots registered by natives.
     pub(crate) temp_roots: Vec<Ref>,
     /// `System.out`.
@@ -274,6 +280,7 @@ impl<'a> Vm<'a> {
             backtraces: BTreeMap::new(),
             return_slot: None,
             in_native: 0,
+            native_allocations: Vec::new(),
             temp_roots: Vec::new(),
             out: Ref::NULL,
             err: Ref::NULL,
@@ -1016,16 +1023,22 @@ impl<'a> Vm<'a> {
         class: ClassId,
         data: ObjectData,
     ) -> Result<Ref, VmError> {
-        if self.oom_throw {
+        let reference = if self.oom_throw {
             // The `OutOfMemoryError` itself is created past the budget, so the failure can
             // always be reported.
-            return Ok(self.heap.allocate_unchecked(class, data));
+            self.heap.allocate_unchecked(class, data)
+        } else {
+            self.ensure_heap_budget(data.object_size())?;
+            match self.heap.allocate(class, data) {
+                Ok(reference) => reference,
+                Err(_) => return Err(self.throw_out_of_memory()),
+            }
+        };
+        if self.in_native > 0 {
+            // The native may still hold this reference only in a Rust local.
+            self.native_allocations.push(reference);
         }
-        self.ensure_heap_budget(data.object_size())?;
-        match self.heap.allocate(class, data) {
-            Ok(reference) => Ok(reference),
-            Err(_) => Err(self.throw_out_of_memory()),
-        }
+        Ok(reference)
     }
 
     /// Make sure `bytes` fit in the heap budget, collecting first when they do not.
@@ -1038,11 +1051,9 @@ impl<'a> Vm<'a> {
         if self.oom_throw || self.heap.can_fit(bytes) {
             return Ok(());
         }
-        if self.in_native == 0 {
-            // Reclaim what the collector can before declaring the heap full. A native call
-            // holds raw references on the Rust stack, so no collection may run there.
-            self.gc();
-        }
+        // Reclaim what the collector can before declaring the heap full. Objects a native holds
+        // in Rust locals are registered in `native_allocations`, so collecting here is safe.
+        self.gc();
         if self.heap.can_fit(bytes) {
             return Ok(());
         }
@@ -1159,6 +1170,7 @@ impl<'a> Vm<'a> {
         roots.push(self.err);
         roots.extend(self.interned.values().copied());
         roots.extend(self.boxed_cache.values().copied());
+        roots.extend(self.native_allocations.iter().copied());
         roots.extend(self.temp_roots.iter().copied());
         roots.extend(self.backtraces.keys().copied());
         for thread in &self.threads {
@@ -1201,9 +1213,6 @@ impl<'a> Vm<'a> {
     /// Request a collection once the heap has grown past its committed size, or once enough
     /// allocations have happened.
     pub(crate) fn maybe_gc(&mut self) {
-        if self.in_native > 0 {
-            return;
-        }
         if self.gc_requested {
             self.gc();
             return;

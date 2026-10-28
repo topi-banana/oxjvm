@@ -352,6 +352,10 @@ fn a_string_that_does_not_fit_raises_out_of_memory() {
         .allocate_array_of(ArrayComponent::Char, 100 * 1024)
         .expect("chars");
     let string = vm.new_instance(class).expect("string");
+    // The collector runs inside the native `String(char[])` constructor now; in guest code the
+    // caller's frame roots both objects, so register them the same way here.
+    vm.protect(chars);
+    vm.protect(string);
     let (declaring, index) = vm.find_method(class, "<init>", "([C)V").expect("ctor");
     let error = vm
         .invoke_method(
