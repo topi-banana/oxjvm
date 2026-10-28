@@ -366,3 +366,24 @@ fn a_string_that_does_not_fit_raises_out_of_memory() {
         .expect_err("out of memory");
     assert_eq!(thrown_class(&vm, error), "java/lang/OutOfMemoryError");
 }
+
+#[test]
+fn committed_memory_does_not_shrink_after_a_collection() {
+    let mut host = TestHost::default();
+    let mut vm = Vm::with_options(
+        &mut host,
+        oxjvm_java::natives(),
+        VmOptions::with_heap_sizes(64 * 1024, 8 * 1024 * 1024),
+    );
+    let array = vm
+        .allocate_array_of(ArrayComponent::Byte, 1024 * 1024)
+        .expect("array");
+    assert_eq!(vm.array_length(array).expect("length"), 1024 * 1024);
+    let committed = vm.heap_total_bytes();
+    assert!(committed >= 1024 * 1024);
+    // No guest frame refers to the array, so a collection reclaims it. The committed size is
+    // the high-water mark and must not follow the live set down.
+    vm.gc();
+    assert!(vm.heap_used_bytes() < committed);
+    assert_eq!(vm.heap_total_bytes(), committed);
+}

@@ -464,6 +464,13 @@ fn run(args: &[String]) -> ExitCode {
             }
         }
     }
+    // The launcher imposes an ergonomic maximum when `-Xmx` is absent, like the `java` launcher.
+    // The VM itself keeps the unbounded default for embedders and tests. An explicit `-Xms`
+    // above that maximum raises it, so the request is honoured instead of rejected.
+    if options.max_heap_bytes.is_none() {
+        let initial = options.initial_heap_bytes.unwrap_or(0);
+        options.max_heap_bytes = Some(oxjvm_vm::options::DEFAULT_MAX_HEAP_BYTES.max(initial));
+    }
     if let (Some(initial), Some(max)) = (options.initial_heap_bytes, options.max_heap_bytes) {
         if initial > max {
             eprintln!("oxjvm: -Xms must not be larger than -Xmx");

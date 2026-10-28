@@ -9,6 +9,13 @@
 /// collector keeps the live set small enough for the budget to hold.
 pub const DEFAULT_INITIAL_HEAP_BYTES: u64 = 64 * 1024 * 1024;
 
+/// The maximum heap size the launcher uses when `-Xmx` is not given, in bytes (1 GiB).
+///
+/// HotSpot derives an ergonomic maximum from the machine's memory; oxjvm uses a fixed value so a
+/// test run behaves the same on every host. An explicit `-Xmx` overrides it, and embedders that
+/// construct a [`VmOptions`] themselves keep the unbounded default.
+pub const DEFAULT_MAX_HEAP_BYTES: u64 = 1024 * 1024 * 1024;
+
 /// The default maximum number of Java frames on a thread.
 pub const DEFAULT_MAX_STACK_FRAMES: usize = 65_536;
 

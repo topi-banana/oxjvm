@@ -220,6 +220,9 @@ pub struct Vm<'a> {
     /// The heap size the collector currently works within. It starts at `-Xms` and grows toward
     /// `-Xmx` as the live set demands.
     pub(crate) commit_bytes: u64,
+    /// The largest number of bytes the heap has held. `Runtime.totalMemory()` reports it so the
+    /// committed size does not shrink after a collection (only an uncommit would shrink it).
+    pub(crate) peak_used_bytes: u64,
     /// Set while the `OutOfMemoryError` is being created, so the exception itself can be
     /// allocated past the budget.
     pub(crate) oom_throw: bool,
@@ -291,6 +294,7 @@ impl<'a> Vm<'a> {
             gc_requested: false,
             options,
             commit_bytes,
+            peak_used_bytes: 0,
             oom_throw: false,
             boot_error: None,
             trace: false,
@@ -1034,6 +1038,7 @@ impl<'a> Vm<'a> {
                 Err(_) => return Err(self.throw_out_of_memory()),
             }
         };
+        self.peak_used_bytes = self.peak_used_bytes.max(self.heap.used_bytes());
         if self.in_native > 0 {
             // The native may still hold this reference only in a Rust local.
             self.native_allocations.push(reference);
@@ -1118,7 +1123,9 @@ impl<'a> Vm<'a> {
     /// The committed heap size: `-Xms`, capped by `-Xmx`, and never below the live set.
     #[must_use]
     pub fn heap_total_bytes(&self) -> u64 {
-        self.commit_bytes.max(self.heap.used_bytes())
+        self.commit_bytes
+            .max(self.peak_used_bytes)
+            .max(self.heap.used_bytes())
     }
 
     /// The maximum heap size, or `None` when the heap is unbounded.
