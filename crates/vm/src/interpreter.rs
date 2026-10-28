@@ -1067,10 +1067,26 @@ impl<'a> Vm<'a> {
             let component_class = self.classes.get(class).component_class;
             let component = component_class
                 .ok_or_else(|| VmError::internal("multianewarray without a component class"))?;
+            // Allocating an element can collect, and only this Rust local refers to the outer
+            // array, so keep it a root until every element has been stored.
+            self.protect(array);
+            let mut result = Ok(());
             for index in 0..length {
-                let child = self.allocate_multi(component, &dimensions[1..])?;
-                self.array_set(array, index, Value::Ref(child), false)?;
+                match self.allocate_multi(component, &dimensions[1..]) {
+                    Ok(child) => {
+                        if let Err(error) = self.array_set(array, index, Value::Ref(child), false) {
+                            result = Err(error);
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        result = Err(error);
+                        break;
+                    }
+                }
             }
+            self.unprotect(array);
+            result?;
         }
         Ok(array)
     }

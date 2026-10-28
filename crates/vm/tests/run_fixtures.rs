@@ -1959,3 +1959,21 @@ fn p2_message_format_reads_and_writes_messages() {
         );
     }
 }
+
+#[test]
+fn keeps_multidimensional_arrays_alive_across_collections() {
+    let mut host = fixture_host();
+    let mut vm = Vm::with_options(
+        &mut host,
+        oxjvm_java::natives(),
+        oxjvm_vm::VmOptions::with_max_heap_bytes(8 * 1024 * 1024),
+    );
+    let class = vm.resolve_class("demo/MultiArray").expect("MultiArray");
+    let (declaring, method) = vm.find_method(class, "fill", "(I)I").expect("fill");
+    // 300 rounds allocate about 11 MiB through `multianewarray`; the 8 MiB budget makes the
+    // collector run while the outer array is still being filled.
+    let result = vm
+        .invoke_method(declaring, method, vec![Value::Int(300)])
+        .expect("fill");
+    assert_eq!(result.as_int(), 190 * 300);
+}
