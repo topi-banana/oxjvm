@@ -25,7 +25,7 @@ The launcher understands the `-X` options the `java` launcher does:
 | Option       | Meaning                                                              | Default       |
 | ------------ | -------------------------------------------------------------------- | ------------- |
 | `-Xms<size>` | The heap size at which the collector starts working                  | 64 MiB        |
-| `-Xmx<size>` | The maximum heap size; a larger allocation raises `OutOfMemoryError` | 1 GiB         |
+| `-Xmx<size>` | The maximum heap size; a larger allocation raises `OutOfMemoryError` | RAM/4 (1–4 GiB) |
 | `-Xss<size>` | The thread stack size, converted to a frame limit (1 KiB per frame)  | 65 536 frames |
 
 Sizes accept a `k`, `m`, or `g` suffix (`-Xmx256m`, `-Xmx=256m`, and `-Xmx 256m` all work). The
@@ -34,9 +34,9 @@ heap is metered in the bytes the guest objects occupy — a `byte[]` costs one b
 allocation does not fit, the collector runs once to reclaim what it can, and the allocation raises
 `java.lang.OutOfMemoryError` if the object still does not fit. The size the collector works within
 starts at `-Xms` and grows toward `-Xmx` as the live set demands, so a program that keeps more
-data alive collects less and less often. When `-Xmx` is absent the launcher uses a fixed 1 GiB
-maximum (instead of HotSpot's machine-dependent ergonomic value) so a test run behaves the same
-on every host; embedders that construct `VmOptions` themselves keep the unbounded default. `Runtime.maxMemory()`, `Runtime.totalMemory()`, and
+data alive collects less and less often. When `-Xmx` is absent the launcher uses a
+quarter of the physical memory on Linux, clamped to 1-4 GiB (HotSpot's ergonomic rule);
+embedders that construct `VmOptions` themselves keep the unbounded default. `Runtime.maxMemory()`, `Runtime.totalMemory()`, and
 `Runtime.freeMemory()` report the same budget.
 
 Embedders configure the same limits through `Vm::with_options` and a `VmOptions` value; the wasm

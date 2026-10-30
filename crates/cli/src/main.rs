@@ -469,7 +469,7 @@ fn run(args: &[String]) -> ExitCode {
     // above that maximum raises it, so the request is honoured instead of rejected.
     if options.max_heap_bytes.is_none() {
         let initial = options.initial_heap_bytes.unwrap_or(0);
-        options.max_heap_bytes = Some(oxjvm_vm::options::DEFAULT_MAX_HEAP_BYTES.max(initial));
+        options.max_heap_bytes = Some(ergonomic_max_heap_bytes().max(initial));
     }
     if let (Some(initial), Some(max)) = (options.initial_heap_bytes, options.max_heap_bytes) {
         if initial > max {
@@ -500,6 +500,26 @@ fn run(args: &[String]) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The maximum heap the launcher picks when `-Xmx` is absent.
+///
+/// HotSpot uses a quarter of the physical memory (clamped by the platform); oxjvm does the
+/// same on Linux, with a 1 GiB floor and a 4 GiB ceiling so one JVM cannot claim the whole
+/// machine. Other platforms fall back to the floor.
+fn ergonomic_max_heap_bytes() -> u64 {
+    let quarter = fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .find(|line| line.starts_with("MemTotal:"))
+                .and_then(|line| line.split_whitespace().nth(1))
+                .and_then(|kilobytes| kilobytes.parse::<u64>().ok())
+        })
+        .map(|kilobytes| kilobytes.saturating_mul(1024) / 4);
+    quarter
+        .map(|bytes| bytes.clamp(oxjvm_vm::options::DEFAULT_MAX_HEAP_BYTES, 4 << 30))
+        .unwrap_or(oxjvm_vm::options::DEFAULT_MAX_HEAP_BYTES)
 }
 
 /// The `-X` options the launcher understands.
