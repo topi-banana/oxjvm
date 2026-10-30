@@ -1220,6 +1220,12 @@ impl<'a> Vm<'a> {
     /// Request a collection once the heap has grown past its committed size, or once enough
     /// allocations have happened.
     pub(crate) fn maybe_gc(&mut self) {
+        // A native allocates through `ensure_heap_budget`, which collects when the allocation
+        // does not fit. Do not also collect proactively here: a native can allocate in a tight
+        // loop, and its live roots make each proactive collection both expensive and ineffective.
+        if self.in_native > 0 {
+            return;
+        }
         if self.gc_requested {
             self.gc();
             return;
