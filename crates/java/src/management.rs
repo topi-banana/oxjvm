@@ -1064,7 +1064,20 @@ pub(crate) const MEMORY_TYPE: oxjvm_vm::NativeClass = class(
     Some("java/lang/Enum"),
     &[],
     ACC_PUBLIC | ACC_FINAL | ACC_ENUM,
-    &[],
+    &[
+        field(
+            "HEAP",
+            "Ljava/lang/management/MemoryType;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "NON_HEAP",
+            "Ljava/lang/management/MemoryType;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+    ],
     &MEMORY_TYPE_METHODS,
     Some(memory_type_clinit),
 );
@@ -1112,10 +1125,190 @@ pub(crate) const SIMPLE_TYPE: oxjvm_vm::NativeClass = class(
     Some("javax/management/openmbean/OpenType"),
     &[],
     ACC_PUBLIC | ACC_FINAL,
-    &[],
-    &[],
-    None,
+    &SIMPLE_TYPE_FIELDS,
+    &SIMPLE_TYPE_METHODS,
+    Some(simple_type_clinit),
 );
+
+static SIMPLE_TYPE_FIELDS: [oxjvm_vm::NativeFieldDef; 15] = [
+    field("className", "Ljava/lang/String;", ACC_PRIVATE, None),
+    field(
+        "VOID",
+        "Ljavax/management/openmbean/SimpleType;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        None,
+    ),
+    field(
+        "BOOLEAN",
+        "Ljavax/management/openmbean/SimpleType;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        None,
+    ),
+    field(
+        "CHARACTER",
+        "Ljavax/management/openmbean/SimpleType;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        None,
+    ),
+    field(
+        "BYTE",
+        "Ljavax/management/openmbean/SimpleType;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        None,
+    ),
+    field(
+        "SHORT",
+        "Ljavax/management/openmbean/SimpleType;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        None,
+    ),
+    field(
+        "INTEGER",
+        "Ljavax/management/openmbean/SimpleType;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        None,
+    ),
+    field(
+        "LONG",
+        "Ljavax/management/openmbean/SimpleType;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        None,
+    ),
+    field(
+        "FLOAT",
+        "Ljavax/management/openmbean/SimpleType;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        None,
+    ),
+    field(
+        "DOUBLE",
+        "Ljavax/management/openmbean/SimpleType;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        None,
+    ),
+    field(
+        "STRING",
+        "Ljavax/management/openmbean/SimpleType;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        None,
+    ),
+    field(
+        "BIGDECIMAL",
+        "Ljavax/management/openmbean/SimpleType;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        None,
+    ),
+    field(
+        "BIGINTEGER",
+        "Ljavax/management/openmbean/SimpleType;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        None,
+    ),
+    field(
+        "DATE",
+        "Ljavax/management/openmbean/SimpleType;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        None,
+    ),
+    field(
+        "OBJECTNAME",
+        "Ljavax/management/openmbean/SimpleType;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        None,
+    ),
+];
+
+const SIMPLE_TYPE_NAMES: [(&str, &str); 14] = [
+    ("VOID", "java.lang.Void"),
+    ("BOOLEAN", "java.lang.Boolean"),
+    ("CHARACTER", "java.lang.Character"),
+    ("BYTE", "java.lang.Byte"),
+    ("SHORT", "java.lang.Short"),
+    ("INTEGER", "java.lang.Integer"),
+    ("LONG", "java.lang.Long"),
+    ("FLOAT", "java.lang.Float"),
+    ("DOUBLE", "java.lang.Double"),
+    ("STRING", "java.lang.String"),
+    ("BIGDECIMAL", "java.math.BigDecimal"),
+    ("BIGINTEGER", "java.math.BigInteger"),
+    ("DATE", "java.util.Date"),
+    ("OBJECTNAME", "javax.management.ObjectName"),
+];
+
+const SIMPLE_TYPE_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method(
+        "getClassName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let text = vm
+                .read_string_field(this, class, "className")
+                .unwrap_or_default();
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let text = vm
+                .read_string_field(this, class, "className")
+                .unwrap_or_default();
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = ref_arg(args, 1);
+            if other.is_null() || vm.class_of(other) != vm.class_of(receiver(args)) {
+                return boolean(false);
+            }
+            let first = vm
+                .read_string_field(receiver(args), vm.class_of(receiver(args)), "className")
+                .unwrap_or_default();
+            let second = vm
+                .read_string_field(other, vm.class_of(other), "className")
+                .unwrap_or_default();
+            boolean(first == second)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let text = vm
+            .read_string_field(receiver(args), vm.class_of(receiver(args)), "className")
+            .unwrap_or_default();
+        let mut hash = 0i32;
+        for unit in text.encode_utf16() {
+            hash = hash.wrapping_mul(31).wrapping_add(i32::from(unit));
+        }
+        int(hash)
+    }),
+    method("isValue", "(Ljava/lang/Object;)Z", ACC_PUBLIC, |_, _, _| {
+        boolean(false)
+    }),
+];
+
+fn simple_type_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("javax/management/openmbean/SimpleType")?;
+    for (name, class_name) in SIMPLE_TYPE_NAMES {
+        let instance = vm.new_instance(class)?;
+        vm.set_string_field(instance, class, "className", class_name)?;
+        vm.set_static_value(
+            class,
+            name,
+            "Ljavax/management/openmbean/SimpleType;",
+            Value::Ref(instance),
+        );
+    }
+    Ok(())
+}
 pub(crate) const TABULAR_TYPE: oxjvm_vm::NativeClass = class(
     "javax/management/openmbean/TabularType",
     Some("javax/management/openmbean/CompositeType"),
@@ -2449,9 +2642,28 @@ pub(crate) const OBJECT_NAME: oxjvm_vm::NativeClass = class(
         field("canonicalName", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("domain", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("keyList", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field(
+            "WILDCARD",
+            "Ljavax/management/ObjectName;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
     ],
     &OBJECT_NAME_METHODS,
-    None,
+    Some(|vm| {
+        let class = vm.resolve_class("javax/management/ObjectName")?;
+        let instance = vm.new_instance(class)?;
+        vm.set_string_field(instance, class, "canonicalName", "*:*")?;
+        vm.set_string_field(instance, class, "domain", "*")?;
+        vm.set_string_field(instance, class, "keyList", "*")?;
+        vm.set_static_value(
+            class,
+            "WILDCARD",
+            "Ljavax/management/ObjectName;",
+            Value::Ref(instance),
+        );
+        Ok(())
+    }),
 );
 
 const OBJECT_INSTANCE_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
@@ -2908,7 +3120,7 @@ pub(crate) const MBEAN_SERVER_CONNECTION: oxjvm_vm::NativeClass = class(
     &[],
     ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
     &[],
-    &[],
+    &MBEAN_SERVER_METHODS,
     None,
 );
 
@@ -3588,9 +3800,24 @@ pub(crate) const IMMUTABLE_DESCRIPTOR: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &["javax/management/Descriptor"],
     ACC_PUBLIC | ACC_FINAL,
+    &[field(
+        "EMPTY_DESCRIPTOR",
+        "Ljavax/management/ImmutableDescriptor;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        None,
+    )],
     &[],
-    &[],
-    None,
+    Some(|vm| {
+        let class = vm.resolve_class("javax/management/ImmutableDescriptor")?;
+        let instance = vm.new_instance(class)?;
+        vm.set_static_value(
+            class,
+            "EMPTY_DESCRIPTOR",
+            "Ljavax/management/ImmutableDescriptor;",
+            Value::Ref(instance),
+        );
+        Ok(())
+    }),
 );
 pub(crate) const MXBEAN_TYPE: oxjvm_vm::NativeClass = class(
     "javax/management/MXBean",

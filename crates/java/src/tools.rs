@@ -1864,6 +1864,135 @@ const JAVAC_TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
 ];
 
 // --------------------------------------------------------------------------
+// com.sun.tools.javac.Main$Result
+// --------------------------------------------------------------------------
+
+pub(crate) const JAVAC_MAIN_RESULT: oxjvm_vm::NativeClass = class(
+    "com/sun/tools/javac/main/Main$Result",
+    Some("java/lang/Enum"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field(
+            "OK",
+            "Lcom/sun/tools/javac/main/Main$Result;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "ERROR",
+            "Lcom/sun/tools/javac/main/Main$Result;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "CMDERR",
+            "Lcom/sun/tools/javac/main/Main$Result;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "SYSERR",
+            "Lcom/sun/tools/javac/main/Main$Result;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "ABNORMAL",
+            "Lcom/sun/tools/javac/main/Main$Result;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field("exitCode", "I", ACC_PUBLIC | ACC_FINAL, None),
+    ],
+    &JAVAC_MAIN_RESULT_METHODS,
+    Some(javac_main_result_clinit),
+);
+
+const JAVAC_MAIN_RESULT_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method("<init>", "()V", ACC_PRIVATE, |_, _, _| void()),
+    method("isOK", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(read_int_field(vm, receiver(args), "exitCode") == 0)
+    }),
+    method(
+        "values",
+        "()[Lcom/sun/tools/javac/main/Main$Result;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("com/sun/tools/javac/main/Main$Result")?;
+            vm.ensure_initialized(class)?;
+            let array = vm.allocate_object_array(class, 5)?;
+            for (index, name) in ["OK", "ERROR", "CMDERR", "SYSERR", "ABNORMAL"]
+                .iter()
+                .enumerate()
+            {
+                if let Some(value) =
+                    vm.read_static_ref_if_set(class, name, "Lcom/sun/tools/javac/main/Main$Result;")
+                {
+                    vm.array_set_ref(array, index, value)?;
+                }
+            }
+            object(array)
+        },
+    ),
+    method(
+        "valueOf",
+        "(Ljava/lang/String;)Lcom/sun/tools/javac/main/Main$Result;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = vm.string_or_empty(ref_arg(args, 0));
+            let class = vm.resolve_class("com/sun/tools/javac/main/Main$Result")?;
+            vm.ensure_initialized(class)?;
+            match vm.read_static_ref_if_set(class, &name, "Lcom/sun/tools/javac/main/Main$Result;")
+            {
+                Some(value) => object(value),
+                None => Err(vm.throw_new("java/lang/IllegalArgumentException", Some(&name))),
+            }
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = vm.read_string_field_any(this, "name").unwrap_or_default();
+            object(vm.make_string(&text)?)
+        },
+    ),
+];
+
+fn javac_main_result_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("com/sun/tools/javac/main/Main$Result")?;
+    for (index, name) in ["OK", "ERROR", "CMDERR", "SYSERR", "ABNORMAL"]
+        .iter()
+        .enumerate()
+    {
+        let instance = vm.new_instance(class)?;
+        vm.set_string_field(instance, class, "name", name)?;
+        if let Some((declaring, field)) = vm.find_field_opt(class, "exitCode", "I") {
+            vm.set_instance_int(instance, declaring, field, index as i32);
+        }
+        vm.set_static_value(
+            class,
+            name,
+            "Lcom/sun/tools/javac/main/Main$Result;",
+            Value::Ref(instance),
+        );
+    }
+    Ok(())
+}
+
+fn javac_result(vm: &mut Vm<'_>, name: &str) -> Result<Value, VmError> {
+    let class = vm.resolve_class("com/sun/tools/javac/main/Main$Result")?;
+    vm.ensure_initialized(class)?;
+    Ok(Value::Ref(
+        vm.read_static_ref(class, name, "Lcom/sun/tools/javac/main/Main$Result;")
+            .unwrap_or(ObjectRef::NULL),
+    ))
+}
+
+// --------------------------------------------------------------------------
 // com.sun.tools.javac.Main
 // --------------------------------------------------------------------------
 
@@ -2565,6 +2694,16 @@ pub(crate) const JAVAC_TASK_IMPL: oxjvm_vm::NativeClass = class(
             |vm, _, args| javac_task_call(vm, args),
         ),
         method(
+            "doCall",
+            "()Lcom/sun/tools/javac/main/Main$Result;",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let result = javac_task_call(vm, args)?;
+                let successful = read_int_field(vm, result.as_ref(), "value") != 0;
+                javac_result(vm, if successful { "OK" } else { "ERROR" })
+            },
+        ),
+        method(
             "setProcessors",
             "(Ljava/lang/Iterable;)V",
             ACC_PUBLIC,
@@ -2885,7 +3024,7 @@ fn documentation_tool_location_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
 // java.util.spi.ToolProvider + javac/javadoc/javap main entry points
 // --------------------------------------------------------------------------
 
-const TOOL_PROVIDER_SPI_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+const TOOL_PROVIDER_SPI_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     method(
         "findFirst",
         "(Ljava/lang/String;)Ljava/util/Optional;",
@@ -2925,6 +3064,29 @@ const TOOL_PROVIDER_SPI_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         "(Ljava/io/PrintWriter;Ljava/io/PrintWriter;[Ljava/lang/String;)I",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
+    ),
+    method(
+        "run",
+        "(Ljava/io/PrintStream;Ljava/io/PrintStream;[Ljava/lang/String;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (class, method) = vm.resolve_virtual_method(
+                this,
+                "run",
+                "(Ljava/io/PrintWriter;Ljava/io/PrintWriter;[Ljava/lang/String;)I",
+            )?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![
+                    Value::Ref(this),
+                    Value::Ref(ObjectRef::NULL),
+                    Value::Ref(ObjectRef::NULL),
+                    args[3],
+                ],
+            )
+        },
     ),
 ];
 
@@ -3112,9 +3274,25 @@ pub(crate) const DOCLINT: oxjvm_vm::NativeClass = class(
     &[],
     ACC_PUBLIC,
     &[],
-    &[],
+    &DOCLINT_METHODS,
     None,
 );
+
+const DOCLINT_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "run",
+        "(Ljava/io/PrintWriter;[Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method(
+        "scan",
+        "(Ljava/lang/String;Lcom/sun/source/util/DocTreePath;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+];
 
 pub(crate) const DOCLINT_BAD_ARGS: oxjvm_vm::NativeClass = class(
     "jdk/javadoc/internal/doclint/DocLint$BadArgs",

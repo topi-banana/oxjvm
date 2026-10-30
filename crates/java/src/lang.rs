@@ -7804,8 +7804,82 @@ const ZONE_ID_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     }),
 ];
 
+const ZONE_SHORT_IDS: [(&str, &str); 29] = [
+    ("ACT", "Australia/Darwin"),
+    ("AET", "Australia/Sydney"),
+    ("AGT", "America/Argentina/Buenos_Aires"),
+    ("ART", "Africa/Cairo"),
+    ("AST", "America/Anchorage"),
+    ("BET", "America/Sao_Paulo"),
+    ("BST", "Asia/Dhaka"),
+    ("CAT", "Africa/Harare"),
+    ("CNT", "America/St_Johns"),
+    ("CST", "America/Chicago"),
+    ("CTT", "Asia/Shanghai"),
+    ("EAT", "Africa/Addis_Ababa"),
+    ("ECT", "Europe/Paris"),
+    ("EST", "America/New_York"),
+    ("HST", "Pacific/Honolulu"),
+    ("IET", "America/Indiana/Indianapolis"),
+    ("IST", "Asia/Kolkata"),
+    ("JST", "Asia/Tokyo"),
+    ("MIT", "Pacific/Apia"),
+    ("MST", "America/Denver"),
+    ("NET", "Asia/Yerevan"),
+    ("NST", "Pacific/Auckland"),
+    ("PLT", "Asia/Karachi"),
+    ("PNT", "America/Phoenix"),
+    ("PRT", "America/Puerto_Rico"),
+    ("PST", "America/Los_Angeles"),
+    ("SST", "Pacific/Guadalcanal"),
+    ("VST", "Asia/Ho_Chi_Minh"),
+    ("WET", "Europe/Lisbon"),
+];
+
+fn zone_id_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let zone_class = vm.resolve_class("java/time/ZoneId")?;
+    let map_class = vm.resolve_class("java/util/HashMap")?;
+    let map = vm.new_instance(map_class)?;
+    let (declaring, ctor) = vm
+        .find_method(map_class, "<init>", "()V")
+        .ok_or_else(|| VmError::internal("HashMap lacks <init>"))?;
+    vm.invoke_method(declaring, ctor, vec![Value::Ref(map)])?;
+    for (key, value) in ZONE_SHORT_IDS {
+        let key_ref = vm.intern(key)?;
+        let value_ref = vm.intern(value)?;
+        let (class, method) = vm.resolve_virtual_method(
+            map,
+            "put",
+            "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        )?;
+        vm.invoke_method(
+            class,
+            method,
+            vec![Value::Ref(map), Value::Ref(key_ref), Value::Ref(value_ref)],
+        )?;
+    }
+    vm.set_static_value(zone_class, "SHORT_IDS", "Ljava/util/Map;", Value::Ref(map));
+    Ok(())
+}
+
 fn zone_id_new(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
-    let text = string_arg(vm, args[0])?;
+    let mut text = string_arg(vm, args[0])?;
+    if args.len() > 1 {
+        let aliases = ref_arg(args, 1);
+        if !aliases.is_null() {
+            let key = vm.intern(&text)?;
+            let (class, method) = vm.resolve_virtual_method(
+                aliases,
+                "get",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+            )?;
+            let value =
+                vm.invoke_method(class, method, vec![Value::Ref(aliases), Value::Ref(key)])?;
+            if !value.as_ref().is_null() {
+                text = vm.string_or_empty(value.as_ref());
+            }
+        }
+    }
     if text.is_empty() {
         return Err(vm.throw_new(
             "java/time/DateTimeException",
@@ -7827,9 +7901,17 @@ pub(crate) const ZONE_ID: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &["java/io/Serializable"],
     ACC_PUBLIC | ACC_ABSTRACT,
-    &[field("id", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &[
+        field("id", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field(
+            "SHORT_IDS",
+            "Ljava/util/Map;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+    ],
     &ZONE_ID_METHODS,
-    None,
+    Some(zone_id_clinit),
 );
 
 // -------------------------------------------------------------------------------------------

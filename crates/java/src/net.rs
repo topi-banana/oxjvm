@@ -2060,14 +2060,292 @@ pub(crate) const URL_PERMISSION: oxjvm_vm::NativeClass = class(
     None,
 );
 
+fn proxy_type_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/net/Proxy$Type")?;
+    for (ordinal, name) in ["DIRECT", "HTTP", "SOCKS"].iter().enumerate() {
+        let instance = vm.new_instance(class)?;
+        vm.set_string_field(instance, class, "name", name)?;
+        if let Some((declaring, field)) = vm.find_field_opt(class, "ordinal", "I") {
+            vm.set_instance_int(instance, declaring, field, ordinal as i32);
+        }
+        vm.set_static_value(class, name, "Ljava/net/Proxy$Type;", Value::Ref(instance));
+    }
+    Ok(())
+}
+
+pub(crate) const PROXY_TYPE: oxjvm_vm::NativeClass = class(
+    "java/net/Proxy$Type",
+    Some("java/lang/Enum"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL | ACC_ENUM,
+    &[
+        field("name", "Ljava/lang/String;", ACC_PRIVATE | ACC_FINAL, None),
+        field("ordinal", "I", ACC_PRIVATE | ACC_FINAL, None),
+        field(
+            "DIRECT",
+            "Ljava/net/Proxy$Type;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "HTTP",
+            "Ljava/net/Proxy$Type;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "SOCKS",
+            "Ljava/net/Proxy$Type;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+    ],
+    &[
+        method("name", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
+            let this = receiver(args);
+            let text = vm
+                .read_string_field(this, vm.class_of(this), "name")
+                .unwrap_or_default();
+            object(vm.make_string(&text)?)
+        }),
+        method(
+            "toString",
+            "()Ljava/lang/String;",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let this = receiver(args);
+                let text = vm
+                    .read_string_field(this, vm.class_of(this), "name")
+                    .unwrap_or_default();
+                object(vm.make_string(&text)?)
+            },
+        ),
+        method("ordinal", "()I", ACC_PUBLIC, |vm, _, args| {
+            int(crate::lang::read_int_field(vm, receiver(args), "ordinal"))
+        }),
+        method(
+            "values",
+            "()[Ljava/net/Proxy$Type;",
+            ACC_PUBLIC | ACC_STATIC,
+            |vm, _, _| {
+                let class = vm.resolve_class("java/net/Proxy$Type")?;
+                vm.ensure_initialized(class)?;
+                let array = vm.allocate_object_array(class, 3)?;
+                for (index, name) in ["DIRECT", "HTTP", "SOCKS"].iter().enumerate() {
+                    if let Some(value) =
+                        vm.read_static_ref_if_set(class, name, "Ljava/net/Proxy$Type;")
+                    {
+                        vm.array_set_ref(array, index, value)?;
+                    }
+                }
+                object(array)
+            },
+        ),
+        method(
+            "valueOf",
+            "(Ljava/lang/String;)Ljava/net/Proxy$Type;",
+            ACC_PUBLIC | ACC_STATIC,
+            |vm, _, args| {
+                let name = vm.string_or_empty(ref_arg(args, 0));
+                let class = vm.resolve_class("java/net/Proxy$Type")?;
+                vm.ensure_initialized(class)?;
+                match vm.read_static_ref_if_set(class, &name, "Ljava/net/Proxy$Type;") {
+                    Some(value) => object(value),
+                    None => Err(vm.throw_new("java/lang/IllegalArgumentException", Some(&name))),
+                }
+            },
+        ),
+    ],
+    Some(proxy_type_clinit),
+);
+
+fn proxy_init(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let proxy_type = ref_arg(args, 1);
+    let address = ref_arg(args, 2);
+    if proxy_type.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, "type", "Ljava/net/Proxy$Type;")?;
+    vm.set_instance_ref(this, declaring, field, proxy_type);
+    let type_name = vm
+        .read_string_field(proxy_type, vm.class_of(proxy_type), "name")
+        .unwrap_or_default();
+    let address_ref = if type_name == "DIRECT" || address.is_null() {
+        ObjectRef::NULL
+    } else if let Some(text) = vm.string_value(address) {
+        if text.is_empty() {
+            ObjectRef::NULL
+        } else {
+            // A host:port pair.
+            let (host, port) = text.rsplit_once(':').unwrap_or((text.as_str(), "0"));
+            let address_class = vm.resolve_class("java/net/InetSocketAddress")?;
+            let instance = vm.new_instance(address_class)?;
+            let (d, ctor) = vm
+                .find_method(address_class, "<init>", "(Ljava/lang/String;I)V")
+                .ok_or_else(|| VmError::internal("InetSocketAddress(String,int) missing"))?;
+            let host = vm.make_string(host)?;
+            vm.invoke_method(
+                d,
+                ctor,
+                vec![
+                    Value::Ref(instance),
+                    Value::Ref(host),
+                    Value::Int(port.parse().unwrap_or(0)),
+                ],
+            )?;
+            instance
+        }
+    } else {
+        address
+    };
+    let (declaring, field) = vm.find_field(class, "address", "Ljava/net/SocketAddress;")?;
+    vm.set_instance_ref(this, declaring, field, address_ref);
+    void()
+}
+
+fn proxy_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/net/Proxy")?;
+    let types = vm.resolve_class("java/net/Proxy$Type")?;
+    vm.ensure_initialized(types)?;
+    let direct = vm
+        .read_static_ref(types, "DIRECT", "Ljava/net/Proxy$Type;")
+        .ok_or_else(|| VmError::internal("Proxy.Type.DIRECT missing"))?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "type", "Ljava/net/Proxy$Type;")?;
+    vm.set_instance_ref(instance, declaring, field, direct);
+    vm.set_static_value(class, "NO_PROXY", "Ljava/net/Proxy;", Value::Ref(instance));
+    Ok(())
+}
+
 pub(crate) const PROXY: oxjvm_vm::NativeClass = class(
     "java/net/Proxy",
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC,
-    &[],
-    &[],
-    None,
+    &[
+        field("type", "Ljava/net/Proxy$Type;", ACC_PRIVATE, None),
+        field("address", "Ljava/net/SocketAddress;", ACC_PRIVATE, None),
+        field(
+            "NO_PROXY",
+            "Ljava/net/Proxy;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+    ],
+    &[
+        method("<init>", "()V", ACC_PRIVATE, |_, _, _| void()),
+        method(
+            "<init>",
+            "(Ljava/net/Proxy$Type;Ljava/net/SocketAddress;)V",
+            ACC_PUBLIC,
+            proxy_init,
+        ),
+        method(
+            "<init>",
+            "(Ljava/net/Proxy$Type;Ljava/lang/String;)V",
+            ACC_PUBLIC,
+            proxy_init,
+        ),
+        method(
+            "type",
+            "()Ljava/net/Proxy$Type;",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let this = receiver(args);
+                let class = vm.class_of(this);
+                object(
+                    vm.read_ref_field(this, class, "type", "Ljava/net/Proxy$Type;")
+                        .unwrap_or(ObjectRef::NULL),
+                )
+            },
+        ),
+        method(
+            "address",
+            "()Ljava/net/SocketAddress;",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let this = receiver(args);
+                let class = vm.class_of(this);
+                object(
+                    vm.read_ref_field(this, class, "address", "Ljava/net/SocketAddress;")
+                        .unwrap_or(ObjectRef::NULL),
+                )
+            },
+        ),
+        method(
+            "toString",
+            "()Ljava/lang/String;",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let this = receiver(args);
+                let class = vm.class_of(this);
+                let proxy_type = vm
+                    .read_ref_field(this, class, "type", "Ljava/net/Proxy$Type;")
+                    .unwrap_or(ObjectRef::NULL);
+                let name = vm
+                    .read_string_field(proxy_type, vm.class_of(proxy_type), "name")
+                    .unwrap_or_default();
+                let address = vm
+                    .read_ref_field(this, class, "address", "Ljava/net/SocketAddress;")
+                    .unwrap_or(ObjectRef::NULL);
+                if address.is_null() {
+                    object(vm.make_string(&name)?)
+                } else {
+                    let (c, m) =
+                        vm.resolve_virtual_method(address, "toString", "()Ljava/lang/String;")?;
+                    let text = vm.invoke_method(c, m, vec![Value::Ref(address)])?;
+                    let address_text = vm.string_or_empty(text.as_ref());
+                    object(vm.make_string(&alloc::format!("{name} @ {address_text}"))?)
+                }
+            },
+        ),
+        method(
+            "equals",
+            "(Ljava/lang/Object;)Z",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let other = ref_arg(args, 1);
+                if other.is_null() || vm.class_of(other) != vm.class_of(receiver(args)) {
+                    return boolean(false);
+                }
+                let this = receiver(args);
+                let class = vm.class_of(this);
+                let this_type = vm
+                    .read_ref_field(this, class, "type", "Ljava/net/Proxy$Type;")
+                    .unwrap_or(ObjectRef::NULL);
+                let other_type = vm
+                    .read_ref_field(other, vm.class_of(other), "type", "Ljava/net/Proxy$Type;")
+                    .unwrap_or(ObjectRef::NULL);
+                let this_address = vm
+                    .read_ref_field(this, class, "address", "Ljava/net/SocketAddress;")
+                    .unwrap_or(ObjectRef::NULL);
+                let other_address = vm
+                    .read_ref_field(
+                        other,
+                        vm.class_of(other),
+                        "address",
+                        "Ljava/net/SocketAddress;",
+                    )
+                    .unwrap_or(ObjectRef::NULL);
+                boolean(this_type == other_type && this_address == other_address)
+            },
+        ),
+        method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let address = vm
+                .read_ref_field(this, class, "address", "Ljava/net/SocketAddress;")
+                .unwrap_or(ObjectRef::NULL);
+            int(vm.heap.get(address).map_or(0, |object| object.hash))
+        }),
+    ],
+    Some(proxy_clinit),
 );
 
 pub(crate) const INET6_ADDRESS: oxjvm_vm::NativeClass = class(

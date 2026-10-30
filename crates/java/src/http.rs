@@ -169,13 +169,19 @@ pub(crate) const HTTP_CLIENT_VERSION: oxjvm_vm::NativeClass = class(
             ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
             None,
         ),
+        field(
+            "HTTP_3",
+            "Ljava/net/http/HttpClient$Version;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
     ],
     &ENUM_STRING_METHODS,
     Some(|vm| {
         enum_strings_clinit(
             vm,
             "java/net/http/HttpClient$Version",
-            &["HTTP_1_1", "HTTP_2"],
+            &["HTTP_1_1", "HTTP_2", "HTTP_3"],
         )
     }),
 );
