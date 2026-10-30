@@ -10073,7 +10073,7 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     era * 146_097 + day_of_era - 719_468
 }
 
-const DATE_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const DATE_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
     method("<init>", "()V", ACC_PUBLIC, date_init),
     method("<init>", "(J)V", ACC_PUBLIC, date_init),
     method("<init>", "(III)V", ACC_PUBLIC, date_init_fields),
@@ -10146,7 +10146,65 @@ const DATE_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
             object(vm.make_string(&date_to_string(time))?)
         },
     ),
+    method("getSeconds", "()I", ACC_PUBLIC, |vm, _, args| {
+        let time = crate::lang::read_long_field(vm, receiver(args), "time");
+        int(time.div_euclid(1000).rem_euclid(60) as i32)
+    }),
+    method("setSeconds", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let time = crate::lang::read_long_field(vm, receiver(args), "time");
+        let current = time.div_euclid(1000).rem_euclid(60) as i32;
+        let delta = i64::from(args[1].as_int() - current);
+        crate::lang::write_long_field(vm, receiver(args), "time", time + delta * 1000);
+        void()
+    }),
+    method("getMinutes", "()I", ACC_PUBLIC, |vm, _, args| {
+        let time = crate::lang::read_long_field(vm, receiver(args), "time");
+        int(time.div_euclid(60_000).rem_euclid(60) as i32)
+    }),
+    method("setMinutes", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let time = crate::lang::read_long_field(vm, receiver(args), "time");
+        let current = time.div_euclid(60_000).rem_euclid(60) as i32;
+        let delta = i64::from(args[1].as_int() - current);
+        crate::lang::write_long_field(vm, receiver(args), "time", time + delta * 60_000);
+        void()
+    }),
+    method("getHours", "()I", ACC_PUBLIC, |vm, _, args| {
+        let time = crate::lang::read_long_field(vm, receiver(args), "time");
+        int(time.div_euclid(3_600_000).rem_euclid(24) as i32)
+    }),
+    method("setHours", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let time = crate::lang::read_long_field(vm, receiver(args), "time");
+        let current = time.div_euclid(3_600_000).rem_euclid(24) as i32;
+        let delta = i64::from(args[1].as_int() - current);
+        crate::lang::write_long_field(vm, receiver(args), "time", time + delta * 3_600_000);
+        void()
+    }),
+    method("getDate", "()I", ACC_PUBLIC, |vm, _, args| {
+        let time = crate::lang::read_long_field(vm, receiver(args), "time");
+        int(date_civil(time.div_euclid(86_400_000)).2)
+    }),
+    method("setDate", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let time = crate::lang::read_long_field(vm, receiver(args), "time");
+        let current = date_civil(time.div_euclid(86_400_000)).2;
+        let delta = i64::from(args[1].as_int() - current);
+        crate::lang::write_long_field(vm, receiver(args), "time", time + delta * 86_400_000);
+        void()
+    }),
 ];
+
+/// The (year, month, day) of a day number since 1970-01-01 (UTC).
+fn date_civil(days: i64) -> (i32, i32, i32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = mp + if mp < 10 { 3 } else { -9 };
+    (y as i32 + i32::from(m <= 2), m as i32, d as i32)
+}
 
 /// `java.util.Date`: a millisecond instant with UTC formatting.
 pub(crate) const DATE: oxjvm_vm::NativeClass = class(

@@ -24,6 +24,7 @@ pub(crate) mod channels;
 pub(crate) mod charset;
 pub(crate) mod classfile_api;
 pub(crate) mod concurrent;
+pub(crate) mod datatype;
 pub(crate) mod encoding;
 pub(crate) mod executor;
 pub(crate) mod file;
@@ -142,7 +143,7 @@ pub fn is_non_writable_property(key: &str) -> bool {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 834] = [
+static REGISTRY: [NativeClass; 844] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -666,6 +667,16 @@ static REGISTRY: [NativeClass; 834] = [
     tools::JAVADOC_TASK_IMPL,
     tools::JAVA_FILE_MANAGER_LOCATION,
     tools::DOCUMENTATION_TOOL_LOCATION,
+    datatype::QNAME,
+    datatype::DATATYPE_CONSTANTS,
+    datatype::DATATYPE_FIELD,
+    datatype::DATATYPE_CONFIGURATION_EXCEPTION,
+    datatype::DATATYPE_FACTORY,
+    datatype::DATATYPE_FACTORY_IMPL,
+    datatype::DURATION,
+    datatype::DURATION_NEW_INSTANCE,
+    datatype::XML_GREGORIAN_CALENDAR,
+    datatype::CALENDAR_NEW_INSTANCE,
     annotation::ELEMENT_TYPE,
     annotation::RETENTION_POLICY,
     annotation::RETENTION,

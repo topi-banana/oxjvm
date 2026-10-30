@@ -3781,7 +3781,11 @@ fn builder_append_sequence_range(
     object(receiver(args))
 }
 
-fn builder_append_text(vm: &mut Vm<'_>, this: ObjectRef, text: &str) -> Result<Value, VmError> {
+pub(crate) fn builder_append_text(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    text: &str,
+) -> Result<Value, VmError> {
     let (mut units, count) = builder_state(vm, this);
     if units.len() < count + text.len() {
         units.resize(count + text.len(), 0);

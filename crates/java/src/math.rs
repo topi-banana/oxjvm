@@ -1063,7 +1063,11 @@ fn big_text(vm: &Vm<'_>, this: ObjectRef) -> String {
 }
 
 /// Create an instance of a big-number class carrying `text`.
-fn create_big_number(vm: &mut Vm<'_>, class_name: &str, text: &str) -> Result<Value, VmError> {
+pub(crate) fn create_big_number(
+    vm: &mut Vm<'_>,
+    class_name: &str,
+    text: &str,
+) -> Result<Value, VmError> {
     let class = vm.resolve_class(class_name)?;
     let instance = vm.new_instance(class)?;
     let string = vm.make_string(text)?;
@@ -1702,7 +1706,7 @@ fn big_decimal_binary(
     )
 }
 
-const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
+const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -1842,6 +1846,27 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
             object(vm.make_string(&text)?)
         },
     ),
+    method(
+        "toBigInteger",
+        "()Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = big_text(vm, receiver(args));
+            let integer = text.split('.').next().unwrap_or("0");
+            create_big_number(vm, "java/math/BigInteger", integer)
+        },
+    ),
+    method("signum", "()I", ACC_PUBLIC, |vm, _, args| {
+        let text = big_text(vm, receiver(args));
+        let value = text.parse::<f64>().unwrap_or(0.0);
+        int(if value < 0.0 {
+            -1
+        } else if value > 0.0 {
+            1
+        } else {
+            0
+        })
+    }),
     method(
         "scaleByPowerOfTen",
         "(I)Ljava/math/BigDecimal;",
