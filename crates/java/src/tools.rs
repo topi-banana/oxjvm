@@ -1235,7 +1235,7 @@ pub(crate) const JAVA_FILE_MANAGER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const STANDARD_JAVA_FILE_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+const STANDARD_JAVA_FILE_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method(
         "setLocation",
         "(Ljavax/tools/JavaFileManager$Location;Ljava/lang/Iterable;)V",
@@ -1265,6 +1265,55 @@ const STANDARD_JAVA_FILE_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         "()V",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getJavaFileObjectsFromPaths",
+        "(Ljava/util/Collection;)Ljava/lang/Iterable;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let paths = crate::util::collection_elements(vm, ref_arg(args, 1))?;
+            let list = new_array_list(vm)?;
+            for path in paths {
+                let (class, to_file) =
+                    vm.resolve_virtual_method(path, "toFile", "()Ljava/io/File;")?;
+                let file = vm
+                    .invoke_method(class, to_file, vec![Value::Ref(path)])?
+                    .as_ref();
+                let sfo = simple_java_file_object(vm, file)?;
+                list_add_value(vm, list, sfo)?;
+            }
+            object(list)
+        },
+    ),
+    method(
+        "getJavaFileObjectsFromStrings",
+        "(Ljava/lang/Iterable;)Ljava/lang/Iterable;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let strings = crate::util::collection_elements(vm, ref_arg(args, 1))?;
+            let list = new_array_list(vm)?;
+            for item in strings {
+                let text = vm.string_or_empty(item);
+                let file = crate::file::new_file(vm, &text)?.as_ref();
+                let sfo = simple_java_file_object(vm, file)?;
+                list_add_value(vm, list, sfo)?;
+            }
+            object(list)
+        },
+    ),
+    method(
+        "getJavaFileObjectsFromFiles",
+        "(Ljava/lang/Iterable;)Ljava/lang/Iterable;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let files = crate::util::collection_elements(vm, ref_arg(args, 1))?;
+            let list = new_array_list(vm)?;
+            for file in files {
+                let sfo = simple_java_file_object(vm, file)?;
+                list_add_value(vm, list, sfo)?;
+            }
+            object(list)
+        },
     ),
 ];
 
