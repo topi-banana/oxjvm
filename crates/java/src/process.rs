@@ -102,17 +102,78 @@ pub(crate) fn runtime_exec(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmE
             command.push(word.to_string());
         }
     }
-    if let Some(array) = args.get(2).map(|value| value.as_ref()) {
-        if !array.is_null() {
-            for element in crate::util::array_list_elements(vm, array) {
-                command.push(vm.string_or_empty(element));
-            }
+    let Some(program) = command.first().cloned() else {
+        return Err(vm.throw_new("java/io/IOException", Some("no command")));
+    };
+    let process = spawn(vm, &program, &command[1..], None)?;
+    object(process)
+}
+
+/// `Runtime.exec(String, String[], File)`: the array is the environment, the last argument the
+/// working directory.
+pub(crate) fn runtime_exec_dir(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let directory = directory_argument(vm, args.get(3));
+    runtime_exec_with(vm, args, directory.as_deref())
+}
+
+/// `Runtime.exec(String[], String[], File)`.
+pub(crate) fn runtime_exec_array_dir(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let directory = directory_argument(vm, args.get(3));
+    runtime_exec_array_with(vm, args, directory.as_deref())
+}
+
+/// `Runtime.exec(String[], String[])`: the environment array is ignored.
+pub(crate) fn runtime_exec_array_env(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    runtime_exec_array_with(vm, args, None)
+}
+
+fn directory_argument(vm: &mut Vm<'_>, value: Option<&Value>) -> Option<String> {
+    let file = value?.as_ref();
+    if file.is_null() {
+        None
+    } else {
+        Some(crate::file::file_path(vm, file))
+    }
+}
+
+fn runtime_exec_with(
+    vm: &mut Vm<'_>,
+    args: &[Value],
+    directory: Option<&str>,
+) -> Result<Value, VmError> {
+    let mut command = Vec::new();
+    let first = args[1].as_ref();
+    if !first.is_null() {
+        let text = vm.string_or_empty(first);
+        for word in text.split_whitespace() {
+            command.push(word.to_string());
         }
     }
     let Some(program) = command.first().cloned() else {
         return Err(vm.throw_new("java/io/IOException", Some("no command")));
     };
-    let process = spawn(vm, &program, &command[1..], None)?;
+    let process = spawn(vm, &program, &command[1..], directory)?;
+    object(process)
+}
+
+fn runtime_exec_array_with(
+    vm: &mut Vm<'_>,
+    args: &[Value],
+    directory: Option<&str>,
+) -> Result<Value, VmError> {
+    let array = args[1].as_ref();
+    let mut command = Vec::new();
+    if !array.is_null() {
+        let length = vm.array_length(array)?;
+        for index in 0..length {
+            let element = vm.array_get(array, index as i32)?.as_ref();
+            command.push(vm.string_or_empty(element));
+        }
+    }
+    let Some(program) = command.first().cloned() else {
+        return Err(vm.throw_new("java/io/IOException", Some("no command")));
+    };
+    let process = spawn(vm, &program, &command[1..], directory)?;
     object(process)
 }
 

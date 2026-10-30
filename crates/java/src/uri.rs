@@ -16,6 +16,25 @@ fn uri_text(vm: &Vm<'_>, this: ObjectRef) -> String {
         .unwrap_or_default()
 }
 
+/// The authority part (`//...` up to the path), without the leading slashes.
+fn uri_authority(text: &str) -> Option<&str> {
+    let rest = text.find(':').map(|index| &text[index + 1..])?;
+    let rest = rest.strip_prefix("//")?;
+    Some(rest.split(['/', '?', '#']).next().unwrap_or(rest))
+}
+
+/// The part after `marker` and before `end` (or the string end).
+fn uri_part(text: &str, marker: char, end: char) -> Option<String> {
+    let start = text.find(marker)? + marker.len_utf8();
+    let rest = &text[start..];
+    let value = if end == '\0' {
+        rest
+    } else {
+        rest.split(end).next().unwrap_or(rest)
+    };
+    Some(String::from(value))
+}
+
 fn uri_scheme(text: &str) -> Option<String> {
     let index = text.find(':')?;
     Some(text[..index].into())
@@ -54,8 +73,56 @@ fn uri_init(
     void()
 }
 
-const URI_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+fn uri_init_parts(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let scheme = string_arg(vm, args[1])?;
+    let user_info = string_arg(vm, args[2])?;
+    let host = string_arg(vm, args[3])?;
+    let port = args[4].as_int();
+    let path = string_arg(vm, args[5])?;
+    let query = string_arg(vm, args[6])?;
+    let fragment = string_arg(vm, args[7])?;
+    let mut text = String::new();
+    if !scheme.is_empty() {
+        text.push_str(&scheme);
+        text.push(':');
+    }
+    if !host.is_empty() {
+        text.push_str("//");
+        if !user_info.is_empty() {
+            text.push_str(&user_info);
+            text.push('@');
+        }
+        text.push_str(&host);
+        if port != -1 {
+            text.push_str(&alloc::format!(":{port}"));
+        }
+    }
+    text.push_str(&path);
+    if !query.is_empty() {
+        text.push('?');
+        text.push_str(&query);
+    }
+    if !fragment.is_empty() {
+        text.push('#');
+        text.push_str(&fragment);
+    }
+    let this = receiver(args);
+    vm.set_string_field(this, vm.class_of(this), "string", &text)?;
+    void()
+}
+
+const URI_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
     method("<init>", "(Ljava/lang/String;)V", ACC_PUBLIC, uri_init),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        uri_init_parts,
+    ),
     method(
         "create",
         "(Ljava/lang/String;)Ljava/net/URI;",
@@ -127,6 +194,119 @@ const URI_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method("isAbsolute", "()Z", ACC_PUBLIC, |vm, _, args| {
         let text = uri_text(vm, receiver(args));
         boolean(uri_scheme(&text).is_some())
+    }),
+    method(
+        "getHost",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = uri_text(vm, receiver(args));
+            match uri_authority(&text)
+                .map(|authority| authority.rsplit('@').next().unwrap_or(authority))
+            {
+                Some(host) => {
+                    let host = host.split(':').next().unwrap_or(host);
+                    object(vm.intern(host)?)
+                }
+                None => object(ObjectRef::NULL),
+            }
+        },
+    ),
+    method("getPort", "()I", ACC_PUBLIC, |vm, _, args| {
+        let text = uri_text(vm, receiver(args));
+        let Some(authority) = uri_authority(&text) else {
+            return int(-1);
+        };
+        let host = authority.rsplit('@').next().unwrap_or(authority);
+        match host.rsplit_once(':') {
+            Some((_, port)) if port.bytes().all(|byte| byte.is_ascii_digit()) => {
+                int(port.parse().unwrap_or(-1))
+            }
+            _ => int(-1),
+        }
+    }),
+    method(
+        "getUserInfo",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = uri_text(vm, receiver(args));
+            match uri_authority(&text).and_then(|authority| authority.split_once('@')) {
+                Some((user, _)) => object(vm.intern(user)?),
+                None => object(ObjectRef::NULL),
+            }
+        },
+    ),
+    method(
+        "getAuthority",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = uri_text(vm, receiver(args));
+            match uri_authority(&text) {
+                Some(authority) => object(vm.intern(authority)?),
+                None => object(ObjectRef::NULL),
+            }
+        },
+    ),
+    method(
+        "getQuery",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = uri_text(vm, receiver(args));
+            match uri_part(&text, '?', '#') {
+                Some(query) => object(vm.intern(&percent_decode(&query))?),
+                None => object(ObjectRef::NULL),
+            }
+        },
+    ),
+    method(
+        "getFragment",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = uri_text(vm, receiver(args));
+            match uri_part(&text, '#', '\0') {
+                Some(fragment) => object(vm.intern(&percent_decode(&fragment))?),
+                None => object(ObjectRef::NULL),
+            }
+        },
+    ),
+    method(
+        "getSchemeSpecificPart",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = uri_text(vm, receiver(args));
+            let rest = match text.find(':') {
+                Some(index) => &text[index + 1..],
+                None => text.as_str(),
+            };
+            let rest = rest.split('#').next().unwrap_or(rest);
+            object(vm.intern(rest)?)
+        },
+    ),
+    method(
+        "getRawSchemeSpecificPart",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = uri_text(vm, receiver(args));
+            let rest = match text.find(':') {
+                Some(index) => &text[index + 1..],
+                None => text.as_str(),
+            };
+            let rest = rest.split('#').next().unwrap_or(rest);
+            object(vm.intern(rest)?)
+        },
+    ),
+    method("normalize", "()Ljava/net/URI;", ACC_PUBLIC, |_, _, args| {
+        object(receiver(args))
+    }),
+    method("isOpaque", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let text = uri_text(vm, receiver(args));
+        boolean(uri_authority(&text).is_none())
     }),
     method(
         "equals",

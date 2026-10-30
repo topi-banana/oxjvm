@@ -95,6 +95,9 @@ const PATH_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let path = path_string(vm, receiver(args));
+            if path.is_empty() {
+                return new_path(vm, "");
+            }
             let segments = path_segments(&path);
             match segments.last() {
                 Some(name) => new_path(vm, name),
@@ -129,6 +132,9 @@ const PATH_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
     ),
     method("getNameCount", "()I", ACC_PUBLIC, |vm, _, args| {
         let path = path_string(vm, receiver(args));
+        if path.is_empty() {
+            return int(1);
+        }
         int(path_segments(&path).len() as i32)
     }),
     method(
@@ -137,6 +143,9 @@ const PATH_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let path = path_string(vm, receiver(args));
+            if path.is_empty() && args[1].as_int() == 0 {
+                return new_path(vm, "");
+            }
             let segments = path_segments(&path);
             let index = crate::int_arg(args, 1);
             if index < 0 || index as usize >= segments.len() {
@@ -667,7 +676,7 @@ pub(crate) fn new_path(vm: &mut Vm<'_>, path: &str) -> Result<Value, VmError> {
 // Files
 // -------------------------------------------------------------------------------------------
 
-const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
+const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 57] = [
     method(
         "createDirectories",
         "(Ljava/nio/file/Path;[Ljava/nio/file/attribute/FileAttribute;)Ljava/nio/file/Path;",
@@ -1350,6 +1359,64 @@ const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
         |vm, _, _| object(new_file_store(vm)?),
     ),
     method(
+        "walkFileTree",
+        "(Ljava/nio/file/Path;Ljava/nio/file/FileVisitor;)Ljava/nio/file/Path;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let start = ref_arg(args, 0);
+            let path = path_string(vm, start);
+            let visitor = ref_arg(args, 1);
+            walk_file_tree(vm, &path, start, visitor, 0, usize::MAX)?;
+            object(start)
+        },
+    ),
+    method(
+        "walkFileTree",
+        "(Ljava/nio/file/Path;Ljava/nio/file/FileVisitor;[Ljava/nio/file/FileVisitOption;)Ljava/nio/file/Path;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let start = ref_arg(args, 0);
+            let path = path_string(vm, start);
+            let visitor = ref_arg(args, 1);
+            walk_file_tree(vm, &path, start, visitor, 0, usize::MAX)?;
+            object(start)
+        },
+    ),
+    method(
+        "walkFileTree",
+        "(Ljava/nio/file/Path;Ljava/util/Set;ILjava/nio/file/FileVisitor;)Ljava/nio/file/Path;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let start = ref_arg(args, 0);
+            if start.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let path = path_string(vm, start);
+            let options = ref_arg(args, 1);
+            if options.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            for option in crate::util::collection_elements(vm, options)? {
+                if option.is_null() {
+                    return Err(vm.throw_new("java/lang/NullPointerException", None));
+                }
+            }
+            let visitor = ref_arg(args, 3);
+            if visitor.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let max_depth = args[2].as_int();
+            if max_depth < 0 {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("maxDepth must not be negative"),
+                ));
+            }
+            walk_file_tree(vm, &path, start, visitor, 0, max_depth as usize)?;
+            object(start)
+        },
+    ),
+    method(
         "newDirectoryStream",
         "(Ljava/nio/file/Path;)Ljava/nio/file/DirectoryStream;",
         ACC_PUBLIC | ACC_STATIC,
@@ -1657,6 +1724,103 @@ fn walk_paths(
         }
     }
     Ok(())
+}
+
+/// Depth-first `Files.walkFileTree`.
+///
+/// Returns 0 to continue, 1 to terminate the whole walk, or 3 to skip the parent directory's
+/// remaining siblings (`FileVisitResult.SKIP_SIBLINGS`).
+fn walk_file_tree(
+    vm: &mut Vm<'_>,
+    path: &str,
+    path_ref: ObjectRef,
+    visitor: ObjectRef,
+    depth: usize,
+    max_depth: usize,
+) -> Result<i32, VmError> {
+    if path_ref.is_null() || visitor.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let attributes = make_basic_attributes(vm, path)?;
+    let is_directory = fs_is_dir(vm, path);
+    if is_directory && depth >= max_depth {
+        return Ok(0);
+    }
+    if !is_directory {
+        let result = visit_call(
+            vm,
+            visitor,
+            "visitFile",
+            "(Ljava/lang/Object;Ljava/nio/file/attribute/BasicFileAttributes;)Ljava/nio/file/FileVisitResult;",
+            &[Value::Ref(path_ref), Value::Ref(attributes)],
+        )?;
+        return Ok(if visit_code(vm, result) == 1 { 1 } else { 0 });
+    }
+    let pre = visit_call(
+        vm,
+        visitor,
+        "preVisitDirectory",
+        "(Ljava/lang/Object;Ljava/nio/file/attribute/BasicFileAttributes;)Ljava/nio/file/FileVisitResult;",
+        &[Value::Ref(path_ref), Value::Ref(attributes)],
+    )?;
+    let code = visit_code(vm, pre);
+    if code == 1 {
+        return Ok(1);
+    }
+    if code >= 2 {
+        return Ok(if code == 3 { 3 } else { 0 });
+    }
+    {
+        if depth < max_depth {
+            let mut entries = fs_list(vm, path).unwrap_or_default();
+            entries.sort();
+            for entry in entries {
+                let child = join_path(path, &entry);
+                let child_ref = new_path(vm, &child)?.as_ref();
+                let child_code =
+                    walk_file_tree(vm, &child, child_ref, visitor, depth + 1, max_depth)?;
+                if child_code == 1 {
+                    return Ok(1);
+                }
+                if child_code == 3 {
+                    break;
+                }
+            }
+        }
+        let post = visit_call(
+            vm,
+            visitor,
+            "postVisitDirectory",
+            "(Ljava/lang/Object;Ljava/io/IOException;)Ljava/nio/file/FileVisitResult;",
+            &[Value::Ref(path_ref), Value::Ref(ObjectRef::NULL)],
+        )?;
+        let post_code = visit_code(vm, post);
+        if post_code == 1 {
+            return Ok(1);
+        }
+        if post_code == 3 {
+            return Ok(3);
+        }
+    }
+    Ok(0)
+}
+
+fn visit_call(
+    vm: &mut Vm<'_>,
+    visitor: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let (class, method) = vm.resolve_virtual_method(visitor, name, descriptor)?;
+    let mut call = alloc::vec![Value::Ref(visitor)];
+    call.extend_from_slice(args);
+    vm.invoke_method(class, method, call)
+}
+
+/// The ordinal of a `FileVisitResult` (CONTINUE=0, TERMINATE=1, SKIP_SUBTREE=2, SKIP_SIBLINGS=3).
+fn visit_code(vm: &Vm<'_>, result: Value) -> i32 {
+    crate::lang::read_int_field(vm, result.as_ref(), "ordinal")
 }
 
 fn paths_to_stream(vm: &mut Vm<'_>, paths: &[String]) -> Result<Value, VmError> {
@@ -2440,24 +2604,23 @@ const SIMPLE_FILE_VISITOR_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         "preVisitDirectory",
         "(Ljava/lang/Object;Ljava/nio/file/attribute/BasicFileAttributes;)Ljava/nio/file/FileVisitResult;",
         ACC_PUBLIC,
-        |vm, _, _| file_visit_result_continue(vm),
+        |vm, _, args| simple_file_visitor_continue(vm, args),
     ),
     method(
         "visitFile",
         "(Ljava/lang/Object;Ljava/nio/file/attribute/BasicFileAttributes;)Ljava/nio/file/FileVisitResult;",
         ACC_PUBLIC,
-        |vm, _, _| file_visit_result_continue(vm),
+        |vm, _, args| simple_file_visitor_continue(vm, args),
     ),
     method(
         "visitFileFailed",
         "(Ljava/lang/Object;Ljava/io/IOException;)Ljava/nio/file/FileVisitResult;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let error = ref_arg(args, 2);
-            if error.is_null() {
-                return file_visit_result_continue(vm);
+            if args[1].as_ref().is_null() || args[2].as_ref().is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
-            Err(VmError::Thrown(error))
+            Err(VmError::Thrown(ref_arg(args, 2)))
         },
     ),
     method(
@@ -2465,6 +2628,9 @@ const SIMPLE_FILE_VISITOR_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         "(Ljava/lang/Object;Ljava/io/IOException;)Ljava/nio/file/FileVisitResult;",
         ACC_PUBLIC,
         |vm, _, args| {
+            if args[1].as_ref().is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let error = ref_arg(args, 2);
             if error.is_null() {
                 return file_visit_result_continue(vm);
@@ -2473,6 +2639,14 @@ const SIMPLE_FILE_VISITOR_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         },
     ),
 ];
+
+/// `SimpleFileVisitor`'s default: reject null arguments, then continue.
+fn simple_file_visitor_continue(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    if args[1].as_ref().is_null() || args[2].as_ref().is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    file_visit_result_continue(vm)
+}
 
 pub(crate) const SIMPLE_FILE_VISITOR: oxjvm_vm::NativeClass = class(
     "java/nio/file/SimpleFileVisitor",

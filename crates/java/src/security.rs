@@ -883,7 +883,7 @@ fn key_store_instance(vm: &mut Vm<'_>, store_type: &str) -> Result<ObjectRef, Vm
     Ok(store)
 }
 
-const KEY_STORE_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
+const KEY_STORE_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
     method(
         "getInstance",
         "(Ljava/lang/String;)Ljava/security/KeyStore;",
@@ -931,6 +931,18 @@ const KEY_STORE_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
             object(key_store_instance(vm, &vm.string_or_empty(name))?)
+        },
+    ),
+    method(
+        "getInstance",
+        "(Ljava/io/File;[C)Ljava/security/KeyStore;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let store = key_store_instance(vm, "PKCS12")?;
+            object(store)
         },
     ),
     method(

@@ -1455,13 +1455,30 @@ pub(crate) const CLASS: oxjvm_vm::NativeClass = class(
 // String
 // -------------------------------------------------------------------------------------------
 
-const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
+const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 55] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "<init>",
         "(Ljava/lang/String;)V",
         ACC_PUBLIC,
         string_init_string,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/StringBuffer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let buffer = ref_arg(args, 1);
+            let (class, method) =
+                vm.resolve_virtual_method(buffer, "toString", "()Ljava/lang/String;")?;
+            let text = vm
+                .invoke_method(class, method, vec![Value::Ref(buffer)])?
+                .as_ref();
+            let units = vm.string_utf16(text).unwrap_or_default();
+            let this = receiver(args);
+            write_string_payload(vm, this, units.to_vec())?;
+            void()
+        },
     ),
     method("<init>", "([C)V", ACC_PUBLIC, string_init_chars),
     method("<init>", "([CII)V", ACC_PUBLIC, string_init_chars_range),
@@ -1829,7 +1846,7 @@ fn string_init_string(
         .string_utf16(other)
         .map(<[u16]>::to_vec)
         .unwrap_or_default();
-    write_string_payload(vm, this, units)?;
+    write_string_payload(vm, this, units.to_vec())?;
     void()
 }
 
@@ -4598,7 +4615,7 @@ pub(crate) const SYSTEM: oxjvm_vm::NativeClass = class(
     Some(system_clinit),
 );
 
-const RUNTIME_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+const RUNTIME_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method(
         "exec",
         "(Ljava/lang/String;)Ljava/lang/Process;",
@@ -4616,6 +4633,24 @@ const RUNTIME_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
         "(Ljava/lang/String;[Ljava/lang/String;)Ljava/lang/Process;",
         ACC_PUBLIC,
         |vm, _, args| crate::process::runtime_exec(vm, args),
+    ),
+    method(
+        "exec",
+        "([Ljava/lang/String;[Ljava/lang/String;)Ljava/lang/Process;",
+        ACC_PUBLIC,
+        |vm, _, args| crate::process::runtime_exec_array_env(vm, args),
+    ),
+    method(
+        "exec",
+        "(Ljava/lang/String;[Ljava/lang/String;Ljava/io/File;)Ljava/lang/Process;",
+        ACC_PUBLIC,
+        |vm, _, args| crate::process::runtime_exec_dir(vm, args),
+    ),
+    method(
+        "exec",
+        "([Ljava/lang/String;[Ljava/lang/String;Ljava/io/File;)Ljava/lang/Process;",
+        ACC_PUBLIC,
+        |vm, _, args| crate::process::runtime_exec_array_dir(vm, args),
     ),
     method(
         "getRuntime",
@@ -7639,13 +7674,46 @@ pub(crate) const VALUE_LAYOUT: oxjvm_vm::NativeClass = class(
 // RandomGenerator (shell)
 // -------------------------------------------------------------------------------------------
 
+const RANDOM_GENERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method("nextInt", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let (class, method) = vm.resolve_virtual_method(this, "nextInt", "()I")?;
+        vm.invoke_method(class, method, vec![Value::Ref(this)])
+    }),
+    method("nextInt", "(I)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let (class, method) = vm.resolve_virtual_method(this, "nextInt", "(I)I")?;
+        vm.invoke_method(class, method, vec![Value::Ref(this), args[1]])
+    }),
+    method("nextInt", "(II)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let (class, method) = vm.resolve_virtual_method(this, "nextInt", "(II)I")?;
+        vm.invoke_method(class, method, vec![Value::Ref(this), args[1], args[2]])
+    }),
+    method("nextLong", "()J", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let (class, method) = vm.resolve_virtual_method(this, "nextLong", "()J")?;
+        vm.invoke_method(class, method, vec![Value::Ref(this)])
+    }),
+    method("nextDouble", "()D", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let (class, method) = vm.resolve_virtual_method(this, "nextDouble", "()D")?;
+        vm.invoke_method(class, method, vec![Value::Ref(this)])
+    }),
+    method("nextBoolean", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let (class, method) = vm.resolve_virtual_method(this, "nextBoolean", "()Z")?;
+        vm.invoke_method(class, method, vec![Value::Ref(this)])
+    }),
+];
+
 pub(crate) const RANDOM_GENERATOR: oxjvm_vm::NativeClass = class(
     "java/util/random/RandomGenerator",
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_INTERFACE,
     &[],
-    &[],
+    &RANDOM_GENERATOR_METHODS,
     None,
 );
 
@@ -7653,13 +7721,114 @@ pub(crate) const RANDOM_GENERATOR: oxjvm_vm::NativeClass = class(
 // ZoneId (shell)
 // -------------------------------------------------------------------------------------------
 
+const ZONE_ID_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+    method(
+        "of",
+        "(Ljava/lang/String;)Ljava/time/ZoneId;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| zone_id_new(vm, args),
+    ),
+    method(
+        "of",
+        "(Ljava/lang/String;Ljava/util/Map;)Ljava/time/ZoneId;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| zone_id_new(vm, args),
+    ),
+    method(
+        "systemDefault",
+        "()Ljava/time/ZoneId;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let id = system_property(vm, "user.timezone")
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| String::from("UTC"));
+            zone_id_with(vm, &id)
+        },
+    ),
+    method(
+        "getId",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = vm
+                .read_string_field(this, vm.class_of(this), "id")
+                .unwrap_or_default();
+            object(vm.intern(&text)?)
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = vm
+                .read_string_field(this, vm.class_of(this), "id")
+                .unwrap_or_default();
+            object(vm.intern(&text)?)
+        },
+    ),
+    method(
+        "normalized",
+        "()Ljava/time/ZoneId;",
+        ACC_PUBLIC,
+        |_, _, args| object(receiver(args)),
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = ref_arg(args, 1);
+            if other.is_null() || vm.class_of(other) != vm.class_of(receiver(args)) {
+                return boolean(false);
+            }
+            let this = receiver(args);
+            boolean(
+                vm.read_string_field(this, vm.class_of(this), "id")
+                    == vm.read_string_field(other, vm.class_of(other), "id"),
+            )
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let text = vm
+            .read_string_field(this, vm.class_of(this), "id")
+            .unwrap_or_default();
+        let mut hash = 0i32;
+        for unit in text.encode_utf16() {
+            hash = hash.wrapping_mul(31).wrapping_add(i32::from(unit));
+        }
+        int(hash)
+    }),
+];
+
+fn zone_id_new(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let text = string_arg(vm, args[0])?;
+    if text.is_empty() {
+        return Err(vm.throw_new(
+            "java/time/DateTimeException",
+            Some("Zone ID must not be empty"),
+        ));
+    }
+    zone_id_with(vm, &text)
+}
+
+fn zone_id_with(vm: &mut Vm<'_>, text: &str) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/time/ZoneId")?;
+    let instance = vm.new_instance(class)?;
+    vm.set_string_field(instance, class, "id", text)?;
+    object(instance)
+}
+
 pub(crate) const ZONE_ID: oxjvm_vm::NativeClass = class(
     "java/time/ZoneId",
     Some("java/lang/Object"),
     &["java/io/Serializable"],
     ACC_PUBLIC | ACC_ABSTRACT,
-    &[],
-    &[],
+    &[field("id", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &ZONE_ID_METHODS,
     None,
 );
 

@@ -1376,9 +1376,27 @@ pub(crate) const FORWARDING_JAVA_FILE_MANAGER: oxjvm_vm::NativeClass = class(
         ACC_PROTECTED,
         None,
     )],
-    &[],
+    &FORWARDING_JAVA_FILE_MANAGER_METHODS,
     None,
 );
+
+const FORWARDING_JAVA_FILE_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method("<init>", "()V", ACC_PROTECTED, |_, _, _| void()),
+    method(
+        "<init>",
+        "(Ljavax/tools/JavaFileManager;)V",
+        ACC_PROTECTED,
+        |vm, _, args| {
+            let this = receiver(args);
+            let manager = ref_arg(args, 1);
+            let class = vm.class_of(this);
+            let (declaring, field) =
+                vm.find_field(class, "fileManager", "Ljavax/tools/JavaFileManager;")?;
+            vm.set_instance_ref(this, declaring, field, manager);
+            void()
+        },
+    ),
+];
 
 pub(crate) const FORWARDING_JAVA_FILE_OBJECT: oxjvm_vm::NativeClass = class(
     "javax/tools/ForwardingJavaFileObject",
@@ -1581,7 +1599,20 @@ fn set_task_field(
     Ok(())
 }
 
-const JAVAC_TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const JAVAC_TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+    method(
+        "getStandardFileManager",
+        "(Ljavax/tools/DiagnosticListener;Ljava/util/Locale;Ljava/nio/charset/Charset;)Lcom/sun/tools/javac/file/JavacFileManager;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("com/sun/tools/javac/file/JavacFileManager")?;
+            let instance = vm.new_instance(class)?;
+            if let Some((declaring, ctor)) = vm.find_method(class, "<init>", "()V") {
+                vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
+            }
+            object(instance)
+        },
+    ),
     method(
         "instance",
         "()Lcom/sun/tools/javac/api/JavacTool;",
@@ -2142,7 +2173,7 @@ pub(crate) const JAVAC_FILE_MANAGER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const JAVAC_FILE_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const JAVAC_FILE_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "setLocation",
@@ -2310,6 +2341,25 @@ const JAVAC_FILE_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
             let files = crate::util::collection_elements(vm, ref_arg(args, 1))?;
             let list = new_array_list(vm)?;
             for file in files {
+                let sfo = simple_java_file_object(vm, file)?;
+                list_add_value(vm, list, sfo)?;
+            }
+            object(list)
+        },
+    ),
+    method(
+        "getJavaFileObjectsFromPaths",
+        "(Ljava/util/Collection;)Ljava/lang/Iterable;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let paths = crate::util::collection_elements(vm, ref_arg(args, 1))?;
+            let list = new_array_list(vm)?;
+            for path in paths {
+                let (class, to_file) =
+                    vm.resolve_virtual_method(path, "toFile", "()Ljava/io/File;")?;
+                let file = vm
+                    .invoke_method(class, to_file, vec![Value::Ref(path)])?
+                    .as_ref();
                 let sfo = simple_java_file_object(vm, file)?;
                 list_add_value(vm, list, sfo)?;
             }
@@ -2918,7 +2968,22 @@ pub(crate) const OJVM_TOOL_PROVIDER: oxjvm_vm::NativeClass = class(
 
 // javadoc / javap / doclint entry points -----------------------------------
 
-const JAVADOC_MAIN_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+const JAVADOC_MAIN_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "setStreams",
+        "(Ljava/io/PrintWriter;Ljava/io/PrintWriter;)Ljdk/javadoc/internal/tool/Main;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "out", "Ljava/io/PrintWriter;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            let (declaring, field) = vm.find_field(class, "err", "Ljava/io/PrintWriter;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 2));
+            object(this)
+        },
+    ),
     method(
         "main",
         "([Ljava/lang/String;)V",
@@ -2984,7 +3049,10 @@ pub(crate) const JAVADOC_MAIN: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC,
-    &[],
+    &[
+        field("out", "Ljava/io/PrintWriter;", ACC_PRIVATE, None),
+        field("err", "Ljava/io/PrintWriter;", ACC_PRIVATE, None),
+    ],
     &JAVADOC_MAIN_METHODS,
     None,
 );
@@ -3009,24 +3077,48 @@ pub(crate) const DOCLINT_BAD_ARGS: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const JAVAP_MAIN_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
-    "main",
-    "([Ljava/lang/String;)V",
-    ACC_PUBLIC | ACC_STATIC,
-    |vm, _, args| {
-        let array = ref_arg(args, 0);
-        let mut cmd: Vec<String> = vec![String::from("javap")];
-        if !array.is_null() {
-            let length = vm.array_length(array)?;
-            for index in 0..length {
-                let element = vm.array_get(array, index as i32)?.as_ref();
-                cmd.push(vm.string_or_empty(element));
+const JAVAP_MAIN_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "main",
+        "([Ljava/lang/String;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            let mut cmd: Vec<String> = vec![String::from("javap")];
+            if !array.is_null() {
+                let length = vm.array_length(array)?;
+                for index in 0..length {
+                    let element = vm.array_get(array, index as i32)?.as_ref();
+                    cmd.push(vm.string_or_empty(element));
+                }
             }
-        }
-        let _ = vm.host.run_process(&cmd[0], &cmd[1..], None);
-        void()
-    },
-)];
+            let _ = vm.host.run_process(&cmd[0], &cmd[1..], None);
+            void()
+        },
+    ),
+    method(
+        "run",
+        "([Ljava/lang/String;Ljava/io/PrintWriter;)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            let mut cmd: Vec<String> = vec![String::from("javap")];
+            if !array.is_null() {
+                let length = vm.array_length(array)?;
+                for index in 0..length {
+                    let element = vm.array_get(array, index as i32)?.as_ref();
+                    cmd.push(vm.string_or_empty(element));
+                }
+            }
+            let status = vm
+                .host
+                .run_process(&cmd[0], &cmd[1..], None)
+                .map(|result| result.status)
+                .unwrap_or(1);
+            int(status)
+        },
+    ),
+];
 
 pub(crate) const JAVAP_MAIN: oxjvm_vm::NativeClass = class(
     "com/sun/tools/javap/Main",

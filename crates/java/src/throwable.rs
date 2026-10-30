@@ -1248,3 +1248,87 @@ exception!(
     "java/util/ServiceConfigurationError",
     "java/lang/Error"
 );
+
+/// `java.net.URISyntaxException`: a string that is not a valid URI reference.
+pub(crate) const URI_SYNTAX_EXCEPTION: oxjvm_vm::NativeClass = class(
+    "java/net/URISyntaxException",
+    Some("java/lang/Exception"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("input", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("reason", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("index", "I", ACC_PRIVATE, None),
+    ],
+    &[
+        method(
+            "<init>",
+            "(Ljava/lang/String;Ljava/lang/String;)V",
+            ACC_PUBLIC,
+            uri_syntax_init,
+        ),
+        method(
+            "<init>",
+            "(Ljava/lang/String;Ljava/lang/String;I)V",
+            ACC_PUBLIC,
+            uri_syntax_init,
+        ),
+        method(
+            "getInput",
+            "()Ljava/lang/String;",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let this = receiver(args);
+                let input = vm
+                    .read_string_field(this, vm.class_of(this), "input")
+                    .unwrap_or_default();
+                object(vm.make_string(&input)?)
+            },
+        ),
+        method("getIndex", "()I", ACC_PUBLIC, |vm, _, args| {
+            object_ignore(Ok(Value::Int(read_int_field(vm, receiver(args), "index"))))
+        }),
+        method(
+            "getReason",
+            "()Ljava/lang/String;",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let this = receiver(args);
+                let reason = vm
+                    .read_string_field(this, vm.class_of(this), "reason")
+                    .unwrap_or_default();
+                object(vm.make_string(&reason)?)
+            },
+        ),
+    ],
+    None,
+);
+
+fn object_ignore(value: Result<Value, VmError>) -> Result<Value, VmError> {
+    value
+}
+
+fn uri_syntax_init(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let reason = crate::string_arg(vm, args[1])?;
+    let input = crate::string_arg(vm, args[2])?;
+    let index = if args.len() > 3 { args[3].as_int() } else { -1 };
+    let class = vm.class_of(this);
+    vm.set_string_field(this, class, "reason", &reason)?;
+    vm.set_string_field(this, class, "input", &input)?;
+    if let Some((declaring, field)) = vm.find_field_opt(class, "index", "I") {
+        vm.set_instance_int(this, declaring, field, index);
+    }
+    let message = alloc::format!("{reason}: {input}");
+    let exception = vm.resolve_class("java/lang/Exception")?;
+    let (declaring, ctor) = vm
+        .find_method(exception, "<init>", "(Ljava/lang/String;)V")
+        .ok_or_else(|| VmError::internal("Exception(String) missing"))?;
+    let text = vm.make_string(&message)?;
+    vm.invoke_method(declaring, ctor, vec![Value::Ref(this), Value::Ref(text)])?;
+    void()
+}

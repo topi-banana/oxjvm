@@ -702,7 +702,7 @@ fn minimal_class_bytes(internal_name: &str) -> Vec<u8> {
     bytes
 }
 
-const CLASS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const CLASS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "of",
@@ -728,6 +728,18 @@ const CLASS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let bytes = read_byte_array(vm, ref_arg(args, 1))?;
+            object(parse_class_model(vm, &bytes)?)
+        },
+    ),
+    method(
+        "parse",
+        "(Ljava/nio/file/Path;)Ljava/lang/classfile/ClassModel;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let path = crate::nio::path_string(vm, ref_arg(args, 1));
+            let Some(bytes) = vm.host.filesystem().and_then(|fs| fs.read(&path)) else {
+                return Err(vm.throw_new("java/io/IOException", Some(&path)));
+            };
             object(parse_class_model(vm, &bytes)?)
         },
     ),
@@ -819,12 +831,16 @@ pub(crate) const OJVM_CLASS_FILE: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const CLASS_FILE_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const CLASS_FILE_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     abstract_method(
         "withOptions",
         "([Ljava/lang/classfile/ClassFile$Option;)Ljava/lang/classfile/ClassFile;",
     ),
     abstract_method("parse", "([B)Ljava/lang/classfile/ClassModel;"),
+    abstract_method(
+        "parse",
+        "(Ljava/nio/file/Path;)Ljava/lang/classfile/ClassModel;",
+    ),
     abstract_method(
         "build",
         "(Ljava/lang/constant/ClassDesc;Ljava/util/function/Consumer;)[B",
