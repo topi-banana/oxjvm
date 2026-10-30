@@ -352,6 +352,16 @@ impl<'a> Vm<'a> {
         };
         self.in_native += 1;
         let base = self.native_allocations.len();
+        // The caller's operand stack was popped into `args`, so these references live only on
+        // the Rust stack for the duration of the call. Root them (and everything the native
+        // allocates) so a collection can still run.
+        for argument in args {
+            if let Value::Ref(reference) = argument {
+                if !reference.is_null() {
+                    self.native_allocations.push(*reference);
+                }
+            }
+        }
         let result = function(self, crate::class::NativeContext { class, method }, args);
         self.native_allocations.truncate(base);
         self.in_native -= 1;
