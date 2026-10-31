@@ -16,3 +16,10 @@ IZ = "IZ"
 # `isWriteable()` and a `writeable` field); not a misspelling of "writable".
 writeable = "writeable"
 Writeable = "Writeable"
+# `Pn` is the ISO 8601 duration designator that starts an XSD `duration` literal (`PnYnMnDTnHnMnS`);
+# not a misspelling of "on".
+Pn = "Pn"
+# `ECT` and `IST` are the tz database "short IDs" (`java.util.TimeZone`), mapped by the JDK to
+# `Europe/Paris` and `Asia/Kolkata`; not misspellings of "etc"/"is".
+ECT = "ECT"
+IST = "IST"
