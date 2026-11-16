@@ -1655,7 +1655,7 @@ macro_rules! array_hash_code {
     };
 }
 
-const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 100] = [
+const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 110] = [
     method(
         "toString",
         "([I)Ljava/lang/String;",
@@ -2059,6 +2059,42 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 100] = [
         |vm, _, args| arrays_sort_objects(vm, args, true),
     ),
     method(
+        "sort",
+        "([Ljava/lang/Object;II)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            if array.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let from = int_arg(args, 1);
+            let to = int_arg(args, 2);
+            let length = vm.array_length(array)?;
+            arrays_range_check(vm, from, to, length)?;
+            arrays_sort_objects_range(vm, array, from as usize, to as usize, None)
+        },
+    ),
+    method(
+        "sort",
+        "([Ljava/lang/Object;IILjava/util/Comparator;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            if array.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let from = int_arg(args, 1);
+            let to = int_arg(args, 2);
+            let comparator = ref_arg(args, 3);
+            if comparator.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let length = vm.array_length(array)?;
+            arrays_range_check(vm, from, to, length)?;
+            arrays_sort_objects_range(vm, array, from as usize, to as usize, Some(comparator))
+        },
+    ),
+    method(
         "stream",
         "([I)Ljava/util/stream/IntStream;",
         ACC_PUBLIC | ACC_STATIC,
@@ -2184,9 +2220,129 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 100] = [
                 vm,
                 ref_arg(args, 0),
                 int_arg(args, 1),
-                ref_arg(args, 2),
-                int_arg(args, 3),
+                ref_arg(args, 3),
                 int_arg(args, 4),
+                int_arg(args, 2) - int_arg(args, 1),
+            )?)
+        },
+    ),
+    method(
+        "mismatch",
+        "([Ljava/lang/Object;II[Ljava/lang/Object;II)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            int(arrays_mismatch_range(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                ref_arg(args, 3),
+                int_arg(args, 4),
+                int_arg(args, 2) - int_arg(args, 1),
+            )?)
+        },
+    ),
+    method(
+        "mismatch",
+        "([JJI[JJI)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            int(arrays_mismatch_range(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                ref_arg(args, 3),
+                int_arg(args, 4),
+                int_arg(args, 2) - int_arg(args, 1),
+            )?)
+        },
+    ),
+    method(
+        "mismatch",
+        "([BBI[BBI)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            int(arrays_mismatch_range(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                ref_arg(args, 3),
+                int_arg(args, 4),
+                int_arg(args, 2) - int_arg(args, 1),
+            )?)
+        },
+    ),
+    method(
+        "mismatch",
+        "([CCI[CCI)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            int(arrays_mismatch_range(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                ref_arg(args, 3),
+                int_arg(args, 4),
+                int_arg(args, 2) - int_arg(args, 1),
+            )?)
+        },
+    ),
+    method(
+        "mismatch",
+        "([SSI[SSI)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            int(arrays_mismatch_range(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                ref_arg(args, 3),
+                int_arg(args, 4),
+                int_arg(args, 2) - int_arg(args, 1),
+            )?)
+        },
+    ),
+    method(
+        "mismatch",
+        "([FFI[FFI)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            int(arrays_mismatch_range(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                ref_arg(args, 3),
+                int_arg(args, 4),
+                int_arg(args, 2) - int_arg(args, 1),
+            )?)
+        },
+    ),
+    method(
+        "mismatch",
+        "([DDI[DDI)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            int(arrays_mismatch_range(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                ref_arg(args, 3),
+                int_arg(args, 4),
+                int_arg(args, 2) - int_arg(args, 1),
+            )?)
+        },
+    ),
+    method(
+        "mismatch",
+        "([ZZI[ZZI)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            int(arrays_mismatch_range(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                ref_arg(args, 3),
+                int_arg(args, 4),
+                int_arg(args, 2) - int_arg(args, 1),
             )?)
         },
     ),
@@ -2420,8 +2576,19 @@ fn arrays_sort_objects(
         None
     };
     let length = vm.array_length(array)?;
-    let mut values: Vec<Value> = Vec::with_capacity(length);
-    for index in 0..length {
+    arrays_sort_objects_range(vm, array, 0, length, comparator)
+}
+
+/// `Arrays.sort(Object[], int, int[, Comparator])`: sort only `[from, to)`.
+fn arrays_sort_objects_range(
+    vm: &mut Vm<'_>,
+    array: ObjectRef,
+    from: usize,
+    to: usize,
+    comparator: Option<ObjectRef>,
+) -> Result<Value, VmError> {
+    let mut values: Vec<Value> = Vec::with_capacity(to.saturating_sub(from));
+    for index in from..to {
         values.push(vm.array_get(array, index as i32)?);
     }
     let mut error: Option<VmError> = None;
@@ -2445,9 +2612,32 @@ fn arrays_sort_objects(
         return Err(failure);
     }
     for (index, value) in values.into_iter().enumerate() {
-        vm.array_set(array, index as i32, value, true)?;
+        vm.array_set(array, (from + index) as i32, value, true)?;
     }
     void()
+}
+
+/// `Arrays.rangeCheck`: validate a `[from, to)` slice against the array length.
+fn arrays_range_check(vm: &mut Vm<'_>, from: i32, to: i32, length: usize) -> Result<(), VmError> {
+    if from > to {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some(&alloc::format!("fromIndex({from}) > toIndex({to})")),
+        ));
+    }
+    if from < 0 {
+        return Err(vm.throw_new(
+            "java/lang/ArrayIndexOutOfBoundsException",
+            Some(&alloc::format!("Array index out of range: {from}")),
+        ));
+    }
+    if to as usize > length {
+        return Err(vm.throw_new(
+            "java/lang/ArrayIndexOutOfBoundsException",
+            Some(&alloc::format!("Array index out of range: {to}")),
+        ));
+    }
+    Ok(())
 }
 
 /// `a.compareTo(b)` through the virtual method table.
@@ -5596,8 +5786,8 @@ fn hash_map_key_set(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let pairs = hash_map_pairs(vm, receiver(args));
-    let list = array_list_from(vm, &pairs.iter().map(|(key, _)| *key).collect::<Vec<_>>())?;
-    object(list)
+    let keys = pairs.iter().map(|(key, _)| *key).collect::<Vec<_>>();
+    object(hash_set_from(vm, &keys)?)
 }
 
 fn hash_map_values(
@@ -5697,10 +5887,33 @@ pub(crate) const HASH_MAP: oxjvm_vm::NativeClass = class(
 );
 
 // -------------------------------------------------------------------------------------------
+// WeakHashMap (same pair-array layout as HashMap; keys are held strongly because the VM has
+// no weak-reference/GC semantics, which satisfies the functional Map contract tests)
+// -------------------------------------------------------------------------------------------
+
+pub(crate) const WEAK_HASH_MAP: oxjvm_vm::NativeClass = class(
+    "java/util/WeakHashMap",
+    Some("java/lang/Object"),
+    &[
+        "java/util/Map",
+        "java/lang/Cloneable",
+        "java/io/Serializable",
+    ],
+    ACC_PUBLIC,
+    &[
+        field("keys", "[Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("values", "[Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("size", "I", ACC_PRIVATE, None),
+    ],
+    &HASH_MAP_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
 // IdentityHashMap (key identity, same pair-array layout as HashMap)
 // -------------------------------------------------------------------------------------------
 
-const IDENTITY_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+const IDENTITY_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
     method("<init>", "()V", ACC_PUBLIC, hash_map_init),
     method("<init>", "(I)V", ACC_PUBLIC, hash_map_init),
     method(
@@ -5785,6 +5998,20 @@ const IDENTITY_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         ACC_PUBLIC,
         hash_map_to_string,
     ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let entries = hash_map_pairs(vm, this);
+            boolean(map_equals_entries(vm, this, ref_arg(args, 1), entries)?)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let entries = hash_map_pairs(vm, receiver(args));
+        int(map_hash_entries(vm, entries)?)
+    }),
     method(
         "entrySet",
         "()Ljava/util/Set;",
@@ -6377,7 +6604,7 @@ fn properties_set_property(
 // Collections
 // -------------------------------------------------------------------------------------------
 
-const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
+const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
     method(
         "sort",
         "(Ljava/util/List;)V",
@@ -6519,6 +6746,54 @@ const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
         |_, _, args| object(ref_arg(args, 0)),
     ),
     method(
+        "checkedCollection",
+        "(Ljava/util/Collection;Ljava/lang/Class;)Ljava/util/Collection;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "checkedSet",
+        "(Ljava/util/Set;Ljava/lang/Class;)Ljava/util/Set;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "checkedSortedSet",
+        "(Ljava/util/SortedSet;Ljava/lang/Class;)Ljava/util/SortedSet;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "checkedNavigableSet",
+        "(Ljava/util/NavigableSet;Ljava/lang/Class;)Ljava/util/NavigableSet;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "checkedMap",
+        "(Ljava/util/Map;Ljava/lang/Class;Ljava/lang/Class;)Ljava/util/Map;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "checkedSortedMap",
+        "(Ljava/util/SortedMap;Ljava/lang/Class;Ljava/lang/Class;)Ljava/util/SortedMap;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "checkedNavigableMap",
+        "(Ljava/util/NavigableMap;Ljava/lang/Class;Ljava/lang/Class;)Ljava/util/NavigableMap;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "checkedQueue",
+        "(Ljava/util/Queue;Ljava/lang/Class;)Ljava/util/Queue;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
         "unmodifiableSet",
         "(Ljava/util/Set;)Ljava/util/Set;",
         ACC_PUBLIC | ACC_STATIC,
@@ -6557,6 +6832,54 @@ const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
     method(
         "synchronizedCollection",
         "(Ljava/util/Collection;)Ljava/util/Collection;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "synchronizedSortedSet",
+        "(Ljava/util/SortedSet;)Ljava/util/SortedSet;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "synchronizedNavigableSet",
+        "(Ljava/util/NavigableSet;)Ljava/util/NavigableSet;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "synchronizedSortedMap",
+        "(Ljava/util/SortedMap;)Ljava/util/SortedMap;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "synchronizedNavigableMap",
+        "(Ljava/util/NavigableMap;)Ljava/util/NavigableMap;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "unmodifiableSortedSet",
+        "(Ljava/util/SortedSet;)Ljava/util/SortedSet;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "unmodifiableNavigableSet",
+        "(Ljava/util/NavigableSet;)Ljava/util/NavigableSet;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "unmodifiableSortedMap",
+        "(Ljava/util/SortedMap;)Ljava/util/SortedMap;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "unmodifiableNavigableMap",
+        "(Ljava/util/NavigableMap;)Ljava/util/NavigableMap;",
         ACC_PUBLIC | ACC_STATIC,
         |_, _, args| object(ref_arg(args, 0)),
     ),
@@ -7724,11 +8047,11 @@ const HASH_SET_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let map = hash_set_map(vm, receiver(args));
-            let keys = hash_map_call(vm, map, "keySet", "()Ljava/util/Set;", &[])?;
-            let set = keys.as_ref();
+            let keys = map_keys(vm, map);
+            let list = array_list_from(vm, &keys)?;
             let (class, method) =
-                vm.resolve_virtual_method(set, "iterator", "()Ljava/util/Iterator;")?;
-            vm.invoke_method(class, method, vec![Value::Ref(set)])
+                vm.resolve_virtual_method(list, "iterator", "()Ljava/util/Iterator;")?;
+            vm.invoke_method(class, method, vec![Value::Ref(list)])
         },
     ),
     method(
@@ -8200,7 +8523,7 @@ fn hashtable_map(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
     hash_set_map(vm, this)
 }
 
-const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let map = new_hash_map(vm)?;
         let this = receiver(args);
@@ -8352,6 +8675,39 @@ const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
         |vm, _, args| {
             let map = hashtable_map(vm, receiver(args));
             hash_map_call(vm, map, "entrySet", "()Ljava/util/Set;", &[])
+        },
+    ),
+    method(
+        "values",
+        "()Ljava/util/Collection;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = hashtable_map(vm, receiver(args));
+            hash_map_call(vm, map, "values", "()Ljava/util/Collection;", &[])
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = hashtable_map(vm, receiver(args));
+            let entries = hash_map_pairs(vm, map);
+            boolean(map_equals_entries(vm, map, ref_arg(args, 1), entries)?)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let map = hashtable_map(vm, receiver(args));
+        let entries = hash_map_pairs(vm, map);
+        int(map_hash_entries(vm, entries)?)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = hashtable_map(vm, receiver(args));
+            hash_map_call(vm, map, "toString", "()Ljava/lang/String;", &[])
         },
     ),
 ];
@@ -9093,7 +9449,20 @@ pub(crate) const CONCURRENT_MAP: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const CONCURRENT_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
+pub(crate) const CONCURRENT_NAVIGABLE_MAP: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/ConcurrentNavigableMap",
+    Some("java/lang/Object"),
+    &[
+        "java/util/NavigableMap",
+        "java/util/concurrent/ConcurrentMap",
+    ],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[],
+    None,
+);
+
+const CONCURRENT_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let map = new_concurrent_map(vm)?;
         concurrent_init(vm, args, map)
@@ -9522,6 +9891,22 @@ const CONCURRENT_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
             concurrent_map(vm, receiver(args)),
             "size",
         )))
+    }),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let map = concurrent_map(vm, this);
+            let entries = hash_map_pairs(vm, map);
+            boolean(map_equals_entries(vm, this, ref_arg(args, 1), entries)?)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let map = concurrent_map(vm, receiver(args));
+        let entries = hash_map_pairs(vm, map);
+        int(map_hash_entries(vm, entries)?)
     }),
 ];
 

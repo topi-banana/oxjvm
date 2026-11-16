@@ -1498,6 +1498,28 @@ pub(crate) const TREE_MAP: oxjvm_vm::NativeClass = class(
 );
 
 // -------------------------------------------------------------------------------------------
+// ConcurrentSkipListMap (a concurrent sorted map; reuses the TreeMap sorted-map storage and
+// methods, which satisfies the functional NavigableMap/Map contract tests)
+// -------------------------------------------------------------------------------------------
+
+pub(crate) const CONCURRENT_SKIP_LIST_MAP: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/ConcurrentSkipListMap",
+    Some("java/lang/Object"),
+    &[
+        "java/util/concurrent/ConcurrentNavigableMap",
+        "java/util/NavigableMap",
+        "java/util/concurrent/ConcurrentMap",
+        "java/util/Map",
+        "java/lang/Cloneable",
+        "java/io/Serializable",
+    ],
+    ACC_PUBLIC,
+    &[],
+    &TREE_MAP_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
 // TreeSet
 // -------------------------------------------------------------------------------------------
 

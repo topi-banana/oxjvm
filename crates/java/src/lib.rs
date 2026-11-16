@@ -143,7 +143,7 @@ pub fn is_non_writable_property(key: &str) -> bool {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 895] = [
+static REGISTRY: [NativeClass; 898] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -465,6 +465,7 @@ static REGISTRY: [NativeClass; 895] = [
     util::GREGORIAN_CALENDAR,
     uuid::UUID,
     util::HASH_MAP,
+    util::WEAK_HASH_MAP,
     util::IDENTITY_HASH_MAP,
     util::ENUMERATION,
     util::OJVM_ENUMERATION,
@@ -479,6 +480,7 @@ static REGISTRY: [NativeClass; 895] = [
     util::MAP_ENTRY,
     util::OJVM_ENTRY,
     util::CONCURRENT_MAP,
+    util::CONCURRENT_NAVIGABLE_MAP,
     util::CONCURRENT_HASH_MAP,
     util::CONCURRENT_HASH_MAP_KEY_SET,
     regex::PATTERN_PREDICATE,
@@ -793,6 +795,7 @@ static REGISTRY: [NativeClass; 895] = [
     util::SORTED_MAP,
     util::NAVIGABLE_MAP,
     tree::TREE_MAP,
+    tree::CONCURRENT_SKIP_LIST_MAP,
     tree::OXJVM_ENTRY_ORDER,
     tree::OXJVM_REVERSED_ORDER,
     intstream::INT_STREAM,
