@@ -7051,7 +7051,7 @@ pub(crate) const SORTED_MAP: oxjvm_vm::NativeClass = class(
 // Properties
 // -------------------------------------------------------------------------------------------
 
-const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
+const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
     method("<init>", "()V", ACC_PUBLIC, properties_init),
     method(
         "<init>",
@@ -7213,6 +7213,34 @@ const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
         ACC_PUBLIC,
         |vm, _, args| properties_store(vm, args),
     ),
+    method(
+        "storeToXML",
+        "(Ljava/io/OutputStream;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| properties_store_xml(vm, args, false),
+    ),
+    method(
+        "storeToXML",
+        "(Ljava/io/OutputStream;Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| properties_store_xml(vm, args, true),
+    ),
+    method(
+        "stringPropertyNames",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC,
+        |vm, _, args| properties_string_property_names(vm, receiver(args)),
+    ),
+    method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        properties_init(
+            vm,
+            oxjvm_vm::NativeContext {
+                class: vm.class_of(receiver(args)),
+                method: 0,
+            },
+            args,
+        )
+    }),
 ];
 
 pub(crate) const PROPERTIES: oxjvm_vm::NativeClass = class(
@@ -7340,6 +7368,85 @@ fn properties_store(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
         vec![Value::Ref(stream), Value::Ref(array)],
     )?;
     void()
+}
+
+/// Escape the five XML markup characters in a property key, value, or comment.
+fn xml_escape(text: &str) -> String {
+    let mut out = String::new();
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// `Properties.storeToXML`: write the entries as a UTF-8 XML document.
+fn properties_store_xml(
+    vm: &mut Vm<'_>,
+    args: &[Value],
+    has_encoding: bool,
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let stream = ref_arg(args, 1);
+    let comment = vm.string_value(ref_arg(args, 2)).unwrap_or_default();
+    let encoding = if has_encoding {
+        vm.string_value(ref_arg(args, 3))
+            .unwrap_or_else(|| "UTF-8".into())
+    } else {
+        "UTF-8".into()
+    };
+    let mut text = String::new();
+    text.push_str("<?xml version=\"1.0\" encoding=\"");
+    text.push_str(&encoding);
+    text.push_str("\"?>\n");
+    text.push_str("<!DOCTYPE properties SYSTEM \"http://java.sun.com/dtd/properties.dtd\">\n");
+    text.push_str("<properties>\n");
+    if !comment.is_empty() {
+        text.push_str("<comment>");
+        text.push_str(&xml_escape(&comment));
+        text.push_str("</comment>\n");
+    }
+    let pairs = hash_map_pairs(vm, properties_map(vm, this));
+    for (key, value) in pairs {
+        let key = vm.string_or_empty(key);
+        let value = vm.string_or_empty(value);
+        text.push_str("<entry key=\"");
+        text.push_str(&xml_escape(&key));
+        text.push_str("\">");
+        text.push_str(&xml_escape(&value));
+        text.push_str("</entry>\n");
+    }
+    text.push_str("</properties>\n");
+    let bytes = text.into_bytes();
+    let array = vm.allocate_array_of(ArrayComponent::Byte, bytes.len())?;
+    for (index, byte) in bytes.iter().enumerate() {
+        vm.array_set(array, index as i32, Value::Int(i32::from(*byte)), false)?;
+    }
+    let (declaring, method) = vm.resolve_virtual_method(stream, "write", "([B)V")?;
+    vm.invoke_method(
+        declaring,
+        method,
+        vec![Value::Ref(stream), Value::Ref(array)],
+    )?;
+    void()
+}
+
+/// `Properties.stringPropertyNames`: the keys whose values are strings, as a `Set`.
+fn properties_string_property_names(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError> {
+    let set = new_hash_set(vm)?;
+    let (class, method) = vm.resolve_virtual_method(set, "add", "(Ljava/lang/Object;)Z")?;
+    for (key, value) in hash_map_pairs(vm, properties_map(vm, this)) {
+        if vm.string_value(key).is_some() && vm.string_value(value).is_some() {
+            vm.invoke_method(class, method, vec![Value::Ref(set), Value::Ref(key)])?;
+        }
+    }
+    object(set)
 }
 
 fn properties_init(
@@ -13026,7 +13133,7 @@ fn calendar_instance(vm: &mut Vm<'_>) -> Result<Value, VmError> {
     object(instance)
 }
 
-const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
+const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
     method(
         "getInstance",
         "()Ljava/util/Calendar;",
@@ -13109,6 +13216,71 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
             };
             object(vm.make_string(name)?)
         },
+    ),
+    method(
+        "getDisplayNames",
+        "(IILjava/util/Locale;)Ljava/util/Map;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let field = int_arg(args, 1);
+            let style = int_arg(args, 2);
+            let long_months = [
+                "January",
+                "February",
+                "March",
+                "April",
+                "May",
+                "June",
+                "July",
+                "August",
+                "September",
+                "October",
+                "November",
+                "December",
+            ];
+            let short_months = [
+                "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+            ];
+            let long_days = [
+                "",
+                "Sunday",
+                "Monday",
+                "Tuesday",
+                "Wednesday",
+                "Thursday",
+                "Friday",
+                "Saturday",
+            ];
+            let short_days = ["", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+            let names: &[&str] = match (field, style) {
+                (2, 1) => &short_months,
+                (2, _) => &long_months,
+                (7, 1) => &short_days,
+                (7, _) => &long_days,
+                _ => &[],
+            };
+            let map = new_hash_map(vm)?;
+            let (class, method) = vm.resolve_virtual_method(
+                map,
+                "put",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+            )?;
+            for (index, name) in names.iter().enumerate() {
+                if name.is_empty() {
+                    continue;
+                }
+                let key = vm.make_string(name)?;
+                let value = crate::boxed::boxed_int(vm, index as i32)?;
+                vm.invoke_method(class, method, vec![Value::Ref(map), Value::Ref(key), value])?;
+            }
+            object(map)
+        },
+    ),
+    method(
+        "getCalendarType",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| object(vm.make_string("gregory")?),
     ),
     method("set", "(II)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
@@ -13670,5 +13842,294 @@ pub(crate) const GREGORIAN_CALENDAR: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC,
     &[],
     &GREGORIAN_CALENDAR_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// Calendar.Builder
+// -------------------------------------------------------------------------------------------
+
+/// Record one field/value pair in the builder's backing map.
+fn builder_set_field(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    field: i32,
+    value: i32,
+) -> Result<(), VmError> {
+    let map = vm
+        .read_ref_field(this, vm.class_of(this), "fields", "Ljava/util/HashMap;")
+        .unwrap_or(ObjectRef::NULL);
+    let key = crate::boxed::boxed_int(vm, field)?;
+    let val = crate::boxed::boxed_int(vm, value)?;
+    let (class, method) = vm.resolve_virtual_method(
+        map,
+        "put",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+    )?;
+    vm.invoke_method(class, method, vec![Value::Ref(map), key, val])?;
+    Ok(())
+}
+
+fn builder_return(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError> {
+    let _ = vm;
+    object(this)
+}
+
+const CALENDAR_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let map = new_hash_map(vm)?;
+        let (declaring, field) =
+            vm.find_field(vm.class_of(this), "fields", "Ljava/util/HashMap;")?;
+        vm.set_instance_ref(this, declaring, field, map);
+        void()
+    }),
+    method(
+        "set",
+        "(II)Ljava/util/Calendar$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            builder_set_field(vm, this, int_arg(args, 1), int_arg(args, 2))?;
+            builder_return(vm, this)
+        },
+    ),
+    method(
+        "setFields",
+        "([I)Ljava/util/Calendar$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let array = ref_arg(args, 1);
+            let length = vm.array_length(array).unwrap_or(0) as i32;
+            let mut index = 0i32;
+            while index + 1 < length {
+                let field = vm.array_get(array, index)?.as_int();
+                let value = vm.array_get(array, index + 1)?.as_int();
+                builder_set_field(vm, this, field, value)?;
+                index += 2;
+            }
+            builder_return(vm, this)
+        },
+    ),
+    method(
+        "setDate",
+        "(III)Ljava/util/Calendar$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            builder_set_field(vm, this, 1, int_arg(args, 1))?;
+            builder_set_field(vm, this, 2, int_arg(args, 2))?;
+            builder_set_field(vm, this, 5, int_arg(args, 3))?;
+            builder_return(vm, this)
+        },
+    ),
+    method(
+        "setTimeOfDay",
+        "(III)Ljava/util/Calendar$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            builder_set_field(vm, this, 11, int_arg(args, 1))?;
+            builder_set_field(vm, this, 12, int_arg(args, 2))?;
+            builder_set_field(vm, this, 13, int_arg(args, 3))?;
+            builder_return(vm, this)
+        },
+    ),
+    method(
+        "setTimeOfDay",
+        "(IIII)Ljava/util/Calendar$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            builder_set_field(vm, this, 11, int_arg(args, 1))?;
+            builder_set_field(vm, this, 12, int_arg(args, 2))?;
+            builder_set_field(vm, this, 13, int_arg(args, 3))?;
+            builder_set_field(vm, this, 14, int_arg(args, 4))?;
+            builder_return(vm, this)
+        },
+    ),
+    method(
+        "setInstant",
+        "(J)Ljava/util/Calendar$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "instant", "J")?;
+            vm.set_instance_long(this, declaring, field, args[1].as_long());
+            let (declaring, field) = vm.find_field(class, "hasInstant", "Z")?;
+            vm.set_instance_int(this, declaring, field, 1);
+            builder_return(vm, this)
+        },
+    ),
+    method(
+        "setTimeInMillis",
+        "(J)Ljava/util/Calendar$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "instant", "J")?;
+            vm.set_instance_long(this, declaring, field, args[1].as_long());
+            let (declaring, field) = vm.find_field(class, "hasInstant", "Z")?;
+            vm.set_instance_int(this, declaring, field, 1);
+            builder_return(vm, this)
+        },
+    ),
+    method(
+        "setCalendarType",
+        "(Ljava/lang/String;)Ljava/util/Calendar$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "calendarType", "Ljava/lang/String;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            builder_return(vm, this)
+        },
+    ),
+    method(
+        "setLocale",
+        "(Ljava/util/Locale;)Ljava/util/Calendar$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "locale", "Ljava/util/Locale;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            builder_return(vm, this)
+        },
+    ),
+    method(
+        "setTimeZone",
+        "(Ljava/util/TimeZone;)Ljava/util/Calendar$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "timeZone", "Ljava/util/TimeZone;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            builder_return(vm, this)
+        },
+    ),
+    method(
+        "setLenient",
+        "(Z)Ljava/util/Calendar$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) = vm.find_field(vm.class_of(this), "lenient", "Z")?;
+            vm.set_instance_int(this, declaring, field, args[1].as_int());
+            builder_return(vm, this)
+        },
+    ),
+    method(
+        "setFirstDayOfWeek",
+        "(I)Ljava/util/Calendar$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            builder_set_field(vm, this, 24, int_arg(args, 1))?;
+            builder_return(vm, this)
+        },
+    ),
+    method(
+        "setMinimalDaysInFirstWeek",
+        "(I)Ljava/util/Calendar$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            builder_set_field(vm, this, 25, int_arg(args, 1))?;
+            builder_return(vm, this)
+        },
+    ),
+    method(
+        "setWeekDefinition",
+        "(II)Ljava/util/Calendar$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            builder_set_field(vm, this, 24, int_arg(args, 1))?;
+            builder_set_field(vm, this, 25, int_arg(args, 2))?;
+            builder_return(vm, this)
+        },
+    ),
+    method(
+        "setWeekDate",
+        "(III)Ljava/util/Calendar$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            builder_set_field(vm, this, 1, int_arg(args, 1))?;
+            builder_set_field(vm, this, 3, int_arg(args, 2))?;
+            builder_set_field(vm, this, 7, int_arg(args, 3))?;
+            builder_return(vm, this)
+        },
+    ),
+    method(
+        "setGregorianChange",
+        "(Ljava/util/Date;)Ljava/util/Calendar$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| builder_return(vm, receiver(args)),
+    ),
+    method(
+        "build",
+        "()Ljava/util/Calendar;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let calendar_class = vm.resolve_class("java/util/GregorianCalendar")?;
+            let calendar = vm.new_instance(calendar_class)?;
+            let (declaring, ctor) = vm
+                .find_method(calendar_class, "<init>", "()V")
+                .ok_or_else(|| VmError::internal("GregorianCalendar() missing"))?;
+            vm.invoke_method(declaring, ctor, vec![Value::Ref(calendar)])?;
+            let has_instant = vm
+                .read_instance_int_named(this, class, "hasInstant", "Z")
+                .unwrap_or(0)
+                != 0;
+            if has_instant {
+                let instant = vm
+                    .read_instance_long_named(this, class, "instant", "J")
+                    .unwrap_or(0);
+                let (c, m) = vm.resolve_virtual_method(calendar, "setTimeInMillis", "(J)V")?;
+                vm.invoke_method(c, m, vec![Value::Ref(calendar), Value::Long(instant)])?;
+            } else {
+                let map = vm
+                    .read_ref_field(this, class, "fields", "Ljava/util/HashMap;")
+                    .unwrap_or(ObjectRef::NULL);
+                let (c, m) = vm.resolve_virtual_method(calendar, "set", "(II)V")?;
+                for (key, value) in hash_map_pairs(vm, map) {
+                    let field = crate::boxed::unbox_value(vm, key, "I").as_int();
+                    let val = crate::boxed::unbox_value(vm, value, "I").as_int();
+                    vm.invoke_method(
+                        c,
+                        m,
+                        vec![Value::Ref(calendar), Value::Int(field), Value::Int(val)],
+                    )?;
+                }
+            }
+            object(calendar)
+        },
+    ),
+];
+
+pub(crate) const CALENDAR_BUILDER: oxjvm_vm::NativeClass = class(
+    "java/util/Calendar$Builder",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("fields", "Ljava/util/HashMap;", ACC_PRIVATE, None),
+        field("instant", "J", ACC_PRIVATE, None),
+        field("hasInstant", "Z", ACC_PRIVATE, None),
+        field("calendarType", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("locale", "Ljava/util/Locale;", ACC_PRIVATE, None),
+        field("timeZone", "Ljava/util/TimeZone;", ACC_PRIVATE, None),
+        field("lenient", "Z", ACC_PRIVATE, None),
+    ],
+    &CALENDAR_BUILDER_METHODS,
     None,
 );

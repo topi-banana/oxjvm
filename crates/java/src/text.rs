@@ -395,7 +395,7 @@ fn simple_date_format_millis(vm: &mut Vm<'_>, date: ObjectRef) -> Result<i64, Vm
     }
 }
 
-const SIMPLE_DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const SIMPLE_DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let (declaring, field) =
@@ -490,6 +490,29 @@ const SIMPLE_DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
             object(instance)
         },
     ),
+    method(
+        "parse",
+        "(Ljava/lang/String;Ljava/text/ParsePosition;)Ljava/util/Date;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let position = ref_arg(args, 2);
+            let input = vm.string_or_empty(ref_arg(args, 1));
+            if input.is_empty() {
+                write_int_field(vm, position, "errorIndex", 0);
+                return object(ObjectRef::NULL);
+            }
+            let millis = crate::format::parse_date_text(&input);
+            let class = vm.resolve_class("java/util/Date")?;
+            let instance = vm.new_instance(class)?;
+            crate::lang::write_long_field(vm, instance, "time", millis);
+            write_int_field(vm, position, "index", input.chars().count() as i32);
+            object(instance)
+        },
+    ),
+    method("setLenient", "(Z)V", ACC_PUBLIC, |_, _, _| void()),
+    method("isLenient", "()Z", ACC_PUBLIC, |_, _, _| {
+        crate::boolean(true)
+    }),
 ];
 
 fn simple_date_format_init(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {

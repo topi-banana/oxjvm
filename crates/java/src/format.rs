@@ -491,7 +491,7 @@ pub(crate) const PARSE_POSITION: oxjvm_vm::NativeClass = class(
 // NumberFormat
 // -------------------------------------------------------------------------------------------
 
-const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
     method(
         "getInstance",
         "()Ljava/text/NumberFormat;",
@@ -628,6 +628,114 @@ const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
         }
         int(hash)
     }),
+    method(
+        "getNumberInstance",
+        "()Ljava/text/NumberFormat;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let pattern = default_number_pattern(vm);
+            number_format(vm, &pattern)
+        },
+    ),
+    method(
+        "getNumberInstance",
+        "(Ljava/util/Locale;)Ljava/text/NumberFormat;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let pattern = default_number_pattern(vm);
+            number_format(vm, &pattern)
+        },
+    ),
+    method(
+        "parse",
+        "(Ljava/lang/String;)Ljava/lang/Number;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = vm.string_or_empty(ref_arg(args, 1));
+            number_parse_boxed(vm, &text)
+        },
+    ),
+    method(
+        "parse",
+        "(Ljava/lang/String;Ljava/text/ParsePosition;)Ljava/lang/Number;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let position = ref_arg(args, 2);
+            let text = vm.string_or_empty(ref_arg(args, 1));
+            let start = read_int_field(vm, position, "index").max(0) as usize;
+            let slice: String = text.chars().skip(start).collect();
+            match parse_number_text(&slice) {
+                Some(_) => {
+                    let value = number_parse_boxed(vm, &slice)?;
+                    write_int_field(vm, position, "index", text.chars().count() as i32);
+                    Ok(value)
+                }
+                None => {
+                    write_int_field(vm, position, "errorIndex", start as i32);
+                    object(ObjectRef::NULL)
+                }
+            }
+        },
+    ),
+    method(
+        "parseObject",
+        "(Ljava/lang/String;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = vm.string_or_empty(ref_arg(args, 1));
+            number_parse_boxed(vm, &text)
+        },
+    ),
+    method(
+        "setRoundingMode",
+        "(Ljava/math/RoundingMode;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method(
+        "getRoundingMode",
+        "()Ljava/math/RoundingMode;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/math/RoundingMode")?;
+            let value = vm
+                .read_static_ref_if_set(class, "HALF_EVEN", "Ljava/math/RoundingMode;")
+                .ok_or_else(|| VmError::internal("RoundingMode constants not initialized"))?;
+            object(value)
+        },
+    ),
+    method("setGroupingUsed", "(Z)V", ACC_PUBLIC, |_, _, _| void()),
+    method("isGroupingUsed", "()Z", ACC_PUBLIC, |_, _, _| {
+        crate::boolean(true)
+    }),
+    method("setParseIntegerOnly", "(Z)V", ACC_PUBLIC, |_, _, _| void()),
+    method("isParseIntegerOnly", "()Z", ACC_PUBLIC, |_, _, _| {
+        crate::boolean(false)
+    }),
+    method("setMaximumFractionDigits", "(I)V", ACC_PUBLIC, |_, _, _| {
+        void()
+    }),
+    method("getMaximumFractionDigits", "()I", ACC_PUBLIC, |_, _, _| {
+        int(3)
+    }),
+    method("setMinimumFractionDigits", "(I)V", ACC_PUBLIC, |_, _, _| {
+        void()
+    }),
+    method("getMinimumFractionDigits", "()I", ACC_PUBLIC, |_, _, _| {
+        int(0)
+    }),
+    method("setMaximumIntegerDigits", "(I)V", ACC_PUBLIC, |_, _, _| {
+        void()
+    }),
+    method("getMaximumIntegerDigits", "()I", ACC_PUBLIC, |_, _, _| {
+        int(i32::MAX)
+    }),
+    method("setMinimumIntegerDigits", "(I)V", ACC_PUBLIC, |_, _, _| {
+        void()
+    }),
+    method("getMinimumIntegerDigits", "()I", ACC_PUBLIC, |_, _, _| {
+        int(1)
+    }),
 ];
 
 /// The text of a number argument, in the form the JDK formats.
@@ -740,10 +848,30 @@ pub(crate) const DECIMAL_FORMAT: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const DECIMAL_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+const DECIMAL_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let text = vm.make_string("#,##0.###")?;
+        let (declaring, field) =
+            vm.find_field(vm.class_of(this), "pattern", "Ljava/lang/String;")?;
+        vm.set_instance_ref(this, declaring, field, text);
+        void()
+    }),
     method(
         "<init>",
         "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "pattern", "Ljava/lang/String;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/text/DecimalFormatSymbols;)V",
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
@@ -780,10 +908,7 @@ const DECIMAL_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let text = vm.string_or_empty(ref_arg(args, 1));
-            match parse_number_text(&text) {
-                Some(value) => Ok(crate::boxed::boxed_double(vm, value)?),
-                None => Err(vm.throw_new("java/text/ParseException", Some("Unparsable number"))),
-            }
+            number_parse_boxed(vm, &text)
         },
     ),
     method(
@@ -795,6 +920,36 @@ const DECIMAL_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
             object(vm.new_instance(class)?)
         },
     ),
+    method(
+        "setDecimalFormatSymbols",
+        "(Ljava/text/DecimalFormatSymbols;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method("setStrict", "(Z)V", ACC_PUBLIC, |_, _, _| void()),
+    method("isStrict", "()Z", ACC_PUBLIC, |_, _, _| {
+        crate::boolean(false)
+    }),
+    method("setParseBigDecimal", "(Z)V", ACC_PUBLIC, |_, _, _| void()),
+    method("isParseBigDecimal", "()Z", ACC_PUBLIC, |_, _, _| {
+        crate::boolean(false)
+    }),
+    method(
+        "setDecimalSeparatorAlwaysShown",
+        "(Z)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method(
+        "isDecimalSeparatorAlwaysShown",
+        "()Z",
+        ACC_PUBLIC,
+        |_, _, _| crate::boolean(false),
+    ),
+    method("setGroupingSize", "(I)V", ACC_PUBLIC, |_, _, _| void()),
+    method("getGroupingSize", "()I", ACC_PUBLIC, |_, _, _| int(3)),
+    method("setMultiplier", "(I)V", ACC_PUBLIC, |_, _, _| void()),
+    method("getMultiplier", "()I", ACC_PUBLIC, |_, _, _| int(1)),
 ];
 
 const DECIMAL_FORMAT_SYMBOLS_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
@@ -878,7 +1033,7 @@ pub(crate) const OJVM_NUMBER_FORMAT: oxjvm_vm::NativeClass = class(
 // DateFormat
 // -------------------------------------------------------------------------------------------
 
-const DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+const DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
     method(
         "getInstance",
         "()Ljava/text/DateFormat;",
@@ -979,7 +1134,147 @@ const DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
             void()
         },
     ),
+    method(
+        "getTimeInstance",
+        "(I)Ljava/text/DateFormat;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| date_format(vm, time_pattern(date_style_name(crate::int_arg(args, 0)))),
+    ),
+    method(
+        "getTimeInstance",
+        "(ILjava/util/Locale;)Ljava/text/DateFormat;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| date_format(vm, time_pattern(date_style_name(crate::int_arg(args, 0)))),
+    ),
+    method(
+        "getDateTimeInstance",
+        "(II)Ljava/text/DateFormat;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let date = date_pattern(date_style_name(crate::int_arg(args, 0)));
+            let time = time_pattern(date_style_name(crate::int_arg(args, 1)));
+            date_format(vm, &alloc::format!("{date} {time}"))
+        },
+    ),
+    method(
+        "getDateTimeInstance",
+        "(IILjava/util/Locale;)Ljava/text/DateFormat;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let date = date_pattern(date_style_name(crate::int_arg(args, 0)));
+            let time = time_pattern(date_style_name(crate::int_arg(args, 1)));
+            date_format(vm, &alloc::format!("{date} {time}"))
+        },
+    ),
+    method(
+        "parse",
+        "(Ljava/lang/String;)Ljava/util/Date;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = vm.string_or_empty(ref_arg(args, 1));
+            date_from_millis(vm, parse_date_text(&text))
+        },
+    ),
+    method(
+        "parse",
+        "(Ljava/lang/String;Ljava/text/ParsePosition;)Ljava/util/Date;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let position = ref_arg(args, 2);
+            let text = vm.string_or_empty(ref_arg(args, 1));
+            if text.is_empty() {
+                write_int_field(vm, position, "errorIndex", 0);
+                return object(ObjectRef::NULL);
+            }
+            let value = date_from_millis(vm, parse_date_text(&text))?;
+            write_int_field(vm, position, "index", text.chars().count() as i32);
+            Ok(value)
+        },
+    ),
+    method(
+        "parseObject",
+        "(Ljava/lang/String;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = vm.string_or_empty(ref_arg(args, 1));
+            date_from_millis(vm, parse_date_text(&text))
+        },
+    ),
+    method(
+        "getAvailableLocales",
+        "()[Ljava/util/Locale;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/util/Locale")?;
+            vm.ensure_initialized(class)?;
+            let names = [
+                "ROOT", "ENGLISH", "US", "UK", "CANADA", "FRANCE", "GERMANY", "ITALY", "JAPAN",
+                "KOREA", "CHINA", "PRC", "TAIWAN",
+            ];
+            let mut locales = Vec::new();
+            for name in names {
+                if let Some(value) = vm.read_static_ref_if_set(class, name, "Ljava/util/Locale;") {
+                    locales.push(value);
+                }
+            }
+            let array = vm.allocate_object_array(class, locales.len())?;
+            for (index, locale) in locales.iter().enumerate() {
+                vm.array_set_ref(array, index, *locale)?;
+            }
+            object(array)
+        },
+    ),
+    method(
+        "setCalendar",
+        "(Ljava/util/Calendar;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method(
+        "getCalendar",
+        "()Ljava/util/Calendar;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/util/GregorianCalendar")?;
+            let instance = vm.new_instance(class)?;
+            let (declaring, ctor) = vm
+                .find_method(class, "<init>", "()V")
+                .ok_or_else(|| VmError::internal("GregorianCalendar lacks its constructor"))?;
+            vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
+            object(instance)
+        },
+    ),
+    method("setLenient", "(Z)V", ACC_PUBLIC, |_, _, _| void()),
+    method("isLenient", "()Z", ACC_PUBLIC, |_, _, _| {
+        crate::boolean(true)
+    }),
+    method(
+        "setTimeZone",
+        "(Ljava/util/TimeZone;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method(
+        "getTimeZone",
+        "()Ljava/util/TimeZone;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/util/TimeZone")?;
+            let (declaring, method) = vm
+                .find_method(class, "getDefault", "()Ljava/util/TimeZone;")
+                .ok_or_else(|| VmError::internal("TimeZone.getDefault missing"))?;
+            vm.invoke_method(declaring, method, Vec::new())
+        },
+    ),
 ];
+
+/// A `java.util.Date` holding the given epoch milliseconds.
+fn date_from_millis(vm: &mut Vm<'_>, millis: i64) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/util/Date")?;
+    let instance = vm.new_instance(class)?;
+    crate::lang::write_long_field(vm, instance, "time", millis);
+    object(instance)
+}
 
 fn date_style_name(style: i32) -> &'static str {
     match style {
@@ -1687,6 +1982,24 @@ fn parse_number_text(text: &str) -> Option<f64> {
         return None;
     }
     digits.parse::<f64>().ok()
+}
+
+/// `NumberFormat.parse`: box the parsed value as a `Long` when it is integral (no fractional
+/// part written) and fits, otherwise as a `Double`, matching the JDK's return-type contract.
+fn number_parse_boxed(vm: &mut Vm<'_>, text: &str) -> Result<Value, VmError> {
+    let mut digits = String::new();
+    for ch in text.chars() {
+        if ch.is_ascii_digit() || ch == '.' || ch == '-' || ch == '+' {
+            digits.push(ch);
+        }
+    }
+    let value = parse_number_text(text)
+        .ok_or_else(|| vm.throw_new("java/text/ParseException", Some("Unparsable number")))?;
+    if !digits.contains('.') && value >= i64::MIN as f64 && value <= i64::MAX as f64 {
+        crate::boxed::boxed_long(vm, value as i64)
+    } else {
+        crate::boxed::boxed_double(vm, value)
+    }
 }
 
 /// The milliseconds a date text holds, read with the patterns the runtime writes.
