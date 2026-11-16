@@ -2565,7 +2565,40 @@ fn cipher_instance(vm: &mut Vm<'_>, transformation: &str) -> Result<ObjectRef, V
     Ok(cipher)
 }
 
-const CIPHER_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
+/// Copy `inputLen` bytes from `input[inputOffset..]` into `output[outputOffset..]` and return
+/// the count. The Cipher shell passes data through unchanged, so the in-place update/doFinal
+/// overloads simply move the bytes into the caller's output buffer.
+fn cipher_copy_to_output(
+    vm: &mut Vm<'_>,
+    args: &[Value],
+    output_offset: i32,
+) -> Result<Value, VmError> {
+    let source = ref_arg(args, 1);
+    let output = ref_arg(args, 4);
+    if source.is_null() || output.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let input_offset = int_arg(args, 2);
+    let length = int_arg(args, 3);
+    let capacity = vm.array_length(source)? as i32;
+    if input_offset < 0 || length < 0 || input_offset + length > capacity {
+        return Err(vm.throw_new("java/lang/ArrayIndexOutOfBoundsException", None));
+    }
+    let out_capacity = vm.array_length(output)? as i32;
+    if output_offset < 0 || output_offset + length > out_capacity {
+        return Err(vm.throw_new(
+            "javax/crypto/ShortBufferException",
+            Some("output buffer too small"),
+        ));
+    }
+    for index in 0..length {
+        let byte = vm.array_get(source, input_offset + index)?;
+        vm.array_set(output, output_offset + index, byte, false)?;
+    }
+    int(length)
+}
+
+const CIPHER_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
     method(
         "getMaxAllowedKeyLength",
         "(Ljava/lang/String;)I",
@@ -2729,6 +2762,18 @@ const CIPHER_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
             bytes.push(vm.array_get(source, (offset + index) as i32)?.as_int() as u8);
         }
         object(new_byte_array(vm, &bytes)?)
+    }),
+    method("update", "([BII[B)I", ACC_PUBLIC, |vm, _, args| {
+        cipher_copy_to_output(vm, args, 0)
+    }),
+    method("update", "([BII[BI)I", ACC_PUBLIC, |vm, _, args| {
+        cipher_copy_to_output(vm, args, int_arg(args, 5))
+    }),
+    method("doFinal", "([BII[B)I", ACC_PUBLIC, |vm, _, args| {
+        cipher_copy_to_output(vm, args, 0)
+    }),
+    method("doFinal", "([BII[BI)I", ACC_PUBLIC, |vm, _, args| {
+        cipher_copy_to_output(vm, args, int_arg(args, 5))
     }),
     method("doFinal", "()[B", ACC_PUBLIC, |vm, _, _| {
         object(new_byte_array(vm, &[])?)

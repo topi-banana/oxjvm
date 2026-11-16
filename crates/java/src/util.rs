@@ -8,7 +8,8 @@ use oxjvm_classfile::flags::*;
 use oxjvm_vm::{ArrayComponent, ArrayData, ObjectData, ObjectRef, Value, Vm, VmError};
 
 use crate::{
-    boolean, class, field, int, long, long_arg, method, object, receiver, ref_arg, string_arg, void,
+    boolean, class, field, int, int_arg, long, long_arg, method, object, receiver, ref_arg,
+    string_arg, void,
 };
 
 // -------------------------------------------------------------------------------------------
@@ -1423,8 +1424,8 @@ const OBJECTS_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "(II)I",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            let index = crate::int_arg(args, 0);
-            let length = crate::int_arg(args, 1);
+            let index = int_arg(args, 0);
+            let length = int_arg(args, 1);
             if index < 0 || index >= length {
                 return Err(vm.throw_new(
                     "java/lang/IndexOutOfBoundsException",
@@ -1654,7 +1655,7 @@ macro_rules! array_hash_code {
     };
 }
 
-const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 84] = [
+const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 100] = [
     method(
         "toString",
         "([I)Ljava/lang/String;",
@@ -1719,12 +1720,7 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 84] = [
         let array = ref_arg(args, 0);
         let length = vm.array_length(array)?;
         for index in 0..length {
-            vm.array_set(
-                array,
-                index as i32,
-                Value::Int(crate::int_arg(args, 1)),
-                false,
-            )?;
+            vm.array_set(array, index as i32, Value::Int(int_arg(args, 1)), false)?;
         }
         void()
     }),
@@ -1746,6 +1742,220 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 84] = [
             let a = ref_arg(args, 0);
             let b = ref_arg(args, 1);
             boolean(a == b || arrays_equal(vm, a, b)?)
+        },
+    ),
+    method(
+        "equals",
+        "([B[B)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let a = ref_arg(args, 0);
+            let b = ref_arg(args, 1);
+            boolean(a == b || arrays_equal(vm, a, b)?)
+        },
+    ),
+    method(
+        "equals",
+        "([S[S)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let a = ref_arg(args, 0);
+            let b = ref_arg(args, 1);
+            boolean(a == b || arrays_equal(vm, a, b)?)
+        },
+    ),
+    method(
+        "equals",
+        "([J[J)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let a = ref_arg(args, 0);
+            let b = ref_arg(args, 1);
+            boolean(a == b || arrays_equal(vm, a, b)?)
+        },
+    ),
+    method(
+        "equals",
+        "([C[C)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let a = ref_arg(args, 0);
+            let b = ref_arg(args, 1);
+            boolean(a == b || arrays_equal(vm, a, b)?)
+        },
+    ),
+    method(
+        "equals",
+        "([F[F)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let a = ref_arg(args, 0);
+            let b = ref_arg(args, 1);
+            boolean(a == b || arrays_equal(vm, a, b)?)
+        },
+    ),
+    method(
+        "equals",
+        "([D[D)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let a = ref_arg(args, 0);
+            let b = ref_arg(args, 1);
+            boolean(a == b || arrays_equal(vm, a, b)?)
+        },
+    ),
+    method(
+        "equals",
+        "([Z[Z)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let a = ref_arg(args, 0);
+            let b = ref_arg(args, 1);
+            boolean(a == b || arrays_equal(vm, a, b)?)
+        },
+    ),
+    method(
+        "equals",
+        "([BII[BII)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            boolean(arrays_equal_range(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                int_arg(args, 2),
+                ref_arg(args, 3),
+                int_arg(args, 4),
+                int_arg(args, 5),
+            )?)
+        },
+    ),
+    method(
+        "equals",
+        "([SII[SII)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            boolean(arrays_equal_range(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                int_arg(args, 2),
+                ref_arg(args, 3),
+                int_arg(args, 4),
+                int_arg(args, 5),
+            )?)
+        },
+    ),
+    method(
+        "equals",
+        "([III[III)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            boolean(arrays_equal_range(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                int_arg(args, 2),
+                ref_arg(args, 3),
+                int_arg(args, 4),
+                int_arg(args, 5),
+            )?)
+        },
+    ),
+    method(
+        "equals",
+        "([JII[JII)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            boolean(arrays_equal_range(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                int_arg(args, 2),
+                ref_arg(args, 3),
+                int_arg(args, 4),
+                int_arg(args, 5),
+            )?)
+        },
+    ),
+    method(
+        "equals",
+        "([CII[CII)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            boolean(arrays_equal_range(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                int_arg(args, 2),
+                ref_arg(args, 3),
+                int_arg(args, 4),
+                int_arg(args, 5),
+            )?)
+        },
+    ),
+    method(
+        "equals",
+        "([FII[FII)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            boolean(arrays_equal_range(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                int_arg(args, 2),
+                ref_arg(args, 3),
+                int_arg(args, 4),
+                int_arg(args, 5),
+            )?)
+        },
+    ),
+    method(
+        "equals",
+        "([DII[DII)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            boolean(arrays_equal_range(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                int_arg(args, 2),
+                ref_arg(args, 3),
+                int_arg(args, 4),
+                int_arg(args, 5),
+            )?)
+        },
+    ),
+    method(
+        "equals",
+        "([ZII[ZII)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            boolean(arrays_equal_range(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                int_arg(args, 2),
+                ref_arg(args, 3),
+                int_arg(args, 4),
+                int_arg(args, 5),
+            )?)
+        },
+    ),
+    method(
+        "equals",
+        "([Ljava/lang/Object;II[Ljava/lang/Object;II)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            boolean(arrays_equal_range(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                int_arg(args, 2),
+                ref_arg(args, 3),
+                int_arg(args, 4),
+                int_arg(args, 5),
+            )?)
         },
     ),
     method(
@@ -1776,36 +1986,16 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 84] = [
         arrays_fill(vm, ref_arg(args, 0), Value::Long(long_arg(args, 1)), false)
     }),
     method("fill", "([ZZ)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
-        arrays_fill(
-            vm,
-            ref_arg(args, 0),
-            Value::Int(crate::int_arg(args, 1)),
-            false,
-        )
+        arrays_fill(vm, ref_arg(args, 0), Value::Int(int_arg(args, 1)), false)
     }),
     method("fill", "([BB)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
-        arrays_fill(
-            vm,
-            ref_arg(args, 0),
-            Value::Int(crate::int_arg(args, 1)),
-            false,
-        )
+        arrays_fill(vm, ref_arg(args, 0), Value::Int(int_arg(args, 1)), false)
     }),
     method("fill", "([CC)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
-        arrays_fill(
-            vm,
-            ref_arg(args, 0),
-            Value::Int(crate::int_arg(args, 1)),
-            false,
-        )
+        arrays_fill(vm, ref_arg(args, 0), Value::Int(int_arg(args, 1)), false)
     }),
     method("fill", "([SS)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
-        arrays_fill(
-            vm,
-            ref_arg(args, 0),
-            Value::Int(crate::int_arg(args, 1)),
-            false,
-        )
+        arrays_fill(vm, ref_arg(args, 0), Value::Int(int_arg(args, 1)), false)
     }),
     method("fill", "([FF)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
         arrays_fill(
@@ -1845,9 +2035,7 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 84] = [
         "binarySearch",
         "([CC)I",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| {
-            arrays_binary_search_char(vm, ref_arg(args, 0), crate::int_arg(args, 1) as u16)
-        },
+        |vm, _, args| arrays_binary_search_char(vm, ref_arg(args, 0), int_arg(args, 1) as u16),
     ),
     method("sort", "([B)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
         arrays_sort_byte(vm, ref_arg(args, 0))
@@ -1995,10 +2183,10 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 84] = [
             int(arrays_mismatch_range(
                 vm,
                 ref_arg(args, 0),
-                crate::int_arg(args, 1),
+                int_arg(args, 1),
                 ref_arg(args, 2),
-                crate::int_arg(args, 3),
-                crate::int_arg(args, 4),
+                int_arg(args, 3),
+                int_arg(args, 4),
             )?)
         },
     ),
@@ -2320,7 +2508,7 @@ fn arrays_copy_of_objects(
     if source.is_null() {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
-    let requested = crate::int_arg(args, 1);
+    let requested = int_arg(args, 1);
     if requested < 0 {
         return Err(vm.throw_new(
             "java/lang/NegativeArraySizeException",
@@ -2347,7 +2535,7 @@ fn arrays_copy_of_objects_typed(
     if source.is_null() {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
-    let requested = crate::int_arg(args, 1);
+    let requested = int_arg(args, 1);
     if requested < 0 {
         return Err(vm.throw_new(
             "java/lang/NegativeArraySizeException",
@@ -2374,8 +2562,8 @@ fn arrays_copy_of_range_objects_typed(
     if source.is_null() {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
-    let from = crate::int_arg(args, 1);
-    let to = crate::int_arg(args, 2);
+    let from = int_arg(args, 1);
+    let to = int_arg(args, 2);
     let new_type = crate::lang::class_argument(vm, ref_arg(args, 3))?;
     let length = vm.array_length(source)? as i32;
     if from < 0 || from > length {
@@ -2415,8 +2603,8 @@ fn arrays_copy_of_range_objects(
     if source.is_null() {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
-    let from = crate::int_arg(args, 1);
-    let to = crate::int_arg(args, 2);
+    let from = int_arg(args, 1);
+    let to = int_arg(args, 2);
     let length = vm.array_length(source)? as i32;
     if from < 0 || from > length {
         return Err(vm.throw_new(
@@ -2511,6 +2699,51 @@ fn arrays_equal(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmE
         }
         _ => Ok(false),
     }
+}
+
+/// `Arrays.equals(a, aFrom, aTo, b, bFrom, bTo)`: compare two equal-length ranges element by
+/// element. Primitive elements compare by value; reference elements compare through `equals`.
+fn arrays_equal_range(
+    vm: &mut Vm<'_>,
+    a: ObjectRef,
+    a_from: i32,
+    a_to: i32,
+    b: ObjectRef,
+    b_from: i32,
+    b_to: i32,
+) -> Result<bool, VmError> {
+    let length = a_to - a_from;
+    if length != b_to - b_from {
+        return Ok(false);
+    }
+    if a == b && a_from == b_from {
+        return Ok(true);
+    }
+    if a.is_null() || b.is_null() {
+        return Ok(false);
+    }
+    let a_len = vm.array_length(a)? as i32;
+    let b_len = vm.array_length(b)? as i32;
+    if a_from < 0 || a_to > a_len || b_from < 0 || b_to > b_len {
+        return Err(vm.throw_new("java/lang/ArrayIndexOutOfBoundsException", None));
+    }
+    let is_ref = matches!(
+        vm.heap.get(a).map(|object| &object.data),
+        Some(ObjectData::Array(ArrayData::Reference(_)))
+    );
+    for index in 0..length {
+        let left = vm.array_get(a, a_from + index)?;
+        let right = vm.array_get(b, b_from + index)?;
+        let equal = if is_ref {
+            objects_equals(vm, left.as_ref(), right.as_ref())?
+        } else {
+            left == right
+        };
+        if !equal {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// `Arrays.hashCode` for an array of the given component type.
@@ -2724,7 +2957,7 @@ fn arrays_copy_of_int(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let array = ref_arg(args, 0);
-    let length = crate::int_arg(args, 1);
+    let length = int_arg(args, 1);
     if length < 0 {
         return Err(vm.throw_new("java/lang/NegativeArraySizeException", None));
     }
@@ -2764,7 +2997,7 @@ const RANDOM_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
             _c: oxjvm_vm::NativeContext,
             args: &[Value],
         ) -> Result<Value, VmError> {
-            let bits = crate::int_arg(args, 1);
+            let bits = int_arg(args, 1);
             let this = receiver(args);
             let mut seed = read_random_seed(vm, this);
             seed = seed.wrapping_mul(0x5DEECE66D).wrapping_add(0xB) & ((1i64 << 48) - 1);
@@ -2777,7 +3010,7 @@ const RANDOM_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         next_random_int(vm, receiver(args), 32, &[])
     }),
     method("nextInt", "(I)I", ACC_PUBLIC, |vm, _, args| {
-        let bound = crate::int_arg(args, 1);
+        let bound = int_arg(args, 1);
         if bound <= 0 {
             return Err(vm.throw_new(
                 "java/lang/IllegalArgumentException",
@@ -2787,8 +3020,8 @@ const RANDOM_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         int(next_random_bounded(vm, receiver(args), bound)?)
     }),
     method("nextInt", "(II)I", ACC_PUBLIC, |vm, _, args| {
-        let origin = crate::int_arg(args, 1);
-        let bound = crate::int_arg(args, 2);
+        let origin = int_arg(args, 1);
+        let bound = int_arg(args, 2);
         if bound <= origin {
             return Err(vm.throw_new(
                 "java/lang/IllegalArgumentException",
@@ -3062,7 +3295,7 @@ const ARRAY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
         "listIterator",
         "(I)Ljava/util/ListIterator;",
         ACC_PUBLIC,
-        |vm, _, args| list_iterator_new(vm, receiver(args), crate::int_arg(args, 1)),
+        |vm, _, args| list_iterator_new(vm, receiver(args), int_arg(args, 1)),
     ),
     method(
         "subList",
@@ -3070,8 +3303,8 @@ const ARRAY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            let from = crate::int_arg(args, 1).max(0) as usize;
-            let to = crate::int_arg(args, 2).max(0) as usize;
+            let from = int_arg(args, 1).max(0) as usize;
+            let to = int_arg(args, 2).max(0) as usize;
             let elements = array_list_elements(vm, this);
             if from > to || to > elements.len() {
                 return Err(vm.throw_new(
@@ -3328,7 +3561,7 @@ fn array_list_add_all_at(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let this = receiver(args);
-    let index = crate::int_arg(args, 1);
+    let index = int_arg(args, 1);
     let incoming = collection_elements(vm, ref_arg(args, 2))?;
     let mut elements = array_list_elements(vm, this);
     if index < 0 || index as usize > elements.len() {
@@ -3354,7 +3587,7 @@ fn array_list_get(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let elements = array_list_elements(vm, receiver(args));
-    let index = crate::int_arg(args, 1);
+    let index = int_arg(args, 1);
     if index < 0 || index as usize >= elements.len() {
         return Err(vm.throw_new(
             "java/lang/IndexOutOfBoundsException",
@@ -3374,7 +3607,7 @@ fn array_list_set(
 ) -> Result<Value, VmError> {
     let this = receiver(args);
     let mut elements = array_list_elements(vm, this);
-    let index = crate::int_arg(args, 1);
+    let index = int_arg(args, 1);
     if index < 0 || index as usize >= elements.len() {
         return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
     }
@@ -3391,7 +3624,7 @@ fn array_list_insert(
 ) -> Result<Value, VmError> {
     let this = receiver(args);
     let mut elements = array_list_elements(vm, this);
-    let index = crate::int_arg(args, 1);
+    let index = int_arg(args, 1);
     if index < 0 || index as usize > elements.len() {
         return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
     }
@@ -3407,7 +3640,7 @@ fn array_list_remove(
 ) -> Result<Value, VmError> {
     let this = receiver(args);
     let mut elements = array_list_elements(vm, this);
-    let index = crate::int_arg(args, 1);
+    let index = int_arg(args, 1);
     if index < 0 || index as usize >= elements.len() {
         return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
     }
@@ -6153,7 +6386,7 @@ const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
         "(ILjava/lang/Object;)Ljava/util/List;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            let count = crate::int_arg(args, 0).max(0) as usize;
+            let count = int_arg(args, 0).max(0) as usize;
             let element = ref_arg(args, 1);
             object(array_list_from(vm, &vec![element; count])?)
         },
@@ -6975,7 +7208,7 @@ fn tokenizer_init(
     let text = string_arg(vm, args[1])?;
     let (delimiters, return_delims) = match descriptor.as_str() {
         "(Ljava/lang/String;Ljava/lang/String;Z)V" => {
-            (string_arg(vm, args[2])?, crate::int_arg(args, 3) != 0)
+            (string_arg(vm, args[2])?, int_arg(args, 3) != 0)
         }
         "(Ljava/lang/String;Ljava/lang/String;)V" => (string_arg(vm, args[2])?, false),
         _ => (String::from(" \t\n\r\u{000C}"), false),
@@ -7648,13 +7881,13 @@ const BITSET_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         void()
     }),
     method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        let size = crate::int_arg(args, 1).max(0) as usize;
+        let size = int_arg(args, 1).max(0) as usize;
         bitset_store(vm, receiver(args), &[], size)?;
         void()
     }),
     method("get", "(I)Z", ACC_PUBLIC, |vm, _, args| {
         let words = bitset_words(vm, receiver(args));
-        let bit = crate::int_arg(args, 1);
+        let bit = int_arg(args, 1);
         if bit < 0 {
             return Err(vm.throw_new(
                 "java/lang/IndexOutOfBoundsException",
@@ -7665,38 +7898,32 @@ const BITSET_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         boolean((words.get(bit / 64).copied().unwrap_or(0) >> (bit % 64)) & 1 == 1)
     }),
     method("set", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        let bit = crate::int_arg(args, 1).max(0) as usize;
+        let bit = int_arg(args, 1).max(0) as usize;
         bit_set_range(vm, receiver(args), bit, bit + 1, true)?;
         void()
     }),
     method("set", "(IZ)V", ACC_PUBLIC, |vm, _, args| {
-        if crate::int_arg(args, 1) < 0 {
+        if int_arg(args, 1) < 0 {
             return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", Some("bit index < 0")));
         }
-        let bit = crate::int_arg(args, 1) as usize;
-        bit_set_range(
-            vm,
-            receiver(args),
-            bit,
-            bit + 1,
-            crate::int_arg(args, 2) != 0,
-        )?;
+        let bit = int_arg(args, 1) as usize;
+        bit_set_range(vm, receiver(args), bit, bit + 1, int_arg(args, 2) != 0)?;
         void()
     }),
     method("set", "(II)V", ACC_PUBLIC, |vm, _, args| {
-        let from = crate::int_arg(args, 1).max(0) as usize;
-        let to = crate::int_arg(args, 2).max(0) as usize;
+        let from = int_arg(args, 1).max(0) as usize;
+        let to = int_arg(args, 2).max(0) as usize;
         bit_set_range(vm, receiver(args), from, to, true)?;
         void()
     }),
     method("clear", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        let bit = crate::int_arg(args, 1).max(0) as usize;
+        let bit = int_arg(args, 1).max(0) as usize;
         bit_set_range(vm, receiver(args), bit, bit + 1, false)?;
         void()
     }),
     method("clear", "(II)V", ACC_PUBLIC, |vm, _, args| {
-        let from = crate::int_arg(args, 1).max(0) as usize;
-        let to = crate::int_arg(args, 2).max(0) as usize;
+        let from = int_arg(args, 1).max(0) as usize;
+        let to = int_arg(args, 2).max(0) as usize;
         bit_set_range(vm, receiver(args), from, to, false)?;
         void()
     }),
@@ -7705,7 +7932,7 @@ const BITSET_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         void()
     }),
     method("flip", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        let bit = crate::int_arg(args, 1).max(0) as usize;
+        let bit = int_arg(args, 1).max(0) as usize;
         let words = bitset_words(vm, receiver(args));
         let value = (words.get(bit / 64).copied().unwrap_or(0) >> (bit % 64)) & 1 == 0;
         bit_set_range(vm, receiver(args), bit, bit + 1, value)?;
@@ -7738,7 +7965,7 @@ const BITSET_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
     }),
     method("nextSetBit", "(I)I", ACC_PUBLIC, |vm, _, args| {
         let words = bitset_words(vm, receiver(args));
-        let from = crate::int_arg(args, 1).max(0) as usize;
+        let from = int_arg(args, 1).max(0) as usize;
         for bit in from..words.len() * 64 {
             if (words[bit / 64] >> (bit % 64)) & 1 == 1 {
                 return int(bit as i32);
@@ -8062,7 +8289,7 @@ const VECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
         |vm, _, args| {
             let this = receiver(args);
             let mut elements = array_list_elements(vm, this);
-            let index = crate::int_arg(args, 2);
+            let index = int_arg(args, 2);
             if index < 0 || index as usize > elements.len() {
                 return Err(vm.throw_new(
                     "java/lang/ArrayIndexOutOfBoundsException",
@@ -8094,7 +8321,7 @@ const VECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
         |vm, _, args| {
             let this = receiver(args);
             let mut elements = array_list_elements(vm, this);
-            let index = crate::int_arg(args, 2);
+            let index = int_arg(args, 2);
             if index < 0 || index as usize >= elements.len() {
                 return Err(vm.throw_new(
                     "java/lang/ArrayIndexOutOfBoundsException",
@@ -8155,7 +8382,7 @@ const VECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
             let this = receiver(args);
             let needle = ref_arg(args, 1);
             let elements = array_list_elements(vm, this);
-            let mut index = crate::int_arg(args, 2);
+            let mut index = int_arg(args, 2);
             if index >= elements.len() as i32 {
                 return Err(vm.throw_new(
                     "java/lang/IndexOutOfBoundsException",
@@ -8179,7 +8406,7 @@ const VECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
             let this = receiver(args);
             let needle = ref_arg(args, 1);
             let elements = array_list_elements(vm, this);
-            let start = crate::int_arg(args, 2).max(0);
+            let start = int_arg(args, 2).max(0);
             for index in start..elements.len() as i32 {
                 if keys_equal(vm, elements[index as usize], needle)? {
                     return int(index);
@@ -8233,7 +8460,7 @@ const VECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
     method("removeElementAt", "(I)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let mut elements = array_list_elements(vm, this);
-        let index = crate::int_arg(args, 1);
+        let index = int_arg(args, 1);
         if index < 0 || index as usize >= elements.len() {
             return Err(vm.throw_new("java/lang/ArrayIndexOutOfBoundsException", None));
         }
@@ -10189,7 +10416,7 @@ fn scanner_find_within_horizon(
     let this = receiver(args);
     let class = vm.class_of(this);
     let pattern_text = string_arg(vm, args[1])?;
-    let horizon = crate::int_arg(args, 2);
+    let horizon = int_arg(args, 2);
     if horizon < 0 {
         return Err(vm.throw_new(
             "java/lang/IllegalArgumentException",
@@ -10297,9 +10524,9 @@ fn date_init_fields(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let year = crate::int_arg(args, 1) as i64 + 1900;
-    let month = crate::int_arg(args, 2) as i64 + 1;
-    let day = crate::int_arg(args, 3) as i64;
+    let year = int_arg(args, 1) as i64 + 1900;
+    let month = int_arg(args, 2) as i64 + 1;
+    let day = int_arg(args, 3) as i64;
     let millis = days_from_civil(year, month, day).saturating_mul(86_400_000);
     crate::lang::write_long_field(vm, receiver(args), "time", millis);
     void()
@@ -10962,15 +11189,15 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
     }),
     method("get", "(I)I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let field = crate::int_arg(args, 1);
+        let field = int_arg(args, 1);
         let value = calendar_get(vm, this, field);
         calendar_mark_all(vm, this);
         int(value)
     }),
     method("set", "(II)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let field = crate::int_arg(args, 1);
-        let value = crate::int_arg(args, 2);
+        let field = int_arg(args, 1);
+        let value = int_arg(args, 2);
         if field == 1 || field == 2 || field == 5 || field == 6 {
             let time = calendar_time(vm, this);
             let mut fields = calendar_fields_from_millis(time);
@@ -11012,9 +11239,9 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
         calendar_set_components(
             vm,
             receiver(args),
-            i64::from(crate::int_arg(args, 1)),
-            i64::from(crate::int_arg(args, 2)) + 1,
-            i64::from(crate::int_arg(args, 3)),
+            i64::from(int_arg(args, 1)),
+            i64::from(int_arg(args, 2)) + 1,
+            i64::from(int_arg(args, 3)),
             0,
             0,
             0,
@@ -11026,11 +11253,11 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
         calendar_set_components(
             vm,
             receiver(args),
-            i64::from(crate::int_arg(args, 1)),
-            i64::from(crate::int_arg(args, 2)) + 1,
-            i64::from(crate::int_arg(args, 3)),
-            i64::from(crate::int_arg(args, 4)),
-            i64::from(crate::int_arg(args, 5)),
+            i64::from(int_arg(args, 1)),
+            i64::from(int_arg(args, 2)) + 1,
+            i64::from(int_arg(args, 3)),
+            i64::from(int_arg(args, 4)),
+            i64::from(int_arg(args, 5)),
             0,
         );
         calendar_mark_all(vm, receiver(args));
@@ -11040,12 +11267,12 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
         calendar_set_components(
             vm,
             receiver(args),
-            i64::from(crate::int_arg(args, 1)),
-            i64::from(crate::int_arg(args, 2)) + 1,
-            i64::from(crate::int_arg(args, 3)),
-            i64::from(crate::int_arg(args, 4)),
-            i64::from(crate::int_arg(args, 5)),
-            i64::from(crate::int_arg(args, 6)),
+            i64::from(int_arg(args, 1)),
+            i64::from(int_arg(args, 2)) + 1,
+            i64::from(int_arg(args, 3)),
+            i64::from(int_arg(args, 4)),
+            i64::from(int_arg(args, 5)),
+            i64::from(int_arg(args, 6)),
         );
         calendar_mark_all(vm, receiver(args));
         void()
@@ -11102,15 +11329,15 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
     ),
     method("add", "(II)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let field = crate::int_arg(args, 1);
-        calendar_add(vm, this, field, crate::int_arg(args, 2));
+        let field = int_arg(args, 1);
+        calendar_add(vm, this, field, int_arg(args, 2));
         calendar_mark(vm, this, field);
         void()
     }),
     method("roll", "(II)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let field = crate::int_arg(args, 1);
-        calendar_add(vm, this, field, crate::int_arg(args, 2));
+        let field = int_arg(args, 1);
+        calendar_add(vm, this, field, int_arg(args, 2));
         calendar_mark(vm, this, field);
         void()
     }),
@@ -11122,7 +11349,7 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
     }),
     method("clear", "(I)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let field = crate::int_arg(args, 1);
+        let field = int_arg(args, 1);
         if field == 2 || field == 5 {
             let mut fields = calendar_fields_from_millis(calendar_time(vm, this));
             if field == 2 {
@@ -11149,12 +11376,7 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
         int(calendar_field_int(vm, receiver(args), "firstDayOfWeek"))
     }),
     method("setFirstDayOfWeek", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        calendar_set_field_int(
-            vm,
-            receiver(args),
-            "firstDayOfWeek",
-            crate::int_arg(args, 1),
-        );
+        calendar_set_field_int(vm, receiver(args), "firstDayOfWeek", int_arg(args, 1));
         void()
     }),
     method(
@@ -11178,14 +11400,14 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
                 vm,
                 receiver(args),
                 "minimalDaysInFirstWeek",
-                crate::int_arg(args, 1),
+                int_arg(args, 1),
             );
             void()
         },
     ),
     method("getActualMaximum", "(I)I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let field = crate::int_arg(args, 1);
+        let field = int_arg(args, 1);
         let fields = calendar_fields_from_millis(calendar_time(vm, this));
         let value = match field {
             5 => calendar_days_in_month(fields.year, fields.month),
@@ -11207,19 +11429,19 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
         })
     }),
     method("getActualMinimum", "(I)I", ACC_PUBLIC, |_vm, _, args| {
-        int(calendar_minimum(crate::int_arg(args, 1)))
+        int(calendar_minimum(int_arg(args, 1)))
     }),
     method("getMinimum", "(I)I", ACC_PUBLIC, |_vm, _, args| {
-        int(calendar_minimum(crate::int_arg(args, 1)))
+        int(calendar_minimum(int_arg(args, 1)))
     }),
     method("getMaximum", "(I)I", ACC_PUBLIC, |_vm, _, args| {
-        int(calendar_maximum(crate::int_arg(args, 1)))
+        int(calendar_maximum(int_arg(args, 1)))
     }),
     method("getGreatestMinimum", "(I)I", ACC_PUBLIC, |_vm, _, args| {
-        int(calendar_minimum(crate::int_arg(args, 1)))
+        int(calendar_minimum(int_arg(args, 1)))
     }),
     method("getLeastMaximum", "(I)I", ACC_PUBLIC, |_vm, _, args| {
-        int(calendar_maximum(crate::int_arg(args, 1)))
+        int(calendar_maximum(int_arg(args, 1)))
     }),
     method(
         "toString",
@@ -11299,7 +11521,7 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
         },
     ),
     method("isSet", "(I)Z", ACC_PUBLIC, |vm, _, args| {
-        boolean(calendar_is_set(vm, receiver(args), crate::int_arg(args, 1)))
+        boolean(calendar_is_set(vm, receiver(args), int_arg(args, 1)))
     }),
     method("computeTime", "()V", ACC_PROTECTED, |vm, _, args| {
         let this = receiver(args);
@@ -11486,9 +11708,9 @@ const GREGORIAN_CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         calendar_set_components(
             vm,
             receiver(args),
-            i64::from(crate::int_arg(args, 1)),
-            i64::from(crate::int_arg(args, 2)) + 1,
-            i64::from(crate::int_arg(args, 3)),
+            i64::from(int_arg(args, 1)),
+            i64::from(int_arg(args, 2)) + 1,
+            i64::from(int_arg(args, 3)),
             0,
             0,
             0,
@@ -11500,11 +11722,11 @@ const GREGORIAN_CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         calendar_set_components(
             vm,
             receiver(args),
-            i64::from(crate::int_arg(args, 1)),
-            i64::from(crate::int_arg(args, 2)) + 1,
-            i64::from(crate::int_arg(args, 3)),
-            i64::from(crate::int_arg(args, 4)),
-            i64::from(crate::int_arg(args, 5)),
+            i64::from(int_arg(args, 1)),
+            i64::from(int_arg(args, 2)) + 1,
+            i64::from(int_arg(args, 3)),
+            i64::from(int_arg(args, 4)),
+            i64::from(int_arg(args, 5)),
             0,
         );
         void()
@@ -11514,12 +11736,12 @@ const GREGORIAN_CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         calendar_set_components(
             vm,
             receiver(args),
-            i64::from(crate::int_arg(args, 1)),
-            i64::from(crate::int_arg(args, 2)) + 1,
-            i64::from(crate::int_arg(args, 3)),
-            i64::from(crate::int_arg(args, 4)),
-            i64::from(crate::int_arg(args, 5)),
-            i64::from(crate::int_arg(args, 6)),
+            i64::from(int_arg(args, 1)),
+            i64::from(int_arg(args, 2)) + 1,
+            i64::from(int_arg(args, 3)),
+            i64::from(int_arg(args, 4)),
+            i64::from(int_arg(args, 5)),
+            i64::from(int_arg(args, 6)),
         );
         void()
     }),
