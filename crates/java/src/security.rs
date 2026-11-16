@@ -2565,6 +2565,31 @@ fn cipher_instance(vm: &mut Vm<'_>, transformation: &str) -> Result<ObjectRef, V
     Ok(cipher)
 }
 
+/// Shared `Cipher.init`: record the mode and key, reset any previous IV, and capture the IV
+/// from an `IvParameterSpec`/`GCMParameterSpec` when one is supplied.
+fn cipher_init(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    mode: i32,
+    key: ObjectRef,
+    spec: ObjectRef,
+) -> Result<(), VmError> {
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, "mode", "I")?;
+    vm.set_instance_int(this, declaring, field, mode);
+    set_ref_field(vm, this, "key", "Ljava/security/Key;", key)?;
+    set_ref_field(vm, this, "iv", "[B", ObjectRef::NULL)?;
+    if !spec.is_null() {
+        if let Ok((declaring, method)) = vm.resolve_virtual_method(spec, "getIV", "()[B") {
+            let iv = vm
+                .invoke_method(declaring, method, vec![Value::Ref(spec)])?
+                .as_ref();
+            set_ref_field(vm, this, "iv", "[B", iv)?;
+        }
+    }
+    Ok(())
+}
+
 /// Copy `inputLen` bytes from `input[inputOffset..]` into `output[outputOffset..]` and return
 /// the count. The Cipher shell passes data through unchanged, so the in-place update/doFinal
 /// overloads simply move the bytes into the caller's output buffer.
@@ -2598,7 +2623,7 @@ fn cipher_copy_to_output(
     int(length)
 }
 
-const CIPHER_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
+const CIPHER_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
     method(
         "getMaxAllowedKeyLength",
         "(Ljava/lang/String;)I",
@@ -2680,14 +2705,45 @@ const CIPHER_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
     method("getOutputSize", "(I)I", ACC_PUBLIC, |_, _, args| {
         int(int_arg(args, 1).max(0))
     }),
-    method("getIV", "()[B", ACC_PUBLIC, |_, _, _| {
-        object(ObjectRef::NULL)
+    method("getIV", "()[B", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let iv = ref_field(vm, this, "iv", "[B");
+        if !iv.is_null() {
+            return object(iv);
+        }
+        // ECB mode has no IV; every other mode gets a fresh random 16-byte IV.
+        let transformation = string_field(vm, this, "transformation").to_ascii_uppercase();
+        let mode = transformation.split('/').nth(1).unwrap_or("ECB");
+        if mode == "ECB" {
+            return object(ObjectRef::NULL);
+        }
+        let bytes = random_bytes(vm, 16)?;
+        let array = new_byte_array(vm, &bytes)?;
+        set_ref_field(vm, this, "iv", "[B", array)?;
+        object(array)
     }),
     method(
         "getParameters",
         "()Ljava/security/AlgorithmParameters;",
         ACC_PUBLIC,
-        |_, _, _| object(ObjectRef::NULL),
+        |vm, _, args| {
+            let this = receiver(args);
+            let transformation = string_field(vm, this, "transformation");
+            let algorithm = String::from(transformation.split('/').next().unwrap_or(""));
+            let params = algorithm_parameters_instance(vm, &algorithm)?;
+            let iv = ref_field(vm, this, "iv", "[B");
+            if !iv.is_null() {
+                let spec = new_iv_parameter_spec(vm, iv)?;
+                set_ref_field(
+                    vm,
+                    params,
+                    "spec",
+                    "Ljava/security/spec/AlgorithmParameterSpec;",
+                    spec,
+                )?;
+            }
+            object(params)
+        },
     ),
     method(
         "getExemptionMechanism",
@@ -2700,11 +2756,13 @@ const CIPHER_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
         "(ILjava/security/Key;)V",
         ACC_PUBLIC,
         |vm, _, args| {
-            let this = receiver(args);
-            let class = vm.class_of(this);
-            let (declaring, field) = vm.find_field(class, "mode", "I")?;
-            vm.set_instance_int(this, declaring, field, int_arg(args, 1));
-            set_ref_field(vm, this, "key", "Ljava/security/Key;", ref_arg(args, 2))?;
+            cipher_init(
+                vm,
+                receiver(args),
+                int_arg(args, 1),
+                ref_arg(args, 2),
+                ObjectRef::NULL,
+            )?;
             void()
         },
     ),
@@ -2713,11 +2771,13 @@ const CIPHER_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
         "(ILjava/security/Key;Ljava/security/SecureRandom;)V",
         ACC_PUBLIC,
         |vm, _, args| {
-            let this = receiver(args);
-            let class = vm.class_of(this);
-            let (declaring, field) = vm.find_field(class, "mode", "I")?;
-            vm.set_instance_int(this, declaring, field, int_arg(args, 1));
-            set_ref_field(vm, this, "key", "Ljava/security/Key;", ref_arg(args, 2))?;
+            cipher_init(
+                vm,
+                receiver(args),
+                int_arg(args, 1),
+                ref_arg(args, 2),
+                ObjectRef::NULL,
+            )?;
             void()
         },
     ),
@@ -2726,11 +2786,13 @@ const CIPHER_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
         "(ILjava/security/Key;Ljava/security/spec/AlgorithmParameterSpec;)V",
         ACC_PUBLIC,
         |vm, _, args| {
-            let this = receiver(args);
-            let class = vm.class_of(this);
-            let (declaring, field) = vm.find_field(class, "mode", "I")?;
-            vm.set_instance_int(this, declaring, field, int_arg(args, 1));
-            set_ref_field(vm, this, "key", "Ljava/security/Key;", ref_arg(args, 2))?;
+            cipher_init(
+                vm,
+                receiver(args),
+                int_arg(args, 1),
+                ref_arg(args, 2),
+                ref_arg(args, 3),
+            )?;
             void()
         },
     ),
@@ -2739,11 +2801,45 @@ const CIPHER_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
         "(ILjava/security/Key;Ljava/security/spec/AlgorithmParameterSpec;Ljava/security/SecureRandom;)V",
         ACC_PUBLIC,
         |vm, _, args| {
-            let this = receiver(args);
-            let class = vm.class_of(this);
-            let (declaring, field) = vm.find_field(class, "mode", "I")?;
-            vm.set_instance_int(this, declaring, field, int_arg(args, 1));
-            set_ref_field(vm, this, "key", "Ljava/security/Key;", ref_arg(args, 2))?;
+            cipher_init(
+                vm,
+                receiver(args),
+                int_arg(args, 1),
+                ref_arg(args, 2),
+                ref_arg(args, 3),
+            )?;
+            void()
+        },
+    ),
+    method(
+        "init",
+        "(ILjava/security/Key;Ljava/security/AlgorithmParameters;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let params = ref_arg(args, 3);
+            let spec = if params.is_null() {
+                ObjectRef::NULL
+            } else {
+                vm.read_ref_field_any(params, "spec")
+                    .unwrap_or(ObjectRef::NULL)
+            };
+            cipher_init(vm, receiver(args), int_arg(args, 1), ref_arg(args, 2), spec)?;
+            void()
+        },
+    ),
+    method(
+        "init",
+        "(ILjava/security/Key;Ljava/security/AlgorithmParameters;Ljava/security/SecureRandom;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let params = ref_arg(args, 3);
+            let spec = if params.is_null() {
+                ObjectRef::NULL
+            } else {
+                vm.read_ref_field_any(params, "spec")
+                    .unwrap_or(ObjectRef::NULL)
+            };
+            cipher_init(vm, receiver(args), int_arg(args, 1), ref_arg(args, 2), spec)?;
             void()
         },
     ),
@@ -2853,6 +2949,7 @@ pub(crate) const CIPHER: oxjvm_vm::NativeClass = class(
         field("provider", "Ljava/security/Provider;", ACC_PRIVATE, None),
         field("mode", "I", ACC_PRIVATE, None),
         field("key", "Ljava/security/Key;", ACC_PRIVATE, None),
+        field("iv", "[B", ACC_PRIVATE, None),
     ],
     &CIPHER_METHODS,
     None,
@@ -3012,6 +3109,265 @@ pub(crate) const GCMPARAMETER_SPEC: oxjvm_vm::NativeClass = class(
             object(ref_field(vm, receiver(args), "src", "[B"))
         }),
     ],
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// java.security.AlgorithmParameters
+// -------------------------------------------------------------------------------------------
+
+fn algorithm_parameters_instance(vm: &mut Vm<'_>, algorithm: &str) -> Result<ObjectRef, VmError> {
+    if algorithm.is_empty() {
+        return Err(vm.throw_new(
+            "java/security/NoSuchAlgorithmException",
+            Some("algorithm must not be empty"),
+        ));
+    }
+    let class = vm.resolve_class("java/security/AlgorithmParameters")?;
+    let params = vm.new_instance(class)?;
+    set_string_field(vm, params, "algorithm", algorithm)?;
+    let provider = new_sun_provider(vm, "SunJCE")?;
+    set_ref_field(vm, params, "provider", "Ljava/security/Provider;", provider)?;
+    Ok(params)
+}
+
+/// Build an `IvParameterSpec` wrapping the given IV array.
+fn new_iv_parameter_spec(vm: &mut Vm<'_>, iv: ObjectRef) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("javax/crypto/spec/IvParameterSpec")?;
+    let spec = vm.new_instance(class)?;
+    set_ref_field(vm, spec, "iv", "[B", iv)?;
+    Ok(spec)
+}
+
+const ALGORITHM_PARAMETERS_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+    method(
+        "getInstance",
+        "(Ljava/lang/String;)Ljava/security/AlgorithmParameters;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = ref_arg(args, 0);
+            if name.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(algorithm_parameters_instance(
+                vm,
+                &vm.string_or_empty(name),
+            )?)
+        },
+    ),
+    method(
+        "getInstance",
+        "(Ljava/lang/String;Ljava/lang/String;)Ljava/security/AlgorithmParameters;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() || ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let provider = vm.string_or_empty(ref_arg(args, 1));
+            if !known_provider(&provider) {
+                return Err(vm.throw_new("java/security/NoSuchProviderException", Some(&provider)));
+            }
+            object(algorithm_parameters_instance(
+                vm,
+                &vm.string_or_empty(ref_arg(args, 0)),
+            )?)
+        },
+    ),
+    method(
+        "getInstance",
+        "(Ljava/lang/String;Ljava/security/Provider;)Ljava/security/AlgorithmParameters;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() || ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(algorithm_parameters_instance(
+                vm,
+                &vm.string_or_empty(ref_arg(args, 0)),
+            )?)
+        },
+    ),
+    method(
+        "getAlgorithm",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| object(vm.make_string(&string_field(vm, receiver(args), "algorithm"))?),
+    ),
+    method(
+        "getProvider",
+        "()Ljava/security/Provider;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "provider",
+                "Ljava/security/Provider;",
+            ))
+        },
+    ),
+    method(
+        "init",
+        "(Ljava/security/spec/AlgorithmParameterSpec;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let spec = ref_arg(args, 1);
+            if spec.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            set_ref_field(
+                vm,
+                receiver(args),
+                "spec",
+                "Ljava/security/spec/AlgorithmParameterSpec;",
+                spec,
+            )?;
+            void()
+        },
+    ),
+    method("init", "([B)V", ACC_PUBLIC, |vm, _, args| {
+        let encoded = ref_arg(args, 1);
+        if encoded.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let spec = new_iv_parameter_spec(vm, encoded)?;
+        set_ref_field(
+            vm,
+            receiver(args),
+            "spec",
+            "Ljava/security/spec/AlgorithmParameterSpec;",
+            spec,
+        )?;
+        void()
+    }),
+    method(
+        "init",
+        "([BLjava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let encoded = ref_arg(args, 1);
+            if encoded.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let spec = new_iv_parameter_spec(vm, encoded)?;
+            set_ref_field(
+                vm,
+                receiver(args),
+                "spec",
+                "Ljava/security/spec/AlgorithmParameterSpec;",
+                spec,
+            )?;
+            void()
+        },
+    ),
+    method(
+        "getParameterSpec",
+        "(Ljava/lang/Class;)Ljava/security/spec/AlgorithmParameterSpec;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let requested = crate::lang::class_argument(vm, ref_arg(args, 1))?;
+            let name = String::from(vm.class_name(requested));
+            let spec = ref_field(
+                vm,
+                this,
+                "spec",
+                "Ljava/security/spec/AlgorithmParameterSpec;",
+            );
+            if spec.is_null() {
+                return Err(vm.throw_new(
+                    "java/security/spec/InvalidParameterSpecException",
+                    Some("Parameters not initialized"),
+                ));
+            }
+            let spec_name = String::from(vm.class_name(vm.class_of(spec)));
+            if name == spec_name {
+                return object(spec);
+            }
+            // An IV-bearing spec can always be viewed as a plain IvParameterSpec.
+            if name == "javax/crypto/spec/IvParameterSpec" {
+                if let Ok((class, method)) = vm.resolve_virtual_method(spec, "getIV", "()[B") {
+                    let iv = vm
+                        .invoke_method(class, method, vec![Value::Ref(spec)])?
+                        .as_ref();
+                    return object(new_iv_parameter_spec(vm, iv)?);
+                }
+            }
+            Err(vm.throw_new(
+                "java/security/spec/InvalidParameterSpecException",
+                Some(&name),
+            ))
+        },
+    ),
+    method("getEncoded", "()[B", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let spec = ref_field(
+            vm,
+            this,
+            "spec",
+            "Ljava/security/spec/AlgorithmParameterSpec;",
+        );
+        if spec.is_null() {
+            return object(new_byte_array(vm, &[])?);
+        }
+        let (class, method) = vm.resolve_virtual_method(spec, "getIV", "()[B")?;
+        let iv = vm
+            .invoke_method(class, method, vec![Value::Ref(spec)])?
+            .as_ref();
+        object(iv)
+    }),
+    method(
+        "getEncoded",
+        "(Ljava/lang/String;)[B",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let spec = ref_field(
+                vm,
+                this,
+                "spec",
+                "Ljava/security/spec/AlgorithmParameterSpec;",
+            );
+            if spec.is_null() {
+                return object(new_byte_array(vm, &[])?);
+            }
+            let (class, method) = vm.resolve_virtual_method(spec, "getIV", "()[B")?;
+            let iv = vm
+                .invoke_method(class, method, vec![Value::Ref(spec)])?
+                .as_ref();
+            object(iv)
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = alloc::format!(
+                "AlgorithmParameters[{}]",
+                string_field(vm, receiver(args), "algorithm")
+            );
+            object(vm.make_string(&text)?)
+        },
+    ),
+];
+
+pub(crate) const ALGORITHM_PARAMETERS: oxjvm_vm::NativeClass = class(
+    "java/security/AlgorithmParameters",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("algorithm", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("provider", "Ljava/security/Provider;", ACC_PRIVATE, None),
+        field(
+            "spec",
+            "Ljava/security/spec/AlgorithmParameterSpec;",
+            ACC_PRIVATE,
+            None,
+        ),
+    ],
+    &ALGORITHM_PARAMETERS_METHODS,
     None,
 );
 
