@@ -420,6 +420,17 @@ pub(crate) fn unbox_value(vm: &Vm<'_>, reference: ObjectRef, descriptor: &str) -
     }
 }
 
+/// Like [`unbox_value`], but in operand-stack form for a method call: a `double` or `float`
+/// argument must arrive as `Value::Double`/`Value::Float`, not as its raw bit pattern in a
+/// `Long`/`Int` (which is how fields store them).
+pub(crate) fn unbox_call_argument(vm: &Vm<'_>, reference: ObjectRef, descriptor: &str) -> Value {
+    match descriptor {
+        "D" => Value::Double(f64::from_bits(read_value_long(vm, reference) as u64)),
+        "F" => Value::Float(f32::from_bits(read_value_int(vm, reference) as u32)),
+        _ => unbox_value(vm, reference, descriptor),
+    }
+}
+
 pub(crate) fn boxed_int(vm: &mut Vm<'_>, value: i32) -> Result<Value, VmError> {
     box_integer_like(vm, "java/lang/Integer", b'I', value)
 }

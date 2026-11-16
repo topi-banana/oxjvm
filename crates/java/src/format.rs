@@ -96,13 +96,6 @@ impl NumberPattern {
         }
     }
 
-    /// A compact number format: the value is written as a multiple of a thousand or more.
-    fn compact(style: Compact) -> Self {
-        let mut pattern = Self::parse("#,##0.#");
-        pattern.compact = Some(style);
-        pattern
-    }
-
     /// Format a number with this pattern.
     fn format(&self, value: f64) -> String {
         let mut scaled = if self.percent { value * 100.0 } else { value };
@@ -503,7 +496,7 @@ pub(crate) const PARSE_POSITION: oxjvm_vm::NativeClass = class(
 // NumberFormat
 // -------------------------------------------------------------------------------------------
 
-const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
+const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
     method(
         "getInstance",
         "()Ljava/text/NumberFormat;",
@@ -566,18 +559,26 @@ const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
     ),
     method(
         "getCompactNumberInstance",
+        "()Ljava/text/NumberFormat;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| compact_number_format(vm, "#,##0.###", ObjectRef::NULL, "SHORT"),
+    ),
+    method(
+        "getCompactNumberInstance",
+        "(Ljava/util/Locale;)Ljava/text/NumberFormat;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| compact_number_format(vm, "#,##0.###", ObjectRef::NULL, "SHORT"),
+    ),
+    method(
+        "getCompactNumberInstance",
         "(Ljava/util/Locale;Ljava/text/NumberFormat$Style;)Ljava/text/NumberFormat;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let style = vm
                 .read_string_field(ref_arg(args, 1), vm.class_of(ref_arg(args, 1)), "name")
                 .unwrap_or_default();
-            let compact = if style == "LONG" {
-                Compact::Long
-            } else {
-                Compact::Short
-            };
-            number_format(vm, &NumberPattern::compact(compact))
+            let style = if style == "LONG" { "LONG" } else { "SHORT" };
+            compact_number_format(vm, "#,##0.###", ObjectRef::NULL, style)
         },
     ),
     method(
@@ -1804,6 +1805,768 @@ pub(crate) const CHOICE_FORMAT: oxjvm_vm::NativeClass = class(
         field("kind", "Ljava/lang/String;", ACC_PRIVATE, None),
     ],
     &CHOICE_FORMAT_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// CompactNumberFormat
+// -------------------------------------------------------------------------------------------
+
+/// The default SHORT compact patterns: three magnitudes each for K, M, B and T.
+const DEFAULT_COMPACT_PATTERNS: [&str; 15] = [
+    "0", "0", "0", "0K", "00K", "000K", "0M", "00M", "000M", "0B", "00B", "000B", "0T", "00T",
+    "000T",
+];
+
+/// Build a `CompactNumberFormat` carrying the decimal pattern, compact patterns and style.
+fn compact_number_format(
+    vm: &mut Vm<'_>,
+    decimal_pattern: &str,
+    patterns: ObjectRef,
+    style: &str,
+) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/text/CompactNumberFormat")?;
+    let instance = vm.new_instance(class)?;
+    let text = vm.make_string(decimal_pattern)?;
+    let (declaring, field) = vm.find_field(class, "pattern", "Ljava/lang/String;")?;
+    vm.set_instance_ref(instance, declaring, field, text);
+    let patterns = if patterns.is_null() {
+        let string_class = vm.resolve_class("java/lang/String")?;
+        let array = vm.allocate_object_array(string_class, DEFAULT_COMPACT_PATTERNS.len())?;
+        for (index, pattern) in DEFAULT_COMPACT_PATTERNS.iter().enumerate() {
+            let text = vm.make_string(pattern)?;
+            vm.array_set_ref(array, index, text)?;
+        }
+        array
+    } else {
+        patterns
+    };
+    let (declaring, field) = vm.find_field(class, "compactPatterns", "[Ljava/lang/String;")?;
+    vm.set_instance_ref(instance, declaring, field, patterns);
+    let style_text = vm.make_string(style)?;
+    let (declaring, field) = vm.find_field(class, "compactStyle", "Ljava/lang/String;")?;
+    vm.set_instance_ref(instance, declaring, field, style_text);
+    let kind = vm.make_string("number")?;
+    let (declaring, field) = vm.find_field(class, "kind", "Ljava/lang/String;")?;
+    vm.set_instance_ref(instance, declaring, field, kind);
+    object(instance)
+}
+
+/// The compact patterns a format carries, as text.
+fn compact_patterns_of(vm: &mut Vm<'_>, format: ObjectRef) -> Vec<String> {
+    let array = vm
+        .read_ref_field(
+            format,
+            vm.class_of(format),
+            "compactPatterns",
+            "[Ljava/lang/String;",
+        )
+        .unwrap_or(ObjectRef::NULL);
+    object_array_elements(vm, array)
+        .into_iter()
+        .map(|element| vm.string_or_empty(element))
+        .collect()
+}
+
+/// Format a value in compact form: pick the magnitude's pattern, scale the value, and write
+/// the pattern's digit count with its suffix.
+fn compact_format_value(vm: &mut Vm<'_>, format: ObjectRef, value: f64) -> String {
+    let decimal = pattern_of(vm, format);
+    let style = vm
+        .read_string_field(format, vm.class_of(format), "compactStyle")
+        .unwrap_or_default();
+    let compact = if style == "LONG" {
+        Compact::Long
+    } else {
+        Compact::Short
+    };
+    let patterns = compact_patterns_of(vm, format);
+    let magnitude = value.abs();
+    if patterns.is_empty() || magnitude < 1000.0 {
+        return NumberPattern::parse(&decimal).format(value);
+    }
+    let group = if magnitude >= 1e12 {
+        4
+    } else if magnitude >= 1e9 {
+        3
+    } else if magnitude >= 1e6 {
+        2
+    } else {
+        1
+    };
+    let divisor = power_of_ten(group * 3);
+    let scaled = magnitude / divisor;
+    // Within a magnitude the pattern index follows the number of integer digits (1..3).
+    let digits = if scaled >= 100.0 {
+        3
+    } else if scaled >= 10.0 {
+        2
+    } else {
+        1
+    };
+    let index = (group * 3 + digits - 1).min(patterns.len() - 1);
+    let pattern = &patterns[index];
+    let digit_count = pattern.chars().filter(|ch| *ch == '0').count().max(1);
+    let suffix: String = pattern
+        .chars()
+        .skip_while(|ch| ch.is_ascii_digit() || *ch == '#' || *ch == '.' || *ch == ',')
+        .collect();
+    let factor = power_of_ten(digit_count.saturating_sub(1));
+    let rounded = crate::math::floor(scaled * factor + 0.5) / factor;
+    let mut text = format_integer(rounded);
+    if text.len() > digit_count {
+        text.truncate(digit_count);
+    }
+    let mut out = String::new();
+    if value < 0.0 {
+        out.push('-');
+    }
+    out.push_str(&text);
+    if compact == Compact::Long {
+        out.push(' ');
+        out.push_str(match group {
+            1 => "thousand",
+            2 => "million",
+            3 => "billion",
+            _ => "trillion",
+        });
+    } else {
+        out.push_str(&suffix);
+    }
+    out
+}
+
+/// Parse compact text: a trailing K/M/B/T (or the long word) scales the number back up.
+fn compact_parse_value(vm: &mut Vm<'_>, text: &str) -> Result<Value, VmError> {
+    let trimmed = text.trim();
+    let (number, multiplier) = if let Some(rest) = trimmed.strip_suffix('K') {
+        (rest, 1e3)
+    } else if let Some(rest) = trimmed.strip_suffix('M') {
+        (rest, 1e6)
+    } else if let Some(rest) = trimmed.strip_suffix('B') {
+        (rest, 1e9)
+    } else if let Some(rest) = trimmed.strip_suffix('T') {
+        (rest, 1e12)
+    } else if let Some(rest) = trimmed.strip_suffix("thousand") {
+        (rest.trim_end(), 1e3)
+    } else if let Some(rest) = trimmed.strip_suffix("million") {
+        (rest.trim_end(), 1e6)
+    } else if let Some(rest) = trimmed.strip_suffix("billion") {
+        (rest.trim_end(), 1e9)
+    } else if let Some(rest) = trimmed.strip_suffix("trillion") {
+        (rest.trim_end(), 1e12)
+    } else {
+        (trimmed, 1.0)
+    };
+    let value = parse_number_text(number)
+        .ok_or_else(|| vm.throw_new("java/text/ParseException", Some("Unparsable number")))?;
+    let scaled = value * multiplier;
+    if scaled >= i64::MIN as f64 && scaled <= i64::MAX as f64 && scaled == (scaled as i64) as f64 {
+        crate::boxed::boxed_long(vm, scaled as i64)
+    } else {
+        crate::boxed::boxed_double(vm, scaled)
+    }
+}
+
+const COMPACT_NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/text/DecimalFormatSymbols;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let pattern = vm.string_or_empty(ref_arg(args, 1));
+            let value = compact_number_format(vm, &pattern, ObjectRef::NULL, "SHORT")?;
+            copy_compact_fields(vm, this, value.as_ref());
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/text/DecimalFormatSymbols;[Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let pattern = vm.string_or_empty(ref_arg(args, 1));
+            let value = compact_number_format(vm, &pattern, ref_arg(args, 3), "SHORT")?;
+            copy_compact_fields(vm, this, value.as_ref());
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/text/DecimalFormatSymbols;[Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let pattern = vm.string_or_empty(ref_arg(args, 1));
+            let value = compact_number_format(vm, &pattern, ref_arg(args, 3), "SHORT")?;
+            copy_compact_fields(vm, this, value.as_ref());
+            void()
+        },
+    ),
+    method(
+        "format",
+        "(D)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = compact_format_value(vm, receiver(args), args[1].as_double());
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "format",
+        "(Ljava/lang/Object;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let value = number_value(vm, ref_arg(args, 1)).unwrap_or(0.0);
+            let text = compact_format_value(vm, receiver(args), value);
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "parse",
+        "(Ljava/lang/String;)Ljava/lang/Number;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = vm.string_or_empty(ref_arg(args, 1));
+            compact_parse_value(vm, &text)
+        },
+    ),
+    method(
+        "parse",
+        "(Ljava/lang/String;Ljava/text/ParsePosition;)Ljava/lang/Number;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let position = ref_arg(args, 2);
+            let text = vm.string_or_empty(ref_arg(args, 1));
+            let start = read_int_field(vm, position, "index").max(0) as usize;
+            let slice: String = text.chars().skip(start).collect();
+            match compact_parse_value(vm, &slice) {
+                Ok(value) => {
+                    write_int_field(vm, position, "index", text.chars().count() as i32);
+                    Ok(value)
+                }
+                Err(_) => {
+                    write_int_field(vm, position, "errorIndex", start as i32);
+                    object(ObjectRef::NULL)
+                }
+            }
+        },
+    ),
+    method(
+        "toPattern",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let pattern = pattern_of(vm, receiver(args));
+            object(vm.make_string(&pattern)?)
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let pattern = pattern_of(vm, receiver(args));
+            let patterns = compact_patterns_of(vm, receiver(args));
+            let text = alloc::format!(
+                "CompactNumberFormat [decimal pattern: \"{pattern}\", compact patterns: \"[{}]\"]",
+                patterns.join(", ")
+            );
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = ref_arg(args, 1);
+            if other.is_null() {
+                return crate::boolean(false);
+            }
+            let this = receiver(args);
+            let same = vm.class_of(this) == vm.class_of(other)
+                && pattern_of(vm, this) == pattern_of(vm, other)
+                && compact_patterns_of(vm, this) == compact_patterns_of(vm, other);
+            crate::boolean(same)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let pattern = pattern_of(vm, receiver(args));
+        let mut hash = 0i32;
+        for ch in pattern.chars() {
+            hash = hash.wrapping_mul(31).wrapping_add(ch as i32);
+        }
+        int(hash)
+    }),
+    method(
+        "getDecimalFormatSymbols",
+        "()Ljava/text/DecimalFormatSymbols;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/text/DecimalFormatSymbols")?;
+            object(vm.new_instance(class)?)
+        },
+    ),
+    method("setGroupingSize", "(I)V", ACC_PUBLIC, |_, _, _| void()),
+    method("getGroupingSize", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+];
+
+/// Copy the compact format's fields onto a freshly constructed instance.
+fn copy_compact_fields(vm: &mut Vm<'_>, target: ObjectRef, source: ObjectRef) {
+    let class = vm.class_of(source);
+    for (name, descriptor) in [
+        ("pattern", "Ljava/lang/String;"),
+        ("compactPatterns", "[Ljava/lang/String;"),
+        ("compactStyle", "Ljava/lang/String;"),
+        ("kind", "Ljava/lang/String;"),
+    ] {
+        if let Some(value) = vm.read_ref_field(source, class, name, descriptor) {
+            if let Some((declaring, field)) =
+                vm.find_field_opt(vm.class_of(target), name, descriptor)
+            {
+                vm.set_instance_ref(target, declaring, field, value);
+            }
+        }
+    }
+}
+
+/// `java.text.CompactNumberFormat`: numbers written as multiples of a thousand or more.
+pub(crate) const COMPACT_NUMBER_FORMAT: oxjvm_vm::NativeClass = class(
+    "java/text/CompactNumberFormat",
+    Some("java/text/NumberFormat"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("pattern", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("compactPatterns", "[Ljava/lang/String;", ACC_PRIVATE, None),
+        field("compactStyle", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("kind", "Ljava/lang/String;", ACC_PRIVATE, None),
+    ],
+    &COMPACT_NUMBER_FORMAT_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// DateFormatSymbols
+// -------------------------------------------------------------------------------------------
+
+/// A fresh `String[]` holding the given texts.
+fn make_string_array(vm: &mut Vm<'_>, texts: &[&str]) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/lang/String")?;
+    let array = vm.allocate_object_array(class, texts.len())?;
+    for (index, text) in texts.iter().enumerate() {
+        let value = vm.make_string(text)?;
+        vm.array_set_ref(array, index, value)?;
+    }
+    Ok(array)
+}
+
+/// The texts a `String[]` holds.
+fn read_string_array(vm: &mut Vm<'_>, array: ObjectRef) -> Vec<String> {
+    object_array_elements(vm, array)
+        .into_iter()
+        .map(|element| vm.string_or_empty(element))
+        .collect()
+}
+
+/// A copy of a `String[]`, the way the JDK's getters and setters hand out arrays.
+fn clone_string_array(vm: &mut Vm<'_>, array: ObjectRef) -> Result<ObjectRef, VmError> {
+    let texts = read_string_array(vm, array);
+    let refs: Vec<&str> = texts.iter().map(|text| text.as_str()).collect();
+    make_string_array(vm, &refs)
+}
+
+/// Fill a fresh `DateFormatSymbols` with the English defaults.
+fn date_format_symbols_init(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    let class = vm.class_of(this);
+    let months = make_string_array(
+        vm,
+        &[
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        ],
+    )?;
+    let short_months = make_string_array(
+        vm,
+        &[
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ],
+    )?;
+    let weekdays = make_string_array(
+        vm,
+        &[
+            "",
+            "Sunday",
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+        ],
+    )?;
+    let short_weekdays =
+        make_string_array(vm, &["", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"])?;
+    let eras = make_string_array(vm, &["BC", "AD"])?;
+    let ampms = make_string_array(vm, &["AM", "PM"])?;
+    for (name, array) in [
+        ("months", months),
+        ("shortMonths", short_months),
+        ("weekdays", weekdays),
+        ("shortWeekdays", short_weekdays),
+        ("eras", eras),
+        ("ampms", ampms),
+    ] {
+        let (declaring, field) = vm.find_field(class, name, "[Ljava/lang/String;")?;
+        vm.set_instance_ref(this, declaring, field, array);
+    }
+    let gmt = make_string_array(
+        vm,
+        &[
+            "GMT",
+            "Greenwich Mean Time",
+            "GMT",
+            "Greenwich Mean Time",
+            "GMT",
+        ],
+    )?;
+    let zone_class = vm.resolve_class("[Ljava/lang/String;")?;
+    let zones = vm.allocate_object_array(zone_class, 1)?;
+    vm.array_set_ref(zones, 0, gmt)?;
+    let (declaring, field) = vm.find_field(class, "zoneStrings", "[[Ljava/lang/String;")?;
+    vm.set_instance_ref(this, declaring, field, zones);
+    let chars = vm.make_string("GyMdkHmsSEDFwWahKzZ")?;
+    let (declaring, field) = vm.find_field(class, "localPatternChars", "Ljava/lang/String;")?;
+    vm.set_instance_ref(this, declaring, field, chars);
+    Ok(())
+}
+
+/// A getter over one of the symbol `String[]` fields; the JDK hands out a copy.
+macro_rules! symbols_getter {
+    ($getter:literal, $field:literal) => {
+        method(
+            $getter,
+            "()[Ljava/lang/String;",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let this = receiver(args);
+                let array = vm
+                    .read_ref_field(this, vm.class_of(this), $field, "[Ljava/lang/String;")
+                    .unwrap_or(ObjectRef::NULL);
+                object(clone_string_array(vm, array)?)
+            },
+        )
+    };
+}
+
+/// A setter over one of the symbol `String[]` fields; the JDK stores a copy.
+macro_rules! symbols_setter {
+    ($setter:literal, $field:literal) => {
+        method(
+            $setter,
+            "([Ljava/lang/String;)V",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let this = receiver(args);
+                if ref_arg(args, 1).is_null() {
+                    return Err(vm.throw_new("java/lang/NullPointerException", None));
+                }
+                let copy = clone_string_array(vm, ref_arg(args, 1))?;
+                let (declaring, field) =
+                    vm.find_field(vm.class_of(this), $field, "[Ljava/lang/String;")?;
+                vm.set_instance_ref(this, declaring, field, copy);
+                void()
+            },
+        )
+    };
+}
+
+const DATE_FORMAT_SYMBOLS_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        date_format_symbols_init(vm, receiver(args))?;
+        void()
+    }),
+    method(
+        "<init>",
+        "(Ljava/util/Locale;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            date_format_symbols_init(vm, receiver(args))?;
+            void()
+        },
+    ),
+    method(
+        "getInstance",
+        "()Ljava/text/DateFormatSymbols;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/text/DateFormatSymbols")?;
+            let instance = vm.new_instance(class)?;
+            date_format_symbols_init(vm, instance)?;
+            object(instance)
+        },
+    ),
+    method(
+        "getInstance",
+        "(Ljava/util/Locale;)Ljava/text/DateFormatSymbols;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let class = vm.resolve_class("java/text/DateFormatSymbols")?;
+            let instance = vm.new_instance(class)?;
+            date_format_symbols_init(vm, instance)?;
+            object(instance)
+        },
+    ),
+    method(
+        "getAvailableLocales",
+        "()[Ljava/util/Locale;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/util/Locale")?;
+            vm.ensure_initialized(class)?;
+            let names = [
+                "ROOT", "ENGLISH", "US", "UK", "CANADA", "FRANCE", "GERMANY", "ITALY", "JAPAN",
+                "KOREA", "CHINA", "PRC", "TAIWAN",
+            ];
+            let mut locales = Vec::new();
+            for name in names {
+                if let Some(value) = vm.read_static_ref_if_set(class, name, "Ljava/util/Locale;") {
+                    locales.push(value);
+                }
+            }
+            let array = vm.allocate_object_array(class, locales.len())?;
+            for (index, locale) in locales.iter().enumerate() {
+                vm.array_set_ref(array, index, *locale)?;
+            }
+            object(array)
+        },
+    ),
+    symbols_getter!("getMonths", "months"),
+    symbols_setter!("setMonths", "months"),
+    symbols_getter!("getShortMonths", "shortMonths"),
+    symbols_setter!("setShortMonths", "shortMonths"),
+    symbols_getter!("getWeekdays", "weekdays"),
+    symbols_setter!("setWeekdays", "weekdays"),
+    symbols_getter!("getShortWeekdays", "shortWeekdays"),
+    symbols_setter!("setShortWeekdays", "shortWeekdays"),
+    symbols_getter!("getEras", "eras"),
+    symbols_setter!("setEras", "eras"),
+    symbols_getter!("getAmPmStrings", "ampms"),
+    symbols_setter!("setAmPmStrings", "ampms"),
+    method(
+        "getZoneStrings",
+        "()[[Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let zones = vm
+                .read_ref_field(
+                    this,
+                    vm.class_of(this),
+                    "zoneStrings",
+                    "[[Ljava/lang/String;",
+                )
+                .unwrap_or(ObjectRef::NULL);
+            let rows = object_array_elements(vm, zones);
+            let string_class = vm.resolve_class("[Ljava/lang/String;")?;
+            let copy = vm.allocate_object_array(string_class, rows.len())?;
+            for (index, row) in rows.iter().enumerate() {
+                let cloned = clone_string_array(vm, *row)?;
+                vm.array_set_ref(copy, index, cloned)?;
+            }
+            object(copy)
+        },
+    ),
+    method(
+        "setZoneStrings",
+        "([[Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let rows = object_array_elements(vm, ref_arg(args, 1));
+            let string_class = vm.resolve_class("[Ljava/lang/String;")?;
+            let copy = vm.allocate_object_array(string_class, rows.len())?;
+            for (index, row) in rows.iter().enumerate() {
+                let cloned = clone_string_array(vm, *row)?;
+                vm.array_set_ref(copy, index, cloned)?;
+            }
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "zoneStrings", "[[Ljava/lang/String;")?;
+            vm.set_instance_ref(this, declaring, field, copy);
+            void()
+        },
+    ),
+    method(
+        "getLocalPatternChars",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let chars = vm
+                .read_string_field(
+                    receiver(args),
+                    vm.class_of(receiver(args)),
+                    "localPatternChars",
+                )
+                .unwrap_or_default();
+            object(vm.make_string(&chars)?)
+        },
+    ),
+    method(
+        "setLocalPatternChars",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "localPatternChars", "Ljava/lang/String;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method(
+        "clone",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let copy = vm.new_instance(class)?;
+            for name in [
+                "months",
+                "shortMonths",
+                "weekdays",
+                "shortWeekdays",
+                "eras",
+                "ampms",
+            ] {
+                let array = vm
+                    .read_ref_field(this, class, name, "[Ljava/lang/String;")
+                    .unwrap_or(ObjectRef::NULL);
+                let cloned = clone_string_array(vm, array)?;
+                let (declaring, field) = vm.find_field(class, name, "[Ljava/lang/String;")?;
+                vm.set_instance_ref(copy, declaring, field, cloned);
+            }
+            let zones = vm
+                .read_ref_field(this, class, "zoneStrings", "[[Ljava/lang/String;")
+                .unwrap_or(ObjectRef::NULL);
+            let rows = object_array_elements(vm, zones);
+            let string_class = vm.resolve_class("[Ljava/lang/String;")?;
+            let zones_copy = vm.allocate_object_array(string_class, rows.len())?;
+            for (index, row) in rows.iter().enumerate() {
+                let cloned = clone_string_array(vm, *row)?;
+                vm.array_set_ref(zones_copy, index, cloned)?;
+            }
+            let (declaring, field) = vm.find_field(class, "zoneStrings", "[[Ljava/lang/String;")?;
+            vm.set_instance_ref(copy, declaring, field, zones_copy);
+            let chars = vm
+                .read_ref_field(this, class, "localPatternChars", "Ljava/lang/String;")
+                .unwrap_or(ObjectRef::NULL);
+            let (declaring, field) =
+                vm.find_field(class, "localPatternChars", "Ljava/lang/String;")?;
+            vm.set_instance_ref(copy, declaring, field, chars);
+            object(copy)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let array = vm
+            .read_ref_field(this, vm.class_of(this), "months", "[Ljava/lang/String;")
+            .unwrap_or(ObjectRef::NULL);
+        let mut hash = 0i32;
+        for text in read_string_array(vm, array) {
+            for ch in text.chars() {
+                hash = hash.wrapping_mul(31).wrapping_add(ch as i32);
+            }
+        }
+        int(hash)
+    }),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = ref_arg(args, 1);
+            if other.is_null() {
+                return crate::boolean(false);
+            }
+            let this = receiver(args);
+            if vm.class_of(this) != vm.class_of(other) {
+                return crate::boolean(false);
+            }
+            let class = vm.class_of(this);
+            for name in [
+                "months",
+                "shortMonths",
+                "weekdays",
+                "shortWeekdays",
+                "eras",
+                "ampms",
+            ] {
+                let left = vm
+                    .read_ref_field(this, class, name, "[Ljava/lang/String;")
+                    .unwrap_or(ObjectRef::NULL);
+                let right = vm
+                    .read_ref_field(other, class, name, "[Ljava/lang/String;")
+                    .unwrap_or(ObjectRef::NULL);
+                if read_string_array(vm, left) != read_string_array(vm, right) {
+                    return crate::boolean(false);
+                }
+            }
+            crate::boolean(true)
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let array = vm
+                .read_ref_field(this, vm.class_of(this), "months", "[Ljava/lang/String;")
+                .unwrap_or(ObjectRef::NULL);
+            let texts = read_string_array(vm, array);
+            let text = alloc::format!("DateFormatSymbols [months=[{}]]", texts.join(","));
+            object(vm.make_string(&text)?)
+        },
+    ),
+];
+
+/// `java.text.DateFormatSymbols`: the month, weekday, era and zone names a date format uses.
+pub(crate) const DATE_FORMAT_SYMBOLS: oxjvm_vm::NativeClass = class(
+    "java/text/DateFormatSymbols",
+    Some("java/lang/Object"),
+    &["java/io/Serializable", "java/lang/Cloneable"],
+    ACC_PUBLIC,
+    &[
+        field("months", "[Ljava/lang/String;", ACC_PRIVATE, None),
+        field("shortMonths", "[Ljava/lang/String;", ACC_PRIVATE, None),
+        field("weekdays", "[Ljava/lang/String;", ACC_PRIVATE, None),
+        field("shortWeekdays", "[Ljava/lang/String;", ACC_PRIVATE, None),
+        field("eras", "[Ljava/lang/String;", ACC_PRIVATE, None),
+        field("ampms", "[Ljava/lang/String;", ACC_PRIVATE, None),
+        field("zoneStrings", "[[Ljava/lang/String;", ACC_PRIVATE, None),
+        field("localPatternChars", "Ljava/lang/String;", ACC_PRIVATE, None),
+    ],
+    &DATE_FORMAT_SYMBOLS_METHODS,
     None,
 );
 

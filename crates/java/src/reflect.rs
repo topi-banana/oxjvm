@@ -528,7 +528,7 @@ fn reflect_invoke(
     let arguments = ref_arg(args, 2);
     for (index, parameter) in parsed.parameters.iter().enumerate() {
         let value = vm.array_get(arguments, index as i32)?;
-        call_args.push(crate::boxed::unbox_value(
+        call_args.push(crate::boxed::unbox_call_argument(
             vm,
             value.as_ref(),
             &field_type_descriptor(parameter),
@@ -2988,7 +2988,7 @@ fn constructor_new_instance(
     let mut call_args = Vec::with_capacity(parsed.parameters.len() + 1);
     for (index, parameter) in parsed.parameters.iter().enumerate() {
         let value = vm.array_get(arguments, index as i32)?;
-        call_args.push(crate::boxed::unbox_value(
+        call_args.push(crate::boxed::unbox_call_argument(
             vm,
             value.as_ref(),
             &field_type_descriptor(parameter),
