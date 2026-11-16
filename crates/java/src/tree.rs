@@ -1163,7 +1163,7 @@ fn tree_map_descending_key_set(
     object(set)
 }
 
-const TREE_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 56] = [
+const TREE_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 60] = [
     method("<init>", "()V", ACC_PUBLIC, tree_map_init),
     method(
         "<init>",
@@ -1463,6 +1463,30 @@ const TREE_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 56] = [
         "()Ljava/util/NavigableMap;",
         ACC_PUBLIC,
         tree_map_descending_map,
+    ),
+    method(
+        "reversed",
+        "()Ljava/util/SequencedMap;",
+        ACC_PUBLIC,
+        tree_map_descending_map,
+    ),
+    method(
+        "sequencedKeySet",
+        "()Ljava/util/SequencedSet;",
+        ACC_PUBLIC,
+        tree_map_key_set,
+    ),
+    method(
+        "sequencedValues",
+        "()Ljava/util/SequencedCollection;",
+        ACC_PUBLIC,
+        tree_map_values,
+    ),
+    method(
+        "sequencedEntrySet",
+        "()Ljava/util/SequencedSet;",
+        ACC_PUBLIC,
+        tree_map_entry_set,
     ),
     method(
         "navigableKeySet",

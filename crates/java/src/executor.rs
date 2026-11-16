@@ -792,3 +792,199 @@ pub(crate) const THREAD_LOCAL_RANDOM: oxjvm_vm::NativeClass = class(
     &THREAD_LOCAL_RANDOM_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// CompletionService / ExecutorCompletionService
+// -------------------------------------------------------------------------------------------
+
+const COMPLETION_SERVICE_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method(
+        "submit",
+        "(Ljava/util/concurrent/Callable;)Ljava/util/concurrent/Future;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "submit",
+        "(Ljava/lang/Runnable;Ljava/lang/Object;)Ljava/util/concurrent/Future;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "take",
+        "()Ljava/util/concurrent/Future;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "poll",
+        "()Ljava/util/concurrent/Future;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "poll",
+        "(JLjava/util/concurrent/TimeUnit;)Ljava/util/concurrent/Future;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
+pub(crate) const COMPLETION_SERVICE: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/CompletionService",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &COMPLETION_SERVICE_METHODS,
+    None,
+);
+
+/// The completion queue held by an `ExecutorCompletionService` (an `ArrayList`).
+fn completion_queue(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "queue", "Ljava/util/List;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+/// Append a completed future to the queue.
+fn completion_enqueue(vm: &mut Vm<'_>, this: ObjectRef, future: ObjectRef) -> Result<(), VmError> {
+    let queue = completion_queue(vm, this);
+    let (class, method) = vm.resolve_virtual_method(queue, "add", "(Ljava/lang/Object;)Z")?;
+    vm.invoke_method(class, method, vec![Value::Ref(queue), Value::Ref(future)])?;
+    Ok(())
+}
+
+/// Remove and return the head of the queue, or null when it is empty.
+fn completion_dequeue(vm: &mut Vm<'_>, this: ObjectRef) -> Result<ObjectRef, VmError> {
+    let queue = completion_queue(vm, this);
+    let (size_class, size) = vm.resolve_virtual_method(queue, "size", "()I")?;
+    let count = vm
+        .invoke_method(size_class, size, vec![Value::Ref(queue)])?
+        .as_int();
+    if count == 0 {
+        return Ok(ObjectRef::NULL);
+    }
+    let (class, method) = vm.resolve_virtual_method(queue, "remove", "(I)Ljava/lang/Object;")?;
+    Ok(vm
+        .invoke_method(class, method, vec![Value::Ref(queue), Value::Int(0)])?
+        .as_ref())
+}
+
+/// Submit a task, run it eagerly, and queue the completed future.
+fn completion_submit(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    callable: ObjectRef,
+    runnable: ObjectRef,
+    result: ObjectRef,
+) -> Result<Value, VmError> {
+    let task = future_task_new(vm, callable, runnable, result)?;
+    future_task_run(vm, task)?;
+    completion_enqueue(vm, this, task)?;
+    object(task)
+}
+
+const EXECUTOR_COMPLETION_SERVICE_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method(
+        "<init>",
+        "(Ljava/util/concurrent/Executor;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let queue = crate::util::array_list_from(vm, &[])?;
+            let (declaring, field) =
+                vm.find_field(class, "executor", "Ljava/util/concurrent/Executor;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            let (declaring, field) = vm.find_field(class, "queue", "Ljava/util/List;")?;
+            vm.set_instance_ref(this, declaring, field, queue);
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/util/concurrent/Executor;Ljava/util/concurrent/BlockingQueue;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let queue = crate::util::array_list_from(vm, &[])?;
+            let (declaring, field) =
+                vm.find_field(class, "executor", "Ljava/util/concurrent/Executor;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            let (declaring, field) = vm.find_field(class, "queue", "Ljava/util/List;")?;
+            vm.set_instance_ref(this, declaring, field, queue);
+            void()
+        },
+    ),
+    method(
+        "submit",
+        "(Ljava/util/concurrent/Callable;)Ljava/util/concurrent/Future;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            completion_submit(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                ObjectRef::NULL,
+                ObjectRef::NULL,
+            )
+        },
+    ),
+    method(
+        "submit",
+        "(Ljava/lang/Runnable;Ljava/lang/Object;)Ljava/util/concurrent/Future;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            completion_submit(
+                vm,
+                receiver(args),
+                ObjectRef::NULL,
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+            )
+        },
+    ),
+    method(
+        "take",
+        "()Ljava/util/concurrent/Future;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let future = completion_dequeue(vm, receiver(args))?;
+            if future.is_null() {
+                return Err(vm.throw_new("java/util/NoSuchElementException", None));
+            }
+            object(future)
+        },
+    ),
+    method(
+        "poll",
+        "()Ljava/util/concurrent/Future;",
+        ACC_PUBLIC,
+        |vm, _, args| object(completion_dequeue(vm, receiver(args))?),
+    ),
+    method(
+        "poll",
+        "(JLjava/util/concurrent/TimeUnit;)Ljava/util/concurrent/Future;",
+        ACC_PUBLIC,
+        |vm, _, args| object(completion_dequeue(vm, receiver(args))?),
+    ),
+];
+
+pub(crate) const EXECUTOR_COMPLETION_SERVICE: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/ExecutorCompletionService",
+    Some("java/lang/Object"),
+    &["java/util/concurrent/CompletionService"],
+    ACC_PUBLIC,
+    &[
+        field(
+            "executor",
+            "Ljava/util/concurrent/Executor;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field("queue", "Ljava/util/List;", ACC_PRIVATE, None),
+    ],
+    &EXECUTOR_COMPLETION_SERVICE_METHODS,
+    None,
+);

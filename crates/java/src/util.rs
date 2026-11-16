@@ -306,6 +306,163 @@ pub(crate) const COLLECTION: oxjvm_vm::NativeClass = class(
     None,
 );
 
+const SEQUENCED_COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method(
+        "addFirst",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "addLast",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getFirst",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getLast",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "removeFirst",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "removeLast",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "reversed",
+        "()Ljava/util/SequencedCollection;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
+pub(crate) const SEQUENCED_COLLECTION: oxjvm_vm::NativeClass = class(
+    "java/util/SequencedCollection",
+    Some("java/lang/Object"),
+    &["java/util/Collection"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &SEQUENCED_COLLECTION_METHODS,
+    None,
+);
+
+const SEQUENCED_SET_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "reversed",
+    "()Ljava/util/SequencedSet;",
+    ACC_PUBLIC | ACC_ABSTRACT,
+    crate::lang::abstract_method_pub,
+)];
+
+pub(crate) const SEQUENCED_SET: oxjvm_vm::NativeClass = class(
+    "java/util/SequencedSet",
+    Some("java/lang/Object"),
+    &["java/util/SequencedCollection", "java/util/Set"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &SEQUENCED_SET_METHODS,
+    None,
+);
+
+const SEQUENCED_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+    method(
+        "putFirst",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "putLast",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getFirst",
+        "()Ljava/util/Map$Entry;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getLast",
+        "()Ljava/util/Map$Entry;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "removeFirst",
+        "()Ljava/util/Map$Entry;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "removeLast",
+        "()Ljava/util/Map$Entry;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "pollFirstEntry",
+        "()Ljava/util/Map$Entry;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "pollLastEntry",
+        "()Ljava/util/Map$Entry;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "sequencedKeySet",
+        "()Ljava/util/SequencedSet;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "sequencedValues",
+        "()Ljava/util/SequencedCollection;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "sequencedEntrySet",
+        "()Ljava/util/SequencedSet;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "reversed",
+        "()Ljava/util/SequencedMap;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
+pub(crate) const SEQUENCED_MAP: oxjvm_vm::NativeClass = class(
+    "java/util/SequencedMap",
+    Some("java/lang/Object"),
+    &["java/util/Map"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &SEQUENCED_MAP_METHODS,
+    None,
+);
+
 const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
     method(
         "getFirst",
@@ -7226,7 +7383,7 @@ fn properties_set_property(
 // Collections
 // -------------------------------------------------------------------------------------------
 
-const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 68] = [
+const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 69] = [
     method(
         "sort",
         "(Ljava/util/List;)V",
@@ -7656,6 +7813,15 @@ const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 68] = [
         "()Ljava/util/Enumeration;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _| object(new_enumeration(vm, &[])?),
+    ),
+    method(
+        "enumeration",
+        "(Ljava/util/Collection;)Ljava/util/Enumeration;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let elements = collection_elements(vm, ref_arg(args, 0))?;
+            object(new_enumeration(vm, &elements)?)
+        },
     ),
     method(
         "emptyNavigableSet",
@@ -8627,7 +8793,7 @@ pub(crate) fn map_put_if_absent(
 // Enumeration + the legacy collections (HashSet, Hashtable, Vector)
 // -------------------------------------------------------------------------------------------
 
-const ENUMERATION_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+const ENUMERATION_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
     method(
         "hasMoreElements",
         "()Z",
@@ -8639,6 +8805,20 @@ const ENUMERATION_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
         "()Ljava/lang/Object;",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
+    ),
+    method(
+        "asIterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let enumeration = receiver(args);
+            let class = vm.resolve_class("java/util/OjvmEnumerationIterator")?;
+            let iterator = vm.new_instance(class)?;
+            let (declaring, field) =
+                vm.find_field(class, "enumeration", "Ljava/util/Enumeration;")?;
+            vm.set_instance_ref(iterator, declaring, field, enumeration);
+            object(iterator)
+        },
     ),
 ];
 
@@ -8865,6 +9045,55 @@ pub(crate) const OJVM_ENUMERATION: oxjvm_vm::NativeClass = class(
         field("cursor", "I", ACC_PRIVATE, None),
     ],
     &OJVM_ENUMERATION_METHODS,
+    None,
+);
+
+const OJVM_ENUMERATION_ITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method("hasNext", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let enumeration = vm
+            .read_ref_field(
+                this,
+                vm.class_of(this),
+                "enumeration",
+                "Ljava/util/Enumeration;",
+            )
+            .unwrap_or(ObjectRef::NULL);
+        let (class, method) = vm.resolve_virtual_method(enumeration, "hasMoreElements", "()Z")?;
+        vm.invoke_method(class, method, vec![Value::Ref(enumeration)])
+    }),
+    method("next", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let enumeration = vm
+            .read_ref_field(
+                this,
+                vm.class_of(this),
+                "enumeration",
+                "Ljava/util/Enumeration;",
+            )
+            .unwrap_or(ObjectRef::NULL);
+        let (class, method) =
+            vm.resolve_virtual_method(enumeration, "nextElement", "()Ljava/lang/Object;")?;
+        vm.invoke_method(class, method, vec![Value::Ref(enumeration)])
+    }),
+    method("remove", "()V", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/UnsupportedOperationException", None))
+    }),
+];
+
+/// `java.util.OjvmEnumerationIterator`: the lazy `Enumeration.asIterator()` view.
+pub(crate) const OJVM_ENUMERATION_ITERATOR: oxjvm_vm::NativeClass = class(
+    "java/util/OjvmEnumerationIterator",
+    Some("java/lang/Object"),
+    &["java/util/Iterator"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[field(
+        "enumeration",
+        "Ljava/util/Enumeration;",
+        ACC_PRIVATE,
+        None,
+    )],
+    &OJVM_ENUMERATION_ITERATOR_METHODS,
     None,
 );
 
