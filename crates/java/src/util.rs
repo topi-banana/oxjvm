@@ -5103,7 +5103,7 @@ pub(crate) const ARRAY_LIST_LIST_ITERATOR: oxjvm_vm::NativeClass = class(
 // HashMap (linear-probing arrays)
 // -------------------------------------------------------------------------------------------
 
-const HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
+const HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
     method("<init>", "()V", ACC_PUBLIC, hash_map_init),
     method("<init>", "(I)V", ACC_PUBLIC, hash_map_init),
     method("<init>", "(IF)V", ACC_PUBLIC, hash_map_init),
@@ -5208,6 +5208,20 @@ const HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
         ACC_PUBLIC,
         hash_map_to_string,
     ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let entries = hash_map_pairs(vm, this);
+            boolean(map_equals_entries(vm, this, ref_arg(args, 1), entries)?)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let entries = hash_map_pairs(vm, receiver(args));
+        int(map_hash_entries(vm, entries)?)
+    }),
     method(
         "entrySet",
         "()Ljava/util/Set;",
@@ -5320,6 +5334,71 @@ pub(crate) fn keys_equal(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<
     let (class, method) = vm.resolve_virtual_method(a, "equals", "(Ljava/lang/Object;)Z")?;
     let result = vm.invoke_method(class, method, vec![Value::Ref(a), Value::Ref(b)])?;
     Ok(result.as_int() != 0)
+}
+
+/// The `Map.equals` contract over a set of entries: the other object must be a `Map` of the
+/// same size whose value for each key equals ours.
+pub(crate) fn map_equals_entries(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    other: ObjectRef,
+    entries: Vec<(ObjectRef, ObjectRef)>,
+) -> Result<bool, VmError> {
+    if this.raw() == other.raw() {
+        return Ok(true);
+    }
+    let map_class = vm.resolve_class("java/util/Map")?;
+    if other.is_null() || !vm.is_instance(other, map_class) {
+        return Ok(false);
+    }
+    let equal = (|| -> Result<bool, VmError> {
+        let (size_class, size_method) = vm.resolve_virtual_method(other, "size", "()I")?;
+        let other_size = vm
+            .invoke_method(size_class, size_method, vec![Value::Ref(other)])?
+            .as_int();
+        if entries.len() as i32 != other_size {
+            return Ok(false);
+        }
+        let (get_class, get_method) =
+            vm.resolve_virtual_method(other, "get", "(Ljava/lang/Object;)Ljava/lang/Object;")?;
+        for (key, value) in entries {
+            let other_value = vm
+                .invoke_method(
+                    get_class,
+                    get_method,
+                    vec![Value::Ref(other), Value::Ref(key)],
+                )?
+                .as_ref();
+            if other_value.is_null() && !value.is_null() {
+                return Ok(false);
+            }
+            if !keys_equal(vm, value, other_value)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    })();
+    match equal {
+        Ok(equal) => Ok(equal),
+        Err(error) => {
+            swallow_map_equality_error(vm, error)?;
+            Ok(false)
+        }
+    }
+}
+
+/// The `Map.hashCode` contract: the sum of `key.hashCode() ^ value.hashCode()` over entries.
+pub(crate) fn map_hash_entries(
+    vm: &mut Vm<'_>,
+    entries: Vec<(ObjectRef, ObjectRef)>,
+) -> Result<i32, VmError> {
+    let mut hash: i32 = 0;
+    for (key, value) in entries {
+        let key_hash = object_hash(vm, key)?;
+        let value_hash = object_hash(vm, value)?;
+        hash = hash.wrapping_add(key_hash ^ value_hash);
+    }
+    Ok(hash)
 }
 
 fn hash_map_value_at(vm: &mut Vm<'_>, this: ObjectRef, index: usize) -> Result<Value, VmError> {

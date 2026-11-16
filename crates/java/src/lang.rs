@@ -1731,7 +1731,7 @@ const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 56] = [
 
 // The remaining `String.valueOf` overloads and `format` are declared in a second array so the
 // first stays readable; both are concatenated below.
-const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 20] = [
+const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 21] = [
     method(
         "valueOf",
         "(Z)Ljava/lang/String;",
@@ -1797,6 +1797,12 @@ const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 20] = [
         "(Ljava/lang/String;I)[Ljava/lang/String;",
         ACC_PUBLIC,
         string_split_limit,
+    ),
+    method(
+        "splitWithDelimiters",
+        "(Ljava/lang/String;I)[Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _c, args| string_split_with_delimiters(vm, args, int_arg(args, 2)),
     ),
     method(
         "matches",
@@ -3143,6 +3149,26 @@ fn string_split_impl(vm: &mut Vm<'_>, args: &[Value], limit: i32) -> Result<Valu
         let units: Vec<u16> = text.encode_utf16().collect();
         let regex = crate::regex::compile_from_str(vm, &separator)?;
         crate::regex::split_spans(&regex, &units, limit)
+            .iter()
+            .map(|(start, end)| String::from_utf16_lossy(&units[*start..*end]))
+            .collect()
+    };
+    string_array(vm, &parts)
+}
+
+fn string_split_with_delimiters(
+    vm: &mut Vm<'_>,
+    args: &[Value],
+    limit: i32,
+) -> Result<Value, VmError> {
+    let text = vm.string_or_empty(receiver(args));
+    let separator = string_arg(vm, args[1])?;
+    let parts: Vec<String> = if separator.is_empty() {
+        text.chars().map(|ch| ch.to_string()).collect()
+    } else {
+        let units: Vec<u16> = text.encode_utf16().collect();
+        let regex = crate::regex::compile_from_str(vm, &separator)?;
+        crate::regex::split_with_delimiters_spans(&regex, &units, limit)
             .iter()
             .map(|(start, end)| String::from_utf16_lossy(&units[*start..*end]))
             .collect()

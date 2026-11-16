@@ -1003,32 +1003,104 @@ pub(crate) fn replace_first(regex: &Regex, text: &[u16], replacement: &[u16]) ->
 
 /// Split spans, honoring the JDK limit rules (limit > 0 caps the pieces; limit == 0 drops
 /// trailing empty pieces).
-pub(crate) fn split_spans(regex: &Regex, text: &[u16], limit: i32) -> Vec<(usize, usize)> {
-    let mut spans = Vec::new();
+/// The sequence of matches produced by repeatedly calling `Matcher.find()`: after a match
+/// `[s, e)` the next search starts at `e` (or `e + 1` for a zero-width match), so empty matches
+/// are reported once per position rather than looping forever.
+fn match_sequence(regex: &Regex, text: &[u16]) -> Vec<(usize, usize)> {
+    let mut matches = Vec::new();
     let mut cursor = 0;
-    let max_pieces = if limit > 0 {
+    while cursor <= text.len() {
+        let Some(matched) = find_from(regex, text, cursor) else {
+            break;
+        };
+        matches.push((matched.start, matched.end));
+        cursor = if matched.end > matched.start {
+            matched.end
+        } else {
+            matched.end + 1
+        };
+    }
+    matches
+}
+
+pub(crate) fn split_spans(regex: &Regex, text: &[u16], limit: i32) -> Vec<(usize, usize)> {
+    let matches = match_sequence(regex, text);
+    let mut spans = Vec::new();
+    let mut index = 0;
+    let match_limited = limit > 0;
+    let max_pieces = if match_limited {
         limit as usize
     } else {
         usize::MAX
     };
-    while spans.len() + 1 < max_pieces {
-        let Some(matched) = find_from(regex, text, cursor) else {
-            break;
-        };
-        if matched.end == matched.start && matched.start == cursor {
-            // Empty match at the cursor: advance without splitting (JDK behavior for zero-width).
-            if cursor >= text.len() {
-                break;
+    for (start, end) in matches {
+        if !match_limited || spans.len() + 1 < max_pieces {
+            // No empty leading substring for a zero-width match at the start of the input.
+            if index == 0 && start == 0 && end == 0 {
+                continue;
             }
-            cursor += 1;
-            continue;
+            spans.push((index, start));
+            index = end;
+        } else if spans.len() + 1 == max_pieces {
+            spans.push((index, text.len()));
+            index = end;
         }
-        spans.push((cursor, matched.start));
-        cursor = matched.end;
     }
-    spans.push((cursor, text.len()));
+    if index == 0 {
+        return vec![(0, text.len())];
+    }
+    if !match_limited || spans.len() < max_pieces {
+        spans.push((index, text.len()));
+    }
     if limit == 0 {
-        while spans.len() > 1 && spans.last().is_some_and(|(start, end)| start == end) {
+        while !spans.is_empty() && spans.last().is_some_and(|(start, end)| start == end) {
+            spans.pop();
+        }
+    }
+    spans
+}
+
+/// Like [`split_spans`], but the matched delimiters are included as alternating spans:
+/// `[part0, delim0, part1, delim1, ..., partN]`. The `limit` counts the non-delimiter parts.
+pub(crate) fn split_with_delimiters_spans(
+    regex: &Regex,
+    text: &[u16],
+    limit: i32,
+) -> Vec<(usize, usize)> {
+    let matches = match_sequence(regex, text);
+    let mut spans = Vec::new();
+    let mut index = 0;
+    let mut parts = 0;
+    let match_limited = limit > 0;
+    let max_parts = if match_limited {
+        limit as usize
+    } else {
+        usize::MAX
+    };
+    for (start, end) in matches {
+        if !match_limited || parts + 1 < max_parts {
+            // No empty leading substring for a zero-width match at the start of the input.
+            if index == 0 && start == 0 && end == 0 {
+                continue;
+            }
+            spans.push((index, start));
+            parts += 1;
+            spans.push((start, end));
+            index = end;
+        } else if parts + 1 == max_parts {
+            spans.push((index, text.len()));
+            parts += 1;
+            index = end;
+        }
+    }
+    if index == 0 {
+        return vec![(0, text.len())];
+    }
+    if !match_limited || parts < max_parts {
+        spans.push((index, text.len()));
+    }
+    if limit == 0 {
+        while !spans.is_empty() && spans.last().is_some_and(|(start, end)| start == end) {
             spans.pop();
         }
     }
@@ -1039,7 +1111,7 @@ pub(crate) fn split_spans(regex: &Regex, text: &[u16], limit: i32) -> Vec<(usize
 // java.util.regex natives
 // -------------------------------------------------------------------------------------------
 
-const PATTERN_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const PATTERN_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     method(
         "compile",
         "(Ljava/lang/String;)Ljava/util/regex/Pattern;",
@@ -1118,6 +1190,18 @@ const PATTERN_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         "(Ljava/lang/CharSequence;I)[Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| pattern_split(vm, args, crate::int_arg(args, 2)),
+    ),
+    method(
+        "splitWithDelimiters",
+        "(Ljava/lang/CharSequence;I)[Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| pattern_split_with_delimiters(vm, args, crate::int_arg(args, 2)),
+    ),
+    method(
+        "namedGroups",
+        "()Ljava/util/Map;",
+        ACC_PUBLIC,
+        |vm, _, args| pattern_named_groups(vm, receiver(args)),
     ),
     method(
         "asPredicate",
@@ -1300,6 +1384,48 @@ fn pattern_split(vm: &mut Vm<'_>, args: &[Value], limit: i32) -> Result<Value, V
     crate::lang::string_array(vm, &parts)
 }
 
+fn pattern_split_with_delimiters(
+    vm: &mut Vm<'_>,
+    args: &[Value],
+    limit: i32,
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let text = char_sequence_utf16(vm, ref_arg(args, 1))?;
+    let (regex, _) = pattern_regex(vm, this)?;
+    let spans = split_with_delimiters_spans(&regex, &text, limit);
+    let mut parts = Vec::with_capacity(spans.len());
+    for (start, end) in spans {
+        parts.push(String::from_utf16_lossy(&text[start..end]));
+    }
+    crate::lang::string_array(vm, &parts)
+}
+
+/// `Pattern.namedGroups()`: an immutable-style map of capturing-group name to index.
+fn pattern_named_groups(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError> {
+    let (regex, _) = pattern_regex(vm, this)?;
+    let map_class = vm.resolve_class("java/util/HashMap")?;
+    let map = vm.new_instance(map_class)?;
+    let (declaring, ctor) = vm
+        .find_method(map_class, "<init>", "()V")
+        .ok_or_else(|| VmError::internal("HashMap lacks <init>"))?;
+    vm.invoke_method(declaring, ctor, vec![Value::Ref(map)])?;
+    let (put_class, put_method) = vm.resolve_virtual_method(
+        map,
+        "put",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+    )?;
+    for (name, index) in &regex.names {
+        let key = vm.make_string(name)?;
+        let value = crate::boxed::boxed_int(vm, *index as i32)?;
+        vm.invoke_method(
+            put_class,
+            put_method,
+            vec![Value::Ref(map), Value::Ref(key), value],
+        )?;
+    }
+    object(map)
+}
+
 /// Recompile a `Pattern` object and return it with its group count.
 fn pattern_regex(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(Regex, usize), VmError> {
     let pattern = pattern_field(vm, this);
@@ -1322,7 +1448,7 @@ fn pattern_regex(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(Regex, usize), VmE
 // Matcher
 // -------------------------------------------------------------------------------------------
 
-const MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
+const MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
     method("matches", "()Z", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let (regex, _) = pattern_regex_for(vm, this)?;
@@ -1369,8 +1495,10 @@ const MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         "(Ljava/lang/String;)Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
+            let this = receiver(args);
+            matcher_check_match(vm, this)?;
             let name = string_arg(vm, args[1])?;
-            matcher_named_group(vm, receiver(args), name)
+            matcher_named_group(vm, this, name)
         },
     ),
     method("start", "()I", ACC_PUBLIC, |vm, _, args| {
@@ -1396,6 +1524,53 @@ const MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
     method("groupCount", "()I", ACC_PUBLIC, |vm, _, args| {
         let (_, groups) = pattern_regex_for(vm, receiver(args))?;
         int(groups as i32)
+    }),
+    method("hasMatch", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "matchStart") >= 0)
+    }),
+    method(
+        "toMatchResult",
+        "()Ljava/util/regex/MatchResult;",
+        ACC_PUBLIC,
+        |vm, _, args| object(matcher_to_match_result(vm, receiver(args))?),
+    ),
+    method(
+        "results",
+        "()Ljava/util/stream/Stream;",
+        ACC_PUBLIC,
+        |vm, _, args| matcher_results(vm, receiver(args)),
+    ),
+    method(
+        "namedGroups",
+        "()Ljava/util/Map;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let pattern = vm
+                .read_ref_field(this, class, "pattern", "Ljava/util/regex/Pattern;")
+                .unwrap_or(ObjectRef::NULL);
+            pattern_named_groups(vm, pattern)
+        },
+    ),
+    method(
+        "start",
+        "(Ljava/lang/String;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            matcher_check_match(vm, this)?;
+            let name = string_arg(vm, args[1])?;
+            let index = matcher_named_index(vm, this, &name)?;
+            int(matcher_span_start(vm, this, index))
+        },
+    ),
+    method("end", "(Ljava/lang/String;)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        matcher_check_match(vm, this)?;
+        let name = string_arg(vm, args[1])?;
+        let index = matcher_named_index(vm, this, &name)?;
+        int(matcher_span_end(vm, this, index))
     }),
     method(
         "pattern",
@@ -1433,6 +1608,26 @@ const MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
             let (declaring, field) = vm.find_field(class, "input", "Ljava/lang/String;")?;
             let text = vm.make_string_utf16(text)?;
             vm.set_instance_ref(this, declaring, field, text);
+            crate::lang::write_int_field(vm, this, "cursor", 0);
+            crate::lang::write_int_field(vm, this, "appendPos", 0);
+            matcher_clear(vm, this);
+            object(this)
+        },
+    ),
+    method(
+        "usePattern",
+        "(Ljava/util/regex/Pattern;)Ljava/util/regex/Matcher;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let pattern = ref_arg(args, 1);
+            if pattern.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let class = vm.class_of(this);
+            let (declaring, field) =
+                vm.find_field(class, "pattern", "Ljava/util/regex/Pattern;")?;
+            vm.set_instance_ref(this, declaring, field, pattern);
             crate::lang::write_int_field(vm, this, "cursor", 0);
             crate::lang::write_int_field(vm, this, "appendPos", 0);
             matcher_clear(vm, this);
@@ -1525,7 +1720,116 @@ pub(crate) const MATCHER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const MATCH_RESULT_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+/// An immutable snapshot of a match, returned by `Matcher.toMatchResult()`. It carries the
+/// same field layout as `Matcher` so the span/group helpers can be reused, and keeps a
+/// reference to the originating pattern for named-group lookup, but cannot be reset or advanced.
+pub(crate) const IMMUTABLE_MATCH_RESULT: oxjvm_vm::NativeClass = class(
+    "java/util/regex/ImmutableMatchResult",
+    Some("java/lang/Object"),
+    &["java/util/regex/MatchResult"],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("input", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("matchStart", "I", ACC_PRIVATE, None),
+        field("matchEnd", "I", ACC_PRIVATE, None),
+        field("groups", "[I", ACC_PRIVATE, None),
+        field("groupCount", "I", ACC_PRIVATE, None),
+        field("pattern", "Ljava/util/regex/Pattern;", ACC_PRIVATE, None),
+    ],
+    &IMMUTABLE_MATCH_RESULT_METHODS,
+    None,
+);
+
+const IMMUTABLE_MATCH_RESULT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+    method(
+        "group",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| matcher_group(vm, receiver(args), 0),
+    ),
+    method(
+        "group",
+        "(I)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| matcher_group(vm, receiver(args), crate::int_arg(args, 1)),
+    ),
+    method("start", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(matcher_span_start(vm, receiver(args), 0))
+    }),
+    method("start", "(I)I", ACC_PUBLIC, |vm, _, args| {
+        int(matcher_span_start(
+            vm,
+            receiver(args),
+            crate::int_arg(args, 1),
+        ))
+    }),
+    method("end", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(matcher_span_end(vm, receiver(args), 0))
+    }),
+    method("end", "(I)I", ACC_PUBLIC, |vm, _, args| {
+        int(matcher_span_end(
+            vm,
+            receiver(args),
+            crate::int_arg(args, 1),
+        ))
+    }),
+    method("groupCount", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(
+            vm,
+            receiver(args),
+            "groupCount",
+        ))
+    }),
+    method("hasMatch", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "matchStart") >= 0)
+    }),
+    method(
+        "group",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let name = string_arg(vm, args[1])?;
+            let index = matcher_named_index(vm, this, &name)?;
+            matcher_check_match(vm, this)?;
+            matcher_group(vm, this, index)
+        },
+    ),
+    method(
+        "start",
+        "(Ljava/lang/String;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let name = string_arg(vm, args[1])?;
+            let index = matcher_named_index(vm, this, &name)?;
+            matcher_check_match(vm, this)?;
+            int(matcher_span_start(vm, this, index))
+        },
+    ),
+    method("end", "(Ljava/lang/String;)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let name = string_arg(vm, args[1])?;
+        let index = matcher_named_index(vm, this, &name)?;
+        matcher_check_match(vm, this)?;
+        int(matcher_span_end(vm, this, index))
+    }),
+    method(
+        "namedGroups",
+        "()Ljava/util/Map;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let pattern = vm
+                .read_ref_field(this, class, "pattern", "Ljava/util/regex/Pattern;")
+                .unwrap_or(ObjectRef::NULL);
+            pattern_named_groups(vm, pattern)
+        },
+    ),
+];
+
+const MATCH_RESULT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method(
         "group",
         "()Ljava/lang/String;",
@@ -1567,6 +1871,56 @@ const MATCH_RESULT_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         "()I",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
+    ),
+    method("hasMatch", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let (class, method) = vm.resolve_virtual_method(this, "start", "()I")?;
+        let start = vm
+            .invoke_method(class, method, vec![Value::Ref(this)])?
+            .as_int();
+        boolean(start >= 0)
+    }),
+    method(
+        "group",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = vm.string_or_empty(ref_arg(args, 1));
+            Err(vm.throw_new(
+                "java/lang/UnsupportedOperationException",
+                Some(&format!("No group with name <{name}>")),
+            ))
+        },
+    ),
+    method(
+        "start",
+        "(Ljava/lang/String;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = vm.string_or_empty(ref_arg(args, 1));
+            Err(vm.throw_new(
+                "java/lang/UnsupportedOperationException",
+                Some(&format!("No group with name <{name}>")),
+            ))
+        },
+    ),
+    method("end", "(Ljava/lang/String;)I", ACC_PUBLIC, |vm, _, args| {
+        let name = vm.string_or_empty(ref_arg(args, 1));
+        Err(vm.throw_new(
+            "java/lang/UnsupportedOperationException",
+            Some(&format!("No group with name <{name}>")),
+        ))
+    }),
+    method(
+        "namedGroups",
+        "()Ljava/util/Map;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            Err(vm.throw_new(
+                "java/lang/UnsupportedOperationException",
+                Some("namedGroups"),
+            ))
+        },
     ),
 ];
 
@@ -1803,6 +2157,19 @@ fn matcher_group(vm: &mut Vm<'_>, this: ObjectRef, group: i32) -> Result<Value, 
 ///
 /// The JDK answers an unknown name with an `IllegalArgumentException`, and a name that belongs
 /// to a group which did not take part in the match with `null`.
+/// Throw `IllegalStateException` when no match is currently available (`Matcher` semantics).
+fn matcher_check_match(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    let start = crate::lang::read_int_field(vm, this, "matchStart");
+    let end = crate::lang::read_int_field(vm, this, "matchEnd");
+    if start < 0 || end < 0 {
+        return Err(vm.throw_new(
+            "java/lang/IllegalStateException",
+            Some("No match available"),
+        ));
+    }
+    Ok(())
+}
+
 fn matcher_named_group(vm: &mut Vm<'_>, this: ObjectRef, name: String) -> Result<Value, VmError> {
     let (regex, _) = pattern_regex_for(vm, this)?;
     let Some(index) = regex.names.get(&name).copied() else {
@@ -1812,6 +2179,129 @@ fn matcher_named_group(vm: &mut Vm<'_>, this: ObjectRef, name: String) -> Result
         ));
     };
     matcher_group(vm, this, index as i32)
+}
+
+/// The capturing-group index of a named group, or an IllegalArgumentException.
+fn matcher_named_index(vm: &mut Vm<'_>, this: ObjectRef, name: &str) -> Result<i32, VmError> {
+    let (regex, _) = pattern_regex_for(vm, this)?;
+    regex
+        .names
+        .get(name)
+        .copied()
+        .map(|index| index as i32)
+        .ok_or_else(|| {
+            vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some(&alloc::format!("No group with name <{name}>")),
+            )
+        })
+}
+
+/// Build an immutable snapshot of the current match.
+fn matcher_to_match_result(vm: &mut Vm<'_>, this: ObjectRef) -> Result<ObjectRef, VmError> {
+    let class = vm.class_of(this);
+    let match_start = crate::lang::read_int_field(vm, this, "matchStart");
+    let match_end = crate::lang::read_int_field(vm, this, "matchEnd");
+    let input = vm
+        .read_ref_field(this, class, "input", "Ljava/lang/String;")
+        .unwrap_or(ObjectRef::NULL);
+    let pattern = vm
+        .read_ref_field(this, class, "pattern", "Ljava/util/regex/Pattern;")
+        .unwrap_or(ObjectRef::NULL);
+    let groups = vm
+        .read_ref_field(this, class, "groups", "[I")
+        .unwrap_or(ObjectRef::NULL);
+    let (_, group_count) = pattern_regex_for(vm, this)?;
+    let mut values = Vec::new();
+    if !groups.is_null() {
+        let length = vm.array_length(groups)?;
+        for index in 0..length {
+            values.push(vm.array_get(groups, index as i32)?.as_int());
+        }
+    }
+    immutable_match_result_new(
+        vm,
+        input,
+        pattern,
+        group_count,
+        match_start,
+        match_end,
+        &values,
+    )
+}
+
+/// Construct an `ImmutableMatchResult` from raw span data.
+fn immutable_match_result_new(
+    vm: &mut Vm<'_>,
+    input: ObjectRef,
+    pattern: ObjectRef,
+    group_count: usize,
+    match_start: i32,
+    match_end: i32,
+    group_values: &[i32],
+) -> Result<ObjectRef, VmError> {
+    let snap_class = vm.resolve_class("java/util/regex/ImmutableMatchResult")?;
+    let snap = vm.new_instance(snap_class)?;
+    crate::lang::write_int_field(vm, snap, "matchStart", match_start);
+    crate::lang::write_int_field(vm, snap, "matchEnd", match_end);
+    crate::lang::write_int_field(vm, snap, "groupCount", group_count as i32);
+    let (declaring, field) = vm.find_field(snap_class, "input", "Ljava/lang/String;")?;
+    vm.set_instance_ref(snap, declaring, field, input);
+    let (declaring, field) = vm.find_field(snap_class, "pattern", "Ljava/util/regex/Pattern;")?;
+    vm.set_instance_ref(snap, declaring, field, pattern);
+    if !group_values.is_empty() {
+        let copy = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Int, group_values.len())?;
+        for (index, value) in group_values.iter().enumerate() {
+            vm.array_set(copy, index as i32, Value::Int(*value), false)?;
+        }
+        let (declaring, field) = vm.find_field(snap_class, "groups", "[I")?;
+        vm.set_instance_ref(snap, declaring, field, copy);
+    }
+    Ok(snap)
+}
+
+/// `Matcher.results()`: a stream of immutable snapshots of every match, without disturbing
+/// the matcher's own state.
+fn matcher_results(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError> {
+    let (regex, group_count) = pattern_regex_for(vm, this)?;
+    let class = vm.class_of(this);
+    let input = vm
+        .read_ref_field(this, class, "input", "Ljava/lang/String;")
+        .unwrap_or(ObjectRef::NULL);
+    let pattern = vm
+        .read_ref_field(this, class, "pattern", "Ljava/util/regex/Pattern;")
+        .unwrap_or(ObjectRef::NULL);
+    let text = matcher_text(vm, this)?;
+    let mut elements = Vec::new();
+    let mut cursor = 0;
+    while cursor <= text.len() {
+        let Some(matched) = find_from(&regex, &text, cursor) else {
+            break;
+        };
+        let mut values = alloc::vec![-1i32; matched.groups.len() * 2];
+        for (index, span) in matched.groups.iter().enumerate() {
+            if let Some((start, end)) = span {
+                values[index * 2] = *start as i32;
+                values[index * 2 + 1] = *end as i32;
+            }
+        }
+        let snap = immutable_match_result_new(
+            vm,
+            input,
+            pattern,
+            group_count,
+            matched.start as i32,
+            matched.end as i32,
+            &values,
+        )?;
+        elements.push(snap);
+        cursor = if matched.end > matched.start {
+            matched.end
+        } else {
+            matched.end + 1
+        };
+    }
+    object(crate::stream::stream_from(vm, elements)?)
 }
 
 fn matcher_span_start(vm: &mut Vm<'_>, this: ObjectRef, group: i32) -> i32 {
