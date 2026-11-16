@@ -1096,11 +1096,31 @@ pub(crate) const NETWORK_CHANNEL: oxjvm_vm::NativeClass = class(
     None,
 );
 
+const SELECTOR_PROVIDER_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "provider",
+    "()Ljava/nio/channels/spi/SelectorProvider;",
+    ACC_PUBLIC | ACC_STATIC,
+    |vm, _, _| {
+        let class = vm.resolve_class("java/nio/channels/spi/OjvmSelectorProvider")?;
+        object(vm.new_instance(class)?)
+    },
+)];
+
 pub(crate) const SELECTOR_PROVIDER: oxjvm_vm::NativeClass = class(
     "java/nio/channels/spi/SelectorProvider",
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_ABSTRACT,
+    &[],
+    &SELECTOR_PROVIDER_METHODS,
+    None,
+);
+
+pub(crate) const OJVM_SELECTOR_PROVIDER: oxjvm_vm::NativeClass = class(
+    "java/nio/channels/spi/OjvmSelectorProvider",
+    Some("java/nio/channels/spi/SelectorProvider"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
     &[],
     &[],
     None,

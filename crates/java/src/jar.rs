@@ -57,7 +57,7 @@ fn attributes_text(vm: &Vm<'_>, attributes: ObjectRef) -> Vec<(String, String)> 
     pairs
 }
 
-const ATTRIBUTES_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
+const ATTRIBUTES_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let attributes = receiver(args);
         let map = crate::util::hash_map_new(vm)?;
@@ -199,6 +199,16 @@ const ATTRIBUTES_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
         let map = attributes_map(vm, receiver(args));
         let (class, method) = vm.resolve_virtual_method(map, "size", "()I")?;
         vm.invoke_method(class, method, vec![Value::Ref(map)])
+    }),
+    method("putAll", "(Ljava/util/Map;)V", ACC_PUBLIC, |vm, _, args| {
+        let map = attributes_map(vm, receiver(args));
+        let source = ref_arg(args, 1);
+        if source.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let (class, method) = vm.resolve_virtual_method(map, "putAll", "(Ljava/util/Map;)V")?;
+        vm.invoke_method(class, method, vec![Value::Ref(map), Value::Ref(source)])?;
+        void()
     }),
     method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
         let map = attributes_map(vm, receiver(args));

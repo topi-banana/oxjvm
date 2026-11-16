@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 use oxjvm_classfile::flags::*;
 
 use crate::{
-    boolean, class, field, int, long, method, object, receiver, ref_arg, string_arg, void,
+    boolean, class, field, int, int_arg, long, method, object, receiver, ref_arg, string_arg, void,
 };
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
@@ -1396,13 +1396,13 @@ const SERVER_SOCKET_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         void()
     }),
     method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        server_socket_init(vm, receiver(args), crate::int_arg(args, 1))?;
+        server_socket_init(vm, receiver(args), int_arg(args, 1))?;
         void()
     }),
     method("<init>", "(II)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        server_socket_init(vm, this, crate::int_arg(args, 1))?;
-        server_socket_set_int(vm, this, "backlog", crate::int_arg(args, 2));
+        server_socket_init(vm, this, int_arg(args, 1))?;
+        server_socket_set_int(vm, this, "backlog", int_arg(args, 2));
         void()
     }),
     method(
@@ -1411,8 +1411,8 @@ const SERVER_SOCKET_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            server_socket_init(vm, this, crate::int_arg(args, 1))?;
-            server_socket_set_int(vm, this, "backlog", crate::int_arg(args, 2));
+            server_socket_init(vm, this, int_arg(args, 1))?;
+            server_socket_set_int(vm, this, "backlog", int_arg(args, 2));
             let address = ref_arg(args, 3);
             if !address.is_null() {
                 let (declaring, field) =
@@ -1436,12 +1436,7 @@ const SERVER_SOCKET_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         "(Ljava/net/SocketAddress;I)V",
         ACC_PUBLIC,
         |vm, _, args| {
-            server_socket_bind(
-                vm,
-                receiver(args),
-                ref_arg(args, 1),
-                crate::int_arg(args, 2),
-            )?;
+            server_socket_bind(vm, receiver(args), ref_arg(args, 1), int_arg(args, 2))?;
             void()
         },
     ),
@@ -1498,7 +1493,7 @@ const SERVER_SOCKET_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         boolean(server_socket_bool(vm, receiver(args), "reuseAddress"))
     }),
     method("setSoTimeout", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        let timeout = crate::int_arg(args, 1);
+        let timeout = int_arg(args, 1);
         if timeout < 0 {
             return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("timeout < 0")));
         }
@@ -1509,7 +1504,7 @@ const SERVER_SOCKET_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         int(server_socket_int(vm, receiver(args), "soTimeout"))
     }),
     method("setReceiveBufferSize", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        let size = crate::int_arg(args, 1);
+        let size = int_arg(args, 1);
         if size <= 0 {
             return Err(vm.throw_new(
                 "java/lang/IllegalArgumentException",
@@ -1613,13 +1608,103 @@ pub(crate) const SERVER_SOCKET: oxjvm_vm::NativeClass = class(
     None,
 );
 
+const SOCKET_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+    method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "<init>",
+        "(Ljava/net/InetAddress;I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            crate::lang::write_int_field(vm, this, "port", int_arg(args, 2));
+            crate::lang::write_int_field(vm, this, "connected", 1);
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "address", "Ljava/net/InetAddress;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            crate::lang::write_int_field(vm, this, "port", int_arg(args, 2));
+            crate::lang::write_int_field(vm, this, "connected", 1);
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/net/SocketAddress;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            crate::lang::write_int_field(vm, receiver(args), "connected", 1);
+            void()
+        },
+    ),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        crate::lang::write_int_field(vm, receiver(args), "closed", 1);
+        void()
+    }),
+    method(
+        "connect",
+        "(Ljava/net/SocketAddress;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            crate::lang::write_int_field(vm, receiver(args), "connected", 1);
+            void()
+        },
+    ),
+    method(
+        "connect",
+        "(Ljava/net/SocketAddress;I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            crate::lang::write_int_field(vm, receiver(args), "connected", 1);
+            void()
+        },
+    ),
+    method("isClosed", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "closed") != 0)
+    }),
+    method("isConnected", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "connected") != 0)
+    }),
+    method("isBound", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "connected") != 0)
+    }),
+    method("getPort", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "port"))
+    }),
+    method("getLocalPort", "()I", ACC_PUBLIC, |_, _, _| int(-1)),
+    method(
+        "getInetAddress",
+        "()Ljava/net/InetAddress;",
+        ACC_PUBLIC,
+        |vm, _, args| object(ref_field_any(vm, receiver(args), "address")),
+    ),
+    method("getSoTimeout", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method("setSoTimeout", "(I)V", ACC_PUBLIC, |_, _, _| void()),
+];
+
+fn ref_field_any(vm: &Vm<'_>, this: ObjectRef, name: &str) -> ObjectRef {
+    vm.read_ref_field_any(this, name).unwrap_or(ObjectRef::NULL)
+}
+
 pub(crate) const SOCKET: oxjvm_vm::NativeClass = class(
     "java/net/Socket",
     Some("java/lang/Object"),
     &["java/io/Closeable"],
     ACC_PUBLIC,
-    &[],
-    &[],
+    &[
+        field("port", "I", ACC_PRIVATE, None),
+        field("closed", "I", ACC_PRIVATE, None),
+        field("connected", "I", ACC_PRIVATE, None),
+        field("address", "Ljava/net/InetAddress;", ACC_PRIVATE, None),
+    ],
+    &SOCKET_METHODS,
     None,
 );
 
@@ -1701,7 +1786,7 @@ const INET_SOCKET_ADDRESS_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
         void()
     }),
     method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        let port = crate::int_arg(args, 1);
+        let port = int_arg(args, 1);
         let wildcard = wildcard_address(vm)?;
         init_inet_socket_address(vm, receiver(args), wildcard, port)?;
         void()
@@ -1711,7 +1796,7 @@ const INET_SOCKET_ADDRESS_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
         "(Ljava/net/InetAddress;I)V",
         ACC_PUBLIC,
         |vm, _, args| {
-            let port = crate::int_arg(args, 2);
+            let port = int_arg(args, 2);
             let mut address = ref_arg(args, 1);
             if address.is_null() {
                 address = wildcard_address(vm)?;
@@ -1726,7 +1811,7 @@ const INET_SOCKET_ADDRESS_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let text = string_arg(vm, args[1])?;
-            let port = crate::int_arg(args, 2);
+            let port = int_arg(args, 2);
             validate_port(vm, port)?;
             let address = resolve_address(vm, "java/net/InetAddress", &text)?.as_ref();
             init_inet_socket_address(vm, receiver(args), address, port)?;
@@ -1839,7 +1924,7 @@ const INET_SOCKET_ADDRESS_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let host = string_arg(vm, args[0])?;
-            let port = crate::int_arg(args, 1);
+            let port = int_arg(args, 1);
             validate_port(vm, port)?;
             let class = vm.resolve_class("java/net/InetSocketAddress")?;
             let instance = vm.new_instance(class)?;
@@ -1877,13 +1962,104 @@ pub(crate) const SOCKET_OPTION: oxjvm_vm::NativeClass = class(
     None,
 );
 
+const DATAGRAM_SOCKET_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+    method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        crate::lang::write_int_field(vm, this, "port", int_arg(args, 1));
+        crate::lang::write_int_field(vm, this, "bound", 1);
+        void()
+    }),
+    method(
+        "<init>",
+        "(ILjava/net/InetAddress;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            crate::lang::write_int_field(vm, this, "port", int_arg(args, 1));
+            crate::lang::write_int_field(vm, this, "bound", 1);
+            let class = vm.class_of(this);
+            let (declaring, field) =
+                vm.find_field(class, "localAddress", "Ljava/net/InetAddress;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 2));
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/net/SocketAddress;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            crate::lang::write_int_field(vm, this, "bound", 1);
+            let address = ref_arg(args, 1);
+            if !address.is_null() {
+                let (class, method) = vm.resolve_virtual_method(address, "getPort", "()I")?;
+                let port = vm
+                    .invoke_method(class, method, vec![Value::Ref(address)])?
+                    .as_int();
+                crate::lang::write_int_field(vm, this, "port", port);
+            }
+            void()
+        },
+    ),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        crate::lang::write_int_field(vm, receiver(args), "closed", 1);
+        void()
+    }),
+    method(
+        "bind",
+        "(Ljava/net/SocketAddress;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            crate::lang::write_int_field(vm, receiver(args), "bound", 1);
+            void()
+        },
+    ),
+    method(
+        "connect",
+        "(Ljava/net/SocketAddress;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method(
+        "connect",
+        "(Ljava/net/InetAddress;I)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method("disconnect", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("isClosed", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "closed") != 0)
+    }),
+    method("isBound", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "bound") != 0)
+    }),
+    method("isConnected", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method("getLocalPort", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "port"))
+    }),
+    method("getPort", "()I", ACC_PUBLIC, |_, _, _| int(-1)),
+    method("getSoTimeout", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method("setSoTimeout", "(I)V", ACC_PUBLIC, |_, _, _| void()),
+    method("getReuseAddress", "()Z", ACC_PUBLIC, |_, _, _| {
+        boolean(false)
+    }),
+    method("setReuseAddress", "(Z)V", ACC_PUBLIC, |_, _, _| void()),
+];
+
 pub(crate) const DATAGRAM_SOCKET: oxjvm_vm::NativeClass = class(
     "java/net/DatagramSocket",
     Some("java/lang/Object"),
     &["java/io/Closeable"],
     ACC_PUBLIC,
-    &[],
-    &[],
+    &[
+        field("port", "I", ACC_PRIVATE, None),
+        field("closed", "I", ACC_PRIVATE, None),
+        field("bound", "I", ACC_PRIVATE, None),
+        field("localAddress", "Ljava/net/InetAddress;", ACC_PRIVATE, None),
+    ],
+    &DATAGRAM_SOCKET_METHODS,
     None,
 );
 
@@ -2045,13 +2221,55 @@ const AUTHENTICATOR_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
     ),
 ];
 
+const PROXY_SELECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method(
+        "getDefault",
+        "()Ljava/net/ProxySelector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let security = vm.resolve_class("java/net/ProxySelector")?;
+            vm.ensure_initialized(security)?;
+            object(
+                vm.read_static_ref(security, "defaultSelector", "Ljava/net/ProxySelector;")
+                    .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method(
+        "setDefault",
+        "(Ljava/net/ProxySelector;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let security = vm.resolve_class("java/net/ProxySelector")?;
+            vm.set_static_value(
+                security,
+                "defaultSelector",
+                "Ljava/net/ProxySelector;",
+                Value::Ref(ref_arg(args, 0)),
+            );
+            void()
+        },
+    ),
+    method(
+        "select",
+        "(Ljava/net/URI;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
 pub(crate) const PROXY_SELECTOR: oxjvm_vm::NativeClass = class(
     "java/net/ProxySelector",
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_ABSTRACT,
-    &[],
-    &[],
+    &[field(
+        "defaultSelector",
+        "Ljava/net/ProxySelector;",
+        ACC_PRIVATE | ACC_STATIC,
+        None,
+    )],
+    &PROXY_SELECTOR_METHODS,
     None,
 );
 

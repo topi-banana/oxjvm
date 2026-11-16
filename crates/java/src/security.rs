@@ -3269,13 +3269,93 @@ pub(crate) const SSLE_ENGINE: oxjvm_vm::NativeClass = class(
     None,
 );
 
+const SSL_PARAMETERS_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+    method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "<init>",
+        "([Ljava/lang/String;[Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "cipherSuites", "[Ljava/lang/String;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            let (declaring, field) = vm.find_field(class, "protocols", "[Ljava/lang/String;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 2));
+            void()
+        },
+    ),
+    method(
+        "getCipherSuites",
+        "()[Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "cipherSuites",
+                "[Ljava/lang/String;",
+            ))
+        },
+    ),
+    method(
+        "setCipherSuites",
+        "([Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "cipherSuites", "[Ljava/lang/String;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method(
+        "getProtocols",
+        "()[Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "protocols",
+                "[Ljava/lang/String;",
+            ))
+        },
+    ),
+    method(
+        "setProtocols",
+        "([Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "protocols", "[Ljava/lang/String;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method("getUseCipherSuitesOrder", "()Z", ACC_PUBLIC, |_, _, _| {
+        boolean(true)
+    }),
+    method("setUseCipherSuitesOrder", "(Z)V", ACC_PUBLIC, |_, _, _| {
+        void()
+    }),
+    method("getEnableRetransmissions", "()Z", ACC_PUBLIC, |_, _, _| {
+        boolean(true)
+    }),
+];
+
 pub(crate) const SSL_PARAMETERS: oxjvm_vm::NativeClass = class(
     "javax/net/ssl/SSLParameters",
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC,
-    &[],
-    &[],
+    &[
+        field("cipherSuites", "[Ljava/lang/String;", ACC_PRIVATE, None),
+        field("protocols", "[Ljava/lang/String;", ACC_PRIVATE, None),
+    ],
+    &SSL_PARAMETERS_METHODS,
     None,
 );
 

@@ -797,8 +797,29 @@ const DECIMAL_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     ),
 ];
 
-const DECIMAL_FORMAT_SYMBOLS_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+const DECIMAL_FORMAT_SYMBOLS_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("<init>", "(Ljava/util/Locale;)V", ACC_PUBLIC, |_, _, _| {
+        void()
+    }),
+    method(
+        "getInstance",
+        "()Ljava/text/DecimalFormatSymbols;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/text/DecimalFormatSymbols")?;
+            object(vm.new_instance(class)?)
+        },
+    ),
+    method(
+        "getInstance",
+        "(Ljava/util/Locale;)Ljava/text/DecimalFormatSymbols;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/text/DecimalFormatSymbols")?;
+            object(vm.new_instance(class)?)
+        },
+    ),
     method("getDecimalSeparator", "()C", ACC_PUBLIC, |_, _, _| {
         int('.' as i32)
     }),
