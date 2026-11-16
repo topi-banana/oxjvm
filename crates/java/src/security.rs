@@ -3333,3 +3333,482 @@ pub(crate) const DESTROY_FAILED_EXCEPTION: oxjvm_vm::NativeClass = class(
     &[],
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// java.security.MessageDigest (real SHA-256 / SHA-1 / MD5)
+// -------------------------------------------------------------------------------------------
+
+fn sha256(data: &[u8]) -> Vec<u8> {
+    const K: [u32; 64] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
+    ];
+    let mut h: [u32; 8] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
+    ];
+    let bit_len = (data.len() as u64).wrapping_mul(8);
+    let mut msg = data.to_vec();
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&bit_len.to_be_bytes());
+    for chunk in msg.chunks(64) {
+        let mut w = [0u32; 64];
+        for i in 0..16 {
+            w[i] = u32::from_be_bytes([
+                chunk[i * 4],
+                chunk[i * 4 + 1],
+                chunk[i * 4 + 2],
+                chunk[i * 4 + 3],
+            ]);
+        }
+        for i in 16..64 {
+            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16]
+                .wrapping_add(s0)
+                .wrapping_add(w[i - 7])
+                .wrapping_add(s1);
+        }
+        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh] = h;
+        for i in 0..64 {
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ ((!e) & g);
+            let t1 = hh
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(K[i])
+                .wrapping_add(w[i]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let t2 = s0.wrapping_add(maj);
+            hh = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(t1);
+            d = c;
+            c = b;
+            b = a;
+            a = t1.wrapping_add(t2);
+        }
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+        h[5] = h[5].wrapping_add(f);
+        h[6] = h[6].wrapping_add(g);
+        h[7] = h[7].wrapping_add(hh);
+    }
+    let mut out = Vec::with_capacity(32);
+    for value in h {
+        out.extend_from_slice(&value.to_be_bytes());
+    }
+    out
+}
+
+fn sha1(data: &[u8]) -> Vec<u8> {
+    let mut h: [u32; 5] = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
+    let bit_len = (data.len() as u64).wrapping_mul(8);
+    let mut msg = data.to_vec();
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&bit_len.to_be_bytes());
+    for chunk in msg.chunks(64) {
+        let mut w = [0u32; 80];
+        for i in 0..16 {
+            w[i] = u32::from_be_bytes([
+                chunk[i * 4],
+                chunk[i * 4 + 1],
+                chunk[i * 4 + 2],
+                chunk[i * 4 + 3],
+            ]);
+        }
+        for i in 16..80 {
+            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        }
+        let [mut a, mut b, mut c, mut d, mut e] = h;
+        for (i, &wi) in w.iter().enumerate() {
+            let (f, k) = match i {
+                0..=19 => ((b & c) | ((!b) & d), 0x5A827999u32),
+                20..=39 => (b ^ c ^ d, 0x6ED9EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDC),
+                _ => (b ^ c ^ d, 0xCA62C1D6),
+            };
+            let temp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(wi);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = temp;
+        }
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+    }
+    let mut out = Vec::with_capacity(20);
+    for value in h {
+        out.extend_from_slice(&value.to_be_bytes());
+    }
+    out
+}
+
+fn md5(data: &[u8]) -> Vec<u8> {
+    const S: [u32; 64] = [
+        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5,
+        9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10,
+        15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+    ];
+    const K: [u32; 64] = [
+        0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613,
+        0xfd469501, 0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193,
+        0xa679438e, 0x49b40821, 0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d,
+        0x02441453, 0xd8a1e681, 0xe7d3fbc8, 0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed,
+        0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a, 0xfffa3942, 0x8771f681, 0x6d9d6122,
+        0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70, 0x289b7ec6, 0xeaa127fa,
+        0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665, 0xf4292244,
+        0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+        0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb,
+        0xeb86d391,
+    ];
+    let mut h: [u32; 4] = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476];
+    let bit_len = (data.len() as u64).wrapping_mul(8);
+    let mut msg = data.to_vec();
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&bit_len.to_le_bytes());
+    for chunk in msg.chunks(64) {
+        let mut m = [0u32; 16];
+        for i in 0..16 {
+            m[i] = u32::from_le_bytes([
+                chunk[i * 4],
+                chunk[i * 4 + 1],
+                chunk[i * 4 + 2],
+                chunk[i * 4 + 3],
+            ]);
+        }
+        let [mut a, mut b, mut c, mut d] = h;
+        for i in 0..64 {
+            let (f, g) = match i {
+                0..=15 => ((b & c) | ((!b) & d), i),
+                16..=31 => ((d & b) | ((!d) & c), (5 * i + 1) % 16),
+                32..=47 => (b ^ c ^ d, (3 * i + 5) % 16),
+                _ => (c ^ (b | (!d)), (7 * i) % 16),
+            };
+            let temp = d;
+            d = c;
+            c = b;
+            let sum = a.wrapping_add(f).wrapping_add(K[i]).wrapping_add(m[g]);
+            b = b.wrapping_add(sum.rotate_left(S[i]));
+            a = temp;
+        }
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+    }
+    let mut out = Vec::with_capacity(16);
+    for value in h {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    out
+}
+
+/// A digest algorithm: canonical name, hash function and output length in bytes.
+type DigestAlgorithm = (&'static str, fn(&[u8]) -> Vec<u8>, i32);
+
+/// Normalize an algorithm name to the canonical form and return its digest function and length.
+fn digest_algorithm(name: &str) -> Option<DigestAlgorithm> {
+    let upper = name.to_ascii_uppercase().replace('-', "");
+    match upper.as_str() {
+        "SHA256" => Some(("SHA-256", sha256, 32)),
+        "SHA1" | "SHA" => Some(("SHA-1", sha1, 20)),
+        "MD5" => Some(("MD5", md5, 16)),
+        _ => None,
+    }
+}
+
+fn message_digest_data(vm: &mut Vm<'_>, this: ObjectRef) -> Vec<u8> {
+    let class = vm.class_of(this);
+    let buf = vm
+        .read_ref_field(this, class, "buf", "[B")
+        .unwrap_or(ObjectRef::NULL);
+    let count = crate::lang::read_int_field(vm, this, "count").max(0) as usize;
+    let mut bytes = Vec::with_capacity(count);
+    for index in 0..count {
+        if let Ok(value) = vm.array_get(buf, index as i32) {
+            bytes.push(value.as_int() as u8);
+        }
+    }
+    bytes
+}
+
+fn message_digest_append(vm: &mut Vm<'_>, this: ObjectRef, bytes: &[u8]) -> Result<(), VmError> {
+    let existing = message_digest_data(vm, this);
+    let mut all = existing;
+    all.extend_from_slice(bytes);
+    let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, all.len())?;
+    for (index, byte) in all.iter().enumerate() {
+        vm.array_set(
+            array,
+            index as i32,
+            Value::Int(i32::from(*byte as i8)),
+            false,
+        )?;
+    }
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, "buf", "[B")?;
+    vm.set_instance_ref(this, declaring, field, array);
+    crate::lang::write_int_field(vm, this, "count", all.len() as i32);
+    Ok(())
+}
+
+fn message_digest_compute(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Vec<u8>, VmError> {
+    let algorithm = string_field(vm, this, "algorithm");
+    let data = message_digest_data(vm, this);
+    let (_, func, _) = digest_algorithm(&algorithm).ok_or_else(|| {
+        vm.throw_new("java/lang/IllegalStateException", Some("unknown algorithm"))
+    })?;
+    Ok(func(&data))
+}
+
+fn message_digest_instance(vm: &mut Vm<'_>, algorithm: &str) -> Result<ObjectRef, VmError> {
+    let (canonical, _, _) = digest_algorithm(algorithm).ok_or_else(|| {
+        vm.throw_new(
+            "java/security/NoSuchAlgorithmException",
+            Some(&alloc::format!("{algorithm} MessageDigest not available")),
+        )
+    })?;
+    let class = vm.resolve_class("java/security/MessageDigest")?;
+    let instance = vm.new_instance(class)?;
+    set_string_field(vm, instance, "algorithm", canonical)?;
+    let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, 0)?;
+    let (declaring, field) = vm.find_field(class, "buf", "[B")?;
+    vm.set_instance_ref(instance, declaring, field, array);
+    crate::lang::write_int_field(vm, instance, "count", 0);
+    Ok(instance)
+}
+
+const MESSAGE_DIGEST_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+    method(
+        "getInstance",
+        "(Ljava/lang/String;)Ljava/security/MessageDigest;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = ref_arg(args, 0);
+            if name.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(message_digest_instance(vm, &vm.string_or_empty(name))?)
+        },
+    ),
+    method(
+        "getInstance",
+        "(Ljava/lang/String;Ljava/lang/String;)Ljava/security/MessageDigest;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() || ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let provider = vm.string_or_empty(ref_arg(args, 1));
+            if !known_provider(&provider) {
+                return Err(vm.throw_new("java/security/NoSuchProviderException", Some(&provider)));
+            }
+            object(message_digest_instance(
+                vm,
+                &vm.string_or_empty(ref_arg(args, 0)),
+            )?)
+        },
+    ),
+    method(
+        "getInstance",
+        "(Ljava/lang/String;Ljava/security/Provider;)Ljava/security/MessageDigest;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() || ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(message_digest_instance(
+                vm,
+                &vm.string_or_empty(ref_arg(args, 0)),
+            )?)
+        },
+    ),
+    method(
+        "getAlgorithm",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| object(vm.make_string(&string_field(vm, receiver(args), "algorithm"))?),
+    ),
+    method("getDigestLength", "()I", ACC_PUBLIC, |vm, _, args| {
+        let algorithm = string_field(vm, receiver(args), "algorithm");
+        let (_, _, len) = digest_algorithm(&algorithm).unwrap_or(("", sha256, 0));
+        int(len)
+    }),
+    method("update", "(B)V", ACC_PUBLIC, |vm, _, args| {
+        message_digest_append(vm, receiver(args), &[(int_arg(args, 1) & 0xFF) as u8])?;
+        void()
+    }),
+    method("update", "([B)V", ACC_PUBLIC, |vm, _, args| {
+        let array = ref_arg(args, 1);
+        if array.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let length = vm.array_length(array)? as i32;
+        let mut bytes = Vec::with_capacity(length as usize);
+        for index in 0..length {
+            bytes.push(vm.array_get(array, index)?.as_int() as u8);
+        }
+        message_digest_append(vm, receiver(args), &bytes)?;
+        void()
+    }),
+    method("update", "([BII)V", ACC_PUBLIC, |vm, _, args| {
+        let array = ref_arg(args, 1);
+        let offset = int_arg(args, 2);
+        let length = int_arg(args, 3);
+        if array.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let capacity = vm.array_length(array)? as i32;
+        if offset < 0 || length < 0 || offset + length > capacity {
+            return Err(vm.throw_new("java/lang/ArrayIndexOutOfBoundsException", None));
+        }
+        let mut bytes = Vec::with_capacity(length as usize);
+        for index in 0..length {
+            bytes.push(vm.array_get(array, offset + index)?.as_int() as u8);
+        }
+        message_digest_append(vm, receiver(args), &bytes)?;
+        void()
+    }),
+    method("digest", "()[B", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let digest = message_digest_compute(vm, this)?;
+        let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, digest.len())?;
+        for (index, byte) in digest.iter().enumerate() {
+            vm.array_set(
+                array,
+                index as i32,
+                Value::Int(i32::from(*byte as i8)),
+                false,
+            )?;
+        }
+        crate::lang::write_int_field(vm, this, "count", 0);
+        object(array)
+    }),
+    method("digest", "([B)[B", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let array = ref_arg(args, 1);
+        if !array.is_null() {
+            let length = vm.array_length(array)? as i32;
+            let mut bytes = Vec::with_capacity(length as usize);
+            for index in 0..length {
+                bytes.push(vm.array_get(array, index)?.as_int() as u8);
+            }
+            message_digest_append(vm, this, &bytes)?;
+        }
+        let digest = message_digest_compute(vm, this)?;
+        let out = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, digest.len())?;
+        for (index, byte) in digest.iter().enumerate() {
+            vm.array_set(out, index as i32, Value::Int(i32::from(*byte as i8)), false)?;
+        }
+        crate::lang::write_int_field(vm, this, "count", 0);
+        object(out)
+    }),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
+        crate::lang::write_int_field(vm, receiver(args), "count", 0);
+        void()
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| object(vm.make_string(&string_field(vm, receiver(args), "algorithm"))?),
+    ),
+    method(
+        "isEqual",
+        "([B[B)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let a = ref_arg(args, 0);
+            let b = ref_arg(args, 1);
+            let la = vm.array_length(a)? as i32;
+            let lb = vm.array_length(b)? as i32;
+            if la != lb {
+                return boolean(false);
+            }
+            for index in 0..la {
+                if vm.array_get(a, index)?.as_int() != vm.array_get(b, index)?.as_int() {
+                    return boolean(false);
+                }
+            }
+            boolean(true)
+        },
+    ),
+    method(
+        "clone",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |_vm, _, args| object(receiver(args)),
+    ),
+    method(
+        "getProvider",
+        "()Ljava/security/Provider;",
+        ACC_PUBLIC,
+        |vm, _, _| object(new_sun_provider(vm, "SUN")?),
+    ),
+    method("digest", "([BII)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let buf = ref_arg(args, 1);
+        let offset = int_arg(args, 2);
+        let digest = message_digest_compute(vm, this)?;
+        let len = digest.len() as i32;
+        if vm.array_length(buf)? as i32 - offset < len {
+            return Err(vm.throw_new("java/security/DigestException", Some("buffer too small")));
+        }
+        for (index, byte) in digest.iter().enumerate() {
+            vm.array_set(
+                buf,
+                offset + index as i32,
+                Value::Int(i32::from(*byte as i8)),
+                false,
+            )?;
+        }
+        crate::lang::write_int_field(vm, this, "count", 0);
+        int(len)
+    }),
+];
+
+pub(crate) const MESSAGE_DIGEST: oxjvm_vm::NativeClass = class(
+    "java/security/MessageDigest",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[
+        field("algorithm", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("buf", "[B", ACC_PRIVATE, None),
+        field("count", "I", ACC_PRIVATE, None),
+    ],
+    &MESSAGE_DIGEST_METHODS,
+    None,
+);

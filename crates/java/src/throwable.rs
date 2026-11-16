@@ -814,6 +814,11 @@ exception!(
     "java/security/GeneralSecurityException"
 );
 exception!(
+    DIGEST_EXCEPTION,
+    "java/security/DigestException",
+    "java/security/GeneralSecurityException"
+);
+exception!(
     KEY_EXCEPTION,
     "java/security/KeyException",
     "java/security/GeneralSecurityException"
