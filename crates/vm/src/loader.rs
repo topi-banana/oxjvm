@@ -134,6 +134,42 @@ fn whitebox_dispatch(
                 .count() as i32;
             Ok(Value::Int(n))
         }
+        "getCPUFeatures" => {
+            // HotSpot's format: additional info first, then comma-separated feature names.
+            // oxjvm advertises a conservative x86-64 baseline; extensions it does not claim
+            // (avx, bmi, sha, ...) keep feature-predicated tests on their skip paths.
+            let features = "(4 cores per cpu, 1 threads per core) family 6 model 158 stepping 10 microcode 0x0, cx8, cmov, fxsr, mmx, sse, sse2, sse3, ssse3, sse4.1, sse4.2, popcnt, tsc";
+            Ok(Value::Ref(vm.make_string(features)?))
+        }
+        "getBooleanVMFlag" => {
+            let name = whitebox_flag_name(vm, args);
+            let value = match name.as_str() {
+                "UseCompiler"
+                | "TieredCompilation"
+                | "UseCompressedOops"
+                | "UseCompressedClassPointers" => Some(true),
+                "PrintGC" | "PrintGCDetails" | "UseSerialGC" | "UseParallelGC"
+                | "UseShenandoahGC" | "UseZGC" => Some(false),
+                _ => None,
+            };
+            match value {
+                Some(value) => box_primitive(vm, BaseType::Boolean, Value::Int(value as i32)),
+                None => Ok(Value::Ref(ObjectRef::NULL)),
+            }
+        }
+        "getIntxVMFlag" | "getUintxVMFlag" | "getUint64VMFlag" => {
+            let name = whitebox_flag_name(vm, args);
+            let value = match name.as_str() {
+                "TieredStopAtLevel" => Some(4),
+                "CICompilerCount" => Some(2),
+                "MaxHeapSize" => vm.heap_max_bytes().map(|bytes| bytes as i64),
+                _ => None,
+            };
+            match value {
+                Some(value) => box_primitive(vm, BaseType::Long, Value::Long(value)),
+                None => Ok(Value::Ref(ObjectRef::NULL)),
+            }
+        }
         _ => {
             let retc = desc
                 .rsplit(')')
@@ -211,6 +247,14 @@ fn whitebox_get_object_size(
         .map(|o| o.data.object_size() as i64)
         .unwrap_or(0);
     Ok(Value::Long(size))
+}
+
+/// The flag name argument of a WhiteBox flag getter.
+fn whitebox_flag_name(vm: &Vm<'_>, args: &[Value]) -> String {
+    match args.get(1) {
+        Some(Value::Ref(r)) if *r != ObjectRef::NULL => vm.string_value(*r).unwrap_or_default(),
+        _ => String::new(),
+    }
 }
 
 impl<'a> Vm<'a> {

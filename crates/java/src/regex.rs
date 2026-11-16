@@ -2,9 +2,9 @@
 //!
 //! Supported syntax: literals, `.`, character classes (`[...]`, ranges, negation, `\d \D \w \W
 //! \s \S`), anchors (`^ $`), word boundaries, groups (`(...)`, `(?:...)`), alternation, and the
-//! quantifiers `* + ? {n} {n,} {n,m}` with an optional lazy `?`. Backreferences and lookaround are
-//! rejected at compile time. A step budget bounds backtracking so pathological patterns fail
-//! instead of hanging.
+//! quantifiers `* + ? {n} {n,} {n,m}` with an optional lazy `?`, and lookaround
+//! (`(?=...)`, `(?!...)`, `(?<=...)`, `(?<!...)`). Backreferences are rejected at compile time.
+//! A step budget bounds backtracking so pathological patterns fail instead of hanging.
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -84,6 +84,11 @@ enum Node {
         lazy: bool,
     },
     Scoped(Flags, Box<Node>),
+    Lookaround {
+        ahead: bool,
+        positive: bool,
+        inner: Box<Node>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -98,6 +103,12 @@ enum Inst {
     SaveEnd(usize),
     Split(usize, usize),
     Jmp(usize),
+    /// A zero-width assertion: run `prog` ahead of (or behind) the current position.
+    Look {
+        ahead: bool,
+        positive: bool,
+        prog: Vec<Inst>,
+    },
     Match,
 }
 
@@ -346,9 +357,51 @@ impl<'a> Parser<'a> {
                             self.expect_close()?;
                             Ok(inner)
                         }
+                        Some(eq) if eq == b'=' as u16 => {
+                            let inner = self.parse_alternation()?;
+                            self.expect_close()?;
+                            Ok(Node::Lookaround {
+                                ahead: true,
+                                positive: true,
+                                inner: Box::new(inner),
+                            })
+                        }
+                        Some(bang) if bang == b'!' as u16 => {
+                            let inner = self.parse_alternation()?;
+                            self.expect_close()?;
+                            Ok(Node::Lookaround {
+                                ahead: true,
+                                positive: false,
+                                inner: Box::new(inner),
+                            })
+                        }
                         // Named capturing group `(?<name>...)`: the name is kept so that
-                        // `Matcher.group(String)` can find the group.
+                        // `Matcher.group(String)` can find the group.  `(?<=` and `(?<!`
+                        // introduce lookbehind instead.
                         Some(lt) if lt == b'<' as u16 => {
+                            match self.peek() {
+                                Some(eq) if eq == b'=' as u16 => {
+                                    self.pos += 1;
+                                    let inner = self.parse_alternation()?;
+                                    self.expect_close()?;
+                                    return Ok(Node::Lookaround {
+                                        ahead: false,
+                                        positive: true,
+                                        inner: Box::new(inner),
+                                    });
+                                }
+                                Some(bang) if bang == b'!' as u16 => {
+                                    self.pos += 1;
+                                    let inner = self.parse_alternation()?;
+                                    self.expect_close()?;
+                                    return Ok(Node::Lookaround {
+                                        ahead: false,
+                                        positive: false,
+                                        inner: Box::new(inner),
+                                    });
+                                }
+                                _ => {}
+                            }
                             let mut name = String::new();
                             loop {
                                 match self.next() {
@@ -561,6 +614,20 @@ fn compile_node(node: &Node, prog: &mut Vec<Inst>, flags: Flags) {
     match node {
         Node::Empty => {}
         Node::Scoped(inner_flags, inner) => compile_node(inner, prog, *inner_flags),
+        Node::Lookaround {
+            ahead,
+            positive,
+            inner,
+        } => {
+            let mut sub = Vec::new();
+            compile_node(inner, &mut sub, flags);
+            sub.push(Inst::Match);
+            prog.push(Inst::Look {
+                ahead: *ahead,
+                positive: *positive,
+                prog: sub,
+            });
+        }
         Node::Char(ch) => prog.push(Inst::Char(*ch, flags.case_insensitive)),
         Node::Any => prog.push(Inst::Any(flags.dotall)),
         Node::Class(set) => prog.push(Inst::Class(set.clone(), flags.case_insensitive)),
@@ -696,7 +763,7 @@ pub(crate) fn compile_from_str(vm: &mut Vm<'_>, pattern: &str) -> Result<Regex, 
 }
 
 fn run(
-    regex: &Regex,
+    prog: &[Inst],
     mut pc: usize,
     text: &[u16],
     mut pos: usize,
@@ -708,7 +775,7 @@ fn run(
         if *steps > STEP_LIMIT {
             return None;
         }
-        match &regex.prog[pc] {
+        match &prog[pc] {
             Inst::Match => return Some(pos),
             Inst::Char(expected, case_insensitive) => {
                 if pos < text.len() && eq_char(text[pos], *expected, *case_insensitive) {
@@ -762,7 +829,7 @@ fn run(
             Inst::SaveStart(index) => {
                 let old = caps[*index];
                 caps[*index] = Some((pos, old.map_or(pos, |span| span.1)));
-                let result = run(regex, pc + 1, text, pos, caps, steps);
+                let result = run(prog, pc + 1, text, pos, caps, steps);
                 if result.is_none() {
                     caps[*index] = old;
                 }
@@ -771,7 +838,7 @@ fn run(
             Inst::SaveEnd(index) => {
                 let old = caps[*index];
                 caps[*index] = Some((old.map_or(pos, |span| span.0), pos));
-                let result = run(regex, pc + 1, text, pos, caps, steps);
+                let result = run(prog, pc + 1, text, pos, caps, steps);
                 if result.is_none() {
                     caps[*index] = old;
                 }
@@ -782,11 +849,45 @@ fn run(
             }
             Inst::Split(first, second) => {
                 let saved = caps.clone();
-                if let Some(end) = run(regex, *first, text, pos, caps, steps) {
+                if let Some(end) = run(prog, *first, text, pos, caps, steps) {
                     return Some(end);
                 }
                 *caps = saved;
                 pc = *second;
+            }
+            Inst::Look {
+                ahead,
+                positive,
+                prog: sub,
+            } => {
+                let saved = caps.clone();
+                let hit = if *ahead {
+                    // A lookahead succeeds when its body matches at the current position;
+                    // how far it consumes does not matter.
+                    run(sub, 0, text, pos, caps, steps).is_some()
+                } else {
+                    // A lookbehind needs some start position whose match ends exactly here.
+                    let mut found = false;
+                    for start in (0..=pos).rev() {
+                        let mut trial = saved.clone();
+                        if run(sub, 0, text, start, &mut trial, steps) == Some(pos) {
+                            *caps = trial;
+                            found = true;
+                            break;
+                        }
+                    }
+                    found
+                };
+                if hit == *positive {
+                    if !*positive {
+                        // Captures made inside a negative assertion never survive it.
+                        *caps = saved;
+                    }
+                    pc += 1;
+                    continue;
+                }
+                *caps = saved;
+                return None;
             }
         }
     }
@@ -797,7 +898,7 @@ pub(crate) fn find_from(regex: &Regex, text: &[u16], from: usize) -> Option<Rege
     for start in from..=text.len() {
         let mut caps = vec![None; regex.groups];
         let mut steps = 0;
-        if let Some(end) = run(regex, 0, text, start, &mut caps, &mut steps) {
+        if let Some(end) = run(&regex.prog, 0, text, start, &mut caps, &mut steps) {
             return Some(RegexMatch {
                 start,
                 end,
@@ -812,7 +913,7 @@ pub(crate) fn find_from(regex: &Regex, text: &[u16], from: usize) -> Option<Rege
 pub(crate) fn match_at(regex: &Regex, text: &[u16], require_full: bool) -> Option<RegexMatch> {
     let mut caps = vec![None; regex.groups];
     let mut steps = 0;
-    let end = run(regex, 0, text, 0, &mut caps, &mut steps)?;
+    let end = run(&regex.prog, 0, text, 0, &mut caps, &mut steps)?;
     if require_full && end != text.len() {
         return None;
     }
@@ -1221,7 +1322,7 @@ fn pattern_regex(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(Regex, usize), VmE
 // Matcher
 // -------------------------------------------------------------------------------------------
 
-const MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
+const MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
     method("matches", "()Z", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let (regex, _) = pattern_regex_for(vm, this)?;
@@ -1316,6 +1417,7 @@ const MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
         |vm, _, args| {
             let this = receiver(args);
             crate::lang::write_int_field(vm, this, "cursor", 0);
+            crate::lang::write_int_field(vm, this, "appendPos", 0);
             matcher_clear(vm, this);
             object(this)
         },
@@ -1332,6 +1434,7 @@ const MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
             let text = vm.make_string_utf16(text)?;
             vm.set_instance_ref(this, declaring, field, text);
             crate::lang::write_int_field(vm, this, "cursor", 0);
+            crate::lang::write_int_field(vm, this, "appendPos", 0);
             matcher_clear(vm, this);
             object(this)
         },
@@ -1347,6 +1450,30 @@ const MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
         "(Ljava/lang/String;)Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| matcher_replace(vm, args, false),
+    ),
+    method(
+        "appendReplacement",
+        "(Ljava/lang/StringBuffer;Ljava/lang/String;)Ljava/util/regex/Matcher;",
+        ACC_PUBLIC,
+        |vm, _, args| matcher_append_replacement(vm, args),
+    ),
+    method(
+        "appendReplacement",
+        "(Ljava/lang/StringBuilder;Ljava/lang/String;)Ljava/util/regex/Matcher;",
+        ACC_PUBLIC,
+        |vm, _, args| matcher_append_replacement(vm, args),
+    ),
+    method(
+        "appendTail",
+        "(Ljava/lang/StringBuffer;)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| matcher_append_tail(vm, args),
+    ),
+    method(
+        "appendTail",
+        "(Ljava/lang/StringBuilder;)Ljava/lang/StringBuilder;",
+        ACC_PUBLIC,
+        |vm, _, args| matcher_append_tail(vm, args),
     ),
     method(
         "toString",
@@ -1389,6 +1516,7 @@ pub(crate) const MATCHER: oxjvm_vm::NativeClass = class(
         field("pattern", "Ljava/util/regex/Pattern;", ACC_PRIVATE, None),
         field("input", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("cursor", "I", ACC_PRIVATE, None),
+        field("appendPos", "I", ACC_PRIVATE, None),
         field("matchStart", "I", ACC_PRIVATE, None),
         field("matchEnd", "I", ACC_PRIVATE, None),
         field("groups", "[I", ACC_PRIVATE, None),
@@ -1548,6 +1676,7 @@ fn matcher_new(vm: &mut Vm<'_>, pattern: ObjectRef, input: ObjectRef) -> Result<
     let text = vm.make_string_utf16(text)?;
     vm.set_instance_ref(instance, declaring, field, text);
     matcher_clear(vm, instance);
+    crate::lang::write_int_field(vm, instance, "appendPos", 0);
     object(instance)
 }
 
@@ -1705,6 +1834,99 @@ fn matcher_replace(vm: &mut Vm<'_>, args: &[Value], all: bool) -> Result<Value, 
         replace_first(&regex, &text, &replacement)
     };
     object(vm.make_string_utf16(result)?)
+}
+
+/// The match currently recorded on the matcher, rebuilt from the stored spans.
+fn matcher_current_match(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    start: usize,
+    end: usize,
+) -> Result<RegexMatch, VmError> {
+    let (_, group_count) = pattern_regex_for(vm, this)?;
+    let class = vm.class_of(this);
+    let array = vm
+        .read_ref_field(this, class, "groups", "[I")
+        .unwrap_or(ObjectRef::NULL);
+    let mut groups = Vec::new();
+    if !array.is_null() {
+        for index in 0..group_count {
+            let slot = (index * 2) as i32;
+            let start = vm.array_get(array, slot)?.as_int();
+            let end = vm.array_get(array, slot + 1)?.as_int();
+            groups.push(if start >= 0 && end >= 0 {
+                Some((start as usize, end as usize))
+            } else {
+                None
+            });
+        }
+    }
+    Ok(RegexMatch { start, end, groups })
+}
+
+/// `target.append(text)` for either buffer flavour.
+fn append_text(vm: &mut Vm<'_>, target: ObjectRef, text: &[u16]) -> Result<(), VmError> {
+    if text.is_empty() {
+        return Ok(());
+    }
+    let string = vm.make_string_utf16(text.to_vec())?;
+    let class = vm.class_of(target);
+    let descriptor = if vm.classes.get(class).name == "java/lang/StringBuilder" {
+        "(Ljava/lang/String;)Ljava/lang/StringBuilder;"
+    } else {
+        "(Ljava/lang/String;)Ljava/lang/StringBuffer;"
+    };
+    let (declaring, method) = vm.resolve_virtual_method(target, "append", descriptor)?;
+    vm.invoke_method(
+        declaring,
+        method,
+        vec![Value::Ref(target), Value::Ref(string)],
+    )?;
+    Ok(())
+}
+
+fn matcher_append_pos(vm: &Vm<'_>, this: ObjectRef, len: usize) -> usize {
+    (crate::lang::read_int_field(vm, this, "appendPos").max(0) as usize).min(len)
+}
+
+/// `Matcher.appendReplacement(StringBuffer|StringBuilder, String)`.
+fn matcher_append_replacement(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let target = ref_arg(args, 1);
+    let replacement = string_arg(vm, args[2])?;
+    let start = crate::lang::read_int_field(vm, this, "matchStart");
+    let end = crate::lang::read_int_field(vm, this, "matchEnd");
+    if start < 0 || end < 0 {
+        return Err(vm.throw_new(
+            "java/lang/IllegalStateException",
+            Some("No match available"),
+        ));
+    }
+    let (start, end) = (start as usize, end as usize);
+    let text = matcher_text(vm, this)?;
+    let append_pos = matcher_append_pos(vm, this, text.len());
+    if append_pos > start {
+        return Err(vm.throw_new(
+            "java/lang/IndexOutOfBoundsException",
+            Some("Illegal append position"),
+        ));
+    }
+    append_text(vm, target, &text[append_pos..start])?;
+    let matched = matcher_current_match(vm, this, start, end)?;
+    let expanded = expand_replacement(&matched, &text, &utf16_from_str(&replacement));
+    append_text(vm, target, &expanded)?;
+    crate::lang::write_int_field(vm, this, "appendPos", end as i32);
+    object(this)
+}
+
+/// `Matcher.appendTail(StringBuffer|StringBuilder)`.
+fn matcher_append_tail(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let target = ref_arg(args, 1);
+    let text = matcher_text(vm, this)?;
+    let append_pos = matcher_append_pos(vm, this, text.len());
+    append_text(vm, target, &text[append_pos..])?;
+    object(target)
 }
 
 /// `Pattern.asPredicate()`: a `Predicate` matching with `Matcher.find`.

@@ -928,6 +928,82 @@ exception!(
     "java/util/zip/DataFormatException",
     "java/lang/Exception"
 );
+exception!(
+    INTERRUPTED_IO_EXCEPTION,
+    "java/io/InterruptedIOException",
+    "java/io/IOException"
+);
+exception!(EOF_EXCEPTION, "java/io/EOFException", "java/io/IOException");
+exception!(
+    UTF_DATA_FORMAT_EXCEPTION,
+    "java/io/UTFDataFormatException",
+    "java/io/IOException"
+);
+exception!(
+    CHAR_CONVERSION_EXCEPTION,
+    "java/io/CharConversionException",
+    "java/io/IOException"
+);
+exception!(
+    OBJECT_STREAM_EXCEPTION,
+    "java/io/ObjectStreamException",
+    "java/io/IOException"
+);
+exception!(
+    INVALID_CLASS_EXCEPTION,
+    "java/io/InvalidClassException",
+    "java/io/ObjectStreamException"
+);
+exception!(
+    NOT_SERIALIZABLE_EXCEPTION,
+    "java/io/NotSerializableException",
+    "java/io/ObjectStreamException"
+);
+exception!(
+    STREAM_CORRUPTED_EXCEPTION,
+    "java/io/StreamCorruptedException",
+    "java/io/ObjectStreamException"
+);
+exception!(
+    OPTIONAL_DATA_EXCEPTION,
+    "java/io/OptionalDataException",
+    "java/io/ObjectStreamException"
+);
+exception!(
+    WRITE_ABORTED_EXCEPTION,
+    "java/io/WriteAbortedException",
+    "java/io/ObjectStreamException"
+);
+exception!(
+    SOCKET_EXCEPTION,
+    "java/net/SocketException",
+    "java/io/IOException"
+);
+exception!(
+    BIND_EXCEPTION,
+    "java/net/BindException",
+    "java/net/SocketException"
+);
+exception!(
+    CONNECT_EXCEPTION,
+    "java/net/ConnectException",
+    "java/net/SocketException"
+);
+exception!(
+    NO_ROUTE_TO_HOST_EXCEPTION,
+    "java/net/NoRouteToHostException",
+    "java/net/SocketException"
+);
+exception!(
+    PORT_UNREACHABLE_EXCEPTION,
+    "java/net/PortUnreachableException",
+    "java/net/SocketException"
+);
+exception!(
+    SOCKET_TIMEOUT_EXCEPTION,
+    "java/net/SocketTimeoutException",
+    "java/io/InterruptedIOException"
+);
 
 fn type_not_present_ctor(
     vm: &mut Vm<'_>,

@@ -143,7 +143,7 @@ pub fn is_non_writable_property(key: &str) -> bool {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 847] = [
+static REGISTRY: [NativeClass; 864] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -323,6 +323,22 @@ static REGISTRY: [NativeClass; 847] = [
     throwable::INVALID_PARAMETER_SPEC_EXCEPTION,
     throwable::UNKNOWN_HOST_EXCEPTION,
     throwable::DATA_FORMAT_EXCEPTION,
+    throwable::INTERRUPTED_IO_EXCEPTION,
+    throwable::EOF_EXCEPTION,
+    throwable::UTF_DATA_FORMAT_EXCEPTION,
+    throwable::CHAR_CONVERSION_EXCEPTION,
+    throwable::OBJECT_STREAM_EXCEPTION,
+    throwable::INVALID_CLASS_EXCEPTION,
+    throwable::NOT_SERIALIZABLE_EXCEPTION,
+    throwable::STREAM_CORRUPTED_EXCEPTION,
+    throwable::OPTIONAL_DATA_EXCEPTION,
+    throwable::WRITE_ABORTED_EXCEPTION,
+    throwable::SOCKET_EXCEPTION,
+    throwable::BIND_EXCEPTION,
+    throwable::CONNECT_EXCEPTION,
+    throwable::NO_ROUTE_TO_HOST_EXCEPTION,
+    throwable::PORT_UNREACHABLE_EXCEPTION,
+    throwable::SOCKET_TIMEOUT_EXCEPTION,
     throwable::ZIP_CONSTANTS,
     throwable::MATCH_EXCEPTION,
     throwable::FILE_NOT_FOUND_EXCEPTION,
@@ -664,6 +680,7 @@ static REGISTRY: [NativeClass; 847] = [
     tools::TOOL_PROVIDER_SPI,
     tools::OJVM_TOOL_PROVIDER,
     tools::JAVADOC_MAIN,
+    tools::JAVADOC_MAIN_RESULT,
     tools::DOCLINT,
     tools::DOCLINT_BAD_ARGS,
     tools::JAVAP_MAIN,

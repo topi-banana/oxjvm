@@ -68,7 +68,7 @@ fn join_path(base: &str, child: &str) -> String {
 // Path (concrete implementation) + Paths
 // -------------------------------------------------------------------------------------------
 
-const PATH_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
+const PATH_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -88,6 +88,26 @@ const PATH_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| object(path_text(vm, receiver(args))),
+    ),
+    method(
+        "compareTo",
+        "(Ljava/nio/file/Path;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = path_string(vm, receiver(args));
+            let other = path_string(vm, ref_arg(args, 1));
+            int(this.cmp(&other) as i32)
+        },
+    ),
+    method(
+        "compareTo",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC | ACC_BRIDGE | ACC_SYNTHETIC,
+        |vm, _, args| {
+            let this = path_string(vm, receiver(args));
+            let other = path_string(vm, ref_arg(args, 1));
+            int(this.cmp(&other) as i32)
+        },
     ),
     method(
         "getFileName",
@@ -421,12 +441,18 @@ pub(crate) const OXJVM_PATH: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PATH_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
+const PATH_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
     method(
         "of",
         "(Ljava/lang/String;[Ljava/lang/String;)Ljava/nio/file/Path;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| path_of(vm, args),
+    ),
+    method(
+        "compareTo",
+        "(Ljava/nio/file/Path;)I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
     ),
     method(
         "toString",

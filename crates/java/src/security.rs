@@ -122,6 +122,56 @@ fn security_properties(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
         .unwrap_or(ObjectRef::NULL))
 }
 
+/// The security properties the JDK ships in `conf/security/java.security`.  Tests read
+/// them through `Security.getProperty`; a missing value surfaces as an NPE in the test
+/// library (e.g. `SecurityUtils.removeFromDisabledAlgs`).
+const SECURITY_PROPERTY_DEFAULTS: [(&str, &str); 9] = [
+    (
+        "jdk.tls.disabledAlgorithms",
+        "SSLv3, TLSv1, TLSv1.1, DTLSv1.0, RC4, DES, MD5withRSA, DH keySize < 1024, \
+         EC keySize < 224, 3DES_EDE_CBC, anon, NULL, ECDH, TLS_RSA_*, \
+         rsa_pkcs1_sha1 usage HandshakeSignature, ecdsa_sha1 usage HandshakeSignature, \
+         dsa_sha1 usage HandshakeSignature",
+    ),
+    (
+        "jdk.certpath.disabledAlgorithms",
+        "MD2, MD5, SHA1 jdkCA & usage TLSServer, RSA keySize < 1024, DSA keySize < 1024, \
+         EC keySize < 224, SHA1 usage SignedJAR & denyAfter 2019-01-01",
+    ),
+    (
+        "jdk.jar.disabledAlgorithms",
+        "MD2, MD5, RSA keySize < 1024, DSA keySize < 1024, SHA1 denyAfter 2019-01-01",
+    ),
+    (
+        "jdk.tls.legacyAlgorithms",
+        "NULL, anon, RC4, DES, 3DES_EDE_CBC",
+    ),
+    ("ssl.KeyManagerFactory.algorithm", "SunX509"),
+    ("ssl.TrustManagerFactory.algorithm", "PKIX"),
+    ("securerandom.source", "file:/dev/random"),
+    (
+        "securerandom.strongAlgorithms",
+        "NativePRNGBlocking:SUN,DRBG:SUN",
+    ),
+    (
+        "jdk.xml.dsig.secureValidationPolicy",
+        "disallowAlg http://www.w3.org/TR/1999/REC-xslt-19991116, \
+         disallowAlg http://www.w3.org/2001/04/xmldsig-more#rsa-md5, \
+         disallowAlg http://www.w3.org/2001/04/xmldsig-more#hmac-md5, \
+         disallowAlg http://www.w3.org/2001/04/xmldsig-more#md5, \
+         disallowAlg http://www.w3.org/2000/09/xmldsig#sha1, \
+         disallowAlg http://www.w3.org/2000/09/xmldsig#dsa-sha1, \
+         disallowAlg http://www.w3.org/2000/09/xmldsig#rsa-sha1, \
+         disallowAlg http://www.w3.org/2007/05/xmldsig-more#sha1-rsa-MGF1, \
+         disallowAlg http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha1, \
+         disallowAlg http://www.w3.org/TR/1999/REC-xpath-19991116, \
+         maxTransforms 5, maxReferences 30, \
+         disallowReferenceUriSchemes file http https, \
+         minKeySize RSA 1024, minKeySize DSA 1024, minKeySize EC 224, \
+         noDuplicateIds, noRetrievalMethodLoops",
+    ),
+];
+
 fn security_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     let security = vm.resolve_class("java/security/Security")?;
     let properties = vm.resolve_class("java/util/Properties")?;
@@ -130,6 +180,17 @@ fn security_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
         .find_method(properties, "<init>", "()V")
         .ok_or_else(|| VmError::internal("Properties lacks <init>"))?;
     vm.invoke_method(declaring, ctor, vec![Value::Ref(props)])?;
+    for (key, value) in SECURITY_PROPERTY_DEFAULTS {
+        let key = vm.make_string(key)?;
+        let value = vm.make_string(value)?;
+        property_call(
+            vm,
+            props,
+            "setProperty",
+            "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/Object;",
+            vec![Value::Ref(props), Value::Ref(key), Value::Ref(value)],
+        )?;
+    }
     vm.set_static_value(
         security,
         "props",

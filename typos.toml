@@ -23,3 +23,6 @@ Pn = "Pn"
 # `Europe/Paris` and `Asia/Kolkata`; not misspellings of "etc"/"is".
 ECT = "ECT"
 IST = "IST"
+# `EDE` is the triple-DES "encrypt-decrypt-encrypt" mode in the JDK security algorithm names
+# (`3DES_EDE_CBC`, `TLS_RSA_WITH_3DES_EDE_CBC_SHA`); not a misspelling of "edge".
+EDE = "EDE"

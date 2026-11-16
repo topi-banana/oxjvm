@@ -187,7 +187,7 @@ fn charset_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     Ok(())
 }
 
-const CHARSET_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+const CHARSET_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
     method(
         "forName",
         "(Ljava/lang/String;)Ljava/nio/charset/Charset;",
@@ -249,6 +249,26 @@ const CHARSET_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
         let name = name_of(vm, receiver(args));
         object(vm.make_string(&name)?)
     }),
+    method(
+        "compareTo",
+        "(Ljava/nio/charset/Charset;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = name_of(vm, receiver(args)).to_lowercase();
+            let other = name_of(vm, ref_arg(args, 1)).to_lowercase();
+            int(this.cmp(&other) as i32)
+        },
+    ),
+    method(
+        "compareTo",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC | ACC_BRIDGE | ACC_SYNTHETIC,
+        |vm, _, args| {
+            let this = name_of(vm, receiver(args)).to_lowercase();
+            let other = name_of(vm, ref_arg(args, 1)).to_lowercase();
+            int(this.cmp(&other) as i32)
+        },
+    ),
     method(
         "displayName",
         "()Ljava/lang/String;",

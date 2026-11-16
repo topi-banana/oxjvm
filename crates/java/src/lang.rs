@@ -3291,7 +3291,7 @@ pub(crate) const CASE_INSENSITIVE_COMPARATOR: oxjvm_vm::NativeClass = class(
 // StringBuilder / StringBuffer
 // -------------------------------------------------------------------------------------------
 
-const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
+const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
     method("<init>", "()V", ACC_PUBLIC, builder_init),
     method("<init>", "(I)V", ACC_PUBLIC, builder_init_capacity),
     method(
@@ -3458,9 +3458,21 @@ const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
             builder_append_text(vm, receiver(args), &text)
         },
     ),
+    method(
+        "compareTo",
+        "(Ljava/lang/StringBuilder;)I",
+        ACC_PUBLIC,
+        builder_compare_to,
+    ),
+    method(
+        "compareTo",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC | ACC_BRIDGE | ACC_SYNTHETIC,
+        builder_compare_to,
+    ),
 ];
 
-const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
+const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
     method("<init>", "()V", ACC_PUBLIC, builder_init),
     method("<init>", "(I)V", ACC_PUBLIC, builder_init_capacity),
     method(
@@ -3604,6 +3616,18 @@ const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
         "()Ljava/lang/StringBuffer;",
         ACC_PUBLIC,
         builder_reverse,
+    ),
+    method(
+        "compareTo",
+        "(Ljava/lang/StringBuffer;)I",
+        ACC_PUBLIC,
+        builder_compare_to,
+    ),
+    method(
+        "compareTo",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC | ACC_BRIDGE | ACC_SYNTHETIC,
+        builder_compare_to,
     ),
 ];
 
@@ -3916,6 +3940,24 @@ fn builder_length(
 ) -> Result<Value, VmError> {
     let (_, count) = builder_state(vm, receiver(args));
     int(count as i32)
+}
+
+/// `StringBuilder/StringBuffer.compareTo`: lexicographic over the live content.
+fn builder_compare_to(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let (units, count) = builder_state(vm, receiver(args));
+    let other = ref_arg(args, 1);
+    if other.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let (other_units, other_count) = builder_state(vm, other);
+    int(compare_units(
+        &units[..count.min(units.len())],
+        &other_units[..other_count.min(other_units.len())],
+    ))
 }
 
 fn builder_char_at(
@@ -4357,11 +4399,13 @@ fn system_class(vm: &mut Vm<'_>) -> Result<ClassId, VmError> {
 }
 
 /// The VM's well-known default system properties.
-pub(crate) const SYSTEM_PROPERTY_DEFAULTS: [(&str, &str); 27] = [
+pub(crate) const SYSTEM_PROPERTY_DEFAULTS: [(&str, &str); 29] = [
     ("java.version", "17"),
     ("java.specification.version", "17"),
     ("java.vm.name", "oxjvm"),
     ("java.vm.version", "0.1.0"),
+    ("java.vm.info", "interpreted mode"),
+    ("sun.management.compiler", "oxjvm 64-Bit Tiered Compilers"),
     ("java.vm.vendor", "oxjvm"),
     ("java.vendor", "oxjvm"),
     ("java.vendor.url", "https://oxjvm.invalid/"),

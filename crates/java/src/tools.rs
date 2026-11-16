@@ -1606,33 +1606,39 @@ pub(crate) const JAVAC_TOOL: oxjvm_vm::NativeClass = class(
     None,
 );
 
-fn javac_program(vm: &mut Vm<'_>) -> String {
+/// The host executable for a JDK tool: the boot JDK when the harness pins one, else the
+/// running JDK's `java.home`, else a bare name resolved through `PATH`.
+fn tool_program(vm: &mut Vm<'_>, name: &str) -> String {
     if let Some(jdk) = vm
         .host_property("test.boot.jdk")
         .or_else(|| vm.get_property("test.boot.jdk"))
     {
         if !jdk.is_empty() {
-            return alloc::format!("{jdk}/bin/javac");
+            return alloc::format!("{jdk}/bin/{name}");
         }
     }
     if let Some(home) = vm.host_property("java.home") {
         if !home.is_empty() && home != "/oxjvm" {
-            return alloc::format!("{home}/bin/javac");
+            return alloc::format!("{home}/bin/{name}");
         }
     }
-    String::from("javac")
+    String::from(name)
+}
+
+/// The tools oxjvm can hand out through `java.util.spi.ToolProvider.findFirst`.
+fn known_tool_provider(name: &str) -> bool {
+    matches!(
+        name,
+        "javac" | "javadoc" | "javap" | "jar" | "jlink" | "jmod" | "jdeps" | "jnativescan"
+    )
+}
+
+fn javac_program(vm: &mut Vm<'_>) -> String {
+    tool_program(vm, "javac")
 }
 
 fn javadoc_program(vm: &mut Vm<'_>) -> String {
-    if let Some(jdk) = vm
-        .host_property("test.boot.jdk")
-        .or_else(|| vm.get_property("test.boot.jdk"))
-    {
-        if !jdk.is_empty() {
-            return alloc::format!("{jdk}/bin/javadoc");
-        }
-    }
-    String::from("javadoc")
+    tool_program(vm, "javadoc")
 }
 
 fn set_task_field(
@@ -3031,7 +3037,7 @@ const TOOL_PROVIDER_SPI_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let name = vm.string_or_empty(ref_arg(args, 0));
-            if matches!(name.as_str(), "javac" | "javadoc" | "javap") {
+            if known_tool_provider(&name) {
                 let provider = new_tool_provider(vm, &name)?;
                 crate::optional::optional_new(vm, provider)
             } else {
@@ -3045,7 +3051,7 @@ const TOOL_PROVIDER_SPI_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let name = vm.string_or_empty(ref_arg(args, 0));
-            if matches!(name.as_str(), "javac" | "javadoc" | "javap") {
+            if known_tool_provider(&name) {
                 let provider = new_tool_provider(vm, &name)?;
                 crate::optional::optional_new(vm, provider)
             } else {
@@ -3116,11 +3122,7 @@ fn tool_provider_run(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> 
         .read_string_field(this, class, "name")
         .unwrap_or_else(|| String::from("javac"));
     let arguments = ref_arg(args, 3);
-    let mut cmd: Vec<String> = vec![match name.as_str() {
-        "javadoc" => javadoc_program(vm),
-        "javap" => String::from("javap"),
-        _ => javac_program(vm),
-    }];
+    let mut cmd: Vec<String> = vec![tool_program(vm, &name)];
     if !arguments.is_null() {
         let length = vm.array_length(arguments)?;
         for index in 0..length {
@@ -3179,7 +3181,182 @@ pub(crate) const OJVM_TOOL_PROVIDER: oxjvm_vm::NativeClass = class(
 
 // javadoc / javap / doclint entry points -----------------------------------
 
-const JAVADOC_MAIN_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+// --------------------------------------------------------------------------
+// jdk.javadoc.internal.tool.Main$Result
+// --------------------------------------------------------------------------
+
+pub(crate) const JAVADOC_MAIN_RESULT: oxjvm_vm::NativeClass = class(
+    "jdk/javadoc/internal/tool/Main$Result",
+    Some("java/lang/Enum"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field(
+            "OK",
+            "Ljdk/javadoc/internal/tool/Main$Result;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "ERROR",
+            "Ljdk/javadoc/internal/tool/Main$Result;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "CMDERR",
+            "Ljdk/javadoc/internal/tool/Main$Result;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "SYSERR",
+            "Ljdk/javadoc/internal/tool/Main$Result;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "ABNORMAL",
+            "Ljdk/javadoc/internal/tool/Main$Result;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field("exitCode", "I", ACC_PUBLIC | ACC_FINAL, None),
+    ],
+    &JAVADOC_MAIN_RESULT_METHODS,
+    Some(javadoc_main_result_clinit),
+);
+
+const JAVADOC_MAIN_RESULT_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method("<init>", "()V", ACC_PRIVATE, |_, _, _| void()),
+    method("isOK", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(read_int_field(vm, receiver(args), "exitCode") == 0)
+    }),
+    method(
+        "values",
+        "()[Ljdk/javadoc/internal/tool/Main$Result;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("jdk/javadoc/internal/tool/Main$Result")?;
+            vm.ensure_initialized(class)?;
+            let array = vm.allocate_object_array(class, 5)?;
+            for (index, name) in ["OK", "ERROR", "CMDERR", "SYSERR", "ABNORMAL"]
+                .iter()
+                .enumerate()
+            {
+                if let Some(value) = vm.read_static_ref_if_set(
+                    class,
+                    name,
+                    "Ljdk/javadoc/internal/tool/Main$Result;",
+                ) {
+                    vm.array_set_ref(array, index, value)?;
+                }
+            }
+            object(array)
+        },
+    ),
+    method(
+        "valueOf",
+        "(Ljava/lang/String;)Ljdk/javadoc/internal/tool/Main$Result;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = vm.string_or_empty(ref_arg(args, 0));
+            let class = vm.resolve_class("jdk/javadoc/internal/tool/Main$Result")?;
+            vm.ensure_initialized(class)?;
+            match vm.read_static_ref_if_set(class, &name, "Ljdk/javadoc/internal/tool/Main$Result;")
+            {
+                Some(value) => object(value),
+                None => Err(vm.throw_new("java/lang/IllegalArgumentException", Some(&name))),
+            }
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = vm.read_string_field_any(this, "name").unwrap_or_default();
+            object(vm.make_string(&text)?)
+        },
+    ),
+];
+
+fn javadoc_main_result_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("jdk/javadoc/internal/tool/Main$Result")?;
+    for (index, name) in ["OK", "ERROR", "CMDERR", "SYSERR", "ABNORMAL"]
+        .iter()
+        .enumerate()
+    {
+        let instance = vm.new_instance(class)?;
+        vm.set_string_field(instance, class, "name", name)?;
+        if let Some((declaring, field)) = vm.find_field_opt(class, "exitCode", "I") {
+            vm.set_instance_int(instance, declaring, field, index as i32);
+        }
+        vm.set_static_value(
+            class,
+            name,
+            "Ljdk/javadoc/internal/tool/Main$Result;",
+            Value::Ref(instance),
+        );
+    }
+    Ok(())
+}
+
+fn javadoc_result(vm: &mut Vm<'_>, name: &str) -> Result<Value, VmError> {
+    let class = vm.resolve_class("jdk/javadoc/internal/tool/Main$Result")?;
+    vm.ensure_initialized(class)?;
+    Ok(Value::Ref(
+        vm.read_static_ref(class, name, "Ljdk/javadoc/internal/tool/Main$Result;")
+            .unwrap_or(ObjectRef::NULL),
+    ))
+}
+
+/// Run the javadoc tool and map its exit status onto a `Main$Result` constant.
+fn javadoc_main_run(vm: &mut Vm<'_>, this: ObjectRef, array: ObjectRef) -> Result<Value, VmError> {
+    let mut cmd: Vec<String> = vec![javadoc_program(vm)];
+    if !array.is_null() {
+        let length = vm.array_length(array)?;
+        for index in 0..length {
+            let element = vm.array_get(array, index as i32)?.as_ref();
+            cmd.push(vm.string_or_empty(element));
+        }
+    }
+    let status = match vm.host.run_process(&cmd[0], &cmd[1..], None) {
+        Ok(result) => {
+            // Forward the captured output to the streams installed via setStreams, the way
+            // the in-process tool writes to its configured writers.
+            let class = vm.class_of(this);
+            for (field_name, stream) in [("out", result.stdout), ("err", result.stderr)] {
+                let writer = vm
+                    .read_ref_field(this, class, field_name, "Ljava/io/PrintWriter;")
+                    .unwrap_or(ObjectRef::NULL);
+                if writer.is_null() || stream.is_empty() {
+                    continue;
+                }
+                let text = String::from_utf8_lossy(&stream).to_string();
+                if let Ok((c, m)) =
+                    vm.resolve_virtual_method(writer, "write", "(Ljava/lang/String;)V")
+                {
+                    let string = vm.make_string(&text)?;
+                    vm.invoke_method(c, m, vec![Value::Ref(writer), Value::Ref(string)])?;
+                }
+            }
+            result.status
+        }
+        Err(_) => 1,
+    };
+    let name = match status {
+        0 => "OK",
+        2 => "CMDERR",
+        3 => "SYSERR",
+        4 => "ABNORMAL",
+        _ => "ERROR",
+    };
+    javadoc_result(vm, name)
+}
+
+const JAVADOC_MAIN_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "setStreams",
@@ -3252,6 +3429,18 @@ const JAVADOC_MAIN_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
                 Err(_) => Ok(Value::Int(1)),
             }
         },
+    ),
+    method(
+        "run",
+        "([Ljava/lang/String;)Ljdk/javadoc/internal/tool/Main$Result;",
+        ACC_PUBLIC,
+        |vm, _, args| javadoc_main_run(vm, receiver(args), ref_arg(args, 1)),
+    ),
+    method(
+        "setFileManager",
+        "(Ljavax/tools/StandardJavaFileManager;)Ljdk/javadoc/internal/tool/Main;",
+        ACC_PUBLIC,
+        |_, _, args| object(receiver(args)),
     ),
 ];
 

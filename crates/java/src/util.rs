@@ -978,7 +978,7 @@ macro_rules! map_of {
     };
 }
 
-const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
+const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
     method(
         "entry",
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map$Entry;",
@@ -1104,6 +1104,92 @@ const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
                 )?;
             }
             void()
+        },
+    ),
+    method(
+        "compute",
+        "(Ljava/lang/Object;Ljava/util/function/BiFunction;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = receiver(args);
+            let key = ref_arg(args, 1);
+            let function = ref_arg(args, 2);
+            if function.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let old = map_virtual_call(
+                vm,
+                map,
+                "get",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                vec![key],
+            )?;
+            let new = bi_function_apply(vm, function, key, old)?;
+            if !new.is_null() {
+                map_virtual_call(
+                    vm,
+                    map,
+                    "put",
+                    "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                    vec![key, new],
+                )?;
+                object(new)
+            } else if !old.is_null() {
+                map_virtual_call(
+                    vm,
+                    map,
+                    "remove",
+                    "(Ljava/lang/Object;)Ljava/lang/Object;",
+                    vec![key],
+                )?;
+                object(ObjectRef::NULL)
+            } else {
+                object(ObjectRef::NULL)
+            }
+        },
+    ),
+    method(
+        "merge",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/util/function/BiFunction;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = receiver(args);
+            let key = ref_arg(args, 1);
+            let value = ref_arg(args, 2);
+            let function = ref_arg(args, 3);
+            if value.is_null() || function.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let old = map_virtual_call(
+                vm,
+                map,
+                "get",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                vec![key],
+            )?;
+            let new = if old.is_null() {
+                value
+            } else {
+                bi_function_apply(vm, function, old, value)?
+            };
+            if new.is_null() {
+                map_virtual_call(
+                    vm,
+                    map,
+                    "remove",
+                    "(Ljava/lang/Object;)Ljava/lang/Object;",
+                    vec![key],
+                )?;
+            } else {
+                map_virtual_call(
+                    vm,
+                    map,
+                    "put",
+                    "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                    vec![key, new],
+                )?;
+            }
+            object(new)
         },
     ),
     map_of!(0, "()Ljava/util/Map;"),
@@ -4127,6 +4213,42 @@ pub(crate) fn swallow_map_equality_error(vm: &mut Vm<'_>, error: VmError) -> Res
 }
 
 /// Collect a map's `(key, value)` pairs through `entrySet`, the contract subclasses implement.
+/// Invoke a single-reference-argument map operation through virtual dispatch, returning the
+/// reference result.  Used by the `Map` interface's default `compute`/`merge`.
+fn map_virtual_call(
+    vm: &mut Vm<'_>,
+    map: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    extra: Vec<ObjectRef>,
+) -> Result<ObjectRef, VmError> {
+    let (class, method) = vm.resolve_virtual_method(map, name, descriptor)?;
+    let mut args = vec![Value::Ref(map)];
+    args.extend(extra.into_iter().map(Value::Ref));
+    Ok(vm.invoke_method(class, method, args)?.as_ref())
+}
+
+/// `BiFunction.apply(a, b)`.
+fn bi_function_apply(
+    vm: &mut Vm<'_>,
+    function: ObjectRef,
+    a: ObjectRef,
+    b: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    let (class, method) = vm.resolve_virtual_method(
+        function,
+        "apply",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+    )?;
+    Ok(vm
+        .invoke_method(
+            class,
+            method,
+            vec![Value::Ref(function), Value::Ref(a), Value::Ref(b)],
+        )?
+        .as_ref())
+}
+
 fn abstract_map_entries(
     vm: &mut Vm<'_>,
     map: ObjectRef,

@@ -1393,13 +1393,28 @@ pub(crate) fn method_parameter_annotations(
     owner: ClassId,
     slot: u32,
 ) -> Result<ObjectRef, VmError> {
-    let parameters = vm
+    let (mut parameters, descriptor, name) = vm
         .classes
         .get(owner)
         .methods
         .get(slot as usize)
-        .map(|method| method.parameter_annotations.clone())
+        .map(|method| {
+            (
+                method.parameter_annotations.clone(),
+                method.descriptor.clone(),
+                method.name.clone(),
+            )
+        })
         .unwrap_or_default();
+    // The attribute is optional: a method without parameter annotations carries no
+    // `RuntimeVisibleParameterAnnotations`, yet reflection still answers one (empty) entry
+    // per declared parameter.  Constructors keep the raw attribute here because
+    // `constructor_parameter_annotations` shifts it to account for implicit parameters.
+    if name != "<init>" {
+        if let Ok(parsed) = MethodDescriptor::parse(&descriptor) {
+            parameters.resize(parsed.parameters.len(), Vec::new());
+        }
+    }
     let annotation_component = vm.resolve_class("java/lang/annotation/Annotation")?;
     let array_component = vm.resolve_class("[Ljava/lang/annotation/Annotation;")?;
     let outer = vm.allocate_object_array(array_component, parameters.len())?;
@@ -1445,6 +1460,19 @@ pub(crate) fn constructor_parameter_annotations(
     };
     let num_parameters = parsed.parameters.len();
     let result_length = vm.array_length(result)?;
+    if result_length == 0 && num_parameters > 0 {
+        // No attribute at all: answer one empty entry per parameter, implicit ones included.
+        let component = vm.resolve_class("[Ljava/lang/annotation/Annotation;")?;
+        let outer = vm.allocate_object_array(component, num_parameters)?;
+        vm.protect(outer);
+        let annotation_component = vm.resolve_class("java/lang/annotation/Annotation")?;
+        for index in 0..num_parameters {
+            let empty = vm.allocate_object_array(annotation_component, 0)?;
+            vm.array_set_ref(outer, index, empty)?;
+        }
+        vm.unprotect(outer);
+        return Ok(outer);
+    }
     let shift = if result_length == num_parameters {
         0
     } else if is_enum
