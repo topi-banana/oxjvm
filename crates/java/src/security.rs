@@ -3812,3 +3812,1230 @@ pub(crate) const MESSAGE_DIGEST: oxjvm_vm::NativeClass = class(
     &MESSAGE_DIGEST_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// Shared crypto helpers
+// -------------------------------------------------------------------------------------------
+
+/// Copy the contents of a Java `byte[]` into a Rust vector (null yields empty).
+fn read_byte_array(vm: &mut Vm<'_>, array: ObjectRef) -> Result<Vec<u8>, VmError> {
+    if array.is_null() {
+        return Ok(Vec::new());
+    }
+    let length = vm.array_length(array)?;
+    let mut bytes = Vec::with_capacity(length);
+    for index in 0..length {
+        bytes.push(vm.array_get(array, index as i32)?.as_int() as u8);
+    }
+    Ok(bytes)
+}
+
+/// Generate `len` cryptographically-styled random bytes through a fresh SecureRandom.
+fn random_bytes(vm: &mut Vm<'_>, len: usize) -> Result<Vec<u8>, VmError> {
+    let class = vm.resolve_class("java/security/SecureRandom")?;
+    let random = vm.new_instance(class)?;
+    let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, len)?;
+    let (declaring, method) = vm.resolve_virtual_method(random, "nextBytes", "([B)V")?;
+    vm.invoke_method(
+        declaring,
+        method,
+        vec![Value::Ref(random), Value::Ref(array)],
+    )?;
+    read_byte_array(vm, array)
+}
+
+/// Build a `javax.crypto.spec.SecretKeySpec` from raw key material.
+fn new_secret_key_spec(
+    vm: &mut Vm<'_>,
+    bytes: &[u8],
+    algorithm: &str,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("javax/crypto/spec/SecretKeySpec")?;
+    let spec = vm.new_instance(class)?;
+    let key = new_byte_array(vm, bytes)?;
+    set_ref_field(vm, spec, "key", "[B", key)?;
+    set_string_field(vm, spec, "algorithm", algorithm)?;
+    Ok(spec)
+}
+
+/// Read a Key's raw encoding through its `getEncoded()` method.
+fn key_encoded(vm: &mut Vm<'_>, key: ObjectRef) -> Result<Vec<u8>, VmError> {
+    if key.is_null() {
+        return Ok(Vec::new());
+    }
+    let (class, method) = vm.resolve_virtual_method(key, "getEncoded", "()[B")?;
+    let array = vm
+        .invoke_method(class, method, vec![Value::Ref(key)])?
+        .as_ref();
+    read_byte_array(vm, array)
+}
+
+/// Read a Key's algorithm name through its `getAlgorithm()` method.
+fn key_algorithm(vm: &mut Vm<'_>, key: ObjectRef) -> Result<String, VmError> {
+    if key.is_null() {
+        return Ok(String::new());
+    }
+    let (class, method) = vm.resolve_virtual_method(key, "getAlgorithm", "()Ljava/lang/String;")?;
+    let text = vm
+        .invoke_method(class, method, vec![Value::Ref(key)])?
+        .as_ref();
+    Ok(vm.string_or_empty(text))
+}
+
+/// Accumulate bytes into a `buf`/`count` pair (shared by Mac and Signature).
+fn crypto_append(vm: &mut Vm<'_>, this: ObjectRef, bytes: &[u8]) -> Result<(), VmError> {
+    let class = vm.class_of(this);
+    let buf = vm
+        .read_ref_field(this, class, "buf", "[B")
+        .unwrap_or(ObjectRef::NULL);
+    let count = crate::lang::read_int_field(vm, this, "count").max(0) as usize;
+    let mut all = read_byte_array(vm, buf)?;
+    all.truncate(count);
+    all.extend_from_slice(bytes);
+    let array = new_byte_array(vm, &all)?;
+    let (declaring, field) = vm.find_field(class, "buf", "[B")?;
+    vm.set_instance_ref(this, declaring, field, array);
+    crate::lang::write_int_field(vm, this, "count", all.len() as i32);
+    Ok(())
+}
+
+/// Read the accumulated bytes of a `buf`/`count` pair.
+fn crypto_data(vm: &mut Vm<'_>, this: ObjectRef) -> Vec<u8> {
+    let class = vm.class_of(this);
+    let buf = vm
+        .read_ref_field(this, class, "buf", "[B")
+        .unwrap_or(ObjectRef::NULL);
+    let count = crate::lang::read_int_field(vm, this, "count").max(0) as usize;
+    let mut bytes = read_byte_array(vm, buf).unwrap_or_default();
+    bytes.truncate(count);
+    bytes
+}
+
+// -------------------------------------------------------------------------------------------
+// javax.crypto.KeyGenerator
+// -------------------------------------------------------------------------------------------
+
+/// Default key size (in bits) for the common symmetric algorithms.
+fn default_key_size(algorithm: &str) -> i32 {
+    let upper = algorithm.to_ascii_uppercase();
+    if let Some(hash) = upper.strip_prefix("HMAC") {
+        return match hash {
+            "SHA1" | "SHA" => 160,
+            "SHA224" => 224,
+            "SHA256" => 256,
+            "SHA384" => 384,
+            "SHA512" => 512,
+            "MD5" => 128,
+            _ => 128,
+        };
+    }
+    match upper.as_str() {
+        "DES" => 56,
+        "DESEDE" | "TRIPLEDES" => 168,
+        "CHACHA20" => 256,
+        _ => 128,
+    }
+}
+
+fn key_generator_instance(vm: &mut Vm<'_>, algorithm: &str) -> Result<ObjectRef, VmError> {
+    if algorithm.is_empty() {
+        return Err(vm.throw_new(
+            "java/security/NoSuchAlgorithmException",
+            Some("algorithm must not be empty"),
+        ));
+    }
+    let class = vm.resolve_class("javax/crypto/KeyGenerator")?;
+    let generator = vm.new_instance(class)?;
+    set_string_field(vm, generator, "algorithm", algorithm)?;
+    let provider = new_sun_provider(vm, "SunJCE")?;
+    set_ref_field(
+        vm,
+        generator,
+        "provider",
+        "Ljava/security/Provider;",
+        provider,
+    )?;
+    let (declaring, field) = vm.find_field(class, "keySize", "I")?;
+    vm.set_instance_int(generator, declaring, field, default_key_size(algorithm));
+    Ok(generator)
+}
+
+const KEY_GENERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
+    method(
+        "getInstance",
+        "(Ljava/lang/String;)Ljavax/crypto/KeyGenerator;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        |vm, _, args| {
+            let name = ref_arg(args, 0);
+            if name.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(key_generator_instance(vm, &vm.string_or_empty(name))?)
+        },
+    ),
+    method(
+        "getInstance",
+        "(Ljava/lang/String;Ljava/lang/String;)Ljavax/crypto/KeyGenerator;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() || ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let provider = vm.string_or_empty(ref_arg(args, 1));
+            if !known_provider(&provider) {
+                return Err(vm.throw_new("java/security/NoSuchProviderException", Some(&provider)));
+            }
+            object(key_generator_instance(
+                vm,
+                &vm.string_or_empty(ref_arg(args, 0)),
+            )?)
+        },
+    ),
+    method(
+        "getInstance",
+        "(Ljava/lang/String;Ljava/security/Provider;)Ljavax/crypto/KeyGenerator;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() || ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(key_generator_instance(
+                vm,
+                &vm.string_or_empty(ref_arg(args, 0)),
+            )?)
+        },
+    ),
+    method(
+        "getAlgorithm",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| object(vm.make_string(&string_field(vm, receiver(args), "algorithm"))?),
+    ),
+    method(
+        "getProvider",
+        "()Ljava/security/Provider;",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "provider",
+                "Ljava/security/Provider;",
+            ))
+        },
+    ),
+    method("init", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let size = int_arg(args, 1);
+        let class = vm.class_of(this);
+        let (declaring, field) = vm.find_field(class, "keySize", "I")?;
+        vm.set_instance_int(this, declaring, field, size);
+        void()
+    }),
+    method(
+        "init",
+        "(ILjava/security/SecureRandom;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let size = int_arg(args, 1);
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "keySize", "I")?;
+            vm.set_instance_int(this, declaring, field, size);
+            void()
+        },
+    ),
+    method(
+        "init",
+        "(Ljava/security/SecureRandom;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method(
+        "init",
+        "(Ljava/security/spec/AlgorithmParameterSpec;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method(
+        "init",
+        "(Ljava/security/spec/AlgorithmParameterSpec;Ljava/security/SecureRandom;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method(
+        "generateKey",
+        "()Ljavax/crypto/SecretKey;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let algorithm = string_field(vm, this, "algorithm");
+            let class = vm.class_of(this);
+            let key_size = vm
+                .read_instance_int_named(this, class, "keySize", "I")
+                .unwrap_or_else(|| default_key_size(&algorithm));
+            let byte_len = ((key_size + 7) / 8).max(1) as usize;
+            let bytes = random_bytes(vm, byte_len)?;
+            object(new_secret_key_spec(vm, &bytes, &algorithm)?)
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = alloc::format!(
+                "KeyGenerator[{}]",
+                string_field(vm, receiver(args), "algorithm")
+            );
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "clone",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |_vm, _, args| object(receiver(args)),
+    ),
+];
+
+pub(crate) const KEY_GENERATOR: oxjvm_vm::NativeClass = class(
+    "javax/crypto/KeyGenerator",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("algorithm", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("keySize", "I", ACC_PRIVATE, None),
+        field("provider", "Ljava/security/Provider;", ACC_PRIVATE, None),
+    ],
+    &KEY_GENERATOR_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// javax.crypto.Mac (real HMAC for HmacSHA1 / HmacSHA256 / HmacMD5)
+// -------------------------------------------------------------------------------------------
+
+/// An HMAC hash function paired with its block size in bytes.
+type HmacHash = (fn(&[u8]) -> Vec<u8>, usize);
+
+/// Map an HMAC algorithm name to its underlying hash function and block size.
+fn hmac_hash(name: &str) -> Option<HmacHash> {
+    let upper = name.to_ascii_uppercase().replace('-', "");
+    let hash = upper.strip_prefix("HMAC")?;
+    match hash {
+        "SHA1" | "SHA" => Some((sha1, 64)),
+        "SHA256" => Some((sha256, 64)),
+        "MD5" => Some((md5, 64)),
+        _ => None,
+    }
+}
+
+/// Compute HMAC per RFC 2104: H((K' ^ opad) || H((K' ^ ipad) || message)).
+fn hmac(func: fn(&[u8]) -> Vec<u8>, block: usize, key: &[u8], message: &[u8]) -> Vec<u8> {
+    let mut key_block = vec![0u8; block];
+    if key.len() > block {
+        let hashed = func(key);
+        key_block[..hashed.len()].copy_from_slice(&hashed);
+    } else {
+        key_block[..key.len()].copy_from_slice(key);
+    }
+    let mut inner = Vec::with_capacity(block + message.len());
+    for byte in &key_block {
+        inner.push(byte ^ 0x36);
+    }
+    inner.extend_from_slice(message);
+    let inner_hash = func(&inner);
+    let mut outer = Vec::with_capacity(block + inner_hash.len());
+    for byte in &key_block {
+        outer.push(byte ^ 0x5C);
+    }
+    outer.extend_from_slice(&inner_hash);
+    func(&outer)
+}
+
+fn mac_instance(vm: &mut Vm<'_>, algorithm: &str) -> Result<ObjectRef, VmError> {
+    if hmac_hash(algorithm).is_none() {
+        return Err(vm.throw_new(
+            "java/security/NoSuchAlgorithmException",
+            Some(&alloc::format!("{algorithm} Mac not available")),
+        ));
+    }
+    let class = vm.resolve_class("javax/crypto/Mac")?;
+    let mac = vm.new_instance(class)?;
+    set_string_field(vm, mac, "algorithm", algorithm)?;
+    let provider = new_sun_provider(vm, "SunJCE")?;
+    set_ref_field(vm, mac, "provider", "Ljava/security/Provider;", provider)?;
+    let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, 0)?;
+    let (declaring, field) = vm.find_field(class, "buf", "[B")?;
+    vm.set_instance_ref(mac, declaring, field, array);
+    crate::lang::write_int_field(vm, mac, "count", 0);
+    Ok(mac)
+}
+
+fn mac_compute(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Vec<u8>, VmError> {
+    let algorithm = string_field(vm, this, "algorithm");
+    let (func, block) = hmac_hash(&algorithm).ok_or_else(|| {
+        vm.throw_new("java/lang/IllegalStateException", Some("unknown algorithm"))
+    })?;
+    let class = vm.class_of(this);
+    let key_array = vm
+        .read_ref_field(this, class, "key", "[B")
+        .unwrap_or(ObjectRef::NULL);
+    let key = read_byte_array(vm, key_array)?;
+    let message = crypto_data(vm, this);
+    Ok(hmac(func, block, &key, &message))
+}
+
+const MAC_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+    method(
+        "getInstance",
+        "(Ljava/lang/String;)Ljavax/crypto/Mac;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        |vm, _, args| {
+            let name = ref_arg(args, 0);
+            if name.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(mac_instance(vm, &vm.string_or_empty(name))?)
+        },
+    ),
+    method(
+        "getInstance",
+        "(Ljava/lang/String;Ljava/lang/String;)Ljavax/crypto/Mac;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() || ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let provider = vm.string_or_empty(ref_arg(args, 1));
+            if !known_provider(&provider) {
+                return Err(vm.throw_new("java/security/NoSuchProviderException", Some(&provider)));
+            }
+            object(mac_instance(vm, &vm.string_or_empty(ref_arg(args, 0)))?)
+        },
+    ),
+    method(
+        "getInstance",
+        "(Ljava/lang/String;Ljava/security/Provider;)Ljavax/crypto/Mac;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() || ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(mac_instance(vm, &vm.string_or_empty(ref_arg(args, 0)))?)
+        },
+    ),
+    method(
+        "getAlgorithm",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| object(vm.make_string(&string_field(vm, receiver(args), "algorithm"))?),
+    ),
+    method(
+        "getProvider",
+        "()Ljava/security/Provider;",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "provider",
+                "Ljava/security/Provider;",
+            ))
+        },
+    ),
+    method(
+        "getMacLength",
+        "()I",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            let algorithm = string_field(vm, receiver(args), "algorithm");
+            let len = hmac_hash(&algorithm)
+                .map(|(func, _)| func(&[]).len())
+                .unwrap_or(0);
+            int(len as i32)
+        },
+    ),
+    method(
+        "init",
+        "(Ljava/security/Key;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let key = ref_arg(args, 1);
+            if key.is_null() {
+                return Err(vm.throw_new("java/security/InvalidKeyException", Some("Null key")));
+            }
+            let bytes = key_encoded(vm, key)?;
+            let array = new_byte_array(vm, &bytes)?;
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "key", "[B")?;
+            vm.set_instance_ref(this, declaring, field, array);
+            crate::lang::write_int_field(vm, this, "count", 0);
+            void()
+        },
+    ),
+    method(
+        "init",
+        "(Ljava/security/Key;Ljava/security/spec/AlgorithmParameterSpec;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let key = ref_arg(args, 1);
+            if key.is_null() {
+                return Err(vm.throw_new("java/security/InvalidKeyException", Some("Null key")));
+            }
+            let bytes = key_encoded(vm, key)?;
+            let array = new_byte_array(vm, &bytes)?;
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "key", "[B")?;
+            vm.set_instance_ref(this, declaring, field, array);
+            crate::lang::write_int_field(vm, this, "count", 0);
+            void()
+        },
+    ),
+    method("update", "(B)V", ACC_PUBLIC, |vm, _, args| {
+        crypto_append(vm, receiver(args), &[(int_arg(args, 1) & 0xFF) as u8])?;
+        void()
+    }),
+    method("update", "([B)V", ACC_PUBLIC, |vm, _, args| {
+        let bytes = read_byte_array(vm, ref_arg(args, 1))?;
+        crypto_append(vm, receiver(args), &bytes)?;
+        void()
+    }),
+    method("update", "([BII)V", ACC_PUBLIC, |vm, _, args| {
+        let array = ref_arg(args, 1);
+        let offset = int_arg(args, 2);
+        let length = int_arg(args, 3);
+        if array.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let capacity = vm.array_length(array)? as i32;
+        if offset < 0 || length < 0 || offset + length > capacity {
+            return Err(vm.throw_new("java/lang/ArrayIndexOutOfBoundsException", None));
+        }
+        let mut bytes = Vec::with_capacity(length as usize);
+        for index in 0..length {
+            bytes.push(vm.array_get(array, offset + index)?.as_int() as u8);
+        }
+        crypto_append(vm, receiver(args), &bytes)?;
+        void()
+    }),
+    method("doFinal", "()[B", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let mac = mac_compute(vm, this)?;
+        crate::lang::write_int_field(vm, this, "count", 0);
+        object(new_byte_array(vm, &mac)?)
+    }),
+    method("doFinal", "([B)[B", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let input = read_byte_array(vm, ref_arg(args, 1))?;
+        crypto_append(vm, this, &input)?;
+        let mac = mac_compute(vm, this)?;
+        crate::lang::write_int_field(vm, this, "count", 0);
+        object(new_byte_array(vm, &mac)?)
+    }),
+    method("doFinal", "([BI)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let buf = ref_arg(args, 1);
+        let offset = int_arg(args, 2);
+        let mac = mac_compute(vm, this)?;
+        if vm.array_length(buf)? as i32 - offset < mac.len() as i32 {
+            return Err(vm.throw_new(
+                "javax/crypto/ShortBufferException",
+                Some("buffer too small"),
+            ));
+        }
+        for (index, byte) in mac.iter().enumerate() {
+            vm.array_set(
+                buf,
+                offset + index as i32,
+                Value::Int(i32::from(*byte as i8)),
+                false,
+            )?;
+        }
+        crate::lang::write_int_field(vm, this, "count", 0);
+        int(mac.len() as i32)
+    }),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
+        crate::lang::write_int_field(vm, receiver(args), "count", 0);
+        void()
+    }),
+    method(
+        "clone",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |_vm, _, args| object(receiver(args)),
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = alloc::format!("Mac[{}]", string_field(vm, receiver(args), "algorithm"));
+            object(vm.make_string(&text)?)
+        },
+    ),
+];
+
+pub(crate) const MAC: oxjvm_vm::NativeClass = class(
+    "javax/crypto/Mac",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("algorithm", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("provider", "Ljava/security/Provider;", ACC_PRIVATE, None),
+        field("key", "[B", ACC_PRIVATE, None),
+        field("buf", "[B", ACC_PRIVATE, None),
+        field("count", "I", ACC_PRIVATE, None),
+    ],
+    &MAC_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// java.security.Signature (hash-based sign/verify round-trip)
+// -------------------------------------------------------------------------------------------
+
+/// A signature's digest: canonical name and hash function.
+type SignatureDigest = (&'static str, fn(&[u8]) -> Vec<u8>);
+
+/// Extract the digest portion of a "SHA256withRSA"-style algorithm name.
+fn signature_digest(name: &str) -> Option<SignatureDigest> {
+    let upper = name.to_ascii_uppercase();
+    let digest = upper.split("WITH").next()?.trim();
+    match digest {
+        "SHA256" => Some(("SHA-256", sha256)),
+        "SHA1" | "SHA" => Some(("SHA-1", sha1)),
+        "MD5" => Some(("MD5", md5)),
+        "NONE" => Some(("NONE", sha256)),
+        _ => None,
+    }
+}
+
+fn signature_instance(vm: &mut Vm<'_>, algorithm: &str) -> Result<ObjectRef, VmError> {
+    if signature_digest(algorithm).is_none() {
+        return Err(vm.throw_new(
+            "java/security/NoSuchAlgorithmException",
+            Some(&alloc::format!("{algorithm} Signature not available")),
+        ));
+    }
+    let class = vm.resolve_class("java/security/Signature")?;
+    let signature = vm.new_instance(class)?;
+    set_string_field(vm, signature, "algorithm", algorithm)?;
+    let provider = new_sun_provider(vm, "SUN")?;
+    set_ref_field(
+        vm,
+        signature,
+        "provider",
+        "Ljava/security/Provider;",
+        provider,
+    )?;
+    let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, 0)?;
+    let (declaring, field) = vm.find_field(class, "buf", "[B")?;
+    vm.set_instance_ref(signature, declaring, field, array);
+    crate::lang::write_int_field(vm, signature, "count", 0);
+    crate::lang::write_int_field(vm, signature, "state", 0);
+    Ok(signature)
+}
+
+fn signature_hash(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Vec<u8>, VmError> {
+    let algorithm = string_field(vm, this, "algorithm");
+    let (_, func) = signature_digest(&algorithm).ok_or_else(|| {
+        vm.throw_new("java/lang/IllegalStateException", Some("unknown algorithm"))
+    })?;
+    let data = crypto_data(vm, this);
+    Ok(func(&data))
+}
+
+const SIGNATURE_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
+    method(
+        "getInstance",
+        "(Ljava/lang/String;)Ljava/security/Signature;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = ref_arg(args, 0);
+            if name.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(signature_instance(vm, &vm.string_or_empty(name))?)
+        },
+    ),
+    method(
+        "getInstance",
+        "(Ljava/lang/String;Ljava/lang/String;)Ljava/security/Signature;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() || ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let provider = vm.string_or_empty(ref_arg(args, 1));
+            if !known_provider(&provider) {
+                return Err(vm.throw_new("java/security/NoSuchProviderException", Some(&provider)));
+            }
+            object(signature_instance(
+                vm,
+                &vm.string_or_empty(ref_arg(args, 0)),
+            )?)
+        },
+    ),
+    method(
+        "getInstance",
+        "(Ljava/lang/String;Ljava/security/Provider;)Ljava/security/Signature;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() || ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(signature_instance(
+                vm,
+                &vm.string_or_empty(ref_arg(args, 0)),
+            )?)
+        },
+    ),
+    method(
+        "getAlgorithm",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| object(vm.make_string(&string_field(vm, receiver(args), "algorithm"))?),
+    ),
+    method(
+        "getProvider",
+        "()Ljava/security/Provider;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "provider",
+                "Ljava/security/Provider;",
+            ))
+        },
+    ),
+    method(
+        "initSign",
+        "(Ljava/security/PrivateKey;)V",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            let this = receiver(args);
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/security/InvalidKeyException", Some("Null key")));
+            }
+            crate::lang::write_int_field(vm, this, "state", 2);
+            crate::lang::write_int_field(vm, this, "count", 0);
+            void()
+        },
+    ),
+    method(
+        "initSign",
+        "(Ljava/security/PrivateKey;Ljava/security/SecureRandom;)V",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            let this = receiver(args);
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/security/InvalidKeyException", Some("Null key")));
+            }
+            crate::lang::write_int_field(vm, this, "state", 2);
+            crate::lang::write_int_field(vm, this, "count", 0);
+            void()
+        },
+    ),
+    method(
+        "initVerify",
+        "(Ljava/security/PublicKey;)V",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            let this = receiver(args);
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/security/InvalidKeyException", Some("Null key")));
+            }
+            crate::lang::write_int_field(vm, this, "state", 3);
+            crate::lang::write_int_field(vm, this, "count", 0);
+            void()
+        },
+    ),
+    method(
+        "initVerify",
+        "(Ljava/security/cert/Certificate;)V",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            let this = receiver(args);
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new(
+                    "java/security/InvalidKeyException",
+                    Some("Null certificate"),
+                ));
+            }
+            crate::lang::write_int_field(vm, this, "state", 3);
+            crate::lang::write_int_field(vm, this, "count", 0);
+            void()
+        },
+    ),
+    method("update", "(B)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if crate::lang::read_int_field(vm, this, "state") == 0 {
+            return Err(vm.throw_new("java/security/SignatureException", Some("not initialized")));
+        }
+        crypto_append(vm, this, &[(int_arg(args, 1) & 0xFF) as u8])?;
+        void()
+    }),
+    method("update", "([B)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if crate::lang::read_int_field(vm, this, "state") == 0 {
+            return Err(vm.throw_new("java/security/SignatureException", Some("not initialized")));
+        }
+        let bytes = read_byte_array(vm, ref_arg(args, 1))?;
+        crypto_append(vm, this, &bytes)?;
+        void()
+    }),
+    method("update", "([BII)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if crate::lang::read_int_field(vm, this, "state") == 0 {
+            return Err(vm.throw_new("java/security/SignatureException", Some("not initialized")));
+        }
+        let array = ref_arg(args, 1);
+        let offset = int_arg(args, 2);
+        let length = int_arg(args, 3);
+        let capacity = vm.array_length(array)? as i32;
+        if offset < 0 || length < 0 || offset + length > capacity {
+            return Err(vm.throw_new("java/lang/ArrayIndexOutOfBoundsException", None));
+        }
+        let mut bytes = Vec::with_capacity(length as usize);
+        for index in 0..length {
+            bytes.push(vm.array_get(array, offset + index)?.as_int() as u8);
+        }
+        crypto_append(vm, this, &bytes)?;
+        void()
+    }),
+    method("sign", "()[B", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if crate::lang::read_int_field(vm, this, "state") != 2 {
+            return Err(vm.throw_new(
+                "java/security/SignatureException",
+                Some("not initialized for signing"),
+            ));
+        }
+        let hash = signature_hash(vm, this)?;
+        crate::lang::write_int_field(vm, this, "count", 0);
+        object(new_byte_array(vm, &hash)?)
+    }),
+    method("sign", "([BII)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if crate::lang::read_int_field(vm, this, "state") != 2 {
+            return Err(vm.throw_new(
+                "java/security/SignatureException",
+                Some("not initialized for signing"),
+            ));
+        }
+        let buf = ref_arg(args, 1);
+        let offset = int_arg(args, 2);
+        let hash = signature_hash(vm, this)?;
+        if vm.array_length(buf)? as i32 - offset < hash.len() as i32 {
+            return Err(vm.throw_new("java/security/SignatureException", Some("buffer too small")));
+        }
+        for (index, byte) in hash.iter().enumerate() {
+            vm.array_set(
+                buf,
+                offset + index as i32,
+                Value::Int(i32::from(*byte as i8)),
+                false,
+            )?;
+        }
+        crate::lang::write_int_field(vm, this, "count", 0);
+        int(hash.len() as i32)
+    }),
+    method("verify", "([B)Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if crate::lang::read_int_field(vm, this, "state") != 3 {
+            return Err(vm.throw_new(
+                "java/security/SignatureException",
+                Some("not initialized for verification"),
+            ));
+        }
+        let expected = read_byte_array(vm, ref_arg(args, 1))?;
+        let hash = signature_hash(vm, this)?;
+        crate::lang::write_int_field(vm, this, "count", 0);
+        boolean(expected == hash)
+    }),
+    method("verify", "([BII)Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if crate::lang::read_int_field(vm, this, "state") != 3 {
+            return Err(vm.throw_new(
+                "java/security/SignatureException",
+                Some("not initialized for verification"),
+            ));
+        }
+        let array = ref_arg(args, 1);
+        let offset = int_arg(args, 2);
+        let length = int_arg(args, 3);
+        let capacity = vm.array_length(array)? as i32;
+        if offset < 0 || length < 0 || offset + length > capacity {
+            return Err(vm.throw_new("java/lang/ArrayIndexOutOfBoundsException", None));
+        }
+        let mut expected = Vec::with_capacity(length as usize);
+        for index in 0..length {
+            expected.push(vm.array_get(array, offset + index)?.as_int() as u8);
+        }
+        let hash = signature_hash(vm, this)?;
+        crate::lang::write_int_field(vm, this, "count", 0);
+        boolean(expected == hash)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = alloc::format!(
+                "Signature[{}]",
+                string_field(vm, receiver(args), "algorithm")
+            );
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "clone",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |_vm, _, args| object(receiver(args)),
+    ),
+    method(
+        "setParameter",
+        "(Ljava/lang/String;Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+];
+
+pub(crate) const SIGNATURE: oxjvm_vm::NativeClass = class(
+    "java/security/Signature",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("algorithm", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("provider", "Ljava/security/Provider;", ACC_PRIVATE, None),
+        field("buf", "[B", ACC_PRIVATE, None),
+        field("count", "I", ACC_PRIVATE, None),
+        field("state", "I", ACC_PRIVATE, None),
+    ],
+    &SIGNATURE_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// javax.crypto.SecretKeyFactory
+// -------------------------------------------------------------------------------------------
+
+fn secret_key_factory_instance(vm: &mut Vm<'_>, algorithm: &str) -> Result<ObjectRef, VmError> {
+    if algorithm.is_empty() {
+        return Err(vm.throw_new(
+            "java/security/NoSuchAlgorithmException",
+            Some("algorithm must not be empty"),
+        ));
+    }
+    let class = vm.resolve_class("javax/crypto/SecretKeyFactory")?;
+    let factory = vm.new_instance(class)?;
+    set_string_field(vm, factory, "algorithm", algorithm)?;
+    let provider = new_sun_provider(vm, "SunJCE")?;
+    set_ref_field(
+        vm,
+        factory,
+        "provider",
+        "Ljava/security/Provider;",
+        provider,
+    )?;
+    Ok(factory)
+}
+
+const SECRET_KEY_FACTORY_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+    method(
+        "getInstance",
+        "(Ljava/lang/String;)Ljavax/crypto/SecretKeyFactory;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        |vm, _, args| {
+            let name = ref_arg(args, 0);
+            if name.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(secret_key_factory_instance(vm, &vm.string_or_empty(name))?)
+        },
+    ),
+    method(
+        "getInstance",
+        "(Ljava/lang/String;Ljava/lang/String;)Ljavax/crypto/SecretKeyFactory;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() || ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let provider = vm.string_or_empty(ref_arg(args, 1));
+            if !known_provider(&provider) {
+                return Err(vm.throw_new("java/security/NoSuchProviderException", Some(&provider)));
+            }
+            object(secret_key_factory_instance(
+                vm,
+                &vm.string_or_empty(ref_arg(args, 0)),
+            )?)
+        },
+    ),
+    method(
+        "getInstance",
+        "(Ljava/lang/String;Ljava/security/Provider;)Ljavax/crypto/SecretKeyFactory;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() || ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(secret_key_factory_instance(
+                vm,
+                &vm.string_or_empty(ref_arg(args, 0)),
+            )?)
+        },
+    ),
+    method(
+        "getAlgorithm",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| object(vm.make_string(&string_field(vm, receiver(args), "algorithm"))?),
+    ),
+    method(
+        "getProvider",
+        "()Ljava/security/Provider;",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "provider",
+                "Ljava/security/Provider;",
+            ))
+        },
+    ),
+    method(
+        "generateSecret",
+        "(Ljava/security/spec/KeySpec;)Ljavax/crypto/SecretKey;",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            let this = receiver(args);
+            let spec = ref_arg(args, 1);
+            if spec.is_null() {
+                return Err(vm.throw_new(
+                    "java/security/spec/InvalidKeySpecException",
+                    Some("Null spec"),
+                ));
+            }
+            let algorithm = string_field(vm, this, "algorithm");
+            let bytes = key_encoded(vm, spec)?;
+            if bytes.is_empty() {
+                return Err(vm.throw_new(
+                    "java/security/spec/InvalidKeySpecException",
+                    Some("Empty key"),
+                ));
+            }
+            object(new_secret_key_spec(vm, &bytes, &algorithm)?)
+        },
+    ),
+    method(
+        "getKeySpec",
+        "(Ljavax/crypto/SecretKey;Ljava/lang/Class;)Ljava/security/spec/KeySpec;",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            let key = ref_arg(args, 1);
+            if key.is_null() {
+                return Err(vm.throw_new(
+                    "java/security/spec/InvalidKeySpecException",
+                    Some("Null key"),
+                ));
+            }
+            let algorithm = key_algorithm(vm, key)?;
+            let bytes = key_encoded(vm, key)?;
+            object(new_secret_key_spec(vm, &bytes, &algorithm)?)
+        },
+    ),
+    method(
+        "translateKey",
+        "(Ljavax/crypto/SecretKey;)Ljavax/crypto/SecretKey;",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            let key = ref_arg(args, 1);
+            if key.is_null() {
+                return Err(vm.throw_new("java/security/InvalidKeyException", Some("Null key")));
+            }
+            let algorithm = key_algorithm(vm, key)?;
+            let bytes = key_encoded(vm, key)?;
+            object(new_secret_key_spec(vm, &bytes, &algorithm)?)
+        },
+    ),
+];
+
+pub(crate) const SECRET_KEY_FACTORY: oxjvm_vm::NativeClass = class(
+    "javax/crypto/SecretKeyFactory",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("algorithm", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("provider", "Ljava/security/Provider;", ACC_PRIVATE, None),
+    ],
+    &SECRET_KEY_FACTORY_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// java.security.KeyFactory
+// -------------------------------------------------------------------------------------------
+
+fn key_factory_instance(vm: &mut Vm<'_>, algorithm: &str) -> Result<ObjectRef, VmError> {
+    if algorithm.is_empty() {
+        return Err(vm.throw_new(
+            "java/security/NoSuchAlgorithmException",
+            Some("algorithm must not be empty"),
+        ));
+    }
+    let class = vm.resolve_class("java/security/KeyFactory")?;
+    let factory = vm.new_instance(class)?;
+    set_string_field(vm, factory, "algorithm", algorithm)?;
+    let provider = new_sun_provider(vm, "SUN")?;
+    set_ref_field(
+        vm,
+        factory,
+        "provider",
+        "Ljava/security/Provider;",
+        provider,
+    )?;
+    Ok(factory)
+}
+
+const KEY_FACTORY_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+    method(
+        "getInstance",
+        "(Ljava/lang/String;)Ljava/security/KeyFactory;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = ref_arg(args, 0);
+            if name.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(key_factory_instance(vm, &vm.string_or_empty(name))?)
+        },
+    ),
+    method(
+        "getInstance",
+        "(Ljava/lang/String;Ljava/lang/String;)Ljava/security/KeyFactory;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() || ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let provider = vm.string_or_empty(ref_arg(args, 1));
+            if !known_provider(&provider) {
+                return Err(vm.throw_new("java/security/NoSuchProviderException", Some(&provider)));
+            }
+            object(key_factory_instance(
+                vm,
+                &vm.string_or_empty(ref_arg(args, 0)),
+            )?)
+        },
+    ),
+    method(
+        "getInstance",
+        "(Ljava/lang/String;Ljava/security/Provider;)Ljava/security/KeyFactory;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() || ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(key_factory_instance(
+                vm,
+                &vm.string_or_empty(ref_arg(args, 0)),
+            )?)
+        },
+    ),
+    method(
+        "getAlgorithm",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| object(vm.make_string(&string_field(vm, receiver(args), "algorithm"))?),
+    ),
+    method(
+        "getProvider",
+        "()Ljava/security/Provider;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "provider",
+                "Ljava/security/Provider;",
+            ))
+        },
+    ),
+    method(
+        "generatePublic",
+        "(Ljava/security/spec/KeySpec;)Ljava/security/PublicKey;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new(
+                    "java/security/spec/InvalidKeySpecException",
+                    Some("Null spec"),
+                ));
+            }
+            let algorithm = string_field(vm, this, "algorithm");
+            object(new_public_key(vm, &algorithm)?)
+        },
+    ),
+    method(
+        "generatePrivate",
+        "(Ljava/security/spec/KeySpec;)Ljava/security/PrivateKey;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new(
+                    "java/security/spec/InvalidKeySpecException",
+                    Some("Null spec"),
+                ));
+            }
+            let algorithm = string_field(vm, this, "algorithm");
+            object(new_private_key(vm, &algorithm)?)
+        },
+    ),
+    method(
+        "getKeySpec",
+        "(Ljava/security/Key;Ljava/lang/Class;)Ljava/security/spec/KeySpec;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let key = ref_arg(args, 1);
+            if key.is_null() {
+                return Err(vm.throw_new(
+                    "java/security/spec/InvalidKeySpecException",
+                    Some("Null key"),
+                ));
+            }
+            let bytes = key_encoded(vm, key)?;
+            let encoded = new_byte_array(vm, &bytes)?;
+            let spec_class = vm.resolve_class("java/security/spec/X509EncodedKeySpec")?;
+            let spec = vm.new_instance(spec_class)?;
+            set_ref_field(vm, spec, "encoded", "[B", encoded)?;
+            object(spec)
+        },
+    ),
+];
+
+pub(crate) const KEY_FACTORY: oxjvm_vm::NativeClass = class(
+    "java/security/KeyFactory",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("algorithm", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("provider", "Ljava/security/Provider;", ACC_PRIVATE, None),
+    ],
+    &KEY_FACTORY_METHODS,
+    None,
+);

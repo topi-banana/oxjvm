@@ -143,7 +143,7 @@ pub fn is_non_writable_property(key: &str) -> bool {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 873] = [
+static REGISTRY: [NativeClass; 878] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -555,6 +555,11 @@ static REGISTRY: [NativeClass; 873] = [
     security::GUARD,
     security::CIPHER,
     security::MESSAGE_DIGEST,
+    security::KEY_GENERATOR,
+    security::MAC,
+    security::SIGNATURE,
+    security::SECRET_KEY_FACTORY,
+    security::KEY_FACTORY,
     security::SECRET_KEY,
     security::SECRET_KEY_SPEC,
     security::IV_PARAMETER_SPEC,
