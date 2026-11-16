@@ -75,7 +75,8 @@ impl<'a> Vm<'a> {
             }
             match self.step() {
                 Ok(Step::Terminated) => self.terminate_current(),
-                Ok(Step::Executed | Step::Suspended) => {}
+                Ok(Step::Executed) => self.preempt_after_slice(),
+                Ok(Step::Suspended) => {}
                 Err(VmError::Thrown(exception)) => {
                     if self.current == thread && self.threads[thread].depth() <= base_depth {
                         return Err(VmError::Thrown(exception));
@@ -91,7 +92,14 @@ impl<'a> Vm<'a> {
     /// non-daemon threads finish.
     pub(crate) fn schedule_step(&mut self) -> Result<(), VmError> {
         match self.pick_thread() {
-            Some(next) => self.current = next,
+            Some(next) => {
+                self.current = next;
+                // A thread picked after yielding starts a fresh scheduling slice.
+                if self.threads[next].state == ThreadState::Yielded {
+                    self.threads[next].state = ThreadState::Runnable;
+                    self.threads[next].slice_steps = 0;
+                }
+            }
             None => {
                 if !self.advance_virtual_time() {
                     return Ok(()); // nothing left to do
@@ -101,7 +109,8 @@ impl<'a> Vm<'a> {
         }
         match self.step() {
             Ok(Step::Terminated) => self.terminate_current(),
-            Ok(Step::Executed | Step::Suspended) => {}
+            Ok(Step::Executed) => self.preempt_after_slice(),
+            Ok(Step::Suspended) => {}
             Err(VmError::Thrown(exception)) => {
                 let thread = self.current;
                 self.handle_uncaught(thread, exception);
@@ -109,6 +118,31 @@ impl<'a> Vm<'a> {
             Err(other) => return Err(other),
         }
         Ok(())
+    }
+
+    /// Time-slice preemption: a runnable thread that has executed a full quantum yields so
+    /// other runnable threads (e.g. a main thread waiting to stop a busy-loop worker) get a
+    /// turn. Without this, a thread that never parks monopolizes the cooperative scheduler.
+    fn preempt_after_slice(&mut self) {
+        const SLICE_QUANTUM: usize = 4096;
+        let thread = self.current;
+        self.threads[thread].slice_steps += 1;
+        if self.threads[thread].slice_steps < SLICE_QUANTUM {
+            return;
+        }
+        self.threads[thread].slice_steps = 0;
+        // Let the virtual clock progress while threads execute, so sleep/wait/join deadlines
+        // expire even when a busy-loop thread keeps some thread runnable forever (otherwise
+        // `advance_virtual_time` only runs when *every* thread is blocked).
+        self.virtual_time = self.virtual_time.saturating_add(1);
+        let others_runnable = self
+            .threads
+            .iter()
+            .enumerate()
+            .any(|(index, t)| index != thread && t.is_runnable());
+        if others_runnable && self.threads[thread].state == ThreadState::Runnable {
+            self.threads[thread].state = ThreadState::Yielded;
+        }
     }
 
     /// Whether any non-daemon thread is still alive.

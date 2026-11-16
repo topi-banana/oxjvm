@@ -69,6 +69,8 @@ pub struct JavaThread {
     pub resume: crate::Resume,
     /// Exception-unwind floor: unwinding below this depth returns to the nested caller.
     pub floor: usize,
+    /// Instructions executed in the current scheduling slice (for time-slice preemption).
+    pub slice_steps: usize,
 }
 
 impl JavaThread {
@@ -88,6 +90,7 @@ impl JavaThread {
             started: false,
             resume: crate::Resume::None,
             floor: 0,
+            slice_steps: 0,
         }
     }
 

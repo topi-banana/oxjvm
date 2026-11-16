@@ -65,6 +65,38 @@ fn future_task_run(vm: &mut Vm<'_>, task: ObjectRef) -> Result<(), VmError> {
     Ok(())
 }
 
+/// The shared body of `FutureTask.get()` and `get(timeout, unit)`: run a pending task, then
+/// report its outcome. A cancelled task throws `CancellationException`; an exceptionally
+/// completed task throws `ExecutionException` wrapping the cause; otherwise the result is
+/// returned. The timeout is ignored because tasks complete eagerly, but the exception contract
+/// must hold even when a getter races the setter (observed once the scheduler preempted threads).
+fn future_task_get(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError> {
+    let class = vm.class_of(this);
+    if vm
+        .read_instance_int_named(this, class, "state", "I")
+        .unwrap_or(0)
+        == 0
+    {
+        future_task_run(vm, this)?;
+    }
+    let state = vm
+        .read_instance_int_named(this, class, "state", "I")
+        .unwrap_or(0);
+    if state == 2 {
+        return Err(vm.throw_new("java/util/concurrent/CancellationException", None));
+    }
+    let exception = vm
+        .read_ref_field(this, class, "exception", "Ljava/lang/Throwable;")
+        .unwrap_or(ObjectRef::NULL);
+    if !exception.is_null() {
+        return Err(vm.throw_new_with_cause("java/util/concurrent/ExecutionException", exception));
+    }
+    object(
+        vm.read_ref_field(this, class, "result", "Ljava/lang/Object;")
+            .unwrap_or(ObjectRef::NULL),
+    )
+}
+
 fn new_executor(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class("java/util/concurrent/OjvmExecutorService")?;
     vm.new_instance(class)
@@ -166,39 +198,13 @@ const FUTURE_TASK_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         void()
     }),
     method("get", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
-        let this = receiver(args);
-        let class = vm.class_of(this);
-        if vm
-            .read_instance_int_named(this, class, "state", "I")
-            .unwrap_or(0)
-            == 0
-        {
-            future_task_run(vm, this)?;
-        }
-        object(
-            vm.read_ref_field(this, class, "result", "Ljava/lang/Object;")
-                .unwrap_or(ObjectRef::NULL),
-        )
+        future_task_get(vm, receiver(args))
     }),
     method(
         "get",
         "(JLjava/util/concurrent/TimeUnit;)Ljava/lang/Object;",
         ACC_PUBLIC,
-        |vm, _, args| {
-            let this = receiver(args);
-            let class = vm.class_of(this);
-            if vm
-                .read_instance_int_named(this, class, "state", "I")
-                .unwrap_or(0)
-                == 0
-            {
-                future_task_run(vm, this)?;
-            }
-            object(
-                vm.read_ref_field(this, class, "result", "Ljava/lang/Object;")
-                    .unwrap_or(ObjectRef::NULL),
-            )
-        },
+        |vm, _, args| future_task_get(vm, receiver(args)),
     ),
     method("isDone", "()Z", ACC_PUBLIC, |vm, _, args| {
         boolean(
