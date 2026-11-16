@@ -525,7 +525,7 @@ fn simple_date_format_init(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmE
 /// `java.text.SimpleDateFormat`: pattern formatting in UTC (time zone offsets are ignored).
 pub(crate) const SIMPLE_DATE_FORMAT: oxjvm_vm::NativeClass = class(
     "java/text/SimpleDateFormat",
-    Some("java/lang/Object"),
+    Some("java/text/DateFormat"),
     &[],
     ACC_PUBLIC,
     &[

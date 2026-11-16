@@ -491,7 +491,7 @@ pub(crate) const PARSE_POSITION: oxjvm_vm::NativeClass = class(
 // NumberFormat
 // -------------------------------------------------------------------------------------------
 
-const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
+const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
     method(
         "getInstance",
         "()Ljava/text/NumberFormat;",
@@ -644,6 +644,30 @@ const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
         |vm, _, _| {
             let pattern = default_number_pattern(vm);
             number_format(vm, &pattern)
+        },
+    ),
+    method(
+        "getAvailableLocales",
+        "()[Ljava/util/Locale;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/util/Locale")?;
+            vm.ensure_initialized(class)?;
+            let names = [
+                "ROOT", "ENGLISH", "US", "UK", "CANADA", "FRANCE", "GERMANY", "ITALY", "JAPAN",
+                "KOREA", "CHINA", "PRC", "TAIWAN",
+            ];
+            let mut locales = Vec::new();
+            for name in names {
+                if let Some(value) = vm.read_static_ref_if_set(class, name, "Ljava/util/Locale;") {
+                    locales.push(value);
+                }
+            }
+            let array = vm.allocate_object_array(class, locales.len())?;
+            for (index, locale) in locales.iter().enumerate() {
+                vm.array_set_ref(array, index, *locale)?;
+            }
+            object(array)
         },
     ),
     method(
@@ -952,7 +976,7 @@ const DECIMAL_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method("getMultiplier", "()I", ACC_PUBLIC, |_, _, _| int(1)),
 ];
 
-const DECIMAL_FORMAT_SYMBOLS_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const DECIMAL_FORMAT_SYMBOLS_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method("<init>", "(Ljava/util/Locale;)V", ACC_PUBLIC, |_, _, _| {
         void()
@@ -992,6 +1016,35 @@ const DECIMAL_FORMAT_SYMBOLS_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method("getNaN", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, _| {
         object(vm.make_string("NaN")?)
     }),
+    method("setDecimalSeparator", "(C)V", ACC_PUBLIC, |_, _, _| void()),
+    method("setGroupingSeparator", "(C)V", ACC_PUBLIC, |_, _, _| void()),
+    method("setMinusSign", "(C)V", ACC_PUBLIC, |_, _, _| void()),
+    method("setZeroDigit", "(C)V", ACC_PUBLIC, |_, _, _| void()),
+    method("setPatternSeparator", "(C)V", ACC_PUBLIC, |_, _, _| void()),
+    method("getPatternSeparator", "()C", ACC_PUBLIC, |_, _, _| {
+        int(';' as i32)
+    }),
+    method(
+        "setMonetaryDecimalSeparator",
+        "(C)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method(
+        "getMonetaryDecimalSeparator",
+        "()C",
+        ACC_PUBLIC,
+        |_, _, _| int('.' as i32),
+    ),
+    method(
+        "setInfinity",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method("setNaN", "(Ljava/lang/String;)V", ACC_PUBLIC, |_, _, _| {
+        void()
+    }),
 ];
 
 pub(crate) const DECIMAL_FORMAT_SYMBOLS: oxjvm_vm::NativeClass = class(
@@ -1018,7 +1071,7 @@ pub(crate) const NUMBER_FORMAT: oxjvm_vm::NativeClass = class(
 /// The number format the runtime hands to the guest.
 pub(crate) const OJVM_NUMBER_FORMAT: oxjvm_vm::NativeClass = class(
     "java/text/OjvmNumberFormat",
-    Some("java/text/NumberFormat"),
+    Some("java/text/DecimalFormat"),
     &[],
     ACC_PUBLIC | ACC_FINAL,
     &[
@@ -1033,7 +1086,7 @@ pub(crate) const OJVM_NUMBER_FORMAT: oxjvm_vm::NativeClass = class(
 // DateFormat
 // -------------------------------------------------------------------------------------------
 
-const DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
+const DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
     method(
         "getInstance",
         "()Ljava/text/DateFormat;",
@@ -1111,6 +1164,39 @@ const DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
             let millis = date_millis(vm, ref_arg(args, 1));
             let text = crate::text::format_pattern(&pattern_of(vm, receiver(args)), millis);
             object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "format",
+        "(Ljava/util/Date;Ljava/lang/StringBuffer;Ljava/text/FieldPosition;)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let buffer = ref_arg(args, 2);
+            let millis = date_millis(vm, ref_arg(args, 1));
+            let text = crate::text::format_pattern(&pattern_of(vm, receiver(args)), millis);
+            let string = vm.make_string(&text)?;
+            let (class, method) = vm.resolve_virtual_method(
+                buffer,
+                "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuffer;",
+            )?;
+            vm.invoke_method(class, method, vec![Value::Ref(buffer), Value::Ref(string)])
+        },
+    ),
+    method(
+        "format",
+        "(Ljava/lang/Object;Ljava/lang/StringBuffer;Ljava/text/FieldPosition;)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let buffer = ref_arg(args, 2);
+            let text = format_argument(vm, receiver(args), ref_arg(args, 1))?;
+            let string = vm.make_string(&text)?;
+            let (class, method) = vm.resolve_virtual_method(
+                buffer,
+                "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuffer;",
+            )?;
+            vm.invoke_method(class, method, vec![Value::Ref(buffer), Value::Ref(string)])
         },
     ),
     method(
@@ -1313,7 +1399,7 @@ pub(crate) const DATE_FORMAT: oxjvm_vm::NativeClass = class(
 /// The date format the runtime hands to the guest.
 pub(crate) const OJVM_DATE_FORMAT: oxjvm_vm::NativeClass = class(
     "java/text/OjvmDateFormat",
-    Some("java/text/DateFormat"),
+    Some("java/text/SimpleDateFormat"),
     &[],
     ACC_PUBLIC | ACC_FINAL,
     &[

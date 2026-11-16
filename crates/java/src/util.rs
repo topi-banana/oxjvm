@@ -7051,7 +7051,7 @@ pub(crate) const SORTED_MAP: oxjvm_vm::NativeClass = class(
 // Properties
 // -------------------------------------------------------------------------------------------
 
-const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
+const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
     method("<init>", "()V", ACC_PUBLIC, properties_init),
     method(
         "<init>",
@@ -7202,6 +7202,27 @@ const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
         properties_load_reader(vm, args)
     }),
     method(
+        "loadFromXML",
+        "(Ljava/io/InputStream;)V",
+        ACC_PUBLIC,
+        |vm, _, args| properties_load_xml(vm, args),
+    ),
+    method(
+        "propertyNames",
+        "()Ljava/util/Enumeration;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let mut keys = Vec::new();
+            for (key, value) in hash_map_pairs(vm, properties_map(vm, this)) {
+                if vm.string_value(key).is_some() && vm.string_value(value).is_some() {
+                    keys.push(key);
+                }
+            }
+            object(new_enumeration(vm, &keys)?)
+        },
+    ),
+    method(
         "store",
         "(Ljava/io/OutputStream;Ljava/lang/String;)V",
         ACC_PUBLIC,
@@ -7303,6 +7324,63 @@ fn properties_parse_text(vm: &mut Vm<'_>, this: ObjectRef, text: &str) -> Result
             "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
             vec![Value::Ref(key), Value::Ref(value)],
         )?;
+    }
+    void()
+}
+
+/// Unescape the five XML markup entities in a property key or value.
+fn xml_unescape(text: &str) -> String {
+    text.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
+/// `Properties.loadFromXML`: read `<entry key="...">value</entry>` pairs from an XML document.
+fn properties_load_xml(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let stream = ref_arg(args, 1);
+    let mut bytes = Vec::new();
+    if !stream.is_null() {
+        let (class, method) = vm.resolve_virtual_method(stream, "read", "()I")?;
+        loop {
+            let value = vm
+                .invoke_method(class, method, vec![Value::Ref(stream)])?
+                .as_int();
+            if value < 0 {
+                break;
+            }
+            bytes.push((value & 0xFF) as u8);
+        }
+    }
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let mut rest = text.as_str();
+    while let Some(start) = rest.find("<entry key=\"") {
+        let after_key = &rest[start + "<entry key=\"".len()..];
+        let Some(key_end) = after_key.find('"') else {
+            break;
+        };
+        let key = xml_unescape(&after_key[..key_end]);
+        let after_quote = &after_key[key_end + 1..];
+        let Some(value_start) = after_quote.find('>') else {
+            break;
+        };
+        let value_region = &after_quote[value_start + 1..];
+        let Some(value_end) = value_region.find("</entry>") else {
+            break;
+        };
+        let value = xml_unescape(&value_region[..value_end]);
+        let key = vm.make_string(&key)?;
+        let value = vm.make_string(&value)?;
+        properties_map_call(
+            vm,
+            this,
+            "put",
+            "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+            vec![Value::Ref(key), Value::Ref(value)],
+        )?;
+        rest = &value_region[value_end + "</entry>".len()..];
     }
     void()
 }
