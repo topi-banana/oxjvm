@@ -212,6 +212,27 @@ fn property_call(
 }
 
 /// The single provider oxjvm advertises.
+/// The standard JDK security provider names oxjvm answers to.  oxjvm backs them all with the
+/// same built-in implementations, but tests select a provider by name (`SunJCE`, `SunRsaSign`,
+/// `SunEC`, ...) and expect `Security.getProvider` / `getInstance(..., provider)` to resolve it.
+pub(crate) fn known_provider(name: &str) -> bool {
+    const NAMES: [&str; 12] = [
+        "SUN",
+        "SunRsaSign",
+        "SunEC",
+        "SunJSSE",
+        "SunJCE",
+        "SunJGSS",
+        "SunSASL",
+        "XMLDSig",
+        "SunPCSC",
+        "JdkLDAP",
+        "JdkSASL",
+        "SunPKCS11",
+    ];
+    NAMES.iter().any(|n| n.eq_ignore_ascii_case(name)) || name.eq_ignore_ascii_case("SUNW")
+}
+
 pub(crate) fn new_sun_provider(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
     let provider_class = vm.resolve_class("java/security/Provider")?;
     let provider = vm.new_instance(provider_class)?;
@@ -316,7 +337,7 @@ const SECURITY_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
                     return object(extra);
                 }
             }
-            if text.eq_ignore_ascii_case("SUN") || text.eq_ignore_ascii_case("SUNW") {
+            if known_provider(&text) {
                 object(new_sun_provider(vm, &text)?)
             } else {
                 object(ObjectRef::NULL)
@@ -329,9 +350,12 @@ const SECURITY_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _| {
             let provider_class = vm.resolve_class("java/security/Provider")?;
-            let array = vm.allocate_object_array(provider_class, 1)?;
-            let provider = new_sun_provider(vm, "SUN")?;
-            vm.array_set_ref(array, 0, provider)?;
+            let names = ["SUN", "SunRsaSign", "SunEC", "SunJSSE", "SunJCE"];
+            let array = vm.allocate_object_array(provider_class, names.len())?;
+            for (index, name) in names.iter().enumerate() {
+                let provider = new_sun_provider(vm, name)?;
+                vm.array_set_ref(array, index, provider)?;
+            }
             object(array)
         },
     ),
@@ -341,9 +365,12 @@ const SECURITY_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _| {
             let provider_class = vm.resolve_class("java/security/Provider")?;
-            let array = vm.allocate_object_array(provider_class, 1)?;
-            let provider = new_sun_provider(vm, "SUN")?;
-            vm.array_set_ref(array, 0, provider)?;
+            let names = ["SUN", "SunRsaSign", "SunEC", "SunJSSE", "SunJCE"];
+            let array = vm.allocate_object_array(provider_class, names.len())?;
+            for (index, name) in names.iter().enumerate() {
+                let provider = new_sun_provider(vm, name)?;
+                vm.array_set_ref(array, index, provider)?;
+            }
             object(array)
         },
     ),
@@ -976,7 +1003,7 @@ const KEY_STORE_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
             }
             let text = vm.string_or_empty(name);
             let provider = vm.string_or_empty(provider);
-            if !provider.eq_ignore_ascii_case("SUN") && !provider.eq_ignore_ascii_case("SUNW") {
+            if !known_provider(&provider) {
                 return Err(vm.throw_new("java/security/NoSuchProviderException", Some(&provider)));
             }
             object(key_store_instance(vm, &text)?)
@@ -1339,7 +1366,7 @@ const KEY_PAIR_GENERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
             let provider = vm.string_or_empty(ref_arg(args, 1));
-            if !provider.eq_ignore_ascii_case("SUN") && !provider.eq_ignore_ascii_case("SUNW") {
+            if !known_provider(&provider) {
                 return Err(vm.throw_new("java/security/NoSuchProviderException", Some(&provider)));
             }
             object(key_pair_generator_instance(
@@ -1571,7 +1598,7 @@ const CERTIFICATE_FACTORY_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
             let provider = vm.string_or_empty(ref_arg(args, 1));
-            if !provider.eq_ignore_ascii_case("SUN") && !provider.eq_ignore_ascii_case("SUNW") {
+            if !known_provider(&provider) {
                 return Err(vm.throw_new("java/security/NoSuchProviderException", Some(&provider)));
             }
             object(certificate_factory_instance(
@@ -2573,7 +2600,7 @@ const CIPHER_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
             let provider = vm.string_or_empty(ref_arg(args, 1));
-            if !provider.eq_ignore_ascii_case("SUN") && !provider.eq_ignore_ascii_case("SUNW") {
+            if !known_provider(&provider) {
                 return Err(vm.throw_new("java/security/NoSuchProviderException", Some(&provider)));
             }
             object(cipher_instance(vm, &vm.string_or_empty(ref_arg(args, 0)))?)
@@ -3016,7 +3043,7 @@ const SSL_CONTEXT_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
             let provider = vm.string_or_empty(ref_arg(args, 1));
-            if !provider.eq_ignore_ascii_case("SUN") && !provider.eq_ignore_ascii_case("SUNW") {
+            if !known_provider(&provider) {
                 return Err(vm.throw_new("java/security/NoSuchProviderException", Some(&provider)));
             }
             object(ssl_context_instance(

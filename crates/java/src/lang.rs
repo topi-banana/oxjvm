@@ -7214,7 +7214,9 @@ pub(crate) fn read_input_byte(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Option
     }
     let byte = vm.array_get(buffer, position)?.as_int();
     write_int_field(vm, this, "pos", position + 1);
-    Ok(Some(byte))
+    // `InputStream.read()` yields the byte as an unsigned value 0..255; the array stores it
+    // signed, so mask off the sign extension here.
+    Ok(Some(byte & 0xFF))
 }
 
 const CHAR_SEQUENCE_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [

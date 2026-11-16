@@ -3022,3 +3022,883 @@ pub(crate) const BUFFERED_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
     &BUFFERED_OUTPUT_STREAM_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// DataInput / DataOutput
+// -------------------------------------------------------------------------------------------
+
+/// Read one byte from an `InputStream` through `read()I`; -1 marks end of stream.
+fn data_read_byte(vm: &mut Vm<'_>, stream: ObjectRef) -> Result<i32, VmError> {
+    let (class, method) = vm.resolve_virtual_method(stream, "read", "()I")?;
+    Ok(vm
+        .invoke_method(class, method, vec![Value::Ref(stream)])?
+        .as_int())
+}
+
+/// Read exactly `count` bytes, raising `EOFException` when the stream ends early.
+fn data_read_fully(vm: &mut Vm<'_>, stream: ObjectRef, count: usize) -> Result<Vec<u8>, VmError> {
+    let mut out = Vec::with_capacity(count);
+    for _ in 0..count {
+        let byte = data_read_byte(vm, stream)?;
+        if byte < 0 {
+            return Err(vm.throw_new("java/io/EOFException", None));
+        }
+        out.push(byte as u8);
+    }
+    Ok(out)
+}
+
+/// Write bytes to an `OutputStream` one byte at a time through `write(I)V`.
+fn data_write_bytes(vm: &mut Vm<'_>, stream: ObjectRef, bytes: &[u8]) -> Result<(), VmError> {
+    let (class, method) = vm.resolve_virtual_method(stream, "write", "(I)V")?;
+    for byte in bytes {
+        vm.invoke_method(
+            class,
+            method,
+            vec![Value::Ref(stream), Value::Int(i32::from(*byte))],
+        )?;
+    }
+    Ok(())
+}
+
+fn be16(bytes: &[u8]) -> u16 {
+    (u16::from(bytes[0]) << 8) | u16::from(bytes[1])
+}
+fn be32(bytes: &[u8]) -> u32 {
+    (u32::from(bytes[0]) << 24)
+        | (u32::from(bytes[1]) << 16)
+        | (u32::from(bytes[2]) << 8)
+        | u32::from(bytes[3])
+}
+fn be64(bytes: &[u8]) -> u64 {
+    (u64::from(be32(&bytes[0..4])) << 32) | u64::from(be32(&bytes[4..8]))
+}
+
+/// Encode a string as JDK "modified UTF-8" (the `DataOutput.writeUTF` format).
+fn modified_utf8(units: &[u16]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut index = 0;
+    while index < units.len() {
+        let unit = units[index];
+        let ch = if (0xD800..=0xDBFF).contains(&unit)
+            && index + 1 < units.len()
+            && (0xDC00..=0xDFFF).contains(&units[index + 1])
+        {
+            let pair = 0x10000
+                + ((u32::from(unit) - 0xD800) << 10)
+                + (u32::from(units[index + 1]) - 0xDC00);
+            index += 1;
+            pair
+        } else {
+            u32::from(unit)
+        };
+        if (0x0001..=0x007F).contains(&ch) {
+            out.push(ch as u8);
+        } else if ch <= 0x07FF {
+            out.push((0xC0 | (ch >> 6)) as u8);
+            out.push((0x80 | (ch & 0x3F)) as u8);
+        } else if ch <= 0xFFFF {
+            out.push((0xE0 | (ch >> 12)) as u8);
+            out.push((0x80 | ((ch >> 6) & 0x3F)) as u8);
+            out.push((0x80 | (ch & 0x3F)) as u8);
+        } else {
+            // Supplementary characters are written as a surrogate pair, each in 3 bytes.
+            let hi = 0xD800 + ((ch - 0x10000) >> 10);
+            let lo = 0xDC00 + ((ch - 0x10000) & 0x3FF);
+            for surrogate in [hi, lo] {
+                out.push((0xE0 | (surrogate >> 12)) as u8);
+                out.push((0x80 | ((surrogate >> 6) & 0x3F)) as u8);
+                out.push((0x80 | (surrogate & 0x3F)) as u8);
+            }
+        }
+        index += 1;
+    }
+    out
+}
+
+/// Decode JDK "modified UTF-8" back into UTF-16 units.
+fn decode_modified_utf8(bytes: &[u8]) -> Result<Vec<u16>, VmError> {
+    let mut out = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        let b0 = bytes[index];
+        let ch = if b0 < 0x80 {
+            index += 1;
+            u32::from(b0)
+        } else if b0 & 0xE0 == 0xC0 {
+            if index + 1 >= bytes.len() {
+                return Err(VmError::internal("truncated modified UTF-8"));
+            }
+            let value = ((u32::from(b0) & 0x1F) << 6) | (u32::from(bytes[index + 1]) & 0x3F);
+            index += 2;
+            value
+        } else if b0 & 0xF0 == 0xE0 {
+            if index + 2 >= bytes.len() {
+                return Err(VmError::internal("truncated modified UTF-8"));
+            }
+            let value = ((u32::from(b0) & 0x0F) << 12)
+                | ((u32::from(bytes[index + 1]) & 0x3F) << 6)
+                | (u32::from(bytes[index + 2]) & 0x3F);
+            index += 3;
+            value
+        } else {
+            return Err(VmError::internal("invalid modified UTF-8 lead byte"));
+        };
+        out.push(ch as u16);
+    }
+    Ok(out)
+}
+
+const DATA_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+    method(
+        "readFully",
+        "([B)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "readFully",
+        "([BII)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "skipBytes",
+        "(I)I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "readBoolean",
+        "()Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "readByte",
+        "()B",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "readUnsignedByte",
+        "()I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "readShort",
+        "()S",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "readUnsignedShort",
+        "()I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "readChar",
+        "()C",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "readInt",
+        "()I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "readLong",
+        "()J",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "readFloat",
+        "()F",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "readDouble",
+        "()D",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "readLine",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "readUTF",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
+pub(crate) const DATA_INPUT: oxjvm_vm::NativeClass = class(
+    "java/io/DataInput",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &DATA_INPUT_METHODS,
+    None,
+);
+
+const DATA_OUTPUT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+    method(
+        "write",
+        "(I)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "write",
+        "([B)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "write",
+        "([BII)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "writeBoolean",
+        "(Z)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "writeByte",
+        "(I)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "writeShort",
+        "(I)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "writeChar",
+        "(I)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "writeInt",
+        "(I)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "writeLong",
+        "(J)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "writeFloat",
+        "(F)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "writeDouble",
+        "(D)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "writeUTF",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
+pub(crate) const DATA_OUTPUT: oxjvm_vm::NativeClass = class(
+    "java/io/DataOutput",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &DATA_OUTPUT_METHODS,
+    None,
+);
+
+fn data_input_stream(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field_any(this, "in").unwrap_or(ObjectRef::NULL)
+}
+
+const DATA_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+    method(
+        "<init>",
+        "(Ljava/io/InputStream;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "in", "Ljava/io/InputStream;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method("readFully", "([B)V", ACC_PUBLIC, |vm, _, args| {
+        let array = ref_arg(args, 1);
+        let length = vm.array_length(array)? as i32;
+        let bytes = data_read_fully(vm, data_input_stream(vm, receiver(args)), length as usize)?;
+        for (index, byte) in bytes.iter().enumerate() {
+            vm.array_set(
+                array,
+                index as i32,
+                Value::Int(i32::from(*byte as i8)),
+                false,
+            )?;
+        }
+        void()
+    }),
+    method("readFully", "([BII)V", ACC_PUBLIC, |vm, _, args| {
+        let array = ref_arg(args, 1);
+        let offset = int_arg(args, 2);
+        let length = int_arg(args, 3);
+        reader_check_range(vm, array, offset, length)?;
+        let bytes = data_read_fully(vm, data_input_stream(vm, receiver(args)), length as usize)?;
+        for (index, byte) in bytes.iter().enumerate() {
+            vm.array_set(
+                array,
+                offset + index as i32,
+                Value::Int(i32::from(*byte as i8)),
+                false,
+            )?;
+        }
+        void()
+    }),
+    method("skipBytes", "(I)I", ACC_PUBLIC, |vm, _, args| {
+        let mut remaining = int_arg(args, 1).max(0);
+        let stream = data_input_stream(vm, receiver(args));
+        let mut skipped = 0;
+        while remaining > 0 {
+            let byte = data_read_byte(vm, stream)?;
+            if byte < 0 {
+                break;
+            }
+            skipped += 1;
+            remaining -= 1;
+        }
+        int(skipped)
+    }),
+    method("readBoolean", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let bytes = data_read_fully(vm, data_input_stream(vm, receiver(args)), 1)?;
+        boolean(bytes[0] != 0)
+    }),
+    method("readByte", "()B", ACC_PUBLIC, |vm, _, args| {
+        let bytes = data_read_fully(vm, data_input_stream(vm, receiver(args)), 1)?;
+        int(i32::from(bytes[0] as i8))
+    }),
+    method("readUnsignedByte", "()I", ACC_PUBLIC, |vm, _, args| {
+        let bytes = data_read_fully(vm, data_input_stream(vm, receiver(args)), 1)?;
+        int(i32::from(bytes[0]))
+    }),
+    method("readShort", "()S", ACC_PUBLIC, |vm, _, args| {
+        let bytes = data_read_fully(vm, data_input_stream(vm, receiver(args)), 2)?;
+        int(i32::from(be16(&bytes) as i16))
+    }),
+    method("readUnsignedShort", "()I", ACC_PUBLIC, |vm, _, args| {
+        let bytes = data_read_fully(vm, data_input_stream(vm, receiver(args)), 2)?;
+        int(i32::from(be16(&bytes)))
+    }),
+    method("readChar", "()C", ACC_PUBLIC, |vm, _, args| {
+        let bytes = data_read_fully(vm, data_input_stream(vm, receiver(args)), 2)?;
+        int(i32::from(be16(&bytes)))
+    }),
+    method("readInt", "()I", ACC_PUBLIC, |vm, _, args| {
+        let bytes = data_read_fully(vm, data_input_stream(vm, receiver(args)), 4)?;
+        int(be32(&bytes) as i32)
+    }),
+    method("readLong", "()J", ACC_PUBLIC, |vm, _, args| {
+        let bytes = data_read_fully(vm, data_input_stream(vm, receiver(args)), 8)?;
+        long(be64(&bytes) as i64)
+    }),
+    method("readFloat", "()F", ACC_PUBLIC, |vm, _, args| {
+        let bytes = data_read_fully(vm, data_input_stream(vm, receiver(args)), 4)?;
+        crate::float(f32::from_bits(be32(&bytes)))
+    }),
+    method("readDouble", "()D", ACC_PUBLIC, |vm, _, args| {
+        let bytes = data_read_fully(vm, data_input_stream(vm, receiver(args)), 8)?;
+        crate::double(f64::from_bits(be64(&bytes)))
+    }),
+    method(
+        "readLine",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let stream = data_input_stream(vm, receiver(args));
+            let mut units = Vec::new();
+            loop {
+                let byte = data_read_byte(vm, stream)?;
+                if byte < 0 {
+                    if units.is_empty() {
+                        return object(ObjectRef::NULL);
+                    }
+                    break;
+                }
+                if byte == i32::from(b'\n') {
+                    break;
+                }
+                if byte == i32::from(b'\r') {
+                    let next = data_read_byte(vm, stream)?;
+                    if next >= 0 && next != i32::from(b'\n') {
+                        // A lone CR ends the line; the next byte belongs to the following line.
+                        // oxjvm streams cannot unread, so treat CR and CRLF alike here.
+                    }
+                    break;
+                }
+                units.push(byte as u16);
+            }
+            object(vm.make_string_utf16(units)?)
+        },
+    ),
+    method(
+        "readUTF",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let stream = data_input_stream(vm, receiver(args));
+            let header = data_read_fully(vm, stream, 2)?;
+            let length = usize::from(be16(&header));
+            let bytes = data_read_fully(vm, stream, length)?;
+            let units = decode_modified_utf8(&bytes)
+                .map_err(|_| vm.throw_new("java/io/UTFDataFormatException", None))?;
+            object(vm.make_string_utf16(units)?)
+        },
+    ),
+];
+
+pub(crate) const DATA_INPUT_STREAM: oxjvm_vm::NativeClass = class(
+    "java/io/DataInputStream",
+    Some("java/io/FilterInputStream"),
+    &["java/io/DataInput"],
+    ACC_PUBLIC,
+    &[],
+    &DATA_INPUT_STREAM_METHODS,
+    None,
+);
+
+fn data_output_stream(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field_any(this, "out")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn data_output_count(vm: &mut Vm<'_>, this: ObjectRef, bytes: &[u8]) -> Result<(), VmError> {
+    data_write_bytes(vm, data_output_stream(vm, this), bytes)?;
+    let written = crate::lang::read_int_field(vm, this, "written");
+    crate::lang::write_int_field(vm, this, "written", written + bytes.len() as i32);
+    Ok(())
+}
+
+const DATA_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "out", "Ljava/io/OutputStream;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method("writeBoolean", "(Z)V", ACC_PUBLIC, |vm, _, args| {
+        data_output_count(
+            vm,
+            receiver(args),
+            &[if int_arg(args, 1) != 0 { 1 } else { 0 }],
+        )?;
+        void()
+    }),
+    method("writeByte", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        data_output_count(vm, receiver(args), &[(int_arg(args, 1) & 0xFF) as u8])?;
+        void()
+    }),
+    method("writeShort", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let value = int_arg(args, 1) as u16;
+        data_output_count(vm, receiver(args), &value.to_be_bytes())?;
+        void()
+    }),
+    method("writeChar", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let value = int_arg(args, 1) as u16;
+        data_output_count(vm, receiver(args), &value.to_be_bytes())?;
+        void()
+    }),
+    method("writeInt", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        data_output_count(vm, receiver(args), &int_arg(args, 1).to_be_bytes())?;
+        void()
+    }),
+    method("writeLong", "(J)V", ACC_PUBLIC, |vm, _, args| {
+        data_output_count(vm, receiver(args), &crate::long_arg(args, 1).to_be_bytes())?;
+        void()
+    }),
+    method("writeFloat", "(F)V", ACC_PUBLIC, |vm, _, args| {
+        data_output_count(
+            vm,
+            receiver(args),
+            &crate::float_arg(args, 1).to_bits().to_be_bytes(),
+        )?;
+        void()
+    }),
+    method("writeDouble", "(D)V", ACC_PUBLIC, |vm, _, args| {
+        data_output_count(
+            vm,
+            receiver(args),
+            &crate::double_arg(args, 1).to_bits().to_be_bytes(),
+        )?;
+        void()
+    }),
+    method(
+        "writeBytes",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = ref_arg(args, 1);
+            let units = vm.string_utf16(text).unwrap_or_default().to_vec();
+            let bytes: Vec<u8> = units.iter().map(|unit| (*unit & 0xFF) as u8).collect();
+            data_output_count(vm, receiver(args), &bytes)?;
+            void()
+        },
+    ),
+    method(
+        "writeChars",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = ref_arg(args, 1);
+            let units = vm.string_utf16(text).unwrap_or_default().to_vec();
+            let mut bytes = Vec::with_capacity(units.len() * 2);
+            for unit in units {
+                bytes.extend_from_slice(&unit.to_be_bytes());
+            }
+            data_output_count(vm, receiver(args), &bytes)?;
+            void()
+        },
+    ),
+    method(
+        "writeUTF",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = ref_arg(args, 1);
+            let units = vm.string_utf16(text).unwrap_or_default().to_vec();
+            let encoded = modified_utf8(&units);
+            if encoded.len() > 0xFFFF {
+                return Err(vm.throw_new(
+                    "java/io/UTFDataFormatException",
+                    Some("encoded string too long"),
+                ));
+            }
+            let mut bytes = Vec::with_capacity(encoded.len() + 2);
+            bytes.extend_from_slice(&(encoded.len() as u16).to_be_bytes());
+            bytes.extend_from_slice(&encoded);
+            data_output_count(vm, receiver(args), &bytes)?;
+            void()
+        },
+    ),
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "written"))
+    }),
+    method("flush", "()V", ACC_PUBLIC, |vm, _, args| {
+        let out = data_output_stream(vm, receiver(args));
+        if !out.is_null() {
+            let (class, method) = vm.resolve_virtual_method(out, "flush", "()V")?;
+            vm.invoke_method(class, method, vec![Value::Ref(out)])?;
+        }
+        void()
+    }),
+    method("write", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        data_output_count(vm, receiver(args), &[(int_arg(args, 1) & 0xFF) as u8])?;
+        void()
+    }),
+    method("write", "([BII)V", ACC_PUBLIC, |vm, _, args| {
+        let array = ref_arg(args, 1);
+        let offset = int_arg(args, 2);
+        let length = int_arg(args, 3);
+        reader_check_range(vm, array, offset, length)?;
+        let mut bytes = Vec::with_capacity(length as usize);
+        for index in 0..length {
+            bytes.push(vm.array_get(array, offset + index)?.as_int() as u8);
+        }
+        data_output_count(vm, receiver(args), &bytes)?;
+        void()
+    }),
+];
+
+pub(crate) const DATA_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
+    "java/io/DataOutputStream",
+    Some("java/io/FilterOutputStream"),
+    &["java/io/DataOutput"],
+    ACC_PUBLIC,
+    &[field("written", "I", ACC_PROTECTED, None)],
+    &DATA_OUTPUT_STREAM_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// CharArrayReader / CharArrayWriter
+// -------------------------------------------------------------------------------------------
+
+const CHAR_ARRAY_READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+    method("<init>", "([C)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let array = ref_arg(args, 1);
+        let class = vm.class_of(this);
+        let length = vm.array_length(array)? as i32;
+        let (declaring, field) = vm.find_field(class, "buf", "[C")?;
+        vm.set_instance_ref(this, declaring, field, array);
+        crate::lang::write_int_field(vm, this, "pos", 0);
+        crate::lang::write_int_field(vm, this, "markedPos", 0);
+        crate::lang::write_int_field(vm, this, "count", length);
+        void()
+    }),
+    method("<init>", "([CII)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let array = ref_arg(args, 1);
+        let offset = int_arg(args, 2);
+        let length = int_arg(args, 3);
+        reader_check_range(vm, array, offset, length)?;
+        let class = vm.class_of(this);
+        let (declaring, field) = vm.find_field(class, "buf", "[C")?;
+        vm.set_instance_ref(this, declaring, field, array);
+        crate::lang::write_int_field(vm, this, "pos", offset);
+        crate::lang::write_int_field(vm, this, "markedPos", offset);
+        crate::lang::write_int_field(vm, this, "count", offset + length);
+        void()
+    }),
+    method("read", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let pos = crate::lang::read_int_field(vm, this, "pos");
+        let count = crate::lang::read_int_field(vm, this, "count");
+        if pos >= count {
+            return int(-1);
+        }
+        let buf = vm
+            .read_ref_field(this, class, "buf", "[C")
+            .unwrap_or(ObjectRef::NULL);
+        let value = vm.array_get(buf, pos)?.as_int();
+        crate::lang::write_int_field(vm, this, "pos", pos + 1);
+        int(value)
+    }),
+    method("read", "([CII)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let target = ref_arg(args, 1);
+        let offset = int_arg(args, 2);
+        let length = int_arg(args, 3);
+        reader_check_range(vm, target, offset, length)?;
+        if length == 0 {
+            return int(0);
+        }
+        let pos = crate::lang::read_int_field(vm, this, "pos");
+        let count = crate::lang::read_int_field(vm, this, "count");
+        if pos >= count {
+            return int(-1);
+        }
+        let buf = vm
+            .read_ref_field(this, class, "buf", "[C")
+            .unwrap_or(ObjectRef::NULL);
+        let available = count - pos;
+        let n = available.min(length);
+        for index in 0..n {
+            let value = vm.array_get(buf, pos + index)?;
+            vm.array_set(target, offset + index, value, false)?;
+        }
+        crate::lang::write_int_field(vm, this, "pos", pos + n);
+        int(n)
+    }),
+    method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let pos = crate::lang::read_int_field(vm, this, "pos");
+        let count = crate::lang::read_int_field(vm, this, "count");
+        let available = (count - pos).max(0);
+        let requested = crate::long_arg(args, 1).max(0) as i32;
+        let n = available.min(requested);
+        crate::lang::write_int_field(vm, this, "pos", pos + n);
+        long(i64::from(n))
+    }),
+    method("ready", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let pos = crate::lang::read_int_field(vm, this, "pos");
+        let count = crate::lang::read_int_field(vm, this, "count");
+        boolean(pos < count)
+    }),
+    method("markSupported", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
+    method("mark", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let pos = crate::lang::read_int_field(vm, this, "pos");
+        crate::lang::write_int_field(vm, this, "markedPos", pos);
+        void()
+    }),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let marked = crate::lang::read_int_field(vm, this, "markedPos");
+        crate::lang::write_int_field(vm, this, "pos", marked);
+        void()
+    }),
+];
+
+pub(crate) const CHAR_ARRAY_READER: oxjvm_vm::NativeClass = class(
+    "java/io/CharArrayReader",
+    Some("java/io/Reader"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("buf", "[C", ACC_PROTECTED, None),
+        field("pos", "I", ACC_PROTECTED, None),
+        field("markedPos", "I", ACC_PROTECTED, None),
+        field("count", "I", ACC_PROTECTED, None),
+    ],
+    &CHAR_ARRAY_READER_METHODS,
+    None,
+);
+
+fn char_array_writer_units(vm: &mut Vm<'_>, this: ObjectRef) -> Vec<u16> {
+    let class = vm.class_of(this);
+    let buf = vm
+        .read_ref_field(this, class, "buf", "[C")
+        .unwrap_or(ObjectRef::NULL);
+    let count = crate::lang::read_int_field(vm, this, "count").max(0) as usize;
+    let mut units = Vec::with_capacity(count);
+    for index in 0..count {
+        if let Ok(value) = vm.array_get(buf, index as i32) {
+            units.push(value.as_int() as u16);
+        }
+    }
+    units
+}
+
+fn char_array_writer_set(vm: &mut Vm<'_>, this: ObjectRef, units: &[u16]) -> Result<(), VmError> {
+    let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Char, units.len())?;
+    for (index, unit) in units.iter().enumerate() {
+        vm.array_set(array, index as i32, Value::Int(i32::from(*unit)), false)?;
+    }
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, "buf", "[C")?;
+    vm.set_instance_ref(this, declaring, field, array);
+    crate::lang::write_int_field(vm, this, "count", units.len() as i32);
+    Ok(())
+}
+
+const CHAR_ARRAY_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        char_array_writer_set(vm, receiver(args), &[])?;
+        void()
+    }),
+    method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        if int_arg(args, 1) < 0 {
+            return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("negative size")));
+        }
+        char_array_writer_set(vm, receiver(args), &[])?;
+        void()
+    }),
+    method("write", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let mut units = char_array_writer_units(vm, this);
+        units.push((int_arg(args, 1) & 0xFFFF) as u16);
+        char_array_writer_set(vm, this, &units)?;
+        void()
+    }),
+    method("write", "([CII)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let array = ref_arg(args, 1);
+        let offset = int_arg(args, 2);
+        let length = int_arg(args, 3);
+        reader_check_range(vm, array, offset, length)?;
+        let mut units = char_array_writer_units(vm, this);
+        for index in 0..length {
+            units.push(vm.array_get(array, offset + index)?.as_int() as u16);
+        }
+        char_array_writer_set(vm, this, &units)?;
+        void()
+    }),
+    method(
+        "write",
+        "(Ljava/lang/String;II)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = ref_arg(args, 1);
+            let offset = int_arg(args, 2).max(0) as usize;
+            let length = int_arg(args, 3).max(0) as usize;
+            let source = vm.string_utf16(text).unwrap_or_default().to_vec();
+            let end = (offset + length).min(source.len());
+            let mut units = char_array_writer_units(vm, this);
+            units.extend_from_slice(&source[offset.min(source.len())..end]);
+            char_array_writer_set(vm, this, &units)?;
+            void()
+        },
+    ),
+    method(
+        "writeTo",
+        "(Ljava/io/Writer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let writer = ref_arg(args, 1);
+            let units = char_array_writer_units(vm, this);
+            let text = vm.make_string_utf16(units)?;
+            let (class, method) =
+                vm.resolve_virtual_method(writer, "write", "(Ljava/lang/String;)V")?;
+            vm.invoke_method(class, method, vec![Value::Ref(writer), Value::Ref(text)])?;
+            void()
+        },
+    ),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
+        char_array_writer_set(vm, receiver(args), &[])?;
+        void()
+    }),
+    method("toCharArray", "()[C", ACC_PUBLIC, |vm, _, args| {
+        let units = char_array_writer_units(vm, receiver(args));
+        let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Char, units.len())?;
+        for (index, unit) in units.iter().enumerate() {
+            vm.array_set(array, index as i32, Value::Int(i32::from(*unit)), false)?;
+        }
+        object(array)
+    }),
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "count"))
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let units = char_array_writer_units(vm, receiver(args));
+            object(vm.make_string_utf16(units)?)
+        },
+    ),
+    method("flush", "()V", ACC_PUBLIC, |_, _, _| void()),
+];
+
+pub(crate) const CHAR_ARRAY_WRITER: oxjvm_vm::NativeClass = class(
+    "java/io/CharArrayWriter",
+    Some("java/io/Writer"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("buf", "[C", ACC_PROTECTED, None),
+        field("count", "I", ACC_PROTECTED, None),
+    ],
+    &CHAR_ARRAY_WRITER_METHODS,
+    None,
+);
