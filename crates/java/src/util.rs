@@ -73,7 +73,34 @@ pub(crate) const EMPTY_STACK_EXCEPTION: oxjvm_vm::NativeClass = {
     )
 };
 
-const ITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+/// `java.util.ConcurrentModificationException`, thrown on illegal concurrent collection edits.
+pub(crate) const CONCURRENT_MODIFICATION_EXCEPTION: oxjvm_vm::NativeClass = {
+    const METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+        method(
+            "<init>",
+            "()V",
+            ACC_PUBLIC,
+            crate::throwable::exception_ctor,
+        ),
+        method(
+            "<init>",
+            "(Ljava/lang/String;)V",
+            ACC_PUBLIC,
+            crate::throwable::exception_ctor,
+        ),
+    ];
+    class(
+        "java/util/ConcurrentModificationException",
+        Some("java/lang/RuntimeException"),
+        &[],
+        ACC_PUBLIC,
+        &[],
+        &METHODS,
+        None,
+    )
+};
+
+const ITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
     method(
         "hasNext",
         "()Z",
@@ -87,6 +114,31 @@ const ITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
         crate::lang::abstract_method_pub,
     ),
     method("remove", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "forEachRemaining",
+        "(Ljava/util/function/Consumer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let iterator = receiver(args);
+            let action = ref_arg(args, 1);
+            if action.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let (has_class, has_next) = vm.resolve_virtual_method(iterator, "hasNext", "()Z")?;
+            let (next_class, next) =
+                vm.resolve_virtual_method(iterator, "next", "()Ljava/lang/Object;")?;
+            let (accept_class, accept) =
+                vm.resolve_virtual_method(action, "accept", "(Ljava/lang/Object;)V")?;
+            loop {
+                let more = vm.invoke_method(has_class, has_next, vec![Value::Ref(iterator)])?;
+                if more.as_int() == 0 {
+                    return void();
+                }
+                let element = vm.invoke_method(next_class, next, vec![Value::Ref(iterator)])?;
+                vm.invoke_method(accept_class, accept, vec![Value::Ref(action), element])?;
+            }
+        },
+    ),
 ];
 
 pub(crate) const ITERATOR: oxjvm_vm::NativeClass = class(
@@ -254,7 +306,7 @@ pub(crate) const COLLECTION: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
+const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
     method(
         "getFirst",
         "()Ljava/lang/Object;",
@@ -590,6 +642,135 @@ const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
         "(II)Ljava/util/List;",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
+    ),
+    method(
+        "replaceAll",
+        "(Ljava/util/function/UnaryOperator;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let list = receiver(args);
+            let operator = ref_arg(args, 1);
+            if operator.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let (size_class, size_method) = vm.resolve_virtual_method(list, "size", "()I")?;
+            let size = vm
+                .invoke_method(size_class, size_method, vec![Value::Ref(list)])?
+                .as_int();
+            let (get_class, get) =
+                vm.resolve_virtual_method(list, "get", "(I)Ljava/lang/Object;")?;
+            let (set_class, set) =
+                vm.resolve_virtual_method(list, "set", "(ILjava/lang/Object;)Ljava/lang/Object;")?;
+            let (apply_class, apply) = vm.resolve_virtual_method(
+                operator,
+                "apply",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+            )?;
+            for index in 0..size {
+                let element =
+                    vm.invoke_method(get_class, get, vec![Value::Ref(list), Value::Int(index)])?;
+                let replacement =
+                    vm.invoke_method(apply_class, apply, vec![Value::Ref(operator), element])?;
+                vm.invoke_method(
+                    set_class,
+                    set,
+                    vec![Value::Ref(list), Value::Int(index), replacement],
+                )?;
+            }
+            void()
+        },
+    ),
+    method(
+        "lastIndexOf",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let list = receiver(args);
+            let target = ref_arg(args, 1);
+            let (size_class, size_method) = vm.resolve_virtual_method(list, "size", "()I")?;
+            let size = vm
+                .invoke_method(size_class, size_method, vec![Value::Ref(list)])?
+                .as_int();
+            let (get_class, get) =
+                vm.resolve_virtual_method(list, "get", "(I)Ljava/lang/Object;")?;
+            for index in (0..size).rev() {
+                let element = vm
+                    .invoke_method(get_class, get, vec![Value::Ref(list), Value::Int(index)])?
+                    .as_ref();
+                if objects_equals(vm, element, target)? {
+                    return int(index);
+                }
+            }
+            int(-1)
+        },
+    ),
+    method(
+        "containsAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let list = receiver(args);
+            let (contains_class, contains) =
+                vm.resolve_virtual_method(list, "contains", "(Ljava/lang/Object;)Z")?;
+            for element in collection_elements(vm, ref_arg(args, 1))? {
+                let found = vm.invoke_method(
+                    contains_class,
+                    contains,
+                    vec![Value::Ref(list), Value::Ref(element)],
+                )?;
+                if found.as_int() == 0 {
+                    return boolean(false);
+                }
+            }
+            boolean(true)
+        },
+    ),
+    method(
+        "retainAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let list = receiver(args);
+            let collection = ref_arg(args, 1);
+            let (contains_class, contains) =
+                vm.resolve_virtual_method(collection, "contains", "(Ljava/lang/Object;)Z")?;
+            let (iter_class, iter_method) =
+                vm.resolve_virtual_method(list, "iterator", "()Ljava/util/Iterator;")?;
+            let iterator = vm
+                .invoke_method(iter_class, iter_method, vec![Value::Ref(list)])?
+                .as_ref();
+            let (has_class, has_next) = vm.resolve_virtual_method(iterator, "hasNext", "()Z")?;
+            let (next_class, next) =
+                vm.resolve_virtual_method(iterator, "next", "()Ljava/lang/Object;")?;
+            let (remove_class, remove) = vm.resolve_virtual_method(iterator, "remove", "()V")?;
+            let mut changed = false;
+            loop {
+                let more = vm.invoke_method(has_class, has_next, vec![Value::Ref(iterator)])?;
+                if more.as_int() == 0 {
+                    return boolean(changed);
+                }
+                let element = vm.invoke_method(next_class, next, vec![Value::Ref(iterator)])?;
+                let kept = vm.invoke_method(
+                    contains_class,
+                    contains,
+                    vec![Value::Ref(collection), element],
+                )?;
+                if kept.as_int() == 0 {
+                    vm.invoke_method(remove_class, remove, vec![Value::Ref(iterator)])?;
+                    changed = true;
+                }
+            }
+        },
+    ),
+    method(
+        "reversed",
+        "()Ljava/util/List;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let mut elements = collection_elements(vm, receiver(args))?;
+            elements.reverse();
+            object(array_list_from(vm, &elements)?)
+        },
     ),
 ];
 
@@ -1024,7 +1205,7 @@ macro_rules! map_of {
     };
 }
 
-const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
+const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
     method(
         "entry",
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map$Entry;",
@@ -1238,6 +1419,29 @@ const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
             object(new)
         },
     ),
+    method(
+        "replaceAll",
+        "(Ljava/util/function/BiFunction;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = receiver(args);
+            let function = ref_arg(args, 1);
+            if function.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            for (key, value) in abstract_map_entries(vm, map)? {
+                let replacement = bi_function_apply(vm, function, key, value)?;
+                map_virtual_call(
+                    vm,
+                    map,
+                    "put",
+                    "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                    vec![key, replacement],
+                )?;
+            }
+            void()
+        },
+    ),
     map_of!(0, "()Ljava/util/Map;"),
     map_of!(2, "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map;"),
     map_of!(
@@ -1292,7 +1496,7 @@ pub(crate) const MAP: oxjvm_vm::NativeClass = class(
 // Objects
 // -------------------------------------------------------------------------------------------
 
-const OBJECTS_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const OBJECTS_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method(
         "equals",
         "(Ljava/lang/Object;Ljava/lang/Object;)Z",
@@ -1398,6 +1602,67 @@ const OBJECTS_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         },
     ),
     method(
+        "requireNonNull",
+        "(Ljava/lang/Object;Ljava/util/function/Supplier;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let reference = ref_arg(args, 0);
+            if reference.is_null() {
+                let supplier = ref_arg(args, 1);
+                let (class, method) =
+                    vm.resolve_virtual_method(supplier, "get", "()Ljava/lang/Object;")?;
+                let message = vm
+                    .invoke_method(class, method, vec![Value::Ref(supplier)])?
+                    .as_ref();
+                return Err(vm.throw_new(
+                    "java/lang/NullPointerException",
+                    Some(&vm.string_or_empty(message)),
+                ));
+            }
+            object(reference)
+        },
+    ),
+    method(
+        "requireNonNullElse",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let reference = ref_arg(args, 0);
+            if !reference.is_null() {
+                return object(reference);
+            }
+            let default = ref_arg(args, 1);
+            if default.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(default)
+        },
+    ),
+    method(
+        "requireNonNullElseGet",
+        "(Ljava/lang/Object;Ljava/util/function/Supplier;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let reference = ref_arg(args, 0);
+            if !reference.is_null() {
+                return object(reference);
+            }
+            let supplier = ref_arg(args, 1);
+            if supplier.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(supplier, "get", "()Ljava/lang/Object;")?;
+            let value = vm
+                .invoke_method(class, method, vec![Value::Ref(supplier)])?
+                .as_ref();
+            if value.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(value)
+        },
+    ),
+    method(
         "deepEquals",
         "(Ljava/lang/Object;Ljava/lang/Object;)Z",
         ACC_PUBLIC | ACC_STATIC,
@@ -1453,6 +1718,37 @@ const OBJECTS_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
                 ));
             }
             long(index)
+        },
+    ),
+    method(
+        "toIdentityString",
+        "(Ljava/lang/Object;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let reference = ref_arg(args, 0);
+            let name = vm.class_name(vm.class_of(reference));
+            let hash = vm.heap.get(reference).map_or(0, |object| object.hash);
+            let text = alloc::format!("{name}@{:x}", hash as u32);
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "compare",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/util/Comparator;)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let a = ref_arg(args, 0);
+            let b = ref_arg(args, 1);
+            let comparator = ref_arg(args, 2);
+            if a == b {
+                return int(0);
+            }
+            let ordering = compare_with(vm, comparator, Value::Ref(a), Value::Ref(b))?;
+            int(match ordering {
+                core::cmp::Ordering::Less => -1,
+                core::cmp::Ordering::Equal => 0,
+                core::cmp::Ordering::Greater => 1,
+            })
         },
     ),
 ];
@@ -3343,9 +3639,10 @@ pub(crate) const RANDOM: oxjvm_vm::NativeClass = class(
 // ArrayList + iterator
 // -------------------------------------------------------------------------------------------
 
-const ARRAY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
+const ARRAY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
     method("<init>", "()V", ACC_PUBLIC, array_list_init),
     method("<init>", "(I)V", ACC_PUBLIC, array_list_init),
+    method("ensureCapacity", "(I)V", ACC_PUBLIC, |_, _, _| void()),
     method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, array_list_add),
     method(
         "addAll",
@@ -5159,6 +5456,331 @@ pub(crate) const ABSTRACT_SET: oxjvm_vm::NativeClass = class(
     None,
 );
 
+// -------------------------------------------------------------------------------------------
+// AbstractList (get/set/size-driven base for lists)
+// -------------------------------------------------------------------------------------------
+
+/// `AbstractList.indexOf`: the first index whose element equals `target`, or -1.
+fn abstract_list_index_of(
+    vm: &mut Vm<'_>,
+    list: ObjectRef,
+    target: ObjectRef,
+    last: bool,
+) -> Result<i32, VmError> {
+    let size = invoke_int(vm, list, "size")?;
+    let indices: Vec<i32> = if last {
+        (0..size).rev().collect()
+    } else {
+        (0..size).collect()
+    };
+    for index in indices {
+        let element = invoke_object(vm, list, "get", &[Value::Int(index)])?;
+        if objects_equals(vm, element, target)? {
+            return Ok(index);
+        }
+    }
+    Ok(-1)
+}
+
+const ABSTRACT_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+    method(
+        "size",
+        "()I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "get",
+        "(I)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "set",
+        "(ILjava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method("add", "(ILjava/lang/Object;)V", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/UnsupportedOperationException", None))
+    }),
+    method("remove", "(I)Ljava/lang/Object;", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/UnsupportedOperationException", None))
+    }),
+    method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, |vm, _, args| {
+        let list = receiver(args);
+        let size = invoke_int(vm, list, "size")?;
+        let (class, method) = vm.resolve_virtual_method(list, "add", "(ILjava/lang/Object;)V")?;
+        vm.invoke_method(
+            class,
+            method,
+            vec![Value::Ref(list), Value::Int(size), args[1]],
+        )?;
+        boolean(true)
+    }),
+    method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(invoke_int(vm, receiver(args), "size")? == 0)
+    }),
+    method(
+        "iterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let list = receiver(args);
+            let class = vm.resolve_class("java/util/AbstractList$Itr")?;
+            let iterator = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "list", "Ljava/util/List;")?;
+            vm.set_instance_ref(iterator, declaring, field, list);
+            crate::lang::write_int_field(vm, iterator, "cursor", 0);
+            object(iterator)
+        },
+    ),
+    method(
+        "contains",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let index = abstract_list_index_of(vm, receiver(args), ref_arg(args, 1), false)?;
+            boolean(index >= 0)
+        },
+    ),
+    method(
+        "indexOf",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            int(abstract_list_index_of(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                false,
+            )?)
+        },
+    ),
+    method(
+        "lastIndexOf",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            int(abstract_list_index_of(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                true,
+            )?)
+        },
+    ),
+    method(
+        "toArray",
+        "()[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = collection_elements(vm, receiver(args))?;
+            let object_class = vm.resolve_class("java/lang/Object")?;
+            let array = vm.allocate_object_array(object_class, elements.len())?;
+            for (index, element) in elements.iter().enumerate() {
+                vm.array_set_ref(array, index, *element)?;
+            }
+            object(array)
+        },
+    ),
+    method(
+        "toArray",
+        "([Ljava/lang/Object;)[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = collection_elements(vm, receiver(args))?;
+            collection_to_array_into(vm, &elements, ref_arg(args, 1))
+        },
+    ),
+    method(
+        "subList",
+        "(II)Ljava/util/List;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let list = receiver(args);
+            let from = int_arg(args, 1);
+            let to = int_arg(args, 2);
+            let size = invoke_int(vm, list, "size")?;
+            if from < 0 || to > size || from > to {
+                return Err(vm.throw_new(
+                    "java/lang/IndexOutOfBoundsException",
+                    Some(&alloc::format!(
+                        "fromIndex: {from}, toIndex: {to}, size: {size}"
+                    )),
+                ));
+            }
+            let class = vm.resolve_class("java/util/AbstractList$SubList")?;
+            let view = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "parent", "Ljava/util/List;")?;
+            vm.set_instance_ref(view, declaring, field, list);
+            crate::lang::write_int_field(vm, view, "offset", from);
+            crate::lang::write_int_field(vm, view, "length", to - from);
+            object(view)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if this.raw() == other.raw() {
+                return boolean(true);
+            }
+            let list_class = vm.resolve_class("java/util/List")?;
+            if other.is_null() || !vm.is_instance(other, list_class) {
+                return boolean(false);
+            }
+            let mine = collection_elements(vm, this)?;
+            let theirs = collection_elements(vm, other)?;
+            if mine.len() != theirs.len() {
+                return boolean(false);
+            }
+            for (a, b) in mine.iter().zip(theirs.iter()) {
+                if !objects_equals(vm, *a, *b)? {
+                    return boolean(false);
+                }
+            }
+            boolean(true)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let elements = collection_elements(vm, receiver(args))?;
+        let mut hash = 1_i32;
+        for element in elements {
+            hash = hash
+                .wrapping_mul(31)
+                .wrapping_add(object_hash(vm, element)?);
+        }
+        int(hash)
+    }),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/UnsupportedOperationException", None))
+    }),
+];
+
+/// `java.util.AbstractList`: the `get`/`size`-driven base for lists.
+pub(crate) const ABSTRACT_LIST: oxjvm_vm::NativeClass = class(
+    "java/util/AbstractList",
+    Some("java/lang/Object"),
+    &["java/util/List"],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[],
+    &ABSTRACT_LIST_METHODS,
+    None,
+);
+
+const ABSTRACT_LIST_ITR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method("hasNext", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let list = vm
+            .read_ref_field(this, vm.class_of(this), "list", "Ljava/util/List;")
+            .unwrap_or(ObjectRef::NULL);
+        let cursor = crate::lang::read_int_field(vm, this, "cursor");
+        boolean(cursor < invoke_int(vm, list, "size")?)
+    }),
+    method("next", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let list = vm
+            .read_ref_field(this, vm.class_of(this), "list", "Ljava/util/List;")
+            .unwrap_or(ObjectRef::NULL);
+        let cursor = crate::lang::read_int_field(vm, this, "cursor");
+        let size = invoke_int(vm, list, "size")?;
+        if cursor < 0 || cursor >= size {
+            return Err(vm.throw_new("java/util/NoSuchElementException", None));
+        }
+        let element = invoke_object(vm, list, "get", &[Value::Int(cursor)])?;
+        crate::lang::write_int_field(vm, this, "cursor", cursor + 1);
+        object(element)
+    }),
+    method("remove", "()V", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/UnsupportedOperationException", None))
+    }),
+];
+
+/// `java.util.AbstractList$Itr`: a cursor over the list's virtual `get`/`size`.
+pub(crate) const ABSTRACT_LIST_ITR: oxjvm_vm::NativeClass = class(
+    "java/util/AbstractList$Itr",
+    Some("java/lang/Object"),
+    &["java/util/Iterator"],
+    ACC_PUBLIC | ACC_SYNTHETIC,
+    &[
+        field("list", "Ljava/util/List;", ACC_PRIVATE, None),
+        field("cursor", "I", ACC_PRIVATE, None),
+    ],
+    &ABSTRACT_LIST_ITR_METHODS,
+    None,
+);
+
+const ABSTRACT_LIST_SUB_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "length"))
+    }),
+    method("get", "(I)Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let index = int_arg(args, 1);
+        let length = crate::lang::read_int_field(vm, this, "length");
+        if index < 0 || index >= length {
+            return Err(vm.throw_new(
+                "java/lang/IndexOutOfBoundsException",
+                Some(&alloc::format!("Index: {index}, Size: {length}")),
+            ));
+        }
+        let parent = vm
+            .read_ref_field(this, vm.class_of(this), "parent", "Ljava/util/List;")
+            .unwrap_or(ObjectRef::NULL);
+        let offset = crate::lang::read_int_field(vm, this, "offset");
+        invoke_object(vm, parent, "get", &[Value::Int(offset + index)]).map(Value::Ref)
+    }),
+    method(
+        "set",
+        "(ILjava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let index = int_arg(args, 1);
+            let length = crate::lang::read_int_field(vm, this, "length");
+            if index < 0 || index >= length {
+                return Err(vm.throw_new(
+                    "java/lang/IndexOutOfBoundsException",
+                    Some(&alloc::format!("Index: {index}, Size: {length}")),
+                ));
+            }
+            let parent = vm
+                .read_ref_field(this, vm.class_of(this), "parent", "Ljava/util/List;")
+                .unwrap_or(ObjectRef::NULL);
+            let offset = crate::lang::read_int_field(vm, this, "offset");
+            let (class, method) = vm.resolve_virtual_method(
+                parent,
+                "set",
+                "(ILjava/lang/Object;)Ljava/lang/Object;",
+            )?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![Value::Ref(parent), Value::Int(offset + index), args[2]],
+            )
+        },
+    ),
+];
+
+/// `java.util.AbstractList$SubList`: an offset window over a parent list.
+pub(crate) const ABSTRACT_LIST_SUB_LIST: oxjvm_vm::NativeClass = class(
+    "java/util/AbstractList$SubList",
+    Some("java/util/AbstractList"),
+    &[],
+    ACC_PUBLIC | ACC_SYNTHETIC,
+    &[
+        field("parent", "Ljava/util/List;", ACC_PRIVATE, None),
+        field("offset", "I", ACC_PRIVATE, None),
+        field("length", "I", ACC_PRIVATE, None),
+    ],
+    &ABSTRACT_LIST_SUB_LIST_METHODS,
+    None,
+);
+
 const ITR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
     method("hasNext", "()Z", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
@@ -6604,7 +7226,7 @@ fn properties_set_property(
 // Collections
 // -------------------------------------------------------------------------------------------
 
-const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
+const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 68] = [
     method(
         "sort",
         "(Ljava/util/List;)V",
@@ -6892,6 +7514,197 @@ const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
             object(array_list_from(vm, &elements)?)
         },
     ),
+    method(
+        "swap",
+        "(Ljava/util/List;II)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let list = ref_arg(args, 0);
+            let i = int_arg(args, 1);
+            let j = int_arg(args, 2);
+            let a = invoke_object(vm, list, "get", &[Value::Int(i)])?;
+            let b = invoke_object(vm, list, "get", &[Value::Int(j)])?;
+            invoke_void(vm, list, "set", &[Value::Int(i), Value::Ref(b)])?;
+            invoke_void(vm, list, "set", &[Value::Int(j), Value::Ref(a)])?;
+            void()
+        },
+    ),
+    method(
+        "rotate",
+        "(Ljava/util/List;I)V",
+        ACC_PUBLIC | ACC_STATIC,
+        collections_rotate,
+    ),
+    method(
+        "shuffle",
+        "(Ljava/util/List;Ljava/util/Random;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        collections_shuffle_random,
+    ),
+    method(
+        "replaceAll",
+        "(Ljava/util/List;Ljava/lang/Object;Ljava/lang/Object;)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        collections_replace_all,
+    ),
+    method(
+        "fill",
+        "(Ljava/util/List;Ljava/lang/Object;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let list = ref_arg(args, 0);
+            let value = ref_arg(args, 1);
+            let size = invoke_int(vm, list, "size")?;
+            for index in 0..size {
+                invoke_void(vm, list, "set", &[Value::Int(index), Value::Ref(value)])?;
+            }
+            void()
+        },
+    ),
+    method(
+        "copy",
+        "(Ljava/util/List;Ljava/util/List;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        collections_copy,
+    ),
+    method(
+        "min",
+        "(Ljava/util/Collection;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| collections_extreme(vm, ref_arg(args, 0), ObjectRef::NULL, false),
+    ),
+    method(
+        "min",
+        "(Ljava/util/Collection;Ljava/util/Comparator;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| collections_extreme(vm, ref_arg(args, 0), ref_arg(args, 1), false),
+    ),
+    method(
+        "max",
+        "(Ljava/util/Collection;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| collections_extreme(vm, ref_arg(args, 0), ObjectRef::NULL, true),
+    ),
+    method(
+        "max",
+        "(Ljava/util/Collection;Ljava/util/Comparator;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| collections_extreme(vm, ref_arg(args, 0), ref_arg(args, 1), true),
+    ),
+    method(
+        "frequency",
+        "(Ljava/util/Collection;Ljava/lang/Object;)I",
+        ACC_PUBLIC | ACC_STATIC,
+        collections_frequency,
+    ),
+    method(
+        "disjoint",
+        "(Ljava/util/Collection;Ljava/util/Collection;)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        collections_disjoint,
+    ),
+    method(
+        "binarySearch",
+        "(Ljava/util/List;Ljava/lang/Object;)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            collections_binary_search(vm, ref_arg(args, 0), ref_arg(args, 1), ObjectRef::NULL)
+        },
+    ),
+    method(
+        "binarySearch",
+        "(Ljava/util/List;Ljava/lang/Object;Ljava/util/Comparator;)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            collections_binary_search(vm, ref_arg(args, 0), ref_arg(args, 1), ref_arg(args, 2))
+        },
+    ),
+    method(
+        "indexOfSubList",
+        "(Ljava/util/List;Ljava/util/List;)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| collections_index_of_sublist(vm, args, false),
+    ),
+    method(
+        "lastIndexOfSubList",
+        "(Ljava/util/List;Ljava/util/List;)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| collections_index_of_sublist(vm, args, true),
+    ),
+    method(
+        "emptyIterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let list = array_list_from(vm, &[])?;
+            let (class, method) =
+                vm.resolve_virtual_method(list, "iterator", "()Ljava/util/Iterator;")?;
+            vm.invoke_method(class, method, vec![Value::Ref(list)])
+        },
+    ),
+    method(
+        "emptyListIterator",
+        "()Ljava/util/ListIterator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let list = array_list_from(vm, &[])?;
+            list_iterator_new(vm, list, 0)
+        },
+    ),
+    method(
+        "emptyEnumeration",
+        "()Ljava/util/Enumeration;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(new_enumeration(vm, &[])?),
+    ),
+    method(
+        "emptyNavigableSet",
+        "()Ljava/util/NavigableSet;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(new_sorted_set_empty(vm)?),
+    ),
+    method(
+        "emptySortedSet",
+        "()Ljava/util/SortedSet;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(new_sorted_set_empty(vm)?),
+    ),
+    method(
+        "emptyNavigableMap",
+        "()Ljava/util/NavigableMap;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(new_sorted_map_empty(vm)?),
+    ),
+    method(
+        "emptySortedMap",
+        "()Ljava/util/SortedMap;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(new_sorted_map_empty(vm)?),
+    ),
+    method(
+        "asLifoQueue",
+        "(Ljava/util/Deque;)Ljava/util/Queue;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "unmodifiableSequencedCollection",
+        "(Ljava/util/SequencedCollection;)Ljava/util/SequencedCollection;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "unmodifiableSequencedSet",
+        "(Ljava/util/SequencedSet;)Ljava/util/SequencedSet;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "unmodifiableSequencedMap",
+        "(Ljava/util/SequencedMap;)Ljava/util/SequencedMap;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
 ];
 
 /// `Collections.addAll(Collection, T...)`.
@@ -6914,6 +7727,253 @@ fn collections_add_all(
         changed |= result.as_int() != 0;
     }
     boolean(changed)
+}
+
+/// `Collections.rotate(List, int)`: shift every element `distance` places to the right.
+fn collections_rotate(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let list = ref_arg(args, 0);
+    let distance = int_arg(args, 1);
+    let size = invoke_int(vm, list, "size")?;
+    if size < 2 {
+        return void();
+    }
+    let shift = distance.rem_euclid(size);
+    if shift == 0 {
+        return void();
+    }
+    let mut elements = Vec::with_capacity(size as usize);
+    for index in 0..size {
+        elements.push(invoke_object(vm, list, "get", &[Value::Int(index)])?);
+    }
+    for (index, element) in elements.into_iter().enumerate() {
+        let target = (index as i32 + shift) % size;
+        invoke_void(vm, list, "set", &[Value::Int(target), Value::Ref(element)])?;
+    }
+    void()
+}
+
+/// `Collections.shuffle(List, Random)`: Fisher-Yates driven by the caller's `Random`.
+fn collections_shuffle_random(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let list = ref_arg(args, 0);
+    let random = ref_arg(args, 1);
+    if random.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let size = invoke_int(vm, list, "size")?;
+    if size < 2 {
+        return void();
+    }
+    let (class, method) = vm.resolve_virtual_method(random, "nextInt", "(I)I")?;
+    for i in (1..size).rev() {
+        let j = vm
+            .invoke_method(class, method, vec![Value::Ref(random), Value::Int(i + 1)])?
+            .as_int();
+        let a = invoke_object(vm, list, "get", &[Value::Int(i)])?;
+        let b = invoke_object(vm, list, "get", &[Value::Int(j)])?;
+        invoke_void(vm, list, "set", &[Value::Int(i), Value::Ref(b)])?;
+        invoke_void(vm, list, "set", &[Value::Int(j), Value::Ref(a)])?;
+    }
+    void()
+}
+
+/// `Collections.replaceAll(List, Object, Object)`: replace every occurrence of `old`.
+fn collections_replace_all(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let list = ref_arg(args, 0);
+    let old_value = ref_arg(args, 1);
+    let new_value = ref_arg(args, 2);
+    let size = invoke_int(vm, list, "size")?;
+    let mut changed = false;
+    for index in 0..size {
+        let element = invoke_object(vm, list, "get", &[Value::Int(index)])?;
+        if objects_equals(vm, element, old_value)? {
+            invoke_void(vm, list, "set", &[Value::Int(index), Value::Ref(new_value)])?;
+            changed = true;
+        }
+    }
+    boolean(changed)
+}
+
+/// `Collections.copy(List dest, List src)`: overwrite the head of `dest` with `src`.
+fn collections_copy(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let dest = ref_arg(args, 0);
+    let source = ref_arg(args, 1);
+    let source_size = invoke_int(vm, source, "size")?;
+    let dest_size = invoke_int(vm, dest, "size")?;
+    if source_size > dest_size {
+        return Err(vm.throw_new(
+            "java/lang/IndexOutOfBoundsException",
+            Some("Source does not fit in dest"),
+        ));
+    }
+    for index in 0..source_size {
+        let element = invoke_object(vm, source, "get", &[Value::Int(index)])?;
+        invoke_void(vm, dest, "set", &[Value::Int(index), Value::Ref(element)])?;
+    }
+    void()
+}
+
+/// `Collections.min`/`max`: the extreme element under the given ordering.
+fn collections_extreme(
+    vm: &mut Vm<'_>,
+    collection: ObjectRef,
+    comparator: ObjectRef,
+    want_max: bool,
+) -> Result<Value, VmError> {
+    let elements = collection_elements(vm, collection)?;
+    let mut iter = elements.into_iter();
+    let mut best = match iter.next() {
+        Some(first) => first,
+        None => return Err(vm.throw_new("java/util/NoSuchElementException", None)),
+    };
+    for element in iter {
+        let ordering = if comparator.is_null() {
+            compare_natural(vm, Value::Ref(element), Value::Ref(best))?
+        } else {
+            compare_with(vm, comparator, Value::Ref(element), Value::Ref(best))?
+        };
+        let better = if want_max {
+            ordering == core::cmp::Ordering::Greater
+        } else {
+            ordering == core::cmp::Ordering::Less
+        };
+        if better {
+            best = element;
+        }
+    }
+    object(best)
+}
+
+/// `Collections.frequency(Collection, Object)`: how many elements equal `target`.
+fn collections_frequency(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let collection = ref_arg(args, 0);
+    let target = ref_arg(args, 1);
+    let mut count = 0i32;
+    for element in collection_elements(vm, collection)? {
+        if objects_equals(vm, element, target)? {
+            count += 1;
+        }
+    }
+    int(count)
+}
+
+/// `Collections.disjoint(Collection, Collection)`: true when no element is shared.
+fn collections_disjoint(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let first = collection_elements(vm, ref_arg(args, 0))?;
+    let second = collection_elements(vm, ref_arg(args, 1))?;
+    for a in &first {
+        for b in &second {
+            if objects_equals(vm, *a, *b)? {
+                return boolean(false);
+            }
+        }
+    }
+    boolean(true)
+}
+
+/// `Collections.binarySearch(List, key[, Comparator])`: index, or `-(insertion point) - 1`.
+fn collections_binary_search(
+    vm: &mut Vm<'_>,
+    list: ObjectRef,
+    key: ObjectRef,
+    comparator: ObjectRef,
+) -> Result<Value, VmError> {
+    let mut low = 0i32;
+    let mut high = invoke_int(vm, list, "size")? - 1;
+    while low <= high {
+        let mid = low + (high - low) / 2;
+        let element = invoke_object(vm, list, "get", &[Value::Int(mid)])?;
+        let ordering = if comparator.is_null() {
+            compare_natural(vm, Value::Ref(element), Value::Ref(key))?
+        } else {
+            compare_with(vm, comparator, Value::Ref(element), Value::Ref(key))?
+        };
+        match ordering {
+            core::cmp::Ordering::Less => low = mid + 1,
+            core::cmp::Ordering::Greater => high = mid - 1,
+            core::cmp::Ordering::Equal => return int(mid),
+        }
+    }
+    int(-(low + 1))
+}
+
+/// `Collections.indexOfSubList`/`lastIndexOfSubList`: first/last match of `target` in `source`.
+fn collections_index_of_sublist(
+    vm: &mut Vm<'_>,
+    args: &[Value],
+    last: bool,
+) -> Result<Value, VmError> {
+    let source = ref_arg(args, 0);
+    let target = ref_arg(args, 1);
+    let source_size = invoke_int(vm, source, "size")?;
+    let target_size = invoke_int(vm, target, "size")?;
+    if target_size == 0 {
+        return int(if last { source_size } else { 0 });
+    }
+    if target_size > source_size {
+        return int(-1);
+    }
+    let mut target_elements = Vec::with_capacity(target_size as usize);
+    for index in 0..target_size {
+        target_elements.push(invoke_object(vm, target, "get", &[Value::Int(index)])?);
+    }
+    let mut found = -1i32;
+    for start in 0..=(source_size - target_size) {
+        let mut matches = true;
+        for (offset, expected) in target_elements.iter().enumerate() {
+            let element = invoke_object(vm, source, "get", &[Value::Int(start + offset as i32)])?;
+            if !objects_equals(vm, element, *expected)? {
+                matches = false;
+                break;
+            }
+        }
+        if matches {
+            found = start;
+            if !last {
+                break;
+            }
+        }
+    }
+    int(found)
+}
+
+/// `Collections.emptySortedSet`/`emptyNavigableSet`: an empty `TreeSet`.
+fn new_sorted_set_empty(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/TreeSet")?;
+    let set = vm.new_instance(class)?;
+    vm.set_sorted_map(set, oxjvm_vm::SortedMap::new());
+    Ok(set)
+}
+
+/// `Collections.emptySortedMap`/`emptyNavigableMap`: an empty `TreeMap`.
+fn new_sorted_map_empty(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/TreeMap")?;
+    let map = vm.new_instance(class)?;
+    vm.set_sorted_map(map, oxjvm_vm::SortedMap::new());
+    Ok(map)
 }
 
 /// Create a `Collections$ReverseComparator`, ordering by `delegate` (natural order when `null`).
@@ -8730,10 +9790,34 @@ pub(crate) const HASHTABLE: oxjvm_vm::NativeClass = class(
 // Vector (ArrayList plus the legacy element API)
 // -------------------------------------------------------------------------------------------
 
-const VECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
+const VECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
     method("<init>", "()V", ACC_PUBLIC, array_list_init),
     method("<init>", "(I)V", ACC_PUBLIC, array_list_init),
     method("<init>", "(II)V", ACC_PUBLIC, array_list_init),
+    method(
+        "<init>",
+        "(Ljava/util/Collection;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let elements = collection_elements(vm, ref_arg(args, 1))?;
+            array_list_store(vm, this, &elements)?;
+            void()
+        },
+    ),
+    method("ensureCapacity", "(I)V", ACC_PUBLIC, |_, _, _| void()),
+    method("capacity", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let array = vm
+            .read_ref_field(
+                this,
+                vm.class_of(this),
+                "elementData",
+                "[Ljava/lang/Object;",
+            )
+            .unwrap_or(ObjectRef::NULL);
+        int(vm.array_length(array).unwrap_or(0) as i32)
+    }),
     method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, array_list_add),
     method(
         "add",

@@ -565,10 +565,16 @@ pub(crate) const OJVM_EXECUTOR_SERVICE: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const EXECUTORS_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const EXECUTORS_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method(
         "newSingleThreadExecutor",
         "()Ljava/util/concurrent/ExecutorService;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(new_executor(vm)?),
+    ),
+    method(
+        "newSingleThreadExecutor",
+        "(Ljava/util/concurrent/ThreadFactory;)Ljava/util/concurrent/ExecutorService;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _| object(new_executor(vm)?),
     ),
@@ -579,8 +585,20 @@ const EXECUTORS_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         |vm, _, _| object(new_executor(vm)?),
     ),
     method(
+        "newFixedThreadPool",
+        "(ILjava/util/concurrent/ThreadFactory;)Ljava/util/concurrent/ExecutorService;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(new_executor(vm)?),
+    ),
+    method(
         "newCachedThreadPool",
         "()Ljava/util/concurrent/ExecutorService;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(new_executor(vm)?),
+    ),
+    method(
+        "newCachedThreadPool",
+        "(Ljava/util/concurrent/ThreadFactory;)Ljava/util/concurrent/ExecutorService;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _| object(new_executor(vm)?),
     ),
@@ -591,8 +609,20 @@ const EXECUTORS_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         |vm, _, _| object(new_executor(vm)?),
     ),
     method(
+        "newScheduledThreadPool",
+        "(ILjava/util/concurrent/ThreadFactory;)Ljava/util/concurrent/ScheduledExecutorService;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(new_executor(vm)?),
+    ),
+    method(
         "newSingleThreadScheduledExecutor",
         "()Ljava/util/concurrent/ScheduledExecutorService;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(new_executor(vm)?),
+    ),
+    method(
+        "newSingleThreadScheduledExecutor",
+        "(Ljava/util/concurrent/ThreadFactory;)Ljava/util/concurrent/ScheduledExecutorService;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _| object(new_executor(vm)?),
     ),
