@@ -1429,7 +1429,7 @@ pub(crate) const FORWARDING_JAVA_FILE_MANAGER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const FORWARDING_JAVA_FILE_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+const FORWARDING_JAVA_FILE_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     method("<init>", "()V", ACC_PROTECTED, |_, _, _| void()),
     method(
         "<init>",
@@ -1445,7 +1445,157 @@ const FORWARDING_JAVA_FILE_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
             void()
         },
     ),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        let target = forwarding_target(vm, receiver(args));
+        if !target.is_null() {
+            let (class, method) = vm.resolve_virtual_method(target, "close", "()V")?;
+            vm.invoke_method(class, method, vec![Value::Ref(target)])?;
+        }
+        void()
+    }),
+    method("flush", "()V", ACC_PUBLIC, |vm, _, args| {
+        let target = forwarding_target(vm, receiver(args));
+        if !target.is_null() {
+            let (class, method) = vm.resolve_virtual_method(target, "flush", "()V")?;
+            vm.invoke_method(class, method, vec![Value::Ref(target)])?;
+        }
+        void()
+    }),
+    method(
+        "getJavaFileForInput",
+        "(Ljavax/tools/JavaFileManager$Location;Ljava/lang/String;Ljavax/tools/JavaFileObject$Kind;)Ljavax/tools/JavaFileObject;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            forwarding_call(
+                vm,
+                args,
+                "getJavaFileForInput",
+                "(Ljavax/tools/JavaFileManager$Location;Ljava/lang/String;Ljavax/tools/JavaFileObject$Kind;)Ljavax/tools/JavaFileObject;",
+            )
+        },
+    ),
+    method(
+        "getJavaFileForOutput",
+        "(Ljavax/tools/JavaFileManager$Location;Ljava/lang/String;Ljavax/tools/JavaFileObject$Kind;Ljavax/tools/FileObject;)Ljavax/tools/JavaFileObject;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            forwarding_call(
+                vm,
+                args,
+                "getJavaFileForOutput",
+                "(Ljavax/tools/JavaFileManager$Location;Ljava/lang/String;Ljavax/tools/JavaFileObject$Kind;Ljavax/tools/FileObject;)Ljavax/tools/JavaFileObject;",
+            )
+        },
+    ),
+    method(
+        "list",
+        "(Ljavax/tools/JavaFileManager$Location;Ljava/lang/String;Ljava/util/Set;Z)Ljava/lang/Iterable;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            forwarding_call(
+                vm,
+                args,
+                "list",
+                "(Ljavax/tools/JavaFileManager$Location;Ljava/lang/String;Ljava/util/Set;Z)Ljava/lang/Iterable;",
+            )
+        },
+    ),
+    method(
+        "inferBinaryName",
+        "(Ljavax/tools/JavaFileManager$Location;Ljavax/tools/JavaFileObject;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            forwarding_call(
+                vm,
+                args,
+                "inferBinaryName",
+                "(Ljavax/tools/JavaFileManager$Location;Ljavax/tools/JavaFileObject;)Ljava/lang/String;",
+            )
+        },
+    ),
+    method(
+        "isSameFile",
+        "(Ljavax/tools/FileObject;Ljavax/tools/FileObject;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            forwarding_call(
+                vm,
+                args,
+                "isSameFile",
+                "(Ljavax/tools/FileObject;Ljavax/tools/FileObject;)Z",
+            )
+        },
+    ),
+    method(
+        "hasLocation",
+        "(Ljavax/tools/JavaFileManager$Location;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            forwarding_call(
+                vm,
+                args,
+                "hasLocation",
+                "(Ljavax/tools/JavaFileManager$Location;)Z",
+            )
+        },
+    ),
+    method(
+        "getClassLoader",
+        "(Ljavax/tools/JavaFileManager$Location;)Ljava/lang/ClassLoader;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            forwarding_call(
+                vm,
+                args,
+                "getClassLoader",
+                "(Ljavax/tools/JavaFileManager$Location;)Ljava/lang/ClassLoader;",
+            )
+        },
+    ),
+    method(
+        "handleOption",
+        "(Ljava/lang/String;Ljava/util/Iterator;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            forwarding_call(
+                vm,
+                args,
+                "handleOption",
+                "(Ljava/lang/String;Ljava/util/Iterator;)Z",
+            )
+        },
+    ),
+    method(
+        "isSupportedOption",
+        "(Ljava/lang/String;)I",
+        ACC_PUBLIC,
+        |vm, _, args| forwarding_call(vm, args, "isSupportedOption", "(Ljava/lang/String;)I"),
+    ),
 ];
+
+/// The delegate held by a `ForwardingJavaFileManager`.
+fn forwarding_target(vm: &mut Vm<'_>, this: ObjectRef) -> ObjectRef {
+    let class = vm.class_of(this);
+    vm.read_ref_field(this, class, "fileManager", "Ljavax/tools/JavaFileManager;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+/// Forward a method call to the delegate with the same arguments.
+fn forwarding_call(
+    vm: &mut Vm<'_>,
+    args: &[Value],
+    name: &str,
+    descriptor: &str,
+) -> Result<Value, VmError> {
+    let target = forwarding_target(vm, receiver(args));
+    if target.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let (class, method) = vm.resolve_virtual_method(target, name, descriptor)?;
+    let mut call_args = vec![Value::Ref(target)];
+    call_args.extend_from_slice(&args[1..]);
+    vm.invoke_method(class, method, call_args)
+}
 
 pub(crate) const FORWARDING_JAVA_FILE_OBJECT: oxjvm_vm::NativeClass = class(
     "javax/tools/ForwardingJavaFileObject",
@@ -1654,7 +1804,7 @@ fn set_task_field(
     Ok(())
 }
 
-const JAVAC_TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const JAVAC_TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method(
         "getStandardFileManager",
         "(Ljavax/tools/DiagnosticListener;Ljava/util/Locale;Ljava/nio/charset/Charset;)Lcom/sun/tools/javac/file/JavacFileManager;",
@@ -1822,52 +1972,62 @@ const JAVAC_TOOL_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         "getTask",
         "(Ljava/io/Writer;Ljavax/tools/JavaFileManager;Ljavax/tools/DiagnosticListener;Ljava/lang/Iterable;Ljava/lang/Iterable;Ljava/lang/Iterable;)Ljavax/tools/JavaCompiler$CompilationTask;",
         ACC_PUBLIC,
-        |vm, _, args| {
-            let class = vm.resolve_class("com/sun/tools/javac/api/JavacTaskImpl")?;
-            let instance = vm.new_instance(class)?;
-            if let Some((declaring, ctor)) = vm.find_method(class, "<init>", "()V") {
-                vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
-            }
-            set_task_field(vm, instance, "writer", "Ljava/io/Writer;", ref_arg(args, 1))?;
-            set_task_field(
-                vm,
-                instance,
-                "fileManager",
-                "Ljava/lang/Object;",
-                ref_arg(args, 2),
-            )?;
-            set_task_field(
-                vm,
-                instance,
-                "diagnosticListener",
-                "Ljava/lang/Object;",
-                ref_arg(args, 3),
-            )?;
-            set_task_field(
-                vm,
-                instance,
-                "options",
-                "Ljava/lang/Object;",
-                ref_arg(args, 4),
-            )?;
-            set_task_field(
-                vm,
-                instance,
-                "classes",
-                "Ljava/lang/Object;",
-                ref_arg(args, 5),
-            )?;
-            set_task_field(
-                vm,
-                instance,
-                "compilationUnits",
-                "Ljava/lang/Object;",
-                ref_arg(args, 6),
-            )?;
-            object(instance)
-        },
+        |vm, _, args| javac_tool_get_task(vm, args),
+    ),
+    method(
+        "getTask",
+        "(Ljava/io/Writer;Ljavax/tools/JavaFileManager;Ljavax/tools/DiagnosticListener;Ljava/lang/Iterable;Ljava/lang/Iterable;Ljava/lang/Iterable;)Lcom/sun/source/util/JavacTask;",
+        ACC_PUBLIC,
+        |vm, _, args| javac_tool_get_task(vm, args),
     ),
 ];
+
+/// Shared `JavacTool.getTask`: build a JavacTaskImpl wired to the given writer, file manager,
+/// diagnostic listener, options, class names and compilation units.
+fn javac_tool_get_task(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let class = vm.resolve_class("com/sun/tools/javac/api/JavacTaskImpl")?;
+    let instance = vm.new_instance(class)?;
+    if let Some((declaring, ctor)) = vm.find_method(class, "<init>", "()V") {
+        vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
+    }
+    set_task_field(vm, instance, "writer", "Ljava/io/Writer;", ref_arg(args, 1))?;
+    set_task_field(
+        vm,
+        instance,
+        "fileManager",
+        "Ljava/lang/Object;",
+        ref_arg(args, 2),
+    )?;
+    set_task_field(
+        vm,
+        instance,
+        "diagnosticListener",
+        "Ljava/lang/Object;",
+        ref_arg(args, 3),
+    )?;
+    set_task_field(
+        vm,
+        instance,
+        "options",
+        "Ljava/lang/Object;",
+        ref_arg(args, 4),
+    )?;
+    set_task_field(
+        vm,
+        instance,
+        "classes",
+        "Ljava/lang/Object;",
+        ref_arg(args, 5),
+    )?;
+    set_task_field(
+        vm,
+        instance,
+        "compilationUnits",
+        "Ljava/lang/Object;",
+        ref_arg(args, 6),
+    )?;
+    object(instance)
+}
 
 // --------------------------------------------------------------------------
 // com.sun.tools.javac.Main$Result
@@ -2672,7 +2832,7 @@ fn javac_task_call(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
 
 pub(crate) const JAVAC_TASK_IMPL: oxjvm_vm::NativeClass = class(
     "com/sun/tools/javac/api/JavacTaskImpl",
-    Some("java/lang/Object"),
+    Some("com/sun/source/util/JavacTask"),
     &[
         "javax/tools/JavaCompiler$CompilationTask",
         "java/util/concurrent/Callable",
@@ -2727,9 +2887,157 @@ pub(crate) const JAVAC_TASK_IMPL: oxjvm_vm::NativeClass = class(
             ACC_PUBLIC,
             |_, _, _| void(),
         ),
+        method(
+            "removeTaskListener",
+            "(Lcom/sun/source/util/TaskListener;)Z",
+            ACC_PUBLIC,
+            |_, _, _| boolean(false),
+        ),
+        method("parse", "()Ljava/lang/Iterable;", ACC_PUBLIC, |vm, _, _| {
+            object(crate::util::array_list_from(vm, &[])?)
+        }),
+        method(
+            "analyze",
+            "()Ljava/lang/Iterable;",
+            ACC_PUBLIC,
+            |vm, _, _| object(crate::util::array_list_from(vm, &[])?),
+        ),
+        method(
+            "generate",
+            "()Ljava/lang/Iterable;",
+            ACC_PUBLIC,
+            |vm, _, _| object(crate::util::array_list_from(vm, &[])?),
+        ),
+        method(
+            "setLocale",
+            "(Ljava/util/Locale;)V",
+            ACC_PUBLIC,
+            |_, _, _| void(),
+        ),
     ],
     None,
 );
+
+// --------------------------------------------------------------------------
+// com.sun.source.util.JavacTask
+// --------------------------------------------------------------------------
+
+const JAVAC_TASK_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+    method(
+        "parse",
+        "()Ljava/lang/Iterable;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "analyze",
+        "()Ljava/lang/Iterable;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "generate",
+        "()Ljava/lang/Iterable;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "setProcessors",
+        "(Ljava/lang/Iterable;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "setTaskListener",
+        "(Lcom/sun/source/util/TaskListener;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "addTaskListener",
+        "(Lcom/sun/source/util/TaskListener;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "removeTaskListener",
+        "(Lcom/sun/source/util/TaskListener;)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "setLocale",
+        "(Ljava/util/Locale;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
+pub(crate) const JAVAC_TASK: oxjvm_vm::NativeClass = class(
+    "com/sun/source/util/JavacTask",
+    Some("java/lang/Object"),
+    &[
+        "javax/tools/JavaCompiler$CompilationTask",
+        "java/util/concurrent/Callable",
+    ],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[],
+    &JAVAC_TASK_METHODS,
+    None,
+);
+
+// --------------------------------------------------------------------------
+// jdk.javadoc.internal.tool.Main
+// --------------------------------------------------------------------------
+
+/// Run the real javadoc executable with the given arguments, copying stdout/stderr into the
+/// supplied PrintWriters (when present) and returning the exit status. Static layout:
+/// `args[0]` is the argument array, `args[1]` the out writer, `args[2]` the optional err writer.
+fn javadoc_main_execute(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let args_array = ref_arg(args, 0);
+    let out = ref_arg(args, 1);
+    let err = if args.len() > 2 {
+        ref_arg(args, 2)
+    } else {
+        ObjectRef::NULL
+    };
+    let mut cmd: Vec<String> = vec![javadoc_program(vm)];
+    if !args_array.is_null() {
+        let length = vm.array_length(args_array)?;
+        for index in 0..length {
+            let element = vm.array_get(args_array, index as i32)?.as_ref();
+            cmd.push(vm.string_or_empty(element));
+        }
+    }
+    match vm.host.run_process(&cmd[0], &cmd[1..], None) {
+        Ok(result) => {
+            javadoc_write_output(vm, out, err, &result.stdout)?;
+            javadoc_write_output(vm, err, out, &result.stderr)?;
+            Ok(Value::Int(result.status))
+        }
+        Err(_) => Ok(Value::Int(1)),
+    }
+}
+
+/// Write tool output bytes into `writer`, falling back to `fallback` when it is null.
+fn javadoc_write_output(
+    vm: &mut Vm<'_>,
+    writer: ObjectRef,
+    fallback: ObjectRef,
+    bytes: &[u8],
+) -> Result<(), VmError> {
+    let target = if writer.is_null() { fallback } else { writer };
+    if target.is_null() || bytes.is_empty() {
+        return Ok(());
+    }
+    let text = String::from_utf8_lossy(bytes).into_owned();
+    if let Ok((class, method)) = vm.resolve_virtual_method(target, "write", "(Ljava/lang/String;)V")
+    {
+        let string = vm.make_string(&text)?;
+        vm.invoke_method(class, method, vec![Value::Ref(target), Value::Ref(string)])?;
+    }
+    Ok(())
+}
 
 // --------------------------------------------------------------------------
 // jdk.javadoc.internal.api.JavadocTaskImpl
@@ -3356,7 +3664,7 @@ fn javadoc_main_run(vm: &mut Vm<'_>, this: ObjectRef, array: ObjectRef) -> Resul
     javadoc_result(vm, name)
 }
 
-const JAVADOC_MAIN_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+const JAVADOC_MAIN_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "setStreams",
@@ -3409,6 +3717,18 @@ const JAVADOC_MAIN_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
                 Err(_) => Ok(Value::Int(1)),
             }
         },
+    ),
+    method(
+        "execute",
+        "([Ljava/lang/String;Ljava/io/PrintWriter;)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| javadoc_main_execute(vm, args),
+    ),
+    method(
+        "execute",
+        "([Ljava/lang/String;Ljava/io/PrintWriter;Ljava/io/PrintWriter;)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| javadoc_main_execute(vm, args),
     ),
     method(
         "run",
