@@ -682,7 +682,7 @@ fn url_port(authority: &str) -> i32 {
     }
 }
 
-const URL_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
+const URL_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -708,6 +708,26 @@ const URL_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
             let base = url_text(vm, ref_arg(args, 1));
             let relative = string_arg(vm, args[2])?;
             let text = resolve_url(&base, &relative);
+            let this = receiver(args);
+            vm.set_string_field(this, vm.class_of(this), "spec", &text)?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;ILjava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let protocol = string_arg(vm, args[1])?;
+            let host = string_arg(vm, args[2])?;
+            let port = int_arg(args, 3);
+            let file = string_arg(vm, args[4])?;
+            let authority = if port >= 0 {
+                alloc::format!("{host}:{port}")
+            } else {
+                host
+            };
+            let text = alloc::format!("{protocol}://{authority}{file}");
             let this = receiver(args);
             vm.set_string_field(this, vm.class_of(this), "spec", &text)?;
             void()
@@ -887,6 +907,18 @@ const URL_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
     method(
         "openConnection",
         "()Ljava/net/URLConnection;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = vm.resolve_class("java/net/URLConnection")?;
+            let connection = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "url", "Ljava/net/URL;")?;
+            vm.set_instance_ref(connection, declaring, field, receiver(args));
+            object(connection)
+        },
+    ),
+    method(
+        "openConnection",
+        "(Ljava/net/Proxy;)Ljava/net/URLConnection;",
         ACC_PUBLIC,
         |vm, _, args| {
             let class = vm.resolve_class("java/net/URLConnection")?;
@@ -2298,8 +2330,54 @@ pub(crate) const SOCKET_PERMISSION: oxjvm_vm::NativeClass = class(
     Some("java/security/Permission"),
     &[],
     ACC_PUBLIC | ACC_FINAL,
-    &[],
-    &[],
+    &[
+        field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("actions", "Ljava/lang/String;", ACC_PRIVATE, None),
+    ],
+    &[
+        method(
+            "<init>",
+            "(Ljava/lang/String;Ljava/lang/String;)V",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let this = receiver(args);
+                let class = vm.class_of(this);
+                let name = string_arg(vm, args[1])?;
+                vm.set_string_field(this, class, "name", &name)?;
+                let actions = string_arg(vm, args[2])?;
+                vm.set_string_field(this, class, "actions", &actions)?;
+                void()
+            },
+        ),
+        method(
+            "getName",
+            "()Ljava/lang/String;",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let text = vm
+                    .read_string_field_any(receiver(args), "name")
+                    .unwrap_or_default();
+                object(vm.make_string(&text)?)
+            },
+        ),
+        method(
+            "getActions",
+            "()Ljava/lang/String;",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let text = vm
+                    .read_string_field_any(receiver(args), "actions")
+                    .unwrap_or_default();
+                object(vm.make_string(&text)?)
+            },
+        ),
+        method(
+            "implies",
+            "(Ljava/security/Permission;)Z",
+            ACC_PUBLIC,
+            |_, _, _| boolean(false),
+        ),
+    ],
     None,
 );
 

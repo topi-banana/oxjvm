@@ -2752,7 +2752,7 @@ fn new_file_system_provider(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
     vm.new_instance(class)
 }
 
-const FILE_SYSTEM_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const FILE_SYSTEM_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method(
         "getPath",
         "(Ljava/lang/String;[Ljava/lang/String;)Ljava/nio/file/Path;",
@@ -2792,6 +2792,15 @@ const FILE_SYSTEM_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         ACC_PUBLIC,
         |vm, _, _| object(new_file_system_provider(vm)?),
     ),
+    method(
+        "newWatchService",
+        "()Ljava/nio/file/WatchService;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/nio/file/OjvmWatchService")?;
+            object(vm.new_instance(class)?)
+        },
+    ),
 ];
 
 pub(crate) const FILE_SYSTEM: oxjvm_vm::NativeClass = class(
@@ -2811,6 +2820,78 @@ pub(crate) const OJVM_FILE_SYSTEM: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
     &[],
     &[],
+    None,
+);
+
+const WATCH_SERVICE_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "close",
+        "()V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "poll",
+        "()Ljava/nio/file/WatchKey;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "take",
+        "()Ljava/nio/file/WatchKey;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "poll",
+        "(JLjava/util/concurrent/TimeUnit;)Ljava/nio/file/WatchKey;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
+pub(crate) const WATCH_SERVICE: oxjvm_vm::NativeClass = class(
+    "java/nio/file/WatchService",
+    Some("java/lang/Object"),
+    &["java/io/Closeable"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &WATCH_SERVICE_METHODS,
+    None,
+);
+
+const OJVM_WATCH_SERVICE_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        crate::lang::write_int_field(vm, receiver(args), "closed", 1);
+        void()
+    }),
+    method(
+        "poll",
+        "()Ljava/nio/file/WatchKey;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "take",
+        "()Ljava/nio/file/WatchKey;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "poll",
+        "(JLjava/util/concurrent/TimeUnit;)Ljava/nio/file/WatchKey;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+];
+
+pub(crate) const OJVM_WATCH_SERVICE: oxjvm_vm::NativeClass = class(
+    "java/nio/file/OjvmWatchService",
+    Some("java/lang/Object"),
+    &["java/nio/file/WatchService"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[field("closed", "I", ACC_PRIVATE, None)],
+    &OJVM_WATCH_SERVICE_METHODS,
     None,
 );
 

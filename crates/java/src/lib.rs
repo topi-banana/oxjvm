@@ -143,7 +143,7 @@ pub fn is_non_writable_property(key: &str) -> bool {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 886] = [
+static REGISTRY: [NativeClass; 890] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -535,6 +535,8 @@ static REGISTRY: [NativeClass; 886] = [
     security::KEY_PAIR_GENERATOR,
     security::KEY_PAIR_GENERATOR_SPI,
     security::CERTIFICATE_FACTORY,
+    security::CERT_PATH,
+    security::OJVM_CERT_PATH,
     security::CERTIFICATE,
     security::CERTIFICATE_ENCODING_EXCEPTION,
     security::X509_CERTIFICATE,
@@ -878,6 +880,8 @@ static REGISTRY: [NativeClass; 886] = [
     nio::FILES,
     nio::FILE_SYSTEM,
     nio::OJVM_FILE_SYSTEM,
+    nio::WATCH_SERVICE,
+    nio::OJVM_WATCH_SERVICE,
     nio::FILE_SYSTEMS,
     nio::FILE_STORE,
     nio::OJVM_FILE_STORE,

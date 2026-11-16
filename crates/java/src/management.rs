@@ -3213,13 +3213,48 @@ fn object_name_matches(pattern: &str, actual: &str) -> bool {
     true
 }
 
-const OJVM_MBEAN_SERVER_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
+/// `MBeanServer.createMBean`: instantiate the named class and register it under the given name.
+fn mbean_server_create(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let class_name = crate::string_arg(vm, args[1])?;
+    let name = ref_arg(args, 2);
+    if name.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let internal = class_name.replace('.', "/");
+    let class = vm.resolve_class(&internal)?;
+    let target = vm.new_instance(class)?;
+    let (declaring, method) = vm.resolve_virtual_method(
+        this,
+        "registerMBean",
+        "(Ljava/lang/Object;Ljavax/management/ObjectName;)Ljavax/management/ObjectInstance;",
+    )?;
+    vm.invoke_method(
+        declaring,
+        method,
+        vec![Value::Ref(this), Value::Ref(target), Value::Ref(name)],
+    )
+}
+
+const OJVM_MBEAN_SERVER_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let entries = new_hash_map(vm)?;
         set_ref_field(vm, this, "entries", "Ljava/util/HashMap;", entries)?;
         void()
     }),
+    method(
+        "createMBean",
+        "(Ljava/lang/String;Ljavax/management/ObjectName;)Ljavax/management/ObjectInstance;",
+        ACC_PUBLIC,
+        |vm, _, args| mbean_server_create(vm, args),
+    ),
+    method(
+        "createMBean",
+        "(Ljava/lang/String;Ljavax/management/ObjectName;[Ljava/lang/Object;[Ljava/lang/String;)Ljavax/management/ObjectInstance;",
+        ACC_PUBLIC,
+        |vm, _, args| mbean_server_create(vm, args),
+    ),
     method(
         "registerMBean",
         "(Ljava/lang/Object;Ljavax/management/ObjectName;)Ljavax/management/ObjectInstance;",

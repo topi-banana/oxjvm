@@ -3153,7 +3153,7 @@ pub(crate) const RANDOM: oxjvm_vm::NativeClass = class(
 // ArrayList + iterator
 // -------------------------------------------------------------------------------------------
 
-const ARRAY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
+const ARRAY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
     method("<init>", "()V", ACC_PUBLIC, array_list_init),
     method("<init>", "(I)V", ACC_PUBLIC, array_list_init),
     method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, array_list_add),
@@ -3314,6 +3314,42 @@ const ARRAY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
             }
             object(array_list_from(vm, &elements[from..to])?)
         },
+    ),
+    method(
+        "getFirst",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| deque_first(vm, receiver(args), "java/util/NoSuchElementException"),
+    ),
+    method(
+        "getLast",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| deque_last(vm, receiver(args), "java/util/NoSuchElementException"),
+    ),
+    method(
+        "addFirst",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        deque_add_first,
+    ),
+    method(
+        "addLast",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        array_list_add,
+    ),
+    method(
+        "removeFirst",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| deque_remove_first(vm, receiver(args), "java/util/NoSuchElementException"),
+    ),
+    method(
+        "removeLast",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| deque_remove_last(vm, receiver(args), "java/util/NoSuchElementException"),
     ),
 ];
 
@@ -11154,7 +11190,7 @@ fn calendar_instance(vm: &mut Vm<'_>) -> Result<Value, VmError> {
     object(instance)
 }
 
-const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
+const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
     method(
         "getInstance",
         "()Ljava/util/Calendar;",
@@ -11194,6 +11230,50 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
         calendar_mark_all(vm, this);
         int(value)
     }),
+    method(
+        "getDisplayName",
+        "(IILjava/util/Locale;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let field = int_arg(args, 1);
+            let value = calendar_get(vm, this, field);
+            let name = match field {
+                2 => [
+                    "January",
+                    "February",
+                    "March",
+                    "April",
+                    "May",
+                    "June",
+                    "July",
+                    "August",
+                    "September",
+                    "October",
+                    "November",
+                    "December",
+                ]
+                .get(value as usize)
+                .copied()
+                .unwrap_or(""),
+                7 => [
+                    "",
+                    "Sunday",
+                    "Monday",
+                    "Tuesday",
+                    "Wednesday",
+                    "Thursday",
+                    "Friday",
+                    "Saturday",
+                ]
+                .get(value as usize)
+                .copied()
+                .unwrap_or(""),
+                _ => "",
+            };
+            object(vm.make_string(name)?)
+        },
+    ),
     method("set", "(II)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let field = int_arg(args, 1);

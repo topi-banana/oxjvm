@@ -2106,7 +2106,7 @@ fn buffered_reader_read_char(vm: &mut Vm<'_>, this: ObjectRef) -> Result<i32, Vm
         .as_int())
 }
 
-const BUFFERED_READER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+const BUFFERED_READER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method(
         "<init>",
         "(Ljava/io/Reader;)V",
@@ -2175,6 +2175,27 @@ const BUFFERED_READER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
                 return object(ObjectRef::NULL);
             }
             object(vm.make_string(&line)?)
+        },
+    ),
+    method(
+        "lines",
+        "()Ljava/util/stream/Stream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let mut lines = Vec::new();
+            loop {
+                let (class, method) =
+                    vm.resolve_virtual_method(this, "readLine", "()Ljava/lang/String;")?;
+                let line = vm
+                    .invoke_method(class, method, vec![Value::Ref(this)])?
+                    .as_ref();
+                if line.is_null() {
+                    break;
+                }
+                lines.push(line);
+            }
+            object(crate::stream::stream_from(vm, lines)?)
         },
     ),
     method("close", "()V", ACC_PUBLIC, |vm, _, args| {

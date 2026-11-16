@@ -6239,7 +6239,7 @@ pub(crate) const THREAD_BUILDER_OF_PLATFORM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const OJVM_THREAD_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const OJVM_THREAD_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method(
         "name",
         "(Ljava/lang/String;)Ljava/lang/Thread$Builder;",
@@ -6287,6 +6287,15 @@ const OJVM_THREAD_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         "(Ljava/lang/Runnable;)Ljava/lang/Thread;",
         ACC_PUBLIC,
         |vm, _, args| thread_builder_make(vm, args, true),
+    ),
+    method(
+        "factory",
+        "()Ljava/util/concurrent/ThreadFactory;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/util/concurrent/OjvmThreadFactory")?;
+            object(vm.new_instance(class)?)
+        },
     ),
 ];
 

@@ -1298,8 +1298,21 @@ pub(crate) const KEY_STORE_PASSWORD_PROTECTION: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &["java/security/KeyStore$ProtectionParameter"],
     ACC_PUBLIC,
-    &[],
-    &[],
+    &[field("password", "[C", ACC_PRIVATE, None)],
+    &[
+        method("<init>", "([C)V", ACC_PUBLIC, |vm, _, args| {
+            let password = ref_arg(args, 1);
+            if password.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            set_ref_field(vm, receiver(args), "password", "[C", password)?;
+            void()
+        }),
+        method("getPassword", "()[C", ACC_PUBLIC, |vm, _, args| {
+            object(ref_field(vm, receiver(args), "password", "[C"))
+        }),
+        method("destroy", "()V", ACC_PUBLIC, |_, _, _| void()),
+    ],
     None,
 );
 
@@ -1576,7 +1589,7 @@ fn new_certificate(vm: &mut Vm<'_>, cert_type: &str, encoded: &[u8]) -> Result<O
     Ok(certificate)
 }
 
-const CERTIFICATE_FACTORY_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const CERTIFICATE_FACTORY_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method(
         "getInstance",
         "(Ljava/lang/String;)Ljava/security/cert/CertificateFactory;",
@@ -1689,9 +1702,72 @@ const CERTIFICATE_FACTORY_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         "generateCertPath",
         "(Ljava/io/InputStream;)Ljava/security/cert/CertPath;",
         ACC_PUBLIC,
-        |_, _, _| Err(VmError::internal("CertPath is not implemented")),
+        |vm, _, _| {
+            let certs = new_array_list(vm)?;
+            object(new_cert_path(vm, certs)?)
+        },
+    ),
+    method(
+        "generateCertPath",
+        "(Ljava/util/List;)Ljava/security/cert/CertPath;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let certs = ref_arg(args, 1);
+            if certs.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(new_cert_path(vm, certs)?)
+        },
     ),
 ];
+
+/// Build an `OjvmCertPath` of type X.509 holding the given certificate list.
+fn new_cert_path(vm: &mut Vm<'_>, certs: ObjectRef) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/security/cert/OjvmCertPath")?;
+    let path = vm.new_instance(class)?;
+    set_string_field(vm, path, "type", "X.509")?;
+    set_ref_field(vm, path, "certs", "Ljava/util/List;", certs)?;
+    Ok(path)
+}
+
+pub(crate) const CERT_PATH: oxjvm_vm::NativeClass = class(
+    "java/security/cert/CertPath",
+    Some("java/lang/Object"),
+    &["java/io/Serializable"],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[
+        field("type", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("certs", "Ljava/util/List;", ACC_PRIVATE, None),
+    ],
+    &[
+        method(
+            "getType",
+            "()Ljava/lang/String;",
+            ACC_PUBLIC,
+            |vm, _, args| object(vm.make_string(&string_field(vm, receiver(args), "type"))?),
+        ),
+        method(
+            "getCertificates",
+            "()Ljava/util/List;",
+            ACC_PUBLIC,
+            |vm, _, args| object(ref_field(vm, receiver(args), "certs", "Ljava/util/List;")),
+        ),
+        method("getEncoded", "()[B", ACC_PUBLIC, |vm, _, _| {
+            object(new_byte_array(vm, &[])?)
+        }),
+    ],
+    None,
+);
+
+pub(crate) const OJVM_CERT_PATH: oxjvm_vm::NativeClass = class(
+    "java/security/cert/OjvmCertPath",
+    Some("java/security/cert/CertPath"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[],
+    &[],
+    None,
+);
 
 pub(crate) const CERTIFICATE_FACTORY: oxjvm_vm::NativeClass = class(
     "java/security/cert/CertificateFactory",
@@ -3615,13 +3691,44 @@ pub(crate) const SSL_SERVER_SOCKET_FACTORY: oxjvm_vm::NativeClass = class(
     None,
 );
 
+const SSL_ENGINE_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method("setUseClientMode", "(Z)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let (declaring, field) = vm.find_field(class, "clientMode", "I")?;
+        vm.set_instance_int(this, declaring, field, int_arg(args, 1));
+        void()
+    }),
+    method("getUseClientMode", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "clientMode") != 0)
+    }),
+    method("closeInbound", "()V", ACC_PUBLIC, |vm, _, args| {
+        crate::lang::write_int_field(vm, receiver(args), "inboundDone", 1);
+        void()
+    }),
+    method("closeOutbound", "()V", ACC_PUBLIC, |vm, _, args| {
+        crate::lang::write_int_field(vm, receiver(args), "outboundDone", 1);
+        void()
+    }),
+    method("isInboundDone", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "inboundDone") != 0)
+    }),
+    method("isOutboundDone", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "outboundDone") != 0)
+    }),
+];
+
 pub(crate) const SSLE_ENGINE: oxjvm_vm::NativeClass = class(
     "javax/net/ssl/SSLEngine",
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_ABSTRACT,
-    &[],
-    &[],
+    &[
+        field("clientMode", "I", ACC_PRIVATE, None),
+        field("inboundDone", "I", ACC_PRIVATE, None),
+        field("outboundDone", "I", ACC_PRIVATE, None),
+    ],
+    &SSL_ENGINE_METHODS,
     None,
 );
 
