@@ -1335,17 +1335,22 @@ pub(crate) const FIELD_POSITION: oxjvm_vm::NativeClass = class(
     &[
         field("beginIndex", "I", ACC_PRIVATE, None),
         field("endIndex", "I", ACC_PRIVATE, None),
+        field("field", "I", ACC_PRIVATE, None),
     ],
     &FIELD_POSITION_METHODS,
     None,
 );
 
-const FIELD_POSITION_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+const FIELD_POSITION_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        write_int_field(vm, this, "beginIndex", int_arg(args, 1));
-        write_int_field(vm, this, "endIndex", int_arg(args, 1));
+        write_int_field(vm, this, "field", int_arg(args, 1));
+        write_int_field(vm, this, "beginIndex", 0);
+        write_int_field(vm, this, "endIndex", 0);
         void()
+    }),
+    method("getField", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_int_field(vm, receiver(args), "field"))
     }),
     method("getBeginIndex", "()I", ACC_PUBLIC, |vm, _, args| {
         int(read_int_field(vm, receiver(args), "beginIndex"))
@@ -1402,7 +1407,7 @@ pub(crate) const PARSE_POSITION: oxjvm_vm::NativeClass = class(
 // NumberFormat
 // -------------------------------------------------------------------------------------------
 
-const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
+const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
     method(
         "getInstance",
         "()Ljava/text/NumberFormat;",
@@ -1646,6 +1651,28 @@ const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
         },
     ),
     method(
+        "parseObject",
+        "(Ljava/lang/String;Ljava/text/ParsePosition;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let position = ref_arg(args, 2);
+            let text = vm.string_or_empty(ref_arg(args, 1));
+            let start = read_int_field(vm, position, "index").max(0) as usize;
+            let slice: String = text.chars().skip(start).collect();
+            match parse_number_text(&slice) {
+                Some(_) => {
+                    let value = number_parse_boxed(vm, &slice)?;
+                    write_int_field(vm, position, "index", text.chars().count() as i32);
+                    Ok(value)
+                }
+                None => {
+                    write_int_field(vm, position, "errorIndex", start as i32);
+                    object(ObjectRef::NULL)
+                }
+            }
+        },
+    ),
+    method(
         "setRoundingMode",
         "(Ljava/math/RoundingMode;)V",
         ACC_PUBLIC,
@@ -1681,6 +1708,7 @@ const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
                 }
             }
             let class = vm.resolve_class("java/math/RoundingMode")?;
+            vm.ensure_initialized(class)?;
             let value = vm
                 .read_static_ref_if_set(class, "HALF_EVEN", "Ljava/math/RoundingMode;")
                 .ok_or_else(|| VmError::internal("RoundingMode constants not initialized"))?;
@@ -1789,6 +1817,45 @@ const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
             ))
         },
     ),
+    method(
+        "setCurrency",
+        "(Ljava/util/Currency;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let currency = ref_arg(args, 1);
+            if let Some((declaring, field)) =
+                vm.find_field_opt(vm.class_of(this), "currency", "Ljava/util/Currency;")
+            {
+                vm.set_instance_ref(this, declaring, field, currency);
+            }
+            void()
+        },
+    ),
+    method(
+        "getCurrency",
+        "()Ljava/util/Currency;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if let Some(currency) =
+                vm.read_ref_field(this, vm.class_of(this), "currency", "Ljava/util/Currency;")
+            {
+                if !currency.is_null() {
+                    return object(currency);
+                }
+            }
+            object(ObjectRef::NULL)
+        },
+    ),
+    method("setStrict", "(Z)V", ACC_PUBLIC, |_, _, _| void()),
+    method("isStrict", "()Z", ACC_PUBLIC, |_, _, _| {
+        crate::boolean(false)
+    }),
+    method("setParseBigDecimal", "(Z)V", ACC_PUBLIC, |_, _, _| void()),
+    method("isParseBigDecimal", "()Z", ACC_PUBLIC, |_, _, _| {
+        crate::boolean(false)
+    }),
 ];
 
 /// Mark a fresh number format's digit/grouping settings as unset (`i32::MIN`), so the
@@ -2008,12 +2075,18 @@ pub(crate) const DECIMAL_FORMAT: oxjvm_vm::NativeClass = class(
     Some("java/text/NumberFormat"),
     &[],
     ACC_PUBLIC,
-    &[field("pattern", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &[
+        field("pattern", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("positivePrefix", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("positiveSuffix", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("negativePrefix", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("negativeSuffix", "Ljava/lang/String;", ACC_PRIVATE, None),
+    ],
     &DECIMAL_FORMAT_METHODS,
     None,
 );
 
-const DECIMAL_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+const DECIMAL_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         init_number_format_state(vm, this);
@@ -2059,7 +2132,28 @@ const DECIMAL_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         },
     ),
     method(
+        "toLocalizedPattern",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let pattern = pattern_of(vm, receiver(args));
+            object(vm.make_string(&pattern)?)
+        },
+    ),
+    method(
         "applyPattern",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "pattern", "Ljava/lang/String;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method(
+        "applyLocalizedPattern",
         "(Ljava/lang/String;)V",
         ACC_PUBLIC,
         |vm, _, args| {
@@ -2118,9 +2212,93 @@ const DECIMAL_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method("getGroupingSize", "()I", ACC_PUBLIC, |_, _, _| int(3)),
     method("setMultiplier", "(I)V", ACC_PUBLIC, |_, _, _| void()),
     method("getMultiplier", "()I", ACC_PUBLIC, |_, _, _| int(1)),
+    method(
+        "getPositivePrefix",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = vm
+                .read_string_field(this, vm.class_of(this), "positivePrefix")
+                .unwrap_or_default();
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "setPositivePrefix",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| set_decimal_string(vm, receiver(args), "positivePrefix", ref_arg(args, 1)),
+    ),
+    method(
+        "getPositiveSuffix",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = vm
+                .read_string_field(this, vm.class_of(this), "positiveSuffix")
+                .unwrap_or_default();
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "setPositiveSuffix",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| set_decimal_string(vm, receiver(args), "positiveSuffix", ref_arg(args, 1)),
+    ),
+    method(
+        "getNegativePrefix",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = vm
+                .read_string_field(this, vm.class_of(this), "negativePrefix")
+                .unwrap_or_else(|| String::from("-"));
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "setNegativePrefix",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| set_decimal_string(vm, receiver(args), "negativePrefix", ref_arg(args, 1)),
+    ),
+    method(
+        "getNegativeSuffix",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = vm
+                .read_string_field(this, vm.class_of(this), "negativeSuffix")
+                .unwrap_or_default();
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "setNegativeSuffix",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| set_decimal_string(vm, receiver(args), "negativeSuffix", ref_arg(args, 1)),
+    ),
 ];
 
-const DECIMAL_FORMAT_SYMBOLS_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
+/// Store a `DecimalFormat` string property.
+fn set_decimal_string(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+    value: ObjectRef,
+) -> Result<Value, VmError> {
+    let (declaring, field) = vm.find_field(vm.class_of(this), name, "Ljava/lang/String;")?;
+    vm.set_instance_ref(this, declaring, field, value);
+    void()
+}
+
+const DECIMAL_FORMAT_SYMBOLS_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method("<init>", "(Ljava/util/Locale;)V", ACC_PUBLIC, |_, _, _| {
         void()
@@ -2189,6 +2367,78 @@ const DECIMAL_FORMAT_SYMBOLS_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
     method("setNaN", "(Ljava/lang/String;)V", ACC_PUBLIC, |_, _, _| {
         void()
     }),
+    method(
+        "getCurrency",
+        "()Ljava/util/Currency;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "getCurrencySymbol",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| object(vm.make_string("$")?),
+    ),
+    method(
+        "setCurrencySymbol",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method(
+        "getInternationalCurrencySymbol",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| object(vm.make_string("USD")?),
+    ),
+    method(
+        "setInternationalCurrencySymbol",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method("getPercent", "()C", ACC_PUBLIC, |_, _, _| int('%' as i32)),
+    method("setPercent", "(C)V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "getLocale",
+        "()Ljava/util/Locale;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/util/Locale")?;
+            vm.ensure_initialized(class)?;
+            let locale = vm
+                .read_static_ref_if_set(class, "US", "Ljava/util/Locale;")
+                .ok_or_else(|| VmError::internal("Locale.US not initialized"))?;
+            object(locale)
+        },
+    ),
+    method(
+        "getExponentSeparator",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| object(vm.make_string("E")?),
+    ),
+    method(
+        "setExponentSeparator",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method("setDigit", "(C)V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "getMonetaryGroupingSeparator",
+        "()C",
+        ACC_PUBLIC,
+        |_, _, _| int(',' as i32),
+    ),
+    method(
+        "setMonetaryGroupingSeparator",
+        "(C)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method("getPerMill", "()C", ACC_PUBLIC, |_, _, _| int('‰' as i32)),
+    method("setPerMill", "(C)V", ACC_PUBLIC, |_, _, _| void()),
 ];
 
 pub(crate) const DECIMAL_FORMAT_SYMBOLS: oxjvm_vm::NativeClass = class(
@@ -2220,6 +2470,7 @@ pub(crate) const NUMBER_FORMAT: oxjvm_vm::NativeClass = class(
         ),
         field("groupingUsed", "I", ACC_PRIVATE, None),
         field("parseIntegerOnly", "Z", ACC_PRIVATE, None),
+        field("currency", "Ljava/util/Currency;", ACC_PRIVATE, None),
     ],
     &NUMBER_FORMAT_METHODS,
     None,
@@ -2715,7 +2966,7 @@ fn ieee_remainder_one(value: f64) -> f64 {
     value - crate::math::floor(value + 0.5)
 }
 
-const CHOICE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const CHOICE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -2816,6 +3067,29 @@ const CHOICE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
             let pattern = pattern_of(vm, receiver(args));
             let text = alloc::format!("ChoiceFormat [pattern: \"{pattern}\"]");
             object(vm.make_string(&text)?)
+        },
+    ),
+    method("getLimits", "()[D", ACC_PUBLIC, |vm, _, args| {
+        let choice = Choice::parse(&pattern_of(vm, receiver(args)));
+        let array = vm.allocate_array_of(ArrayComponent::Double, choice.limits.len())?;
+        for (index, value) in choice.limits.iter().enumerate() {
+            vm.array_set(array, index as i32, Value::Double(*value), false)?;
+        }
+        object(array)
+    }),
+    method(
+        "getFormats",
+        "()[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let choice = Choice::parse(&pattern_of(vm, receiver(args)));
+            let class = vm.resolve_class("java/lang/Object")?;
+            let array = vm.allocate_object_array(class, choice.texts.len())?;
+            for (index, text) in choice.texts.iter().enumerate() {
+                let string = vm.make_string(text)?;
+                vm.array_set_ref(array, index, string)?;
+            }
+            object(array)
         },
     ),
     method(

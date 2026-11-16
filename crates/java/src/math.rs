@@ -1103,6 +1103,7 @@ const ROUNDING_MODE_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _| {
             let class = vm.resolve_class("java/math/RoundingMode")?;
+            vm.ensure_initialized(class)?;
             let array = vm.allocate_object_array(class, ROUNDING_MODE_NAMES.len())?;
             for (index, name) in ROUNDING_MODE_NAMES.iter().enumerate() {
                 if let Some(value) =
@@ -1121,6 +1122,7 @@ const ROUNDING_MODE_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         |vm, _, args| {
             let name = vm.string_or_empty(ref_arg(args, 0));
             let class = vm.resolve_class("java/math/RoundingMode")?;
+            vm.ensure_initialized(class)?;
             for candidate in ROUNDING_MODE_NAMES {
                 if candidate == name {
                     if let Some(value) =
@@ -1148,6 +1150,7 @@ const ROUNDING_MODE_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
                 return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
             }
             let class = vm.resolve_class("java/math/RoundingMode")?;
+            vm.ensure_initialized(class)?;
             let name = ROUNDING_MODE_NAMES[mode as usize];
             let value = vm
                 .read_static_ref_if_set(class, name, "Ljava/math/RoundingMode;")

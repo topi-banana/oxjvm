@@ -1470,7 +1470,7 @@ fn boolean_get_boolean(
     ))
 }
 
-const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 45] = [
+const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 50] = [
     method("<init>", "(C)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), int_arg(args, 1));
         void()
@@ -1567,6 +1567,36 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 45] = [
         let ch = int_arg(args, 0) as u32 & 0xFFFF;
         let radix = int_arg(args, 1);
         let value = char::from_u32(ch)
+            .and_then(|c| c.to_digit(radix as u32))
+            .map_or(-1, |d| d as i32);
+        int(value)
+    }),
+    method("isDigit", "(I)Z", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        boolean(char::from_u32(int_arg(args, 0) as u32).is_some_and(char::is_numeric))
+    }),
+    method("isLetter", "(I)Z", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        boolean(char::from_u32(int_arg(args, 0) as u32).is_some_and(char::is_alphabetic))
+    }),
+    method(
+        "isLetterOrDigit",
+        "(I)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            boolean(char::from_u32(int_arg(args, 0) as u32).is_some_and(char::is_alphanumeric))
+        },
+    ),
+    method(
+        "isWhitespace",
+        "(I)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            boolean(char::from_u32(int_arg(args, 0) as u32).is_some_and(char::is_whitespace))
+        },
+    ),
+    method("digit", "(II)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        let code_point = int_arg(args, 0) as u32;
+        let radix = int_arg(args, 1);
+        let value = char::from_u32(code_point)
             .and_then(|c| c.to_digit(radix as u32))
             .map_or(-1, |d| d as i32);
         int(value)
