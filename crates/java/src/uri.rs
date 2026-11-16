@@ -115,8 +115,28 @@ fn uri_init_parts(
     void()
 }
 
-const URI_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
+const URI_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
     method("<init>", "(Ljava/lang/String;)V", ACC_PUBLIC, uri_init),
+    method(
+        "compareTo",
+        "(Ljava/net/URI;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = uri_text(vm, receiver(args));
+            let other = uri_text(vm, ref_arg(args, 1));
+            int(this.cmp(&other) as i32)
+        },
+    ),
+    method(
+        "compareTo",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC | ACC_BRIDGE | ACC_SYNTHETIC,
+        |vm, _, args| {
+            let this = uri_text(vm, receiver(args));
+            let other = uri_text(vm, ref_arg(args, 1));
+            int(this.cmp(&other) as i32)
+        },
+    ),
     method(
         "<init>",
         "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",

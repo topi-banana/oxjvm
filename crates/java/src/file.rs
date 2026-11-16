@@ -32,7 +32,7 @@ pub(crate) const FILE_FILTER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
+const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 45] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -70,6 +70,18 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
             file_init_path(vm, receiver(args), join_paths(&parent, &child))
         },
     ),
+    method("<init>", "(Ljava/net/URI;)V", ACC_PUBLIC, |vm, _, args| {
+        let uri = ref_arg(args, 1);
+        if uri.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let (class, method) = vm.resolve_virtual_method(uri, "getPath", "()Ljava/lang/String;")?;
+        let path = vm
+            .invoke_method(class, method, vec![Value::Ref(uri)])?
+            .as_ref();
+        let text = vm.string_or_empty(path);
+        file_init_path(vm, receiver(args), text)
+    }),
     method(
         "getName",
         "()Ljava/lang/String;",

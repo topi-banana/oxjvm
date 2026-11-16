@@ -2538,7 +2538,20 @@ fn cipher_instance(vm: &mut Vm<'_>, transformation: &str) -> Result<ObjectRef, V
     Ok(cipher)
 }
 
-const CIPHER_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
+const CIPHER_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
+    method(
+        "getMaxAllowedKeyLength",
+        "(Ljava/lang/String;)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            // oxjvm ships the unlimited-strength policy: every transformation allows the
+            // largest key size the algorithm can express.
+            int(i32::MAX)
+        },
+    ),
     method(
         "getInstance",
         "(Ljava/lang/String;)Ljavax/crypto/Cipher;",

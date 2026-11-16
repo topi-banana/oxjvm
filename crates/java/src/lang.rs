@@ -1455,7 +1455,7 @@ pub(crate) const CLASS: oxjvm_vm::NativeClass = class(
 // String
 // -------------------------------------------------------------------------------------------
 
-const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 55] = [
+const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 56] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "<init>",
@@ -1466,6 +1466,23 @@ const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 55] = [
     method(
         "<init>",
         "(Ljava/lang/StringBuffer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let buffer = ref_arg(args, 1);
+            let (class, method) =
+                vm.resolve_virtual_method(buffer, "toString", "()Ljava/lang/String;")?;
+            let text = vm
+                .invoke_method(class, method, vec![Value::Ref(buffer)])?
+                .as_ref();
+            let units = vm.string_utf16(text).unwrap_or_default();
+            let this = receiver(args);
+            write_string_payload(vm, this, units.to_vec())?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/StringBuilder;)V",
         ACC_PUBLIC,
         |vm, _, args| {
             let buffer = ref_arg(args, 1);
@@ -7436,19 +7453,19 @@ const COMPARATOR_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         "comparingInt",
         "(Ljava/util/function/ToIntFunction;)Ljava/util/Comparator;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| comparator_from_function(vm, ref_arg(args, 0), ObjectRef::NULL),
+        |vm, _, args| crate::util::comparator_from_primitive(vm, ref_arg(args, 0), 0),
     ),
     method(
         "comparingLong",
         "(Ljava/util/function/ToLongFunction;)Ljava/util/Comparator;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| comparator_from_function(vm, ref_arg(args, 0), ObjectRef::NULL),
+        |vm, _, args| crate::util::comparator_from_primitive(vm, ref_arg(args, 0), 1),
     ),
     method(
         "comparingDouble",
         "(Ljava/util/function/ToDoubleFunction;)Ljava/util/Comparator;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| comparator_from_function(vm, ref_arg(args, 0), ObjectRef::NULL),
+        |vm, _, args| crate::util::comparator_from_primitive(vm, ref_arg(args, 0), 2),
     ),
     method(
         "naturalOrder",

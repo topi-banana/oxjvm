@@ -1450,7 +1450,7 @@ macro_rules! functional_interface {
 // Each interface carries the same shape; the dispatcher selects by descriptor, so a shared array
 // with one abstract method of each common descriptor is sufficient and lets a single class serve
 // every functional interface users link against.
-const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 43] = [
+const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 45] = [
     method(
         "apply",
         "(Ljava/lang/Object;)Ljava/lang/Object;",
@@ -1608,6 +1608,12 @@ const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 43] = [
         crate::lang::abstract_method_pub,
     ),
     method(
+        "applyAsInt",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
         "applyAsDouble",
         "(J)D",
         ACC_PUBLIC | ACC_ABSTRACT,
@@ -1700,6 +1706,18 @@ const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 43] = [
         "(Ljava/lang/Object;)Ljava/util/function/Predicate;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| predicate_combine(vm, 3, ref_arg(args, 0), ObjectRef::NULL),
+    ),
+    method(
+        "not",
+        "(Ljava/util/function/Predicate;)Ljava/util/function/Predicate;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let target = ref_arg(args, 0);
+            if target.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            predicate_combine(vm, 2, target, ObjectRef::NULL)
+        },
     ),
     method(
         "andThen",

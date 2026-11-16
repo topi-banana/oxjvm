@@ -195,7 +195,7 @@ pub(crate) fn runtime_exec_array(vm: &mut Vm<'_>, args: &[Value]) -> Result<Valu
     object(process)
 }
 
-const PROCESS_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+const PROCESS_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method("pid", "()J", ACC_PUBLIC, |vm, _, args| {
         long(crate::lang::read_long_field(vm, receiver(args), "pid"))
     }),
@@ -306,6 +306,14 @@ const PROCESS_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
         ACC_PUBLIC,
         |_vm, _, args| object(receiver(args)),
     ),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        // `Process.close()` is the AutoCloseable default that destroys the process.
+        let this = receiver(args);
+        if let Ok((class, method)) = vm.resolve_virtual_method(this, "destroy", "()V") {
+            vm.invoke_method(class, method, vec![Value::Ref(this)])?;
+        }
+        void()
+    }),
     method(
         "toString",
         "()Ljava/lang/String;",

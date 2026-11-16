@@ -2005,10 +2005,45 @@ pub(crate) const AUTHENTICATOR: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_ABSTRACT,
-    &[],
-    &[],
+    &[field(
+        "theDefault",
+        "Ljava/net/Authenticator;",
+        ACC_PRIVATE | ACC_STATIC,
+        None,
+    )],
+    &AUTHENTICATOR_METHODS,
     None,
 );
+
+const AUTHENTICATOR_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "setDefault",
+        "(Ljava/net/Authenticator;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let class = vm.resolve_class("java/net/Authenticator")?;
+            vm.set_static_value(
+                class,
+                "theDefault",
+                "Ljava/net/Authenticator;",
+                Value::Ref(ref_arg(args, 0)),
+            );
+            void()
+        },
+    ),
+    method(
+        "getDefault",
+        "()Ljava/net/Authenticator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/net/Authenticator")?;
+            object(
+                vm.read_static_ref(class, "theDefault", "Ljava/net/Authenticator;")
+                    .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+];
 
 pub(crate) const PROXY_SELECTOR: oxjvm_vm::NativeClass = class(
     "java/net/ProxySelector",

@@ -79,7 +79,7 @@ pub(crate) const NUMBER: oxjvm_vm::NativeClass = class(
 // Integer
 // -------------------------------------------------------------------------------------------
 
-const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
+const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
     method("<init>", "(I)V", ACC_PUBLIC, boxed_int_init),
     method("intValue", "()I", ACC_PUBLIC, |vm, _, args| {
         int(read_value_int(vm, receiver(args)))
@@ -304,6 +304,18 @@ const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
                 return Err(vm.throw_new("java/lang/ArithmeticException", Some("/ by zero")));
             }
             int(((int_arg(args, 0) as u32) / divisor) as i32)
+        },
+    ),
+    method(
+        "remainderUnsigned",
+        "(II)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let divisor = int_arg(args, 1) as u32;
+            if divisor == 0 {
+                return Err(vm.throw_new("java/lang/ArithmeticException", Some("/ by zero")));
+            }
+            int(((int_arg(args, 0) as u32) % divisor) as i32)
         },
     ),
 ];
@@ -730,7 +742,7 @@ pub(crate) const INTEGER: oxjvm_vm::NativeClass = class(
 // Long
 // -------------------------------------------------------------------------------------------
 
-const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
+const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
     method("<init>", "(J)V", ACC_PUBLIC, |vm, _, args| {
         write_value_long(vm, receiver(args), long_arg(args, 1));
         void()
@@ -824,6 +836,19 @@ const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
                 return Err(vm.throw_new("java/lang/ArithmeticException", Some("/ by zero")));
             }
             long((dividend / divisor) as i64)
+        },
+    ),
+    method(
+        "remainderUnsigned",
+        "(JJ)J",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let dividend = long_arg(args, 0) as u64;
+            let divisor = long_arg(args, 1) as u64;
+            if divisor == 0 {
+                return Err(vm.throw_new("java/lang/ArithmeticException", Some("/ by zero")));
+            }
+            long((dividend % divisor) as i64)
         },
     ),
     method(
@@ -1434,7 +1459,7 @@ fn boolean_get_boolean(
     ))
 }
 
-const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
+const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 45] = [
     method("<init>", "(C)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), int_arg(args, 1));
         void()
@@ -1762,6 +1787,64 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
                 ch == '_'
                     || ch == '$'
                     || ch.is_alphanumeric()
+                    || ch == '\u{200c}'
+                    || ch == '\u{200d}'
+            }))
+        },
+    ),
+    method(
+        "isUnicodeIdentifierStart",
+        "(C)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let unit = int_arg(args, 0) as u32 & 0xFFFF;
+            boolean(char::from_u32(unit).is_some_and(|ch| {
+                ch.is_alphabetic()
+                    || ch == '$'
+                    || ch == '_'
+                    || ('\u{00a2}'..='\u{00a5}').contains(&ch)
+            }))
+        },
+    ),
+    method(
+        "isUnicodeIdentifierPart",
+        "(C)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let unit = int_arg(args, 0) as u32 & 0xFFFF;
+            boolean(char::from_u32(unit).is_some_and(|ch| {
+                ch.is_alphanumeric()
+                    || ch == '$'
+                    || ch == '_'
+                    || ch == '\u{200c}'
+                    || ch == '\u{200d}'
+            }))
+        },
+    ),
+    method(
+        "isUnicodeIdentifierStart",
+        "(I)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let code_point = int_arg(args, 0) as u32;
+            boolean(char::from_u32(code_point).is_some_and(|ch| {
+                ch.is_alphabetic()
+                    || ch == '$'
+                    || ch == '_'
+                    || ('\u{00a2}'..='\u{00a5}').contains(&ch)
+            }))
+        },
+    ),
+    method(
+        "isUnicodeIdentifierPart",
+        "(I)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let code_point = int_arg(args, 0) as u32;
+            boolean(char::from_u32(code_point).is_some_and(|ch| {
+                ch.is_alphanumeric()
+                    || ch == '$'
+                    || ch == '_'
                     || ch == '\u{200c}'
                     || ch == '\u{200d}'
             }))

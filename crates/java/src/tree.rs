@@ -1864,6 +1864,87 @@ fn tree_set_sub_set(
     object(range)
 }
 
+/// A range copy honouring the inclusive/exclusive bounds of the `NavigableSet` views.
+fn tree_set_range_flags(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    from: Option<ObjectRef>,
+    from_inclusive: bool,
+    to: Option<ObjectRef>,
+    to_inclusive: bool,
+) -> Result<ObjectRef, VmError> {
+    let ordering = ordering_of(vm, this);
+    let range = new_sorted_map(vm, "java/util/TreeSet", ordering)?;
+    let present = hash_set_present(vm)?;
+    for element in keys(vm, this) {
+        if let Some(from) = from {
+            let cmp = compare_keys(vm, ordering, element, from)?;
+            if cmp < 0 || (cmp == 0 && !from_inclusive) {
+                continue;
+            }
+        }
+        if let Some(to) = to {
+            let cmp = compare_keys(vm, ordering, element, to)?;
+            if cmp > 0 || (cmp == 0 && !to_inclusive) {
+                continue;
+            }
+        }
+        put_value(vm, range, element, present)?;
+    }
+    Ok(range)
+}
+
+/// `TreeSet.subSet(Object, boolean, Object, boolean)`.
+fn tree_set_sub_set_flags(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let range = tree_set_range_flags(
+        vm,
+        receiver(args),
+        Some(ref_arg(args, 1)),
+        crate::int_arg(args, 2) != 0,
+        Some(ref_arg(args, 3)),
+        crate::int_arg(args, 4) != 0,
+    )?;
+    object(range)
+}
+
+/// `TreeSet.headSet(Object, boolean)`.
+fn tree_set_head_set_flags(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let range = tree_set_range_flags(
+        vm,
+        receiver(args),
+        None,
+        false,
+        Some(ref_arg(args, 1)),
+        crate::int_arg(args, 2) != 0,
+    )?;
+    object(range)
+}
+
+/// `TreeSet.tailSet(Object, boolean)`.
+fn tree_set_tail_set_flags(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let range = tree_set_range_flags(
+        vm,
+        receiver(args),
+        Some(ref_arg(args, 1)),
+        crate::int_arg(args, 2) != 0,
+        None,
+        false,
+    )?;
+    object(range)
+}
+
 /// `TreeSet.descendingSet()`: the set with the order turned around.
 fn tree_set_descending_set(
     vm: &mut Vm<'_>,
@@ -1880,7 +1961,7 @@ fn tree_set_descending_set(
     object(set)
 }
 
-const TREE_SET_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
+const TREE_SET_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
     method("<init>", "()V", ACC_PUBLIC, tree_set_init),
     method(
         "<init>",
@@ -2061,6 +2142,24 @@ const TREE_SET_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/SortedSet;",
         ACC_PUBLIC,
         tree_set_sub_set,
+    ),
+    method(
+        "subSet",
+        "(Ljava/lang/Object;ZLjava/lang/Object;Z)Ljava/util/NavigableSet;",
+        ACC_PUBLIC,
+        tree_set_sub_set_flags,
+    ),
+    method(
+        "headSet",
+        "(Ljava/lang/Object;Z)Ljava/util/NavigableSet;",
+        ACC_PUBLIC,
+        tree_set_head_set_flags,
+    ),
+    method(
+        "tailSet",
+        "(Ljava/lang/Object;Z)Ljava/util/NavigableSet;",
+        ACC_PUBLIC,
+        tree_set_tail_set_flags,
     ),
     method(
         "descendingSet",

@@ -253,7 +253,34 @@ pub(crate) const COLLECTION: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
+const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
+    method(
+        "getFirst",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let list = receiver(args);
+            let (class, method) =
+                vm.resolve_virtual_method(list, "get", "(I)Ljava/lang/Object;")?;
+            vm.invoke_method(class, method, vec![Value::Ref(list), Value::Int(0)])
+        },
+    ),
+    method(
+        "getLast",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let list = receiver(args);
+            let (sc, sm) = vm.resolve_virtual_method(list, "size", "()I")?;
+            let size = vm.invoke_method(sc, sm, vec![Value::Ref(list)])?.as_int();
+            if size == 0 {
+                return Err(vm.throw_new("java/util/NoSuchElementException", None));
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(list, "get", "(I)Ljava/lang/Object;")?;
+            vm.invoke_method(class, method, vec![Value::Ref(list), Value::Int(size - 1)])
+        },
+    ),
     method(
         "size",
         "()I",
@@ -892,7 +919,7 @@ pub(crate) const SORTED_SET: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const NAVIGABLE_SET_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const NAVIGABLE_SET_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method(
         "first",
         "()Ljava/lang/Object;",
@@ -944,6 +971,24 @@ const NAVIGABLE_SET_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method(
         "higher",
         "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "subSet",
+        "(Ljava/lang/Object;ZLjava/lang/Object;Z)Ljava/util/NavigableSet;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "headSet",
+        "(Ljava/lang/Object;Z)Ljava/util/NavigableSet;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "tailSet",
+        "(Ljava/lang/Object;Z)Ljava/util/NavigableSet;",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
@@ -5984,7 +6029,7 @@ fn properties_set_property(
 // Collections
 // -------------------------------------------------------------------------------------------
 
-const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
+const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
     method(
         "sort",
         "(Ljava/util/List;)V",
@@ -6116,6 +6161,12 @@ const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
     method(
         "unmodifiableList",
         "(Ljava/util/List;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "checkedList",
+        "(Ljava/util/List;Ljava/lang/Class;)Ljava/util/List;",
         ACC_PUBLIC | ACC_STATIC,
         |_, _, args| object(ref_arg(args, 0)),
     ),
@@ -6457,6 +6508,76 @@ pub(crate) const FUNCTION_COMPARATOR: oxjvm_vm::NativeClass = class(
     &FUNCTION_COMPARATOR_METHODS,
     None,
 );
+
+/// The comparator `Comparator.comparingInt/Long/Double` returns: extracts a primitive key with
+/// the matching `applyAsInt`/`applyAsLong`/`applyAsDouble` SAM, then compares the primitives.
+/// A plain `FunctionComparator` would call `apply(Object)Object`, which these functional
+/// interfaces do not declare.
+const PRIMITIVE_COMPARATOR_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "compare",
+    "(Ljava/lang/Object;Ljava/lang/Object;)I",
+    ACC_PUBLIC,
+    |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let function = vm
+            .read_ref_field(this, class, "function", "Ljava/lang/Object;")
+            .unwrap_or(ObjectRef::NULL);
+        let kind = crate::lang::read_int_field(vm, this, "kind");
+        let a = ref_arg(args, 1);
+        let b = ref_arg(args, 2);
+        let (name, descriptor) = match kind {
+            1 => ("applyAsLong", "(Ljava/lang/Object;)J"),
+            2 => ("applyAsDouble", "(Ljava/lang/Object;)D"),
+            _ => ("applyAsInt", "(Ljava/lang/Object;)I"),
+        };
+        let (fc, fm) = vm.resolve_virtual_method(function, name, descriptor)?;
+        let ka = vm.invoke_method(fc, fm, vec![Value::Ref(function), Value::Ref(a)])?;
+        let kb = vm.invoke_method(fc, fm, vec![Value::Ref(function), Value::Ref(b)])?;
+        let ordering = match kind {
+            1 => ka.as_long().cmp(&kb.as_long()) as i32,
+            2 => {
+                let (x, y) = (ka.as_double(), kb.as_double());
+                if x < y {
+                    -1
+                } else if x > y {
+                    1
+                } else {
+                    0
+                }
+            }
+            _ => ka.as_int().cmp(&kb.as_int()) as i32,
+        };
+        int(ordering)
+    },
+)];
+
+pub(crate) const PRIMITIVE_COMPARATOR: oxjvm_vm::NativeClass = class(
+    "java/util/Comparator$PrimitiveComparator",
+    Some("java/lang/Object"),
+    &["java/util/Comparator"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[
+        field("function", "Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("kind", "I", ACC_PRIVATE, None),
+    ],
+    &PRIMITIVE_COMPARATOR_METHODS,
+    None,
+);
+
+/// Build a `Comparator$PrimitiveComparator`; `kind` is 0=int, 1=long, 2=double.
+pub(crate) fn comparator_from_primitive(
+    vm: &mut Vm<'_>,
+    function: ObjectRef,
+    kind: i32,
+) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/util/Comparator$PrimitiveComparator")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "function", "Ljava/lang/Object;")?;
+    vm.set_instance_ref(instance, declaring, field, function);
+    crate::lang::write_int_field(vm, instance, "kind", kind);
+    object(instance)
+}
 
 fn collections_sort(
     vm: &mut Vm<'_>,
