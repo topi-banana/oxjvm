@@ -3627,7 +3627,7 @@ pub(crate) const ARRAYS: oxjvm_vm::NativeClass = class(
 // Random (exactly the java.util.Random LCG)
 // -------------------------------------------------------------------------------------------
 
-const RANDOM_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const RANDOM_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method("<init>", "()V", ACC_PUBLIC, random_init),
     method("<init>", "(J)V", ACC_PUBLIC, random_init_seed),
     method("setSeed", "(J)V", ACC_PUBLIC, |vm, _, args| {
@@ -3688,6 +3688,44 @@ const RANDOM_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         let low = next_random_int(vm, receiver(args), 27, &[])?;
         let value = ((high.as_int() as i64) << 27).wrapping_add(i64::from(low.as_int()));
         Ok(Value::Double(value as f64 / (1i64 << 53) as f64))
+    }),
+    method("nextDouble", "(DD)D", ACC_PUBLIC, |vm, _, args| {
+        let origin = args[1].as_double();
+        let bound = args[2].as_double();
+        if origin >= bound || origin.is_nan() || bound.is_nan() {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("bound must be greater than origin"),
+            ));
+        }
+        let this = receiver(args);
+        let high = next_random_int(vm, this, 26, &[])?;
+        let low = next_random_int(vm, this, 27, &[])?;
+        let value = ((high.as_int() as i64) << 27).wrapping_add(i64::from(low.as_int()));
+        let unit = value as f64 / (1i64 << 53) as f64;
+        let mut result = origin + unit * (bound - origin);
+        if result >= bound || result.is_nan() {
+            result = f64::from_bits(bound.to_bits() - 1);
+        }
+        Ok(Value::Double(result))
+    }),
+    method("nextGaussian", "()D", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let mut u1 = 0.0;
+        while u1 == 0.0 {
+            let high = next_random_int(vm, this, 26, &[])?;
+            let low = next_random_int(vm, this, 27, &[])?;
+            let value = ((high.as_int() as i64) << 27).wrapping_add(i64::from(low.as_int()));
+            u1 = value as f64 / (1i64 << 53) as f64;
+        }
+        let high = next_random_int(vm, this, 26, &[])?;
+        let low = next_random_int(vm, this, 27, &[])?;
+        let value = ((high.as_int() as i64) << 27).wrapping_add(i64::from(low.as_int()));
+        let u2 = value as f64 / (1i64 << 53) as f64;
+        // Box-Muller transform; the runtime has no libm, so approximate ln/cos/sin.
+        let radius = crate::math::sqrt(-2.0 * crate::math::ln(u1));
+        let angle = 2.0 * core::f64::consts::PI * u2;
+        Ok(Value::Double(radius * crate::math::cos(angle)))
     }),
     method("nextFloat", "()F", ACC_PUBLIC, |vm, _, args| {
         let bits = next_random_int(vm, receiver(args), 24, &[])?.as_int();
@@ -12158,7 +12196,7 @@ fn new_time_zone(vm: &mut Vm<'_>, id: &str) -> Result<Value, VmError> {
     object(instance)
 }
 
-const TIME_ZONE_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const TIME_ZONE_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method(
         "getDefault",
         "()Ljava/util/TimeZone;",
@@ -12267,6 +12305,27 @@ const TIME_ZONE_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
             object(crate::stream::stream_from(vm, vec![id])?)
         },
     ),
+    method(
+        "inDaylightTime",
+        "(Ljava/util/Date;)Z",
+        ACC_PUBLIC,
+        |_, _, _| boolean(false),
+    ),
+    method("getDSTSavings", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method("getOffset", "(IIIIII)I", ACC_PUBLIC, |_, _, _| int(0)),
+    method("setRawOffset", "(I)V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "hasSameRules",
+        "(Ljava/util/TimeZone;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = ref_arg(args, 1);
+            if other.is_null() {
+                return boolean(false);
+            }
+            boolean(vm.class_of(receiver(args)) == vm.class_of(other))
+        },
+    ),
 ];
 
 pub(crate) const TIME_ZONE: oxjvm_vm::NativeClass = class(
@@ -12291,7 +12350,7 @@ pub(crate) const TIME_ZONE: oxjvm_vm::NativeClass = class(
 // Scanner (string sources)
 // -------------------------------------------------------------------------------------------
 
-const SCANNER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const SCANNER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -12397,7 +12456,73 @@ const SCANNER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         },
     ),
     method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("hasNext", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let input = vm
+            .read_string_field(this, vm.class_of(this), "input")
+            .unwrap_or_default();
+        let position = crate::lang::read_int_field(vm, this, "position").max(0) as usize;
+        let units: Vec<u16> = input.encode_utf16().collect();
+        boolean(scanner_next_token(&units, position).is_some())
+    }),
+    method("next", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let input = vm
+            .read_string_field(this, class, "input")
+            .unwrap_or_default();
+        let units: Vec<u16> = input.encode_utf16().collect();
+        let position = crate::lang::read_int_field(vm, this, "position").max(0) as usize;
+        let Some((start, end)) = scanner_next_token(&units, position) else {
+            return Err(vm.throw_new("java/util/NoSuchElementException", None));
+        };
+        crate::lang::write_int_field(vm, this, "position", end as i32);
+        let token = String::from_utf16_lossy(&units[start..end]);
+        object(vm.make_string(&token)?)
+    }),
+    method(
+        "useDelimiter",
+        "(Ljava/lang/String;)Ljava/util/Scanner;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            // The default whitespace delimiter is the only one the token reader honors;
+            // record the pattern so delimiter() can report it.
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            if let Some((declaring, field)) =
+                vm.find_field_opt(class, "delimiter", "Ljava/lang/String;")
+            {
+                vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            }
+            object(this)
+        },
+    ),
 ];
+
+/// The (start, end) utf16 offsets of the next whitespace-delimited token at or after
+/// `position`, or `None` when the input is exhausted.
+fn scanner_next_token(units: &[u16], position: usize) -> Option<(usize, usize)> {
+    let is_space = |unit: u16| {
+        unit == u16::from(b' ')
+            || unit == u16::from(b'\t')
+            || unit == u16::from(b'\n')
+            || unit == u16::from(b'\r')
+            || unit == 0x000B
+            || unit == 0x000C
+    };
+    let mut start = position;
+    while start < units.len() && is_space(units[start]) {
+        start += 1;
+    }
+    if start >= units.len() {
+        return None;
+    }
+    let mut end = start;
+    while end < units.len() && !is_space(units[end]) {
+        end += 1;
+    }
+    Some((start, end))
+}
 
 pub(crate) const SCANNER: oxjvm_vm::NativeClass = class(
     "java/util/Scanner",
@@ -12408,6 +12533,7 @@ pub(crate) const SCANNER: oxjvm_vm::NativeClass = class(
         field("input", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("position", "I", ACC_PRIVATE, None),
         field("match", "Ljava/util/regex/MatchResult;", ACC_PRIVATE, None),
+        field("delimiter", "Ljava/lang/String;", ACC_PRIVATE, None),
     ],
     &SCANNER_METHODS,
     None,
@@ -12600,7 +12726,7 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     era * 146_097 + day_of_era - 719_468
 }
 
-const DATE_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
+const DATE_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
     method("<init>", "()V", ACC_PUBLIC, date_init),
     method("<init>", "(J)V", ACC_PUBLIC, date_init),
     method("<init>", "(III)V", ACC_PUBLIC, date_init_fields),
@@ -12717,7 +12843,112 @@ const DATE_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
         crate::lang::write_long_field(vm, receiver(args), "time", time + delta * 86_400_000);
         void()
     }),
+    method("<init>", "(IIIII)V", ACC_PUBLIC, date_init_deprecated),
+    method("<init>", "(IIIIII)V", ACC_PUBLIC, date_init_deprecated),
+    method("getMonth", "()I", ACC_PUBLIC, |vm, _, args| {
+        let time = crate::lang::read_long_field(vm, receiver(args), "time");
+        int(date_civil(time.div_euclid(86_400_000)).1 - 1)
+    }),
+    method("setMonth", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        date_set_month(vm, receiver(args), int_arg(args, 1));
+        void()
+    }),
+    method("getYear", "()I", ACC_PUBLIC, |vm, _, args| {
+        let time = crate::lang::read_long_field(vm, receiver(args), "time");
+        int(date_civil(time.div_euclid(86_400_000)).0 - 1900)
+    }),
+    method("setYear", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let time = crate::lang::read_long_field(vm, this, "time");
+        let (_year, month, day) = date_civil(time.div_euclid(86_400_000));
+        let new_year = i64::from(int_arg(args, 1)) + 1900;
+        let max_day = calendar_days_in_month(new_year, i64::from(month));
+        let of_day = time.rem_euclid(86_400_000);
+        let millis = days_from_civil(new_year, i64::from(month), i64::from(day).min(max_day))
+            .saturating_mul(86_400_000)
+            + of_day;
+        crate::lang::write_long_field(vm, this, "time", millis);
+        void()
+    }),
+    method("getDay", "()I", ACC_PUBLIC, |vm, _, args| {
+        let time = crate::lang::read_long_field(vm, receiver(args), "time");
+        int((time.div_euclid(86_400_000) + 4).rem_euclid(7) as i32)
+    }),
+    method("getTimezoneOffset", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method(
+        "toGMTString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let time = crate::lang::read_long_field(vm, receiver(args), "time");
+            object(vm.make_string(&date_to_string(time))?)
+        },
+    ),
+    method(
+        "toLocaleString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let time = crate::lang::read_long_field(vm, receiver(args), "time");
+            object(vm.make_string(&date_to_string(time))?)
+        },
+    ),
+    method(
+        "parse",
+        "(Ljava/lang/String;)J",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = vm.string_or_empty(ref_arg(args, 0));
+            long(crate::format::parse_date_text(&text))
+        },
+    ),
+    method("UTC", "(IIIIII)J", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        let year = i64::from(int_arg(args, 0)) + 1900;
+        let month = i64::from(int_arg(args, 1)) + 1;
+        let day = i64::from(int_arg(args, 2));
+        let millis = days_from_civil(year, month, day).saturating_mul(86_400_000)
+            + i64::from(int_arg(args, 3)) * 3_600_000
+            + i64::from(int_arg(args, 4)) * 60_000
+            + i64::from(int_arg(args, 5)) * 1_000;
+        long(millis)
+    }),
 ];
+
+/// The deprecated `Date(year, month, day, hrs, mins[, secs])` constructors.
+fn date_init_deprecated(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let year = i64::from(int_arg(args, 1)) + 1900;
+    let month = i64::from(int_arg(args, 2)) + 1;
+    let day = i64::from(int_arg(args, 3));
+    let mut millis = days_from_civil(year, month, day).saturating_mul(86_400_000)
+        + i64::from(int_arg(args, 4)) * 3_600_000
+        + i64::from(int_arg(args, 5)) * 60_000;
+    if args.len() > 6 {
+        millis += i64::from(int_arg(args, 6)) * 1_000;
+    }
+    crate::lang::write_long_field(vm, receiver(args), "time", millis);
+    void()
+}
+
+/// `Date.setMonth`: move the month, carrying into the year and clamping the day.
+fn date_set_month(vm: &mut Vm<'_>, this: ObjectRef, month: i32) {
+    let time = crate::lang::read_long_field(vm, this, "time");
+    let (year, current_month, day) = date_civil(time.div_euclid(86_400_000));
+    let total = i64::from(year) * 12
+        + i64::from(current_month - 1)
+        + i64::from(month - (current_month - 1));
+    let new_year = total.div_euclid(12);
+    let new_month = total.rem_euclid(12) + 1;
+    let max_day = calendar_days_in_month(new_year, new_month);
+    let of_day = time.rem_euclid(86_400_000);
+    let millis = days_from_civil(new_year, new_month, i64::from(day).min(max_day))
+        .saturating_mul(86_400_000)
+        + of_day;
+    crate::lang::write_long_field(vm, this, "time", millis);
+}
 
 /// The (year, month, day) of a day number since 1970-01-01 (UTC).
 fn date_civil(days: i64) -> (i32, i32, i32) {
@@ -13143,6 +13374,117 @@ fn calendar_add(vm: &mut Vm<'_>, this: ObjectRef, field: i32, amount: i32) {
     }
 }
 
+/// `Calendar.roll(field, amount)`: move within the field's own range without carrying into
+/// larger fields (rolling December forward lands in January of the *same* year).
+fn calendar_roll(vm: &mut Vm<'_>, this: ObjectRef, field: i32, amount: i32) {
+    let time = calendar_time(vm, this);
+    let mut fields = calendar_fields_from_millis(time);
+    let amount = i64::from(amount);
+    match field {
+        // MONTH: cycle within the year, clamping the day.
+        2 => {
+            let month = (fields.month - 1 + amount).rem_euclid(12) + 1;
+            fields.month = month;
+            let max_day = calendar_days_in_month(fields.year, month);
+            fields.day = fields.day.min(max_day);
+            calendar_set_time(vm, this, calendar_millis_from_fields(fields));
+        }
+        // DATE / DAY_OF_MONTH: cycle within the month.
+        5 => {
+            let max_day = calendar_days_in_month(fields.year, fields.month);
+            fields.day = (fields.day - 1 + amount).rem_euclid(max_day) + 1;
+            calendar_set_time(vm, this, calendar_millis_from_fields(fields));
+        }
+        // DAY_OF_WEEK: cycle within the week.
+        7 => {
+            let dow = calendar_day_of_week(time);
+            let first = calendar_first_day_of_week(vm, this);
+            let offset = (dow - first + amount).rem_euclid(7);
+            let days = time.div_euclid(MILLIS_PER_DAY);
+            let week_start = days - (dow - first).rem_euclid(7);
+            let of_day = time.rem_euclid(MILLIS_PER_DAY);
+            calendar_set_time(vm, this, (week_start + offset) * MILLIS_PER_DAY + of_day);
+        }
+        // HOUR_OF_DAY
+        11 => {
+            fields.hour = (fields.hour + amount).rem_euclid(24);
+            calendar_set_time(vm, this, calendar_millis_from_fields(fields));
+        }
+        // HOUR (12-hour clock)
+        10 => {
+            fields.hour = (fields.hour + amount).rem_euclid(12);
+            calendar_set_time(vm, this, calendar_millis_from_fields(fields));
+        }
+        // MINUTE
+        12 => {
+            fields.minute = (fields.minute + amount).rem_euclid(60);
+            calendar_set_time(vm, this, calendar_millis_from_fields(fields));
+        }
+        // SECOND
+        13 => {
+            fields.second = (fields.second + amount).rem_euclid(60);
+            calendar_set_time(vm, this, calendar_millis_from_fields(fields));
+        }
+        // MILLISECOND
+        14 => {
+            fields.millisecond = (fields.millisecond + amount).rem_euclid(1000);
+            calendar_set_time(vm, this, calendar_millis_from_fields(fields));
+        }
+        // Larger fields have no smaller range to wrap within; fall back to add.
+        _ => calendar_add(vm, this, field, amount as i32),
+    }
+}
+
+/// The configured first day of the week (1 = Sunday .. 7 = Saturday), defaulting to Sunday.
+fn calendar_first_day_of_week(vm: &Vm<'_>, this: ObjectRef) -> i64 {
+    let value = vm
+        .read_instance_int_named(this, vm.class_of(this), "firstDayOfWeek", "I")
+        .unwrap_or(0);
+    if (1..=7).contains(&value) {
+        i64::from(value)
+    } else {
+        1
+    }
+}
+
+/// The configured minimal days in the first week, defaulting to 1.
+fn calendar_minimal_days(vm: &Vm<'_>, this: ObjectRef) -> i64 {
+    let value = vm
+        .read_instance_int_named(this, vm.class_of(this), "minimalDaysInFirstWeek", "I")
+        .unwrap_or(0);
+    if (1..=7).contains(&value) {
+        i64::from(value)
+    } else {
+        1
+    }
+}
+
+/// Midnight of the first day of the week containing `time`.
+fn calendar_week_start(vm: &Vm<'_>, this: ObjectRef, time: i64) -> i64 {
+    let days = time.div_euclid(MILLIS_PER_DAY);
+    let dow = ((days + 4).rem_euclid(7)) + 1;
+    let first = calendar_first_day_of_week(vm, this);
+    (days - (dow - first).rem_euclid(7)) * MILLIS_PER_DAY
+}
+
+/// The week-year a time belongs to: the year holding day `minimalDays` of its week.
+fn calendar_week_year(vm: &Vm<'_>, this: ObjectRef, time: i64) -> i64 {
+    let week_start = calendar_week_start(vm, this, time);
+    let minimal = calendar_minimal_days(vm, this);
+    let anchor = week_start + (minimal - 1) * MILLIS_PER_DAY;
+    civil_from_days(anchor.div_euclid(MILLIS_PER_DAY)).0
+}
+
+/// Midnight of the first day of week 1 of the given week-year.
+fn calendar_week_one_start(vm: &Vm<'_>, this: ObjectRef, week_year: i64) -> i64 {
+    let jan1 = days_from_civil(week_year, 1, 1) * MILLIS_PER_DAY;
+    let mut start = calendar_week_start(vm, this, jan1);
+    if calendar_week_year(vm, this, start) < week_year {
+        start += 7 * MILLIS_PER_DAY;
+    }
+    start
+}
+
 fn calendar_get(vm: &Vm<'_>, this: ObjectRef, field: i32) -> i32 {
     let time = calendar_time(vm, this);
     let fields = calendar_fields_from_millis(time);
@@ -13211,7 +13553,7 @@ fn calendar_instance(vm: &mut Vm<'_>) -> Result<Value, VmError> {
     object(instance)
 }
 
-const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
+const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
     method(
         "getInstance",
         "()Ljava/util/Calendar;",
@@ -13506,6 +13848,48 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
         calendar_add(vm, this, field, int_arg(args, 2));
         calendar_mark(vm, this, field);
         void()
+    }),
+    method("roll", "(IZ)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let field = int_arg(args, 1);
+        let amount = if args[2].as_int() != 0 { 1 } else { -1 };
+        calendar_roll(vm, this, field, amount);
+        calendar_mark(vm, this, field);
+        void()
+    }),
+    method("setWeekDate", "(III)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let week_year = i64::from(int_arg(args, 1));
+        let week_of_year = i64::from(int_arg(args, 2));
+        let day_of_week = i64::from(int_arg(args, 3));
+        let time = calendar_time(vm, this);
+        let of_day = time.rem_euclid(MILLIS_PER_DAY);
+        let week_start = calendar_week_one_start(vm, this, week_year);
+        let first_day = calendar_first_day_of_week(vm, this);
+        let offset = (day_of_week - first_day).rem_euclid(7);
+        let millis = week_start
+            .saturating_add((week_of_year - 1) * 7 * MILLIS_PER_DAY)
+            .saturating_add(offset * MILLIS_PER_DAY)
+            .saturating_add(of_day);
+        calendar_set_time(vm, this, millis);
+        calendar_mark_all(vm, this);
+        void()
+    }),
+    method("getWeekYear", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let time = calendar_time(vm, this);
+        int(calendar_week_year(vm, this, time) as i32)
+    }),
+    method("getWeeksInWeekYear", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let time = calendar_time(vm, this);
+        let year = calendar_week_year(vm, this, time);
+        let start = calendar_week_one_start(vm, this, year);
+        let next = calendar_week_one_start(vm, this, year + 1);
+        int(((next - start) / (7 * MILLIS_PER_DAY)) as i32)
+    }),
+    method("isWeekDateSupported", "()Z", ACC_PUBLIC, |_, _, _| {
+        boolean(true)
     }),
     method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
@@ -13821,7 +14205,7 @@ pub(crate) const CALENDAR: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const GREGORIAN_CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+const GREGORIAN_CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let now = vm.host_time_millis();
         calendar_init(vm, receiver(args), now)?;
@@ -13911,6 +14295,37 @@ const GREGORIAN_CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         );
         void()
     }),
+    method(
+        "setGregorianChange",
+        "(Ljava/util/Date;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let date = ref_arg(args, 1);
+            if date.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let time = crate::lang::read_long_field(vm, date, "time");
+            let (declaring, field) = vm.find_field(vm.class_of(this), "gregorianChange", "J")?;
+            vm.set_instance_long(this, declaring, field, time);
+            void()
+        },
+    ),
+    method(
+        "getGregorianChange",
+        "()Ljava/util/Date;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let time = vm
+                .read_instance_long_named(this, vm.class_of(this), "gregorianChange", "J")
+                .unwrap_or(i64::MIN);
+            let class = vm.resolve_class("java/util/Date")?;
+            let instance = vm.new_instance(class)?;
+            crate::lang::write_long_field(vm, instance, "time", time);
+            object(instance)
+        },
+    ),
 ];
 
 pub(crate) const GREGORIAN_CALENDAR: oxjvm_vm::NativeClass = class(
@@ -13918,7 +14333,7 @@ pub(crate) const GREGORIAN_CALENDAR: oxjvm_vm::NativeClass = class(
     Some("java/util/Calendar"),
     &[],
     ACC_PUBLIC,
-    &[],
+    &[field("gregorianChange", "J", ACC_PRIVATE, None)],
     &GREGORIAN_CALENDAR_METHODS,
     None,
 );
@@ -13953,7 +14368,7 @@ fn builder_return(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError> {
     object(this)
 }
 
-const CALENDAR_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+const CALENDAR_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let map = new_hash_map(vm)?;
@@ -14036,6 +14451,25 @@ const CALENDAR_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
             let class = vm.class_of(this);
             let (declaring, field) = vm.find_field(class, "instant", "J")?;
             vm.set_instance_long(this, declaring, field, args[1].as_long());
+            let (declaring, field) = vm.find_field(class, "hasInstant", "Z")?;
+            vm.set_instance_int(this, declaring, field, 1);
+            builder_return(vm, this)
+        },
+    ),
+    method(
+        "setInstant",
+        "(Ljava/util/Date;)Ljava/util/Calendar$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let date = ref_arg(args, 1);
+            if date.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let time = crate::lang::read_long_field(vm, date, "time");
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "instant", "J")?;
+            vm.set_instance_long(this, declaring, field, time);
             let (declaring, field) = vm.find_field(class, "hasInstant", "Z")?;
             vm.set_instance_int(this, declaring, field, 1);
             builder_return(vm, this)

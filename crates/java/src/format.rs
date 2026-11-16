@@ -404,6 +404,18 @@ fn append_to_buffer(vm: &mut Vm<'_>, buffer: ObjectRef, text: &str) {
     let _ = (buffer, text);
 }
 
+/// Append formatted text to a `StringBuffer` and return the buffer, as the
+/// `format(value, StringBuffer, FieldPosition)` overloads do.
+fn append_format_text(vm: &mut Vm<'_>, buffer: ObjectRef, text: &str) -> Result<Value, VmError> {
+    let string = vm.make_string(text)?;
+    let (class, method) = vm.resolve_virtual_method(
+        buffer,
+        "append",
+        "(Ljava/lang/String;)Ljava/lang/StringBuffer;",
+    )?;
+    vm.invoke_method(class, method, vec![Value::Ref(buffer), Value::Ref(string)])
+}
+
 /// `java.text.Format`: the base of every format.
 pub(crate) const FORMAT: oxjvm_vm::NativeClass = class(
     "java/text/Format",
@@ -491,7 +503,7 @@ pub(crate) const PARSE_POSITION: oxjvm_vm::NativeClass = class(
 // NumberFormat
 // -------------------------------------------------------------------------------------------
 
-const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
+const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
     method(
         "getInstance",
         "()Ljava/text/NumberFormat;",
@@ -595,6 +607,26 @@ const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
             let pattern = pattern_of(vm, receiver(args));
             let text = NumberPattern::parse(&pattern).format(args[1].as_long() as f64);
             object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "format",
+        "(DLjava/lang/StringBuffer;Ljava/text/FieldPosition;)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let pattern = pattern_of(vm, receiver(args));
+            let text = NumberPattern::parse(&pattern).format(args[1].as_double());
+            append_format_text(vm, ref_arg(args, 2), &text)
+        },
+    ),
+    method(
+        "format",
+        "(JLjava/lang/StringBuffer;Ljava/text/FieldPosition;)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let pattern = pattern_of(vm, receiver(args));
+            let text = NumberPattern::parse(&pattern).format(args[1].as_long() as f64);
+            append_format_text(vm, ref_arg(args, 2), &text)
         },
     ),
     method(
@@ -1490,6 +1522,16 @@ impl Choice {
         self.texts.get(index).cloned().unwrap_or_default()
     }
 
+    /// The limit whose range text matches `text`, for `ChoiceFormat.parse`.
+    fn limit_for_text(&self, text: &str) -> Option<f64> {
+        for (index, candidate) in self.texts.iter().enumerate() {
+            if candidate == text {
+                return self.limits.get(index).copied();
+            }
+        }
+        None
+    }
+
     /// The pattern of a choice, written the way the JDK writes it.
     ///
     /// A limit that is not a whole number is written as the number below it with a `<`, so that
@@ -1548,7 +1590,7 @@ fn ieee_remainder_one(value: f64) -> f64 {
     value - crate::math::floor(value + 0.5)
 }
 
-const CHOICE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const CHOICE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -1686,6 +1728,41 @@ const CHOICE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         }
         int(hash)
     }),
+    method(
+        "parse",
+        "(Ljava/lang/String;)Ljava/lang/Number;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = vm.string_or_empty(ref_arg(args, 1));
+            let choice = Choice::parse(&pattern_of(vm, receiver(args)));
+            match choice.limit_for_text(&text) {
+                Some(value) => crate::boxed::boxed_double(vm, value),
+                None => Err(vm.throw_new("java/text/ParseException", Some("Unparsable choice"))),
+            }
+        },
+    ),
+    method(
+        "parse",
+        "(Ljava/lang/String;Ljava/text/ParsePosition;)Ljava/lang/Number;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let position = ref_arg(args, 2);
+            let text = vm.string_or_empty(ref_arg(args, 1));
+            let start = read_int_field(vm, position, "index").max(0) as usize;
+            let slice: String = text.chars().skip(start).collect();
+            let choice = Choice::parse(&pattern_of(vm, receiver(args)));
+            match choice.limit_for_text(&slice) {
+                Some(value) => {
+                    write_int_field(vm, position, "index", text.chars().count() as i32);
+                    crate::boxed::boxed_double(vm, value)
+                }
+                None => {
+                    write_int_field(vm, position, "errorIndex", start as i32);
+                    object(ObjectRef::NULL)
+                }
+            }
+        },
+    ),
 ];
 
 /// The value of a number argument.
