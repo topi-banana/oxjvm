@@ -793,6 +793,16 @@ exception!(
     "java/lang/RuntimeException"
 );
 exception!(
+    DATE_TIME_EXCEPTION,
+    "java/time/DateTimeException",
+    "java/lang/RuntimeException"
+);
+exception!(
+    DATE_TIME_PARSE_EXCEPTION,
+    "java/time/format/DateTimeParseException",
+    "java/time/DateTimeException"
+);
+exception!(
     FILE_NOT_FOUND_EXCEPTION,
     "java/io/FileNotFoundException",
     "java/io/IOException"
