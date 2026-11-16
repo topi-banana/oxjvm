@@ -1455,7 +1455,7 @@ pub(crate) const CLASS: oxjvm_vm::NativeClass = class(
 // String
 // -------------------------------------------------------------------------------------------
 
-const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 56] = [
+const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 60] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "<init>",
@@ -1727,6 +1727,30 @@ const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 56] = [
         ACC_PUBLIC | ACC_STATIC,
         string_value_of_chars_range,
     ),
+    method(
+        "copyValueOf",
+        "([C)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        string_value_of_chars,
+    ),
+    method(
+        "copyValueOf",
+        "([CII)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        string_value_of_chars_range,
+    ),
+    method(
+        "contentEquals",
+        "(Ljava/lang/CharSequence;)Z",
+        ACC_PUBLIC,
+        string_content_equals,
+    ),
+    method(
+        "contentEquals",
+        "(Ljava/lang/StringBuffer;)Z",
+        ACC_PUBLIC,
+        string_content_equals,
+    ),
 ];
 
 // The remaining `String.valueOf` overloads and `format` are declared in a second array so the
@@ -1939,12 +1963,18 @@ fn string_init_code_points(
     string_range_check(vm, offset, count, codepoints.len())?;
     let mut units: Vec<u16> = Vec::new();
     for &cp in &codepoints[offset as usize..(offset + count) as usize] {
-        let Some(ch) = char::from_u32(cp as u32) else {
+        if !(0..=0x10FFFF).contains(&cp) {
             return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
-        };
-        let mut buf = [0u16; 2];
-        let encoded = ch.encode_utf16(&mut buf);
-        units.extend_from_slice(encoded);
+        }
+        if let Some(ch) = char::from_u32(cp as u32) {
+            let mut buf = [0u16; 2];
+            let encoded = ch.encode_utf16(&mut buf);
+            units.extend_from_slice(encoded);
+        } else {
+            // A lone surrogate code point is a valid `Character.isValidCodePoint`
+            // value but not a Rust `char`; store the UTF-16 unit directly.
+            units.push(cp as u16);
+        }
     }
     write_string_payload(vm, receiver(args), units)?;
     void()
@@ -2253,6 +2283,28 @@ fn string_equals_ignore_case(
     let this = vm.string_or_empty(receiver(args));
     let other = vm.string_or_empty(other);
     boolean(this.eq_ignore_ascii_case(&other))
+}
+
+/// `String.contentEquals(CharSequence/StringBuffer)`: compare against the argument's `toString()`.
+fn string_content_equals(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let other = ref_arg(args, 1);
+    if other.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let (class, method) = vm.resolve_virtual_method(other, "toString", "()Ljava/lang/String;")?;
+    let text = vm
+        .invoke_method(class, method, vec![Value::Ref(other)])?
+        .as_ref();
+    let result = match (vm.string_utf16(this), vm.string_utf16(text)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    };
+    boolean(result)
 }
 
 fn string_compare_to(

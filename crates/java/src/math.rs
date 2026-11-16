@@ -1045,6 +1045,178 @@ pub(crate) const STRICT_MATH: oxjvm_vm::NativeClass = class(
     None,
 );
 
+// java.math.RoundingMode
+// -------------------------------------------------------------------------------------------
+
+const ROUNDING_MODE_NAMES: [&str; 8] = [
+    "UP",
+    "DOWN",
+    "CEILING",
+    "FLOOR",
+    "HALF_UP",
+    "HALF_DOWN",
+    "HALF_EVEN",
+    "UNNECESSARY",
+];
+
+fn rounding_mode_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/math/RoundingMode")?;
+    for (index, name) in ROUNDING_MODE_NAMES.iter().enumerate() {
+        let instance = vm.new_instance(class)?;
+        if let Some((declaring, field)) = vm.find_field_opt(class, "ordinal", "I") {
+            vm.set_instance_int(instance, declaring, field, index as i32);
+        }
+        vm.set_static_value(
+            class,
+            name,
+            "Ljava/math/RoundingMode;",
+            Value::Ref(instance),
+        );
+    }
+    Ok(())
+}
+
+fn rounding_mode_ordinal(vm: &Vm<'_>, instance: ObjectRef) -> i32 {
+    crate::lang::read_int_field(vm, instance, "ordinal")
+}
+
+const ROUNDING_MODE_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method("ordinal", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(rounding_mode_ordinal(vm, receiver(args)))
+    }),
+    method("name", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
+        let index = rounding_mode_ordinal(vm, receiver(args)).clamp(0, 7) as usize;
+        object(vm.make_string(ROUNDING_MODE_NAMES[index])?)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let index = rounding_mode_ordinal(vm, receiver(args)).clamp(0, 7) as usize;
+            object(vm.make_string(ROUNDING_MODE_NAMES[index])?)
+        },
+    ),
+    method(
+        "values",
+        "()[Ljava/math/RoundingMode;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/math/RoundingMode")?;
+            let array = vm.allocate_object_array(class, ROUNDING_MODE_NAMES.len())?;
+            for (index, name) in ROUNDING_MODE_NAMES.iter().enumerate() {
+                if let Some(value) =
+                    vm.read_static_ref_if_set(class, name, "Ljava/math/RoundingMode;")
+                {
+                    vm.array_set_ref(array, index, value)?;
+                }
+            }
+            object(array)
+        },
+    ),
+    method(
+        "valueOf",
+        "(Ljava/lang/String;)Ljava/math/RoundingMode;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = vm.string_or_empty(ref_arg(args, 0));
+            let class = vm.resolve_class("java/math/RoundingMode")?;
+            for candidate in ROUNDING_MODE_NAMES {
+                if candidate == name {
+                    if let Some(value) =
+                        vm.read_static_ref_if_set(class, candidate, "Ljava/math/RoundingMode;")
+                    {
+                        return object(value);
+                    }
+                }
+            }
+            Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some(&alloc::format!(
+                    "No enum constant java.math.RoundingMode.{name}"
+                )),
+            ))
+        },
+    ),
+    method(
+        "valueOf",
+        "(I)Ljava/math/RoundingMode;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let mode = int_arg(args, 0);
+            if !(0..=7).contains(&mode) {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            let class = vm.resolve_class("java/math/RoundingMode")?;
+            let name = ROUNDING_MODE_NAMES[mode as usize];
+            let value = vm
+                .read_static_ref_if_set(class, name, "Ljava/math/RoundingMode;")
+                .ok_or_else(|| VmError::internal("RoundingMode constants not initialized"))?;
+            object(value)
+        },
+    ),
+];
+
+pub(crate) const ROUNDING_MODE: oxjvm_vm::NativeClass = class(
+    "java/math/RoundingMode",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("ordinal", "I", ACC_PRIVATE | ACC_FINAL, None),
+        field(
+            "UP",
+            "Ljava/math/RoundingMode;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "DOWN",
+            "Ljava/math/RoundingMode;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "CEILING",
+            "Ljava/math/RoundingMode;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "FLOOR",
+            "Ljava/math/RoundingMode;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "HALF_UP",
+            "Ljava/math/RoundingMode;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "HALF_DOWN",
+            "Ljava/math/RoundingMode;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "HALF_EVEN",
+            "Ljava/math/RoundingMode;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "UNNECESSARY",
+            "Ljava/math/RoundingMode;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+    ],
+    &ROUNDING_MODE_METHODS,
+    Some(rounding_mode_clinit),
+);
+
 // java.math.BigInteger / BigDecimal
 // -------------------------------------------------------------------------------------------
 

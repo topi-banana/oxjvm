@@ -7051,8 +7051,34 @@ pub(crate) const SORTED_MAP: oxjvm_vm::NativeClass = class(
 // Properties
 // -------------------------------------------------------------------------------------------
 
-const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
     method("<init>", "()V", ACC_PUBLIC, properties_init),
+    method(
+        "<init>",
+        "(Ljava/util/Properties;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let map_class = vm.resolve_class("java/util/HashMap")?;
+            let map = vm.new_instance(map_class)?;
+            let (declaring, ctor) = vm
+                .find_method(map_class, "<init>", "()V")
+                .ok_or_else(|| VmError::internal("HashMap lacks its constructor"))?;
+            vm.invoke_method(declaring, ctor, vec![Value::Ref(map)])?;
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "map", "Ljava/util/HashMap;")?;
+            vm.set_instance_ref(this, declaring, field, map);
+            let defaults = ref_arg(args, 1);
+            if !defaults.is_null() {
+                if let Some((declaring, field)) =
+                    vm.find_field_opt(class, "defaults", "Ljava/util/Properties;")
+                {
+                    vm.set_instance_ref(this, declaring, field, defaults);
+                }
+            }
+            void()
+        },
+    ),
     method(
         "getProperty",
         "(Ljava/lang/String;)Ljava/lang/String;",
@@ -7172,6 +7198,9 @@ const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         ACC_PUBLIC,
         |vm, _, args| properties_load(vm, args),
     ),
+    method("load", "(Ljava/io/Reader;)V", ACC_PUBLIC, |vm, _, args| {
+        properties_load_reader(vm, args)
+    }),
     method(
         "store",
         "(Ljava/io/OutputStream;Ljava/lang/String;)V",
@@ -7191,7 +7220,10 @@ pub(crate) const PROPERTIES: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC,
-    &[field("map", "Ljava/util/HashMap;", ACC_PRIVATE, None)],
+    &[
+        field("map", "Ljava/util/HashMap;", ACC_PRIVATE, None),
+        field("defaults", "Ljava/util/Properties;", ACC_PRIVATE, None),
+    ],
     &PROPERTIES_METHODS,
     None,
 );
@@ -7220,6 +7252,11 @@ fn properties_load(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
         }
     }
     let text = String::from_utf8_lossy(&bytes).into_owned();
+    properties_parse_text(vm, this, &text)
+}
+
+/// Parse `.properties` text lines into the map backing `this`.
+fn properties_parse_text(vm: &mut Vm<'_>, this: ObjectRef, text: &str) -> Result<Value, VmError> {
     for line in text.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('!') {
@@ -7240,6 +7277,28 @@ fn properties_load(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
         )?;
     }
     void()
+}
+
+/// `Properties.load(Reader)`: read characters and parse them as `.properties` text.
+fn properties_load_reader(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let reader = ref_arg(args, 1);
+    let mut text = String::new();
+    if !reader.is_null() {
+        let (class, method) = vm.resolve_virtual_method(reader, "read", "()I")?;
+        loop {
+            let value = vm
+                .invoke_method(class, method, vec![Value::Ref(reader)])?
+                .as_int();
+            if value < 0 {
+                break;
+            }
+            if let Some(ch) = char::from_u32(value as u32) {
+                text.push(ch);
+            }
+        }
+    }
+    properties_parse_text(vm, this, &text)
 }
 
 /// `Properties.store`: write the properties in the JDK's format.
