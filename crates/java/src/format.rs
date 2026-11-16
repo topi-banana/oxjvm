@@ -13,7 +13,7 @@ use oxjvm_classfile::flags::*;
 use oxjvm_vm::{ArrayComponent, ObjectRef, Value, Vm, VmError};
 
 use crate::lang::{read_int_field, write_int_field};
-use crate::{class, field, int, method, object, receiver, ref_arg, void};
+use crate::{class, field, int, int_arg, method, object, receiver, ref_arg, void};
 
 // -------------------------------------------------------------------------------------------
 // Number patterns
@@ -40,8 +40,12 @@ struct NumberPattern {
     max_fraction: usize,
     /// The percent style multiplies the value by a hundred.
     percent: bool,
-    /// The compact style writes the value as a multiple of a thousand, a million, …
-    compact: Option<Compact>,
+    /// The pattern writes the value as a mantissa and a power of ten (`0.###E0`).
+    scientific: bool,
+    /// The digit positions the integer part offers; the repeating range in scientific form.
+    max_integer: usize,
+    /// The minimum digits the exponent is written with (`E00` writes two).
+    min_exponent: usize,
 }
 
 impl NumberPattern {
@@ -69,19 +73,34 @@ impl NumberPattern {
         let prefix: String = chars[..start].iter().collect();
         let suffix: String = chars[end..].iter().collect();
         let number: String = chars[start..end].iter().collect();
-        let (integer, fraction) = match number.split_once('.') {
+        let (mantissa, exponent_part) = match number.split_once('E') {
+            Some((mantissa, exponent)) => (mantissa, Some(exponent)),
+            None => (number.as_str(), None),
+        };
+        let (integer, fraction) = match mantissa.split_once('.') {
             Some((integer, fraction)) => (integer, fraction),
-            None => (number.as_str(), ""),
+            None => (mantissa, ""),
         };
         let grouping = integer
             .rfind(',')
             .map_or(0, |index| integer.len() - index - 1);
-        let min_integer = integer.chars().filter(|ch| *ch == '0').count();
+        let mut min_integer = integer.chars().filter(|ch| *ch == '0').count();
         let min_fraction = fraction.chars().filter(|ch| *ch == '0').count();
         let max_fraction = fraction
             .chars()
             .filter(|ch| *ch == '0' || *ch == '#')
             .count();
+        let max_integer = integer
+            .chars()
+            .filter(|ch| *ch == '0' || *ch == '#')
+            .count();
+        let scientific = exponent_part.is_some();
+        if scientific {
+            // The JDK writes at least one integer digit in scientific form.
+            min_integer = min_integer.max(1);
+        }
+        let min_exponent =
+            exponent_part.map_or(0, |part| part.chars().filter(|ch| *ch == '0').count());
         let percent = suffix.contains('%');
         Self {
             source: pattern.to_string(),
@@ -92,40 +111,95 @@ impl NumberPattern {
             min_fraction,
             max_fraction,
             percent,
-            compact: None,
+            scientific,
+            max_integer,
+            min_exponent,
         }
     }
 
     /// Format a number with this pattern.
     fn format(&self, value: f64) -> String {
-        let mut scaled = if self.percent { value * 100.0 } else { value };
-        let mut compact_suffix = String::new();
-        if let Some(style) = self.compact {
-            let magnitude = scaled.abs();
-            let (divisor, short, long) = if magnitude >= 1e12 {
-                (1e12, "T", " trillion")
-            } else if magnitude >= 1e9 {
-                (1e9, "B", " billion")
-            } else if magnitude >= 1e6 {
-                (1e6, "M", " million")
-            } else if magnitude >= 1e3 {
-                (1e3, "K", " thousand")
-            } else {
-                (1.0, "", "")
-            };
-            scaled /= divisor;
-            compact_suffix = match style {
-                Compact::Short => short.to_string(),
-                Compact::Long => long.to_string(),
-            };
+        self.format_with(value, Rounding::HalfUp)
+            .unwrap_or_else(|| oxjvm_vm::format::double_to_string(value))
+    }
+
+    /// Format with an explicit rounding mode; `None` when `UNNECESSARY` finds a tie.
+    fn format_with(&self, value: f64, mode: Rounding) -> Option<String> {
+        let scaled = if self.percent { value * 100.0 } else { value };
+        if scaled.is_nan() {
+            return Some(String::from("NaN"));
         }
-        let factor = power_of_ten(self.max_fraction);
-        let magnitude = crate::math::floor(scaled.abs() * factor + 0.5) / factor;
-        let negative = scaled < 0.0 && magnitude != 0.0;
-        let integer = crate::math::floor(magnitude);
-        let fraction = crate::math::floor((magnitude - integer) * factor + 0.5) as u64;
-        let digits = format_integer(integer);
-        let grouped = group_digits(&digits, self.grouping);
+        if scaled.is_infinite() {
+            let mut text = String::new();
+            if scaled.is_sign_negative() {
+                text.push('-');
+            }
+            text.push_str(&self.prefix);
+            text.push('\u{221e}');
+            text.push_str(&self.suffix);
+            return Some(text);
+        }
+        // The JDK keeps the sign of a negative zero, and of a value that rounds to zero.
+        let negative = scaled.is_sign_negative();
+        let magnitude = scaled.abs();
+        let digits = self.max_fraction;
+        // Ceiling and Floor point the other way for a negative value.
+        let mode = if negative {
+            match mode {
+                Rounding::Ceiling => Rounding::Floor,
+                Rounding::Floor => Rounding::Ceiling,
+                other => other,
+            }
+        } else {
+            mode
+        };
+        if self.scientific {
+            return self.format_scientific(magnitude, negative, mode);
+        }
+        // The JDK formats a double from its shortest round-trip decimal digits, then rounds
+        // at the requested fraction position, deciding ties from the value's exact binary
+        // value.  When the rounding position lies beyond the shortest digits (very large or
+        // very small magnitudes) no rounding touches them and they are kept as they are.
+        let (integer_text, mut fraction_text) = if magnitude == 0.0 {
+            (
+                String::from("0"),
+                alloc::format!("{:0width$}", 0, width = digits),
+            )
+        } else {
+            let (significant, decimal_at) = shortest_digits(magnitude);
+            let count = significant.len() as i32;
+            let target = digits as i32 + decimal_at;
+            if target < 0 {
+                (
+                    String::from("0"),
+                    alloc::format!("{:0width$}", 0, width = digits),
+                )
+            } else if target >= count {
+                split_fixed(&significant, decimal_at, digits)
+            } else {
+                match round_exact_scale(magnitude, target - decimal_at, mode) {
+                    ExactRound::Digits(value) if value != 0 => {
+                        let text = format_u128(value);
+                        let len = text.len() as i32;
+                        split_fixed(&text, decimal_at + len - target, digits)
+                    }
+                    ExactRound::Digits(_) => (
+                        String::from("0"),
+                        alloc::format!("{:0width$}", 0, width = digits),
+                    ),
+                    ExactRound::Unnecessary => return None,
+                    ExactRound::Unsupported => {
+                        let text = exact_double_digits(magnitude);
+                        let (integer, fraction) = match text.split_once('.') {
+                            Some((integer, fraction)) => (integer, fraction),
+                            None => (text.as_str(), ""),
+                        };
+                        round_decimal_digits(integer, fraction, digits, mode)?
+                    }
+                }
+            }
+        };
+        let grouped = group_digits(&integer_text, self.grouping);
         let padded = if grouped.len() < self.min_integer {
             let mut text = String::new();
             for _ in 0..(self.min_integer - grouped.len()) {
@@ -142,8 +216,7 @@ impl NumberPattern {
         }
         out.push_str(&self.prefix);
         out.push_str(&padded);
-        if self.max_fraction > 0 {
-            let mut fraction_text = alloc::format!("{fraction:0width$}", width = self.max_fraction);
+        if digits > 0 {
             while fraction_text.len() > self.min_fraction && fraction_text.ends_with('0') {
                 fraction_text.pop();
             }
@@ -153,9 +226,842 @@ impl NumberPattern {
             }
         }
         out.push_str(&self.suffix);
-        out.push_str(&compact_suffix);
-        out
+        Some(out)
     }
+
+    /// Scientific form: round to `max_integer + max_fraction` significant digits, then
+    /// place the decimal point.  When the integer part offers more than one digit and more
+    /// than the minimum, the JDK reads it as a repeating range and snaps the exponent to a
+    /// multiple of it (engineering notation); otherwise the minimum integer digits set the
+    /// exponent.
+    fn format_scientific(&self, magnitude: f64, negative: bool, mode: Rounding) -> Option<String> {
+        let max_int = self.max_integer.max(1);
+        let significant = max_int + self.max_fraction;
+        let (decimal_at, rounded) = if magnitude == 0.0 {
+            (0i32, 0u128)
+        } else if significant <= 38 {
+            let mut decimal_at = decimal_exponent(magnitude) + 1;
+            let scale = significant as i32 - decimal_at;
+            let mut rounded = match round_exact_scale(magnitude, scale, mode) {
+                ExactRound::Digits(value) => value,
+                ExactRound::Unnecessary => return None,
+                ExactRound::Unsupported => {
+                    let mantissa = magnitude / signed_power_of_ten(decimal_at - 1);
+                    let factor = power_of_ten(significant - 1);
+                    let value = round_scaled(mantissa * factor, mode)?;
+                    crate::math::floor(value) as u128
+                }
+            };
+            if rounded >= power_of_ten_u128(significant) {
+                rounded /= 10;
+                decimal_at += 1;
+            }
+            (decimal_at, rounded)
+        } else {
+            let decimal_at = decimal_exponent(magnitude) + 1;
+            let mantissa = magnitude / signed_power_of_ten(decimal_at - 1);
+            let factor = power_of_ten(37);
+            let value = round_scaled(mantissa * factor, mode)?;
+            let mut rounded = crate::math::floor(value) as u128;
+            let mut decimal_at = decimal_at;
+            if rounded >= power_of_ten_u128(38) {
+                rounded /= 10;
+                decimal_at += 1;
+            }
+            (decimal_at, rounded)
+        };
+        let repeat = max_int as i32;
+        let min_int = self.min_integer as i32;
+        let (exponent, integer_digits) = scientific_exponent(decimal_at, repeat, min_int);
+        let mut out = String::new();
+        if negative {
+            out.push('-');
+        }
+        out.push_str(&self.prefix);
+        if decimal_at == 0 {
+            for _ in 0..integer_digits {
+                out.push('0');
+            }
+            if self.min_fraction > 0 {
+                out.push('.');
+                for _ in 0..self.min_fraction {
+                    out.push('0');
+                }
+            }
+        } else {
+            let width = if significant <= 38 { significant } else { 38 };
+            let text = alloc::format!("{rounded:0width$}");
+            let split = (integer_digits as usize).min(text.len());
+            out.push_str(&text[..split]);
+            let mut fraction_text = text[split..].to_string();
+            while fraction_text.len() > self.min_fraction && fraction_text.ends_with('0') {
+                fraction_text.pop();
+            }
+            if !fraction_text.is_empty() {
+                out.push('.');
+                out.push_str(&fraction_text);
+            }
+        }
+        out.push_str(&self.suffix);
+        out.push('E');
+        if exponent < 0 {
+            out.push('-');
+        }
+        let exponent_text = alloc::format!("{}", exponent.abs());
+        for _ in exponent_text.len()..self.min_exponent {
+            out.push('0');
+        }
+        out.push_str(&exponent_text);
+        Some(out)
+    }
+}
+
+/// The JDK's `java.math.RoundingMode`, in ordinal order.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Rounding {
+    Up,
+    Down,
+    Ceiling,
+    Floor,
+    HalfUp,
+    HalfDown,
+    HalfEven,
+    Unnecessary,
+}
+
+impl Rounding {
+    /// The mode a `RoundingMode` instance's ordinal names.
+    pub(crate) fn from_ordinal(ordinal: i32) -> Self {
+        match ordinal {
+            0 => Self::Up,
+            1 => Self::Down,
+            2 => Self::Ceiling,
+            3 => Self::Floor,
+            4 => Self::HalfUp,
+            5 => Self::HalfDown,
+            7 => Self::Unnecessary,
+            _ => Self::HalfEven,
+        }
+    }
+}
+
+/// The outcome of rounding a double's exact binary value at a decimal scale.
+enum ExactRound {
+    /// The value times ten to the scale, rounded to a whole number.
+    Digits(u128),
+    /// `UNNECESSARY` found a nonzero fraction to discard.
+    Unnecessary,
+    /// The scale or the value is beyond the exact path; use float arithmetic.
+    Unsupported,
+}
+
+/// Round `magnitude * 10^digits` to a whole number using the double's exact binary value,
+/// the way the JDK does: a double is `m * 2^e`, so the scaled value is `m * 5^digits / 2^k`
+/// with `k = -(e + digits)`, and the fraction's size follows from the low `k` bits alone.
+/// Float multiplication would collapse near-ties (0.0000005 * 10^6 lands exactly on 0.5).
+fn round_scaled_exact(magnitude: f64, digits: usize, mode: Rounding) -> ExactRound {
+    if !magnitude.is_finite() {
+        return ExactRound::Unsupported;
+    }
+    if magnitude == 0.0 {
+        return ExactRound::Digits(0);
+    }
+    // m < 2^53 and 5^32 < 2^75, so the product stays inside u128 up to 32 digits.
+    if digits > 32 {
+        return ExactRound::Unsupported;
+    }
+    let bits = magnitude.to_bits();
+    let raw_exponent = ((bits >> 52) & 0x7ff) as i32;
+    let mantissa = bits & 0x000f_ffff_ffff_ffff;
+    let (m, e) = if raw_exponent == 0 {
+        (mantissa, -1074i32)
+    } else {
+        (mantissa | (1u64 << 52), raw_exponent - 1023 - 52)
+    };
+    let mut scaled = u128::from(m);
+    for _ in 0..digits {
+        scaled *= 5;
+    }
+    let k = -(e + digits as i32);
+    if k <= 0 {
+        // The scaled value is already a whole number: m * 5^digits * 2^(-k).
+        let shift = (-k) as u32;
+        return match shl_exact(scaled, shift) {
+            Some(value) => ExactRound::Digits(value),
+            None => ExactRound::Unsupported,
+        };
+    }
+    let k = k as u32;
+    let (quotient, remainder, half) = if k >= 129 {
+        // The remainder is the whole product, below 2^128, and half is 2^(k-1) >= 2^128.
+        (0u128, scaled, u128::MAX)
+    } else {
+        (scaled >> k, scaled & ((1u128 << k) - 1), 1u128 << (k - 1))
+    };
+    let increment = match mode {
+        Rounding::Up | Rounding::Ceiling => remainder != 0,
+        Rounding::Down | Rounding::Floor => false,
+        Rounding::HalfUp => remainder >= half,
+        Rounding::HalfDown => remainder > half,
+        Rounding::HalfEven => remainder > half || (remainder == half && quotient % 2 == 1),
+        Rounding::Unnecessary => {
+            if remainder != 0 {
+                return ExactRound::Unnecessary;
+            }
+            false
+        }
+    };
+    ExactRound::Digits(quotient + u128::from(increment))
+}
+
+/// A power of ten as an exact integer, for scales the exact path handles.
+fn power_of_ten_u128(exponent: usize) -> u128 {
+    let mut value = 1u128;
+    for _ in 0..exponent {
+        value *= 10;
+    }
+    value
+}
+
+/// A power of ten with a signed exponent, as a float.
+fn signed_power_of_ten(exponent: i32) -> f64 {
+    if exponent >= 0 {
+        power_of_ten(exponent as usize)
+    } else {
+        1.0 / power_of_ten((-exponent) as usize)
+    }
+}
+
+/// A left shift that reports overflow instead of silently dropping high bits.
+fn shl_exact(value: u128, shift: u32) -> Option<u128> {
+    if shift >= 128 || value.leading_zeros() < shift {
+        None
+    } else {
+        Some(value << shift)
+    }
+}
+
+/// Round `num / den` to a whole number under the given mode.
+fn round_ratio(num: u128, den: u128, mode: Rounding) -> ExactRound {
+    let quotient = num / den;
+    let remainder = num % den;
+    let half = den / 2;
+    let tie = remainder == half && den % 2 == 0;
+    let increment = match mode {
+        Rounding::Up | Rounding::Ceiling => remainder != 0,
+        Rounding::Down | Rounding::Floor => false,
+        Rounding::HalfUp => remainder > half || tie,
+        Rounding::HalfDown => remainder > half,
+        Rounding::HalfEven => remainder > half || (tie && quotient % 2 == 1),
+        Rounding::Unnecessary => {
+            if remainder != 0 {
+                return ExactRound::Unnecessary;
+            }
+            false
+        }
+    };
+    ExactRound::Digits(quotient + u128::from(increment))
+}
+
+/// Round `magnitude * 10^scale` for a scale that may be negative: the value is then
+/// `m * 2^(e-j) / 5^j` with `j = -scale`, a ratio of two exact integers.
+fn round_exact_scale(magnitude: f64, scale: i32, mode: Rounding) -> ExactRound {
+    if scale >= 0 {
+        return round_scaled_exact(magnitude, scale as usize, mode);
+    }
+    if !magnitude.is_finite() {
+        return ExactRound::Unsupported;
+    }
+    if magnitude == 0.0 {
+        return ExactRound::Digits(0);
+    }
+    let j = (-scale) as usize;
+    if j > 32 {
+        return ExactRound::Unsupported;
+    }
+    let bits = magnitude.to_bits();
+    let raw_exponent = ((bits >> 52) & 0x7ff) as i32;
+    let mantissa = bits & 0x000f_ffff_ffff_ffff;
+    let (m, e) = if raw_exponent == 0 {
+        (mantissa, -1074i32)
+    } else {
+        (mantissa | (1u64 << 52), raw_exponent - 1023 - 52)
+    };
+    let mut five = 1u128;
+    for _ in 0..j {
+        five *= 5;
+    }
+    let t = e - j as i32;
+    let (num, den) = if t >= 0 {
+        match shl_exact(u128::from(m), t as u32) {
+            Some(num) => (num, five),
+            None => return ExactRound::Unsupported,
+        }
+    } else {
+        match shl_exact(five, (-t) as u32) {
+            Some(den) => (u128::from(m), den),
+            None => return ExactRound::Unsupported,
+        }
+    };
+    round_ratio(num, den, mode)
+}
+
+/// Compare a double's exact binary value with `10^power`, exactly where the
+/// cross-multiplication fits in u128 and with float arithmetic otherwise.
+fn cmp_pow10(magnitude: f64, power: i32) -> core::cmp::Ordering {
+    use core::cmp::Ordering;
+    let bits = magnitude.to_bits();
+    let raw_exponent = ((bits >> 52) & 0x7ff) as i32;
+    let mantissa = bits & 0x000f_ffff_ffff_ffff;
+    let (m, e) = if raw_exponent == 0 {
+        (mantissa, -1074i32)
+    } else {
+        (mantissa | (1u64 << 52), raw_exponent - 1023 - 52)
+    };
+    if power >= 0 {
+        if power <= 55 {
+            let mut five = 1u128;
+            for _ in 0..power {
+                five *= 5;
+            }
+            if e >= power {
+                if let Some(lhs) = shl_exact(u128::from(m), (e - power) as u32) {
+                    return lhs.cmp(&five);
+                }
+            } else if let Some(rhs) = shl_exact(five, (power - e) as u32) {
+                return u128::from(m).cmp(&rhs);
+            }
+        }
+    } else {
+        let q = -power;
+        if e + q >= 0 {
+            // m * 5^q * 2^(e+q) is a whole number, at least one.
+            return Ordering::Greater;
+        }
+        if q <= 32 && -(e + q) < 128 {
+            let mut five = 1u128;
+            for _ in 0..q {
+                five *= 5;
+            }
+            let lhs = u128::from(m) * five;
+            let rhs = 1u128 << (-(e + q)) as u32;
+            return lhs.cmp(&rhs);
+        }
+    }
+    let reference = signed_power_of_ten(power);
+    magnitude.partial_cmp(&reference).unwrap_or(Ordering::Equal)
+}
+
+/// The exponent and integer-digit count of scientific form: a repeating range snaps the
+/// exponent to a multiple of the maximum integer digits; otherwise the minimum sets it.
+fn scientific_exponent(decimal_at: i32, repeat: i32, min_int: i32) -> (i32, i32) {
+    if decimal_at == 0 {
+        let min_used = if repeat > 1 && repeat > min_int {
+            1
+        } else {
+            min_int.max(1)
+        };
+        (0, min_used)
+    } else if repeat > 1 && repeat > min_int {
+        let exponent = if decimal_at >= 1 {
+            ((decimal_at - 1) / repeat) * repeat
+        } else {
+            ((decimal_at - repeat) / repeat) * repeat
+        };
+        (exponent, decimal_at - exponent)
+    } else {
+        (decimal_at - min_int, min_int.max(1))
+    }
+}
+
+/// Whether the discarded tail of a digit string is above half, exactly half, or below,
+/// and whether it is nonzero at all.
+fn digit_tail(rest: &str) -> (bool, bool, bool) {
+    let bytes = rest.as_bytes();
+    let first = bytes[0];
+    let nonzero = bytes.iter().any(|byte| *byte != b'0');
+    let tail_zero = bytes[1..].iter().all(|byte| *byte == b'0');
+    let greater = first > b'5' || (first == b'5' && !tail_zero);
+    let tie = first == b'5' && tail_zero;
+    (greater, tie, nonzero)
+}
+
+/// Whether a rounding mode rounds up given the discarded tail and the last kept digit.
+fn rounds_up(mode: Rounding, greater: bool, tie: bool, nonzero: bool, last_odd: bool) -> bool {
+    match mode {
+        Rounding::Up | Rounding::Ceiling => nonzero,
+        Rounding::Down | Rounding::Floor => false,
+        Rounding::HalfUp => greater || tie,
+        Rounding::HalfDown => greater,
+        Rounding::HalfEven => greater || (tie && last_odd),
+        Rounding::Unnecessary => false,
+    }
+}
+
+/// Add one to the number `integer.fraction`, carrying through both parts.
+fn increment_digits(integer: &str, fraction: &str) -> (String, String) {
+    let mut frac: Vec<u8> = fraction.bytes().collect();
+    let mut carry = true;
+    for byte in frac.iter_mut().rev() {
+        if *byte == b'9' {
+            *byte = b'0';
+        } else {
+            *byte += 1;
+            carry = false;
+            break;
+        }
+    }
+    let mut int: Vec<u8> = integer.bytes().collect();
+    if carry {
+        for byte in int.iter_mut().rev() {
+            if *byte == b'9' {
+                *byte = b'0';
+            } else {
+                *byte += 1;
+                carry = false;
+                break;
+            }
+        }
+        if carry {
+            int.insert(0, b'1');
+        }
+    }
+    (
+        String::from_utf8(int).unwrap_or_default(),
+        String::from_utf8(frac).unwrap_or_default(),
+    )
+}
+
+/// The last digit of the kept part, for half-even rounding.
+fn last_digit_odd(integer: &str, fraction: &str) -> bool {
+    let digit = fraction
+        .bytes()
+        .last()
+        .or_else(|| integer.bytes().last())
+        .unwrap_or(b'0');
+    (digit - b'0') % 2 == 1
+}
+
+/// Format the exact decimal digits of a `BigInteger` or `BigDecimal` under a format's
+/// settings, without going through a double (which would lose digits).
+fn format_exact_decimal(vm: &mut Vm<'_>, format: ObjectRef, text: &str) -> Result<String, VmError> {
+    let (pattern, mode) = number_format_state(vm, format);
+    let negative = text.starts_with('-');
+    let digits = text.trim_start_matches(['-', '+']);
+    let (integer, fraction) = match digits.split_once('.') {
+        Some((integer, fraction)) => (integer, fraction),
+        None => (digits, ""),
+    };
+    let trimmed = integer.trim_start_matches('0');
+    let integer = if trimmed.is_empty() { "0" } else { trimmed };
+    let mode = if negative {
+        match mode {
+            Rounding::Ceiling => Rounding::Floor,
+            Rounding::Floor => Rounding::Ceiling,
+            other => other,
+        }
+    } else {
+        mode
+    };
+    let unnecessary =
+        |vm: &mut Vm<'_>| vm.throw_new("java/lang/ArithmeticException", Some("Rounding necessary"));
+    let mut out = String::new();
+    if negative {
+        out.push('-');
+    }
+    out.push_str(&pattern.prefix);
+    if pattern.scientific {
+        let max_int = pattern.max_integer.max(1);
+        let significant = max_int + pattern.max_fraction;
+        let all = alloc::format!("{integer}{fraction}");
+        let all = all.trim_end_matches('0');
+        let zero = all.is_empty() || integer == "0" && fraction.bytes().all(|b| b == b'0');
+        let (decimal_at, rounded) = if zero {
+            (0i32, String::from("0"))
+        } else {
+            let mut decimal_at = integer.len() as i32;
+            let mut rounded = if all.len() <= significant {
+                let mut text = all.to_string();
+                while text.len() < significant {
+                    text.push('0');
+                }
+                text
+            } else {
+                let kept = &all[..significant];
+                let rest = &all[significant..];
+                let (greater, tie, nonzero) = digit_tail(rest);
+                if mode == Rounding::Unnecessary && nonzero {
+                    return Err(unnecessary(vm));
+                }
+                let mut text = kept.to_string();
+                if rounds_up(mode, greater, tie, nonzero, last_digit_odd(kept, "")) {
+                    let (int_part, _) = increment_digits(&text, "");
+                    text = int_part;
+                }
+                if text.len() > significant {
+                    text.truncate(significant);
+                    decimal_at += 1;
+                }
+                text
+            };
+            if rounded.len() < significant {
+                let mut text = rounded;
+                while text.len() < significant {
+                    text.push('0');
+                }
+                rounded = text;
+            }
+            (decimal_at, rounded)
+        };
+        let (exponent, integer_digits) =
+            scientific_exponent(decimal_at, max_int as i32, pattern.min_integer as i32);
+        if decimal_at == 0 {
+            for _ in 0..integer_digits {
+                out.push('0');
+            }
+            if pattern.min_fraction > 0 {
+                out.push('.');
+                for _ in 0..pattern.min_fraction {
+                    out.push('0');
+                }
+            }
+        } else {
+            let split = (integer_digits as usize).min(rounded.len());
+            out.push_str(&rounded[..split]);
+            let mut fraction_text = rounded[split..].to_string();
+            while fraction_text.len() > pattern.min_fraction && fraction_text.ends_with('0') {
+                fraction_text.pop();
+            }
+            if !fraction_text.is_empty() {
+                out.push('.');
+                out.push_str(&fraction_text);
+            }
+        }
+        out.push_str(&pattern.suffix);
+        out.push('E');
+        if exponent < 0 {
+            out.push('-');
+        }
+        let exponent_text = alloc::format!("{}", exponent.abs());
+        for _ in exponent_text.len()..pattern.min_exponent {
+            out.push('0');
+        }
+        out.push_str(&exponent_text);
+        return Ok(out);
+    }
+    // Plain form: round the fraction at the maximum fraction digits, carrying into the
+    // integer part, then group and pad.
+    let max_fraction = pattern.max_fraction;
+    let (mut integer_text, mut fraction_text) = if fraction.len() <= max_fraction {
+        let mut fraction_text = fraction.to_string();
+        while fraction_text.len() < max_fraction {
+            fraction_text.push('0');
+        }
+        (integer.to_string(), fraction_text)
+    } else {
+        let kept = &fraction[..max_fraction];
+        let rest = &fraction[max_fraction..];
+        let (greater, tie, nonzero) = digit_tail(rest);
+        if mode == Rounding::Unnecessary && nonzero {
+            return Err(unnecessary(vm));
+        }
+        if rounds_up(mode, greater, tie, nonzero, last_digit_odd(integer, kept)) {
+            increment_digits(integer, kept)
+        } else {
+            (integer.to_string(), kept.to_string())
+        }
+    };
+    let max_integer_digits = read_number_digits(vm, format, "maxIntegerDigits", i32::MAX);
+    if max_integer_digits >= 0 && integer_text.len() > max_integer_digits as usize {
+        let keep = integer_text.len() - max_integer_digits as usize;
+        integer_text = integer_text[keep..].to_string();
+    }
+    let grouped = group_digits(&integer_text, pattern.grouping);
+    if grouped.len() < pattern.min_integer {
+        for _ in 0..(pattern.min_integer - grouped.len()) {
+            out.push('0');
+        }
+    }
+    out.push_str(&grouped);
+    while fraction_text.len() > pattern.min_fraction && fraction_text.ends_with('0') {
+        fraction_text.pop();
+    }
+    if !fraction_text.is_empty() {
+        out.push('.');
+        out.push_str(&fraction_text);
+    }
+    out.push_str(&pattern.suffix);
+    Ok(out)
+}
+
+/// The decimal exponent of a magnitude: the largest `e` with `10^e <= magnitude`.
+fn decimal_exponent(magnitude: f64) -> i32 {
+    use core::cmp::Ordering;
+    let bits = magnitude.to_bits();
+    let raw_exponent = ((bits >> 52) & 0x7ff) as i32;
+    let exp2 = if raw_exponent == 0 {
+        -1074
+    } else {
+        raw_exponent - 1023
+    };
+    let mut exponent = crate::math::floor(f64::from(exp2) * core::f64::consts::LOG10_2) as i32;
+    while cmp_pow10(magnitude, exponent + 1) != Ordering::Less {
+        exponent += 1;
+    }
+    while cmp_pow10(magnitude, exponent) == Ordering::Less {
+        exponent -= 1;
+    }
+    exponent
+}
+
+/// The digits of a whole number held as an exact integer.
+fn format_u128(value: u128) -> String {
+    alloc::format!("{value}")
+}
+
+/// The shortest round-trip decimal digits of a finite, non-negative double and the position
+/// of the decimal point within them, the way the JDK's digit list stores a double.  Rust's
+/// `Display` already produces the shortest round-trip form without an exponent.
+fn shortest_digits(magnitude: f64) -> (String, i32) {
+    let text = alloc::format!("{magnitude}");
+    let (integer, fraction) = match text.split_once('.') {
+        Some((integer, fraction)) => (integer, fraction),
+        None => (text.as_str(), ""),
+    };
+    let combined = alloc::format!("{integer}{fraction}");
+    let leading = combined.bytes().take_while(|byte| *byte == b'0').count();
+    let tail = &combined[leading..];
+    let end = tail
+        .bytes()
+        .rposition(|byte| byte != b'0')
+        .map_or(0, |index| index + 1);
+    let significant = &tail[..end];
+    if significant.is_empty() {
+        return (String::from("0"), 0);
+    }
+    let decimal_at = integer.len() as i32 - leading as i32;
+    (significant.to_string(), decimal_at)
+}
+
+/// Split a rounded digit string with its decimal-point position into an integer part and a
+/// fraction part padded to exactly `digits` places.
+fn split_fixed(rounded: &str, decimal_at: i32, digits: usize) -> (String, String) {
+    let len = rounded.len() as i32;
+    if decimal_at >= len {
+        let mut integer = rounded.to_string();
+        for _ in 0..(decimal_at - len) {
+            integer.push('0');
+        }
+        (integer, alloc::format!("{:0width$}", 0, width = digits))
+    } else if decimal_at > 0 {
+        let split = decimal_at as usize;
+        let mut fraction = rounded[split..].to_string();
+        while fraction.len() < digits {
+            fraction.push('0');
+        }
+        fraction.truncate(digits);
+        (rounded[..split].to_string(), fraction)
+    } else {
+        let mut fraction = String::new();
+        for _ in 0..(-decimal_at) {
+            fraction.push('0');
+        }
+        fraction.push_str(rounded);
+        while fraction.len() < digits {
+            fraction.push('0');
+        }
+        fraction.truncate(digits);
+        (String::from("0"), fraction)
+    }
+}
+
+/// Round the fraction of an exact decimal digit string at `max_fraction` digits, carrying
+/// into the integer part; `None` when `UNNECESSARY` would have to discard a nonzero tail.
+/// The returned fraction always holds exactly `max_fraction` digits.
+fn round_decimal_digits(
+    integer: &str,
+    fraction: &str,
+    max_fraction: usize,
+    mode: Rounding,
+) -> Option<(String, String)> {
+    if fraction.len() <= max_fraction {
+        let mut fraction_text = fraction.to_string();
+        while fraction_text.len() < max_fraction {
+            fraction_text.push('0');
+        }
+        return Some((integer.to_string(), fraction_text));
+    }
+    let kept = &fraction[..max_fraction];
+    let rest = &fraction[max_fraction..];
+    let (greater, tie, nonzero) = digit_tail(rest);
+    if mode == Rounding::Unnecessary && nonzero {
+        return None;
+    }
+    if rounds_up(mode, greater, tie, nonzero, last_digit_odd(integer, kept)) {
+        Some(increment_digits(integer, kept))
+    } else {
+        Some((integer.to_string(), kept.to_string()))
+    }
+}
+
+/// The exact decimal expansion of a finite, non-negative double, without an exponent.
+/// A double is `m * 2^e`; for `e >= 0` that is the whole number `m << e`, and for `e < 0`
+/// it is `m * 5^(-e)` with the decimal point placed `-e` digits from the right.
+fn exact_double_digits(magnitude: f64) -> String {
+    let bits = magnitude.to_bits();
+    let raw_exponent = ((bits >> 52) & 0x7ff) as i32;
+    let mantissa = bits & 0x000f_ffff_ffff_ffff;
+    let (m, e) = if raw_exponent == 0 {
+        (mantissa, -1074i32)
+    } else {
+        (mantissa | (1u64 << 52), raw_exponent - 1023 - 52)
+    };
+    if m == 0 {
+        return String::from("0");
+    }
+    let mut big = BigUint::from_u64(m);
+    if e >= 0 {
+        big.shl(e as usize);
+        return big.to_decimal();
+    }
+    let k = (-e) as usize;
+    for _ in 0..k {
+        big.mul_small(5);
+    }
+    let digits = big.to_decimal();
+    let split = digits.len().saturating_sub(k);
+    if split == 0 {
+        let mut text = String::new();
+        for _ in 0..(k + 1 - digits.len()) {
+            text.push('0');
+        }
+        text.push_str(&digits);
+        let point = text.len() - k;
+        alloc::format!("{}.{}", &text[..point], &text[point..])
+    } else {
+        alloc::format!("{}.{}", &digits[..split], &digits[split..])
+    }
+}
+
+/// A whole number of arbitrary size, held as little-endian 64-bit limbs, for the exact
+/// decimal expansion of doubles beyond the u128 range.
+struct BigUint {
+    limbs: Vec<u64>,
+}
+
+impl BigUint {
+    fn from_u64(value: u64) -> Self {
+        Self { limbs: vec![value] }
+    }
+
+    fn is_zero(&self) -> bool {
+        self.limbs.iter().all(|limb| *limb == 0)
+    }
+
+    fn mul_small(&mut self, factor: u64) {
+        let mut carry = 0u128;
+        for limb in self.limbs.iter_mut() {
+            let product = u128::from(*limb) * u128::from(factor) + carry;
+            *limb = product as u64;
+            carry = product >> 64;
+        }
+        while carry != 0 {
+            self.limbs.push(carry as u64);
+            carry >>= 64;
+        }
+    }
+
+    fn shl(&mut self, bits: usize) {
+        let whole = bits / 64;
+        let part = bits % 64;
+        if whole != 0 {
+            let mut shifted = vec![0u64; whole];
+            shifted.extend_from_slice(&self.limbs);
+            self.limbs = shifted;
+        }
+        if part != 0 {
+            let mut carry = 0u64;
+            for limb in self.limbs.iter_mut() {
+                let next = *limb >> (64 - part);
+                *limb = (*limb << part) | carry;
+                carry = next;
+            }
+            if carry != 0 {
+                self.limbs.push(carry);
+            }
+        }
+    }
+
+    /// Divide by a small divisor in place, returning the remainder.
+    fn div_small(&mut self, divisor: u64) -> u64 {
+        let mut remainder = 0u128;
+        for limb in self.limbs.iter_mut().rev() {
+            let current = (remainder << 64) | u128::from(*limb);
+            *limb = (current / u128::from(divisor)) as u64;
+            remainder = current % u128::from(divisor);
+        }
+        while self.limbs.len() > 1 && *self.limbs.last().unwrap_or(&0) == 0 {
+            self.limbs.pop();
+        }
+        remainder as u64
+    }
+
+    fn to_decimal(&self) -> String {
+        let mut copy = Self {
+            limbs: self.limbs.clone(),
+        };
+        if copy.is_zero() {
+            return String::from("0");
+        }
+        let mut chunks = Vec::new();
+        while !copy.is_zero() {
+            chunks.push(copy.div_small(1_000_000_000));
+        }
+        let mut text = alloc::format!("{}", chunks.pop().unwrap_or(0));
+        while let Some(chunk) = chunks.pop() {
+            text.push_str(&alloc::format!("{chunk:09}"));
+        }
+        text
+    }
+}
+
+/// Round a scaled value to an integer under the given mode; `None` when `UNNECESSARY`
+/// would have to discard a nonzero fraction.
+fn round_scaled(value: f64, mode: Rounding) -> Option<f64> {
+    let floor = crate::math::floor(value);
+    let ceil = -crate::math::floor(-value);
+    let magnitude = value.abs();
+    let mag_floor = crate::math::floor(magnitude);
+    let fraction = magnitude - mag_floor;
+    let sign = if value < 0.0 { -1.0 } else { 1.0 };
+    let rounded = match mode {
+        Rounding::Up => sign * -crate::math::floor(-magnitude),
+        Rounding::Down => sign * mag_floor,
+        Rounding::Ceiling => ceil,
+        Rounding::Floor => floor,
+        Rounding::HalfUp => sign * crate::math::floor(magnitude + 0.5),
+        Rounding::HalfDown => {
+            if fraction == 0.5 {
+                sign * mag_floor
+            } else {
+                sign * crate::math::floor(magnitude + 0.5)
+            }
+        }
+        Rounding::HalfEven => {
+            if fraction > 0.5 || (fraction == 0.5 && mag_floor as i64 % 2 != 0) {
+                sign * (mag_floor + 1.0)
+            } else {
+                sign * mag_floor
+            }
+        }
+        Rounding::Unnecessary => {
+            if value != floor {
+                return None;
+            }
+            value
+        }
+    };
+    Some(rounded)
 }
 
 /// A power of ten, without the float maths the portable core does not carry.
@@ -437,8 +1343,8 @@ pub(crate) const FIELD_POSITION: oxjvm_vm::NativeClass = class(
 const FIELD_POSITION_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        write_int_field(vm, this, "beginIndex", crate::int_arg(args, 1));
-        write_int_field(vm, this, "endIndex", crate::int_arg(args, 1));
+        write_int_field(vm, this, "beginIndex", int_arg(args, 1));
+        write_int_field(vm, this, "endIndex", int_arg(args, 1));
         void()
     }),
     method("getBeginIndex", "()I", ACC_PUBLIC, |vm, _, args| {
@@ -448,32 +1354,32 @@ const FIELD_POSITION_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         int(read_int_field(vm, receiver(args), "endIndex"))
     }),
     method("setBeginIndex", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        write_int_field(vm, receiver(args), "beginIndex", crate::int_arg(args, 1));
+        write_int_field(vm, receiver(args), "beginIndex", int_arg(args, 1));
         void()
     }),
     method("setEndIndex", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        write_int_field(vm, receiver(args), "endIndex", crate::int_arg(args, 1));
+        write_int_field(vm, receiver(args), "endIndex", int_arg(args, 1));
         void()
     }),
 ];
 
 const PARSE_POSITION_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        write_int_field(vm, receiver(args), "index", crate::int_arg(args, 1));
+        write_int_field(vm, receiver(args), "index", int_arg(args, 1));
         void()
     }),
     method("getIndex", "()I", ACC_PUBLIC, |vm, _, args| {
         int(read_int_field(vm, receiver(args), "index"))
     }),
     method("setIndex", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        write_int_field(vm, receiver(args), "index", crate::int_arg(args, 1));
+        write_int_field(vm, receiver(args), "index", int_arg(args, 1));
         void()
     }),
     method("getErrorIndex", "()I", ACC_PUBLIC, |vm, _, args| {
         int(read_int_field(vm, receiver(args), "errorIndex"))
     }),
     method("setErrorIndex", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        write_int_field(vm, receiver(args), "errorIndex", crate::int_arg(args, 1));
+        write_int_field(vm, receiver(args), "errorIndex", int_arg(args, 1));
         void()
     }),
 ];
@@ -586,7 +1492,7 @@ const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
         "(Ljava/lang/Object;)Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let text = number_argument_text(vm, receiver(args), ref_arg(args, 1));
+            let text = number_argument_text(vm, receiver(args), ref_arg(args, 1))?;
             object(vm.make_string(&text)?)
         },
     ),
@@ -595,8 +1501,7 @@ const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
         "(D)Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let pattern = pattern_of(vm, receiver(args));
-            let text = NumberPattern::parse(&pattern).format(args[1].as_double());
+            let text = format_number_required(vm, receiver(args), args[1].as_double())?;
             object(vm.make_string(&text)?)
         },
     ),
@@ -605,8 +1510,7 @@ const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
         "(J)Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let pattern = pattern_of(vm, receiver(args));
-            let text = NumberPattern::parse(&pattern).format(args[1].as_long() as f64);
+            let text = format_number_required(vm, receiver(args), args[1].as_long() as f64)?;
             object(vm.make_string(&text)?)
         },
     ),
@@ -615,8 +1519,7 @@ const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
         "(DLjava/lang/StringBuffer;Ljava/text/FieldPosition;)Ljava/lang/StringBuffer;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let pattern = pattern_of(vm, receiver(args));
-            let text = NumberPattern::parse(&pattern).format(args[1].as_double());
+            let text = format_number_required(vm, receiver(args), args[1].as_double())?;
             append_format_text(vm, ref_arg(args, 2), &text)
         },
     ),
@@ -625,8 +1528,7 @@ const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
         "(JLjava/lang/StringBuffer;Ljava/text/FieldPosition;)Ljava/lang/StringBuffer;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let pattern = pattern_of(vm, receiver(args));
-            let text = NumberPattern::parse(&pattern).format(args[1].as_long() as f64);
+            let text = format_number_required(vm, receiver(args), args[1].as_long() as f64)?;
             append_format_text(vm, ref_arg(args, 2), &text)
         },
     ),
@@ -747,13 +1649,37 @@ const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
         "setRoundingMode",
         "(Ljava/math/RoundingMode;)V",
         ACC_PUBLIC,
-        |_, _, _| void(),
+        |vm, _, args| {
+            let this = receiver(args);
+            let mode = ref_arg(args, 1);
+            if mode.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let (declaring, field) = vm.find_field(
+                vm.class_of(this),
+                "roundingMode",
+                "Ljava/math/RoundingMode;",
+            )?;
+            vm.set_instance_ref(this, declaring, field, mode);
+            void()
+        },
     ),
     method(
         "getRoundingMode",
         "()Ljava/math/RoundingMode;",
         ACC_PUBLIC,
-        |vm, _, _| {
+        |vm, _, args| {
+            let this = receiver(args);
+            if let Some(mode) = vm.read_ref_field(
+                this,
+                vm.class_of(this),
+                "roundingMode",
+                "Ljava/math/RoundingMode;",
+            ) {
+                if !mode.is_null() {
+                    return object(mode);
+                }
+            }
             let class = vm.resolve_class("java/math/RoundingMode")?;
             let value = vm
                 .read_static_ref_if_set(class, "HALF_EVEN", "Ljava/math/RoundingMode;")
@@ -761,51 +1687,232 @@ const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
             object(value)
         },
     ),
-    method("setGroupingUsed", "(Z)V", ACC_PUBLIC, |_, _, _| void()),
-    method("isGroupingUsed", "()Z", ACC_PUBLIC, |_, _, _| {
-        crate::boolean(true)
-    }),
-    method("setParseIntegerOnly", "(Z)V", ACC_PUBLIC, |_, _, _| void()),
-    method("isParseIntegerOnly", "()Z", ACC_PUBLIC, |_, _, _| {
-        crate::boolean(false)
-    }),
-    method("setMaximumFractionDigits", "(I)V", ACC_PUBLIC, |_, _, _| {
+    method("setGroupingUsed", "(Z)V", ACC_PUBLIC, |vm, _, args| {
+        write_number_flag(vm, receiver(args), "groupingUsed", args[1].as_int());
         void()
     }),
-    method("getMaximumFractionDigits", "()I", ACC_PUBLIC, |_, _, _| {
-        int(3)
+    method("isGroupingUsed", "()Z", ACC_PUBLIC, |vm, _, args| {
+        crate::boolean(read_number_flag(vm, receiver(args), "groupingUsed", 1) != 0)
     }),
-    method("setMinimumFractionDigits", "(I)V", ACC_PUBLIC, |_, _, _| {
+    method("setParseIntegerOnly", "(Z)V", ACC_PUBLIC, |vm, _, args| {
+        write_number_flag(vm, receiver(args), "parseIntegerOnly", args[1].as_int());
         void()
     }),
-    method("getMinimumFractionDigits", "()I", ACC_PUBLIC, |_, _, _| {
-        int(0)
+    method("isParseIntegerOnly", "()Z", ACC_PUBLIC, |vm, _, args| {
+        crate::boolean(read_number_flag(vm, receiver(args), "parseIntegerOnly", 0) != 0)
     }),
-    method("setMaximumIntegerDigits", "(I)V", ACC_PUBLIC, |_, _, _| {
-        void()
-    }),
-    method("getMaximumIntegerDigits", "()I", ACC_PUBLIC, |_, _, _| {
-        int(i32::MAX)
-    }),
-    method("setMinimumIntegerDigits", "(I)V", ACC_PUBLIC, |_, _, _| {
-        void()
-    }),
-    method("getMinimumIntegerDigits", "()I", ACC_PUBLIC, |_, _, _| {
-        int(1)
-    }),
+    method(
+        "setMaximumFractionDigits",
+        "(I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            write_number_digits(vm, receiver(args), "maxFractionDigits", int_arg(args, 1));
+            void()
+        },
+    ),
+    method(
+        "getMaximumFractionDigits",
+        "()I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            int(read_number_digits(
+                vm,
+                receiver(args),
+                "maxFractionDigits",
+                3,
+            ))
+        },
+    ),
+    method(
+        "setMinimumFractionDigits",
+        "(I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            write_number_digits(vm, receiver(args), "minFractionDigits", int_arg(args, 1));
+            void()
+        },
+    ),
+    method(
+        "getMinimumFractionDigits",
+        "()I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            int(read_number_digits(
+                vm,
+                receiver(args),
+                "minFractionDigits",
+                0,
+            ))
+        },
+    ),
+    method(
+        "setMaximumIntegerDigits",
+        "(I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            write_number_digits(vm, receiver(args), "maxIntegerDigits", int_arg(args, 1));
+            void()
+        },
+    ),
+    method(
+        "getMaximumIntegerDigits",
+        "()I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            int(read_number_digits(
+                vm,
+                receiver(args),
+                "maxIntegerDigits",
+                i32::MAX,
+            ))
+        },
+    ),
+    method(
+        "setMinimumIntegerDigits",
+        "(I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            write_number_digits(vm, receiver(args), "minIntegerDigits", int_arg(args, 1));
+            void()
+        },
+    ),
+    method(
+        "getMinimumIntegerDigits",
+        "()I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            int(read_number_digits(
+                vm,
+                receiver(args),
+                "minIntegerDigits",
+                1,
+            ))
+        },
+    ),
 ];
 
+/// Mark a fresh number format's digit/grouping settings as unset (`i32::MIN`), so the
+/// getters fall back to the JDK defaults instead of reading the zero-filled fields.
+fn init_number_format_state(vm: &mut Vm<'_>, this: ObjectRef) {
+    let class = vm.class_of(this);
+    for name in [
+        "maxFractionDigits",
+        "minFractionDigits",
+        "maxIntegerDigits",
+        "minIntegerDigits",
+        "groupingUsed",
+        "parseIntegerOnly",
+    ] {
+        if let Some((declaring, field)) = vm.find_field_opt(class, name, "I") {
+            vm.set_instance_int(this, declaring, field, i32::MIN);
+        }
+    }
+}
+
+/// Store a digit-count setting; negative values mean "unset", matching the JDK's defaults.
+fn write_number_digits(vm: &mut Vm<'_>, this: ObjectRef, name: &str, value: i32) {
+    let value = if value < 0 { i32::MIN } else { value };
+    if let Some((declaring, field)) = vm.find_field_opt(vm.class_of(this), name, "I") {
+        vm.set_instance_int(this, declaring, field, value);
+    }
+}
+
+/// Read a digit-count setting, falling back to the JDK default when unset.
+fn read_number_digits(vm: &Vm<'_>, this: ObjectRef, name: &str, default: i32) -> i32 {
+    match vm.read_instance_int_named(this, vm.class_of(this), name, "I") {
+        Some(value) if value != i32::MIN => value,
+        _ => default,
+    }
+}
+
+/// Store a boolean setting as 0/1, with `i32::MIN` meaning "unset".
+fn write_number_flag(vm: &mut Vm<'_>, this: ObjectRef, name: &str, value: i32) {
+    if let Some((declaring, field)) = vm.find_field_opt(vm.class_of(this), name, "I") {
+        vm.set_instance_int(this, declaring, field, i32::from(value != 0));
+    }
+}
+
+/// Read a boolean setting, falling back to the JDK default when unset.
+fn read_number_flag(vm: &Vm<'_>, this: ObjectRef, name: &str, default: i32) -> i32 {
+    match vm.read_instance_int_named(this, vm.class_of(this), name, "I") {
+        Some(value) if value == 0 || value == 1 => value,
+        _ => default,
+    }
+}
+
+/// The pattern a number format writes with, after its digit/grouping settings are applied,
+/// and the rounding mode it rounds under.
+fn number_format_state(vm: &mut Vm<'_>, format: ObjectRef) -> (NumberPattern, Rounding) {
+    let mut pattern = NumberPattern::parse(&pattern_of(vm, format));
+    let class = vm.class_of(format);
+    let max_fraction = read_number_digits(vm, format, "maxFractionDigits", -1);
+    if max_fraction >= 0 {
+        pattern.max_fraction = max_fraction as usize;
+    }
+    let min_fraction = read_number_digits(vm, format, "minFractionDigits", -1);
+    if min_fraction >= 0 {
+        pattern.min_fraction = min_fraction as usize;
+        if pattern.max_fraction < pattern.min_fraction {
+            pattern.max_fraction = pattern.min_fraction;
+        }
+    }
+    let min_integer = read_number_digits(vm, format, "minIntegerDigits", -1);
+    if min_integer >= 0 {
+        pattern.min_integer = min_integer as usize;
+    }
+    if read_number_flag(vm, format, "groupingUsed", 1) == 0 {
+        pattern.grouping = 0;
+    }
+    let mode = vm
+        .read_ref_field(format, class, "roundingMode", "Ljava/math/RoundingMode;")
+        .filter(|mode| !mode.is_null())
+        .map(|mode| Rounding::from_ordinal(read_int_field(vm, mode, "ordinal")))
+        .unwrap_or(Rounding::HalfEven);
+    (pattern, mode)
+}
+
+/// Format a number under a format's settings; `None` when `UNNECESSARY` finds a fraction.
+fn format_number_stateful(vm: &mut Vm<'_>, format: ObjectRef, value: f64) -> Option<String> {
+    let (pattern, mode) = number_format_state(vm, format);
+    pattern.format_with(value, mode)
+}
+
 /// The text of a number argument, in the form the JDK formats.
-fn number_argument_text(vm: &mut Vm<'_>, format: ObjectRef, argument: ObjectRef) -> String {
+fn number_argument_text(
+    vm: &mut Vm<'_>,
+    format: ObjectRef,
+    argument: ObjectRef,
+) -> Result<String, VmError> {
     if argument.is_null() {
-        return String::from("null");
+        return Ok(String::from("null"));
+    }
+    // BigInteger and BigDecimal are formatted from their exact digits, not through a double.
+    for name in ["java/math/BigInteger", "java/math/BigDecimal"] {
+        if let Ok(class) = vm.resolve_class(name) {
+            if vm.is_instance(argument, class) {
+                let text = vm
+                    .read_string_field(argument, vm.class_of(argument), "value")
+                    .unwrap_or_default();
+                return format_exact_decimal(vm, format, &text);
+            }
+        }
     }
     match number_value(vm, argument) {
-        Some(value) => {
-            let pattern = NumberPattern::parse(&pattern_of(vm, format));
-            pattern.format(value)
-        }
-        None => number_to_text(vm, argument),
+        Some(value) => format_number_required(vm, format, value),
+        None => Ok(number_to_text(vm, argument)),
+    }
+}
+
+/// Format under the format's settings, throwing `ArithmeticException` when the rounding
+/// mode is `UNNECESSARY` and the value needs rounding.
+fn format_number_required(
+    vm: &mut Vm<'_>,
+    format: ObjectRef,
+    value: f64,
+) -> Result<String, VmError> {
+    match format_number_stateful(vm, format, value) {
+        Some(text) => Ok(text),
+        None => Err(vm.throw_new("java/lang/ArithmeticException", Some("Rounding necessary"))),
     }
 }
 
@@ -813,6 +1920,7 @@ fn number_argument_text(vm: &mut Vm<'_>, format: ObjectRef, argument: ObjectRef)
 fn number_format(vm: &mut Vm<'_>, pattern: &NumberPattern) -> Result<Value, VmError> {
     let class = vm.resolve_class("java/text/OjvmNumberFormat")?;
     let instance = vm.new_instance(class)?;
+    init_number_format_state(vm, instance);
     let text = vm.make_string(&pattern.text())?;
     let (declaring, field) = vm.find_field(class, "pattern", "Ljava/lang/String;")?;
     vm.set_instance_ref(instance, declaring, field, text);
@@ -908,6 +2016,7 @@ pub(crate) const DECIMAL_FORMAT: oxjvm_vm::NativeClass = class(
 const DECIMAL_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        init_number_format_state(vm, this);
         let text = vm.make_string("#,##0.###")?;
         let (declaring, field) =
             vm.find_field(vm.class_of(this), "pattern", "Ljava/lang/String;")?;
@@ -920,6 +2029,7 @@ const DECIMAL_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
+            init_number_format_state(vm, this);
             let (declaring, field) =
                 vm.find_field(vm.class_of(this), "pattern", "Ljava/lang/String;")?;
             vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
@@ -932,6 +2042,7 @@ const DECIMAL_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
+            init_number_format_state(vm, this);
             let (declaring, field) =
                 vm.find_field(vm.class_of(this), "pattern", "Ljava/lang/String;")?;
             vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
@@ -1096,7 +2207,20 @@ pub(crate) const NUMBER_FORMAT: oxjvm_vm::NativeClass = class(
     Some("java/text/Format"),
     &[],
     ACC_PUBLIC | ACC_ABSTRACT,
-    &[],
+    &[
+        field("maxFractionDigits", "I", ACC_PRIVATE, None),
+        field("minFractionDigits", "I", ACC_PRIVATE, None),
+        field("maxIntegerDigits", "I", ACC_PRIVATE, None),
+        field("minIntegerDigits", "I", ACC_PRIVATE, None),
+        field(
+            "roundingMode",
+            "Ljava/math/RoundingMode;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field("groupingUsed", "I", ACC_PRIVATE, None),
+        field("parseIntegerOnly", "Z", ACC_PRIVATE, None),
+    ],
     &NUMBER_FORMAT_METHODS,
     None,
 );
@@ -1148,13 +2272,13 @@ const DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
         "getDateInstance",
         "(I)Ljava/text/DateFormat;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| date_format(vm, date_pattern(date_style_name(crate::int_arg(args, 0)))),
+        |vm, _, args| date_format(vm, date_pattern(date_style_name(int_arg(args, 0)))),
     ),
     method(
         "getDateInstance",
         "(ILjava/util/Locale;)Ljava/text/DateFormat;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| date_format(vm, date_pattern(date_style_name(crate::int_arg(args, 0)))),
+        |vm, _, args| date_format(vm, date_pattern(date_style_name(int_arg(args, 0)))),
     ),
     method(
         "getTimeInstance",
@@ -1257,21 +2381,21 @@ const DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
         "getTimeInstance",
         "(I)Ljava/text/DateFormat;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| date_format(vm, time_pattern(date_style_name(crate::int_arg(args, 0)))),
+        |vm, _, args| date_format(vm, time_pattern(date_style_name(int_arg(args, 0)))),
     ),
     method(
         "getTimeInstance",
         "(ILjava/util/Locale;)Ljava/text/DateFormat;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| date_format(vm, time_pattern(date_style_name(crate::int_arg(args, 0)))),
+        |vm, _, args| date_format(vm, time_pattern(date_style_name(int_arg(args, 0)))),
     ),
     method(
         "getDateTimeInstance",
         "(II)Ljava/text/DateFormat;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            let date = date_pattern(date_style_name(crate::int_arg(args, 0)));
-            let time = time_pattern(date_style_name(crate::int_arg(args, 1)));
+            let date = date_pattern(date_style_name(int_arg(args, 0)));
+            let time = time_pattern(date_style_name(int_arg(args, 1)));
             date_format(vm, &alloc::format!("{date} {time}"))
         },
     ),
@@ -1280,8 +2404,8 @@ const DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
         "(IILjava/util/Locale;)Ljava/text/DateFormat;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            let date = date_pattern(date_style_name(crate::int_arg(args, 0)));
-            let time = time_pattern(date_style_name(crate::int_arg(args, 1)));
+            let date = date_pattern(date_style_name(int_arg(args, 0)));
+            let time = time_pattern(date_style_name(int_arg(args, 1)));
             date_format(vm, &alloc::format!("{date} {time}"))
         },
     ),
@@ -1774,6 +2898,17 @@ fn number_value(vm: &mut Vm<'_>, argument: ObjectRef) -> Option<f64> {
     if !is_number(vm, argument) {
         return None;
     }
+    // BigDecimal and BigInteger keep their value as a decimal string, not a boxed primitive.
+    for name in ["java/math/BigDecimal", "java/math/BigInteger"] {
+        if let Ok(class) = vm.resolve_class(name) {
+            if vm.is_instance(argument, class) {
+                let text = vm
+                    .read_string_field(argument, vm.class_of(argument), "value")
+                    .unwrap_or_default();
+                return text.parse::<f64>().ok();
+            }
+        }
+    }
     if is_double(vm, argument) {
         return Some(f64::from_bits(
             crate::boxed::read_value_long(vm, argument) as u64
@@ -1827,6 +2962,7 @@ fn compact_number_format(
 ) -> Result<Value, VmError> {
     let class = vm.resolve_class("java/text/CompactNumberFormat")?;
     let instance = vm.new_instance(class)?;
+    init_number_format_state(vm, instance);
     let text = vm.make_string(decimal_pattern)?;
     let (declaring, field) = vm.find_field(class, "pattern", "Ljava/lang/String;")?;
     vm.set_instance_ref(instance, declaring, field, text);
@@ -3145,7 +4281,7 @@ const MESSAGE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
         "(I)Ljava/text/Format;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let index = crate::int_arg(args, 1);
+            let index = int_arg(args, 1);
             object(message_format_at(vm, receiver(args), index))
         },
     ),
@@ -3283,7 +4419,7 @@ const MESSAGE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
         "(ILjava/text/Format;)V",
         ACC_PUBLIC,
         |vm, _, args| {
-            let index = crate::int_arg(args, 1);
+            let index = int_arg(args, 1);
             set_message_format(vm, receiver(args), index, ref_arg(args, 2));
             void()
         },
@@ -3293,7 +4429,7 @@ const MESSAGE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
         "(ILjava/text/Format;)V",
         ACC_PUBLIC,
         |vm, _, args| {
-            let index = crate::int_arg(args, 1);
+            let index = int_arg(args, 1);
             set_message_format(vm, receiver(args), index, ref_arg(args, 2));
             void()
         },
@@ -3304,7 +4440,7 @@ const MESSAGE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
         ACC_PUBLIC,
         |vm, _, args| {
             // The old name of `setFormatByArgumentIndex`.
-            let index = crate::int_arg(args, 1);
+            let index = int_arg(args, 1);
             set_message_format(vm, receiver(args), index, ref_arg(args, 2));
             void()
         },
@@ -4003,7 +5139,7 @@ const PARSE_EXCEPTION_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         |vm, context, args| {
             let this = receiver(args);
             crate::throwable::exception_ctor(vm, context, args)?;
-            write_int_field(vm, this, "errorOffset", crate::int_arg(args, 2));
+            write_int_field(vm, this, "errorOffset", int_arg(args, 2));
             void()
         },
     ),
