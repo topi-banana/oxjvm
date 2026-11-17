@@ -913,7 +913,12 @@ fn map_equivalents(
     let mut key_map: Vec<(String, Vec<String>)> = Vec::new();
     for (key, value) in pairs {
         let key_text = vm.string_value(key).unwrap_or_default().to_lowercase();
-        let equivalents = crate::util::collection_elements(vm, value)?;
+        // A null equivalent list drops the matching range, as in the JDK.
+        let equivalents = if value.is_null() {
+            Vec::new()
+        } else {
+            crate::util::collection_elements(vm, value)?
+        };
         let mut texts = Vec::new();
         for equivalent in equivalents {
             texts.push(string_arg(vm, Value::Ref(equivalent))?);
