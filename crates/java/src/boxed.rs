@@ -79,7 +79,7 @@ pub(crate) const NUMBER: oxjvm_vm::NativeClass = class(
 // Integer
 // -------------------------------------------------------------------------------------------
 
-const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
+const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 43] = [
     method("<init>", "(I)V", ACC_PUBLIC, boxed_int_init),
     method("intValue", "()I", ACC_PUBLIC, |vm, _, args| {
         int(read_value_int(vm, receiver(args)))
@@ -199,6 +199,12 @@ const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
         int(int_arg(args, 0).signum())
     }),
     method(
+        "reverseBytes",
+        "(I)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| int(int_arg(args, 0).swap_bytes()),
+    ),
+    method(
         "compareUnsigned",
         "(II)I",
         ACC_PUBLIC | ACC_STATIC,
@@ -212,7 +218,7 @@ const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
         "(I)Ljava/lang/String;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            let text = format::int_to_radix_string(int_arg(args, 0), 16);
+            let text = format::ulong_to_radix_string(int_arg(args, 0) as u32 as u64, 16);
             object(vm.make_string(&text)?)
         },
     ),
@@ -221,7 +227,7 @@ const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
         "(I)Ljava/lang/String;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            let text = format::int_to_radix_string(int_arg(args, 0), 2);
+            let text = format::ulong_to_radix_string(int_arg(args, 0) as u32 as u64, 2);
             object(vm.make_string(&text)?)
         },
     ),
@@ -230,7 +236,7 @@ const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
         "(I)Ljava/lang/String;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            let text = format::int_to_radix_string(int_arg(args, 0), 8);
+            let text = format::ulong_to_radix_string(int_arg(args, 0) as u32 as u64, 8);
             object(vm.make_string(&text)?)
         },
     ),
@@ -261,6 +267,21 @@ const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
     method("bitCount", "(I)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
         int(int_arg(args, 0).count_ones() as i32)
     }),
+    method("reverse", "(I)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        int(int_arg(args, 0).reverse_bits())
+    }),
+    method(
+        "rotateLeft",
+        "(II)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| int(int_arg(args, 0).rotate_left(int_arg(args, 1) as u32)),
+    ),
+    method(
+        "rotateRight",
+        "(II)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| int(int_arg(args, 0).rotate_right(int_arg(args, 1) as u32)),
+    ),
     method(
         "numberOfLeadingZeros",
         "(I)I",
@@ -837,7 +858,7 @@ fn unsigned_radix_string(mut value: u64, radix: i32) -> String {
     digits.iter().rev().collect()
 }
 
-const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
+const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
     method("<init>", "(J)V", ACC_PUBLIC, |vm, _, args| {
         write_value_long(vm, receiver(args), long_arg(args, 1));
         void()
@@ -951,7 +972,7 @@ const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
         "(J)Ljava/lang/String;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            let text = format::long_to_radix_string(long_arg(args, 0), 16);
+            let text = format::ulong_to_radix_string(long_arg(args, 0) as u64, 16);
             object(vm.make_string(&text)?)
         },
     ),
@@ -960,7 +981,7 @@ const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
         "(J)Ljava/lang/String;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            let text = format::long_to_radix_string(long_arg(args, 0), 2);
+            let text = format::ulong_to_radix_string(long_arg(args, 0) as u64, 2);
             object(vm.make_string(&text)?)
         },
     ),
@@ -1090,6 +1111,30 @@ const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
     ),
     method("bitCount", "(J)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
         int(long_arg(args, 0).count_ones() as i32)
+    }),
+    method("reverse", "(J)J", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        long(long_arg(args, 0).reverse_bits())
+    }),
+    method(
+        "rotateLeft",
+        "(JI)J",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| long(long_arg(args, 0).rotate_left(int_arg(args, 1) as u32)),
+    ),
+    method(
+        "rotateRight",
+        "(JI)J",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| long(long_arg(args, 0).rotate_right(int_arg(args, 1) as u32)),
+    ),
+    method(
+        "reverseBytes",
+        "(J)J",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| long(long_arg(args, 0).swap_bytes()),
+    ),
+    method("signum", "(J)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        int(long_arg(args, 0).signum() as i32)
     }),
 ];
 

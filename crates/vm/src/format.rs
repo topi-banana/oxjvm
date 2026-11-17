@@ -210,6 +210,30 @@ pub fn int_to_radix_string(value: i32, radix: u32) -> String {
     out
 }
 
+/// Format a `u64` in an arbitrary radix (unsigned, as `Long.toBinaryString` etc. require).
+#[must_use]
+pub fn ulong_to_radix_string(mut value: u64, radix: u32) -> String {
+    if radix == 10 {
+        return value.to_string();
+    }
+    if value == 0 {
+        return "0".into();
+    }
+    let mut digits = [0u8; 65];
+    let mut count = 0;
+    while value != 0 {
+        let digit = (value % u64::from(radix)) as u32;
+        digits[count] = core::char::from_digit(digit, radix).unwrap_or('?') as u8;
+        count += 1;
+        value /= u64::from(radix);
+    }
+    let mut out = String::with_capacity(count);
+    for index in (0..count).rev() {
+        out.push(digits[index] as char);
+    }
+    out
+}
+
 /// Parse a `float` like `Float.parseFloat`, including `NaN`, `Infinity`, and hex literals.
 #[must_use]
 pub fn parse_float(text: &str) -> Option<f32> {
