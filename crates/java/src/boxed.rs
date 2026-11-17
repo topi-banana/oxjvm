@@ -1230,7 +1230,7 @@ pub(crate) const LONG: oxjvm_vm::NativeClass = class(
 // Short / Byte / Boolean / Character / Float / Double / Void
 // -------------------------------------------------------------------------------------------
 
-const SHORT_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const SHORT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method("<init>", "(S)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), int_arg(args, 1));
         void()
@@ -1250,6 +1250,15 @@ const SHORT_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let text = format::int_to_string(read_value_int(vm, receiver(args)) as i16 as i32);
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "toString",
+        "(S)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = format::int_to_string(int_arg(args, 0) as i16 as i32);
             object(vm.make_string(&text)?)
         },
     ),
@@ -1339,7 +1348,7 @@ pub(crate) const SHORT: oxjvm_vm::NativeClass = class(
     Some(short_clinit),
 );
 
-const BYTE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const BYTE_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method("<init>", "(B)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), int_arg(args, 1));
         void()
@@ -1356,6 +1365,15 @@ const BYTE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let text = format::int_to_string(read_value_int(vm, receiver(args)) as i8 as i32);
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "toString",
+        "(B)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = format::int_to_string(int_arg(args, 0) as i8 as i32);
             object(vm.make_string(&text)?)
         },
     ),
