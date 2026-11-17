@@ -1932,7 +1932,7 @@ fn boolean_get_boolean(
     ))
 }
 
-const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 50] = [
+const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 51] = [
     method("<init>", "(C)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), int_arg(args, 1));
         void()
@@ -2082,6 +2082,12 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 50] = [
     method("hashCode", "(C)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
         int(int_arg(args, 0))
     }),
+    method(
+        "reverseBytes",
+        "(C)C",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| int(i32::from((int_arg(args, 0) as u16).swap_bytes())),
+    ),
     method(
         "toString",
         "(C)Ljava/lang/String;",
