@@ -1422,6 +1422,39 @@ impl<'a> Vm<'a> {
         }
     }
 
+    /// Write an instance `double` field.
+    pub fn set_instance_double(
+        &mut self,
+        object: ObjectRef,
+        class: ClassId,
+        field: u32,
+        value: f64,
+    ) {
+        let slot = self.classes.get(class).fields[field as usize].slot as usize;
+        if let Some(ObjectData::Instance(fields)) =
+            self.heap.get_mut(object).map(|object| &mut object.data)
+        {
+            fields[slot] = Value::Double(value);
+        }
+    }
+
+    /// Read an instance `double` field by name and descriptor.
+    #[must_use]
+    pub fn read_instance_double_named(
+        &self,
+        object: ObjectRef,
+        class: ClassId,
+        name: &str,
+        descriptor: &str,
+    ) -> Option<f64> {
+        let (declaring, field) = self.find_method_field(class, name, descriptor)?;
+        let slot = self.classes.get(declaring).fields[field as usize].slot as usize;
+        match self.heap.get(object)?.data {
+            ObjectData::Instance(ref fields) => Some(fields[slot].as_double()),
+            _ => None,
+        }
+    }
+
     /// Read an instance `long` field by name and descriptor.
     #[must_use]
     pub fn read_instance_long_named(

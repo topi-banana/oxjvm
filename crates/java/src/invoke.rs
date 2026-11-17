@@ -1004,6 +1004,40 @@ fn new_var_handle(
     object(handle)
 }
 
+fn var_handle_invoke_exact(vm: &Vm<'_>, this: ObjectRef) -> bool {
+    crate::lang::read_int_field(vm, this, "invokeExact") != 0
+}
+
+/// Copy a `VarHandle` with a new invoke-behavior mode, preserving its coordinates.
+fn var_handle_with_mode(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    exact: bool,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/lang/invoke/VarHandle")?;
+    let copy = vm.new_instance(class)?;
+    for (name, descriptor) in [
+        ("targetClass", "Ljava/lang/Class;"),
+        ("fieldType", "Ljava/lang/Class;"),
+        ("name", "Ljava/lang/String;"),
+        ("descriptor", "Ljava/lang/String;"),
+    ] {
+        if let Some(value) = vm.read_ref_field(this, vm.class_of(this), name, descriptor) {
+            if let Some((declaring, field)) = vm.find_field_opt(class, name, descriptor) {
+                vm.set_instance_ref(copy, declaring, field, value);
+            }
+        }
+    }
+    let kind = crate::lang::read_int_field(vm, this, "kind");
+    if let Some((declaring, field)) = vm.find_field_opt(class, "kind", "I") {
+        vm.set_instance_int(copy, declaring, field, kind);
+    }
+    if let Some((declaring, field)) = vm.find_field_opt(class, "invokeExact", "I") {
+        vm.set_instance_int(copy, declaring, field, i32::from(exact));
+    }
+    Ok(copy)
+}
+
 fn var_handle_parts(
     vm: &mut Vm<'_>,
     this: ObjectRef,
@@ -1081,7 +1115,7 @@ fn var_handle_set(
     Ok(())
 }
 
-const VAR_HANDLE_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
+const VAR_HANDLE_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
     method(
         "get",
         "(Ljava/lang/Object;)Ljava/lang/Object;",
@@ -1414,9 +1448,36 @@ const VAR_HANDLE_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
         ACC_PUBLIC,
         |_, _, _| boolean(true),
     ),
-    method("hasInvokeExactBehavior", "()Z", ACC_PUBLIC, |_, _, _| {
-        boolean(false)
-    }),
+    method(
+        "hasInvokeExactBehavior",
+        "()Z",
+        ACC_PUBLIC,
+        |vm, _, args| boolean(var_handle_invoke_exact(vm, receiver(args))),
+    ),
+    method(
+        "withInvokeBehavior",
+        "()Ljava/lang/invoke/VarHandle;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if !var_handle_invoke_exact(vm, this) {
+                return object(this);
+            }
+            object(var_handle_with_mode(vm, this, false)?)
+        },
+    ),
+    method(
+        "withInvokeExactBehavior",
+        "()Ljava/lang/invoke/VarHandle;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if var_handle_invoke_exact(vm, this) {
+                return object(this);
+            }
+            object(var_handle_with_mode(vm, this, true)?)
+        },
+    ),
     method(
         "varType",
         "()Ljava/lang/Class;",
@@ -1461,6 +1522,7 @@ pub(crate) const VAR_HANDLE: oxjvm_vm::NativeClass = class(
         field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("descriptor", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("kind", "I", ACC_PRIVATE, None),
+        field("invokeExact", "I", ACC_PRIVATE, None),
     ],
     &VAR_HANDLE_METHODS,
     None,

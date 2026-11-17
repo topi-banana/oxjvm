@@ -9,7 +9,7 @@ use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
 use crate::{boolean, class, field, int, method, object, receiver, ref_arg, string_arg, void};
 
-const LOCALE_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
+const LOCALE_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -121,6 +121,42 @@ const LOCALE_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
         "(Ljava/lang/String;)Ljava/util/Locale;",
         ACC_PUBLIC | ACC_STATIC,
         locale_for_language_tag,
+    ),
+    method(
+        "filter",
+        "(Ljava/util/List;Ljava/util/Collection;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| crate::locale_match::locale_filter(vm, args, false),
+    ),
+    method(
+        "filter",
+        "(Ljava/util/List;Ljava/util/Collection;Ljava/util/Locale$FilteringMode;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| crate::locale_match::locale_filter(vm, args, true),
+    ),
+    method(
+        "filterTags",
+        "(Ljava/util/List;Ljava/util/Collection;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| crate::locale_match::locale_filter_tags(vm, args, false),
+    ),
+    method(
+        "filterTags",
+        "(Ljava/util/List;Ljava/util/Collection;Ljava/util/Locale$FilteringMode;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| crate::locale_match::locale_filter_tags(vm, args, true),
+    ),
+    method(
+        "lookup",
+        "(Ljava/util/List;Ljava/util/Collection;)Ljava/util/Locale;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| crate::locale_match::locale_lookup(vm, args),
+    ),
+    method(
+        "lookupTag",
+        "(Ljava/util/List;Ljava/util/Collection;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| crate::locale_match::locale_lookup_tag(vm, args),
     ),
     method(
         "equals",
@@ -246,6 +282,7 @@ pub(crate) const LOCALE: oxjvm_vm::NativeClass = class(
         field("language", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("country", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("variant", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("languageTag", "Ljava/lang/String;", ACC_PRIVATE, None),
         field(
             "defaultLocale",
             "Ljava/util/Locale;",
@@ -719,20 +756,113 @@ fn locale_to_language_tag(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let this = receiver(args);
+    let class = vm.class_of(this);
+    // A locale built by `forLanguageTag` keeps its canonical BCP 47 tag.
+    if let Some(tag) = vm.read_string_field(this, class, "languageTag") {
+        if !tag.is_empty() {
+            return object(vm.make_string(&tag)?);
+        }
+    }
     let language = vm
-        .read_string_field(this, vm.class_of(this), "language")
-        .unwrap_or_default();
+        .read_string_field(this, class, "language")
+        .unwrap_or_default()
+        .to_lowercase();
     let country = vm
-        .read_string_field(this, vm.class_of(this), "country")
+        .read_string_field(this, class, "country")
+        .unwrap_or_default()
+        .to_uppercase();
+    let variant = vm
+        .read_string_field(this, class, "variant")
         .unwrap_or_default();
-    let text = if language.is_empty() {
+    let mut text = if language.is_empty() {
         String::from("und")
-    } else if country.is_empty() {
-        language
     } else {
-        alloc::format!("{language}-{country}")
+        language
     };
+    if !country.is_empty() {
+        text.push('-');
+        text.push_str(&country);
+    }
+    if !variant.is_empty() {
+        for part in variant.split('_') {
+            text.push('-');
+            text.push_str(&part.to_lowercase());
+        }
+    }
     object(vm.make_string(&text)?)
+}
+
+/// Whether every character is an ASCII letter.
+fn tag_alpha(subtag: &str) -> bool {
+    !subtag.is_empty() && subtag.chars().all(|c| c.is_ascii_alphabetic())
+}
+
+/// Whether every character is an ASCII digit.
+fn tag_digit(subtag: &str) -> bool {
+    !subtag.is_empty() && subtag.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Whether every character is an ASCII letter or digit.
+fn tag_alphanum(subtag: &str) -> bool {
+    !subtag.is_empty() && subtag.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+fn tag_titlecase(subtag: &str) -> String {
+    let mut chars = subtag.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase(),
+        None => String::new(),
+    }
+}
+
+/// A BCP 47 variant subtag: 5-8 alphanumerics, or 4 characters starting with a digit.
+fn tag_variant(subtag: &str) -> bool {
+    (subtag.len() >= 5 && subtag.len() <= 8 && tag_alphanum(subtag))
+        || (subtag.len() == 4 && subtag.chars().next().is_some_and(|c| c.is_ascii_digit()))
+}
+
+/// Parse a BCP 47 language tag into its canonical form plus the legacy
+/// language/country/variant fields, normalizing case the way the JDK does.
+fn parse_language_tag(tag: &str) -> (String, String, String, String) {
+    let subtags: Vec<&str> = tag.split('-').collect();
+    let mut canonical: Vec<String> = Vec::new();
+    let mut language = String::new();
+    let mut country = String::new();
+    let mut variant = String::new();
+    let mut i = 0;
+    if i < subtags.len() && tag_alpha(subtags[i]) && (2..=8).contains(&subtags[i].len()) {
+        language = subtags[i].to_lowercase();
+        canonical.push(language.clone());
+        i += 1;
+    }
+    if i < subtags.len() && subtags[i].len() == 4 && tag_alpha(subtags[i]) {
+        canonical.push(tag_titlecase(subtags[i]));
+        i += 1;
+    }
+    if i < subtags.len()
+        && ((subtags[i].len() == 2 && tag_alpha(subtags[i]))
+            || (subtags[i].len() == 3 && tag_digit(subtags[i])))
+    {
+        country = subtags[i].to_uppercase();
+        canonical.push(country.clone());
+        i += 1;
+    }
+    while i < subtags.len() && tag_variant(subtags[i]) {
+        let part = subtags[i].to_lowercase();
+        if variant.is_empty() {
+            variant = part.clone();
+        } else {
+            variant.push('_');
+            variant.push_str(&part);
+        }
+        canonical.push(part);
+        i += 1;
+    }
+    while i < subtags.len() {
+        canonical.push(subtags[i].to_lowercase());
+        i += 1;
+    }
+    (canonical.join("-"), language, country, variant)
 }
 
 fn locale_for_language_tag(
@@ -741,31 +871,34 @@ fn locale_for_language_tag(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let tag = string_arg(vm, args[0])?;
-    let (language, rest) = match tag.split_once('-') {
-        Some((language, rest)) => (language.to_string(), rest.to_string()),
-        None => (tag.clone(), String::new()),
-    };
-    let country = if rest.is_empty() {
-        String::new()
-    } else {
-        rest.split('-').next().unwrap_or("").to_string()
-    };
+    let (canonical, language, country, variant) = parse_language_tag(&tag);
     let class = vm.resolve_class("java/util/Locale")?;
     let instance = vm.new_instance(class)?;
     let (declaring, ctor) = vm
-        .find_method(class, "<init>", "(Ljava/lang/String;Ljava/lang/String;)V")
+        .find_method(
+            class,
+            "<init>",
+            "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
+        )
         .ok_or_else(|| VmError::internal("Locale lacks its constructor"))?;
-    let language = vm.make_string(&language)?;
-    let country = vm.make_string(&country)?;
+    let language_ref = vm.make_string(&language)?;
+    let country_ref = vm.make_string(&country)?;
+    let variant_ref = vm.make_string(&variant)?;
     vm.invoke_method(
         declaring,
         ctor,
         vec![
             Value::Ref(instance),
-            Value::Ref(language),
-            Value::Ref(country),
+            Value::Ref(language_ref),
+            Value::Ref(country_ref),
+            Value::Ref(variant_ref),
         ],
     )?;
+    let tag_ref = vm.make_string(&canonical)?;
+    if let Some((declaring, field)) = vm.find_field_opt(class, "languageTag", "Ljava/lang/String;")
+    {
+        vm.set_instance_ref(instance, declaring, field, tag_ref);
+    }
     object(instance)
 }
 

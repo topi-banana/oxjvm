@@ -9,7 +9,7 @@ use alloc::vec;
 use oxjvm_classfile::flags::*;
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
-use crate::{boolean, class, field, int, method, object, receiver, ref_arg, void};
+use crate::{boolean, class, field, int, method, object, receiver, ref_arg, string_arg, void};
 
 fn new_instance(vm: &mut Vm<'_>, class_name: &str) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class(class_name)?;
@@ -983,7 +983,7 @@ pub(crate) const CHANNEL_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const CHANNELS_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+const CHANNELS_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method(
         "newChannel",
         "(Ljava/io/InputStream;)Ljava/nio/channels/ReadableByteChannel;",
@@ -1042,7 +1042,177 @@ const CHANNELS_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
             object(stream)
         },
     ),
+    method(
+        "newWriter",
+        "(Ljava/nio/channels/WritableByteChannel;Ljava/lang/String;)Ljava/io/Writer;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| channels_new_writer(vm, ref_arg(args, 0), args[1], WriterCharset::Name),
+    ),
+    method(
+        "newWriter",
+        "(Ljava/nio/channels/WritableByteChannel;Ljava/nio/charset/Charset;)Ljava/io/Writer;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| channels_new_writer(vm, ref_arg(args, 0), args[1], WriterCharset::Charset),
+    ),
+    method(
+        "newWriter",
+        "(Ljava/nio/channels/WritableByteChannel;Ljava/nio/charset/CharsetEncoder;)Ljava/io/Writer;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| channels_new_writer(vm, ref_arg(args, 0), args[1], WriterCharset::Encoder),
+    ),
+    method(
+        "newReader",
+        "(Ljava/nio/channels/ReadableByteChannel;Ljava/lang/String;)Ljava/io/Reader;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| channels_new_reader(vm, ref_arg(args, 0), args[1], WriterCharset::Name),
+    ),
+    method(
+        "newReader",
+        "(Ljava/nio/channels/ReadableByteChannel;Ljava/nio/charset/Charset;)Ljava/io/Reader;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| channels_new_reader(vm, ref_arg(args, 0), args[1], WriterCharset::Charset),
+    ),
+    method(
+        "newReader",
+        "(Ljava/nio/channels/ReadableByteChannel;Ljava/nio/charset/CharsetDecoder;)Ljava/io/Reader;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| channels_new_reader(vm, ref_arg(args, 0), args[1], WriterCharset::Encoder),
+    ),
+    method(
+        "newWriter",
+        "(Ljava/nio/channels/WritableByteChannel;Ljava/nio/charset/CharsetEncoder;I)Ljava/io/Writer;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| channels_new_writer(vm, ref_arg(args, 0), args[1], WriterCharset::Encoder),
+    ),
+    method(
+        "newReader",
+        "(Ljava/nio/channels/ReadableByteChannel;Ljava/nio/charset/CharsetDecoder;I)Ljava/io/Reader;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| channels_new_reader(vm, ref_arg(args, 0), args[1], WriterCharset::Encoder),
+    ),
 ];
+
+/// How the charset argument of `Channels.newWriter`/`newReader` is supplied.
+enum WriterCharset {
+    Name,
+    Charset,
+    Encoder,
+}
+
+/// The `OutputStream` that `Channels.newOutputStream` adapts a writable channel to.
+fn channel_output_stream(vm: &mut Vm<'_>, channel: ObjectRef) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/nio/channels/Channels")?;
+    let (declaring, method) = vm
+        .find_method(
+            class,
+            "newOutputStream",
+            "(Ljava/nio/channels/WritableByteChannel;)Ljava/io/OutputStream;",
+        )
+        .ok_or_else(|| VmError::internal("Channels.newOutputStream"))?;
+    Ok(vm
+        .invoke_method(declaring, method, vec![Value::Ref(channel)])?
+        .as_ref())
+}
+
+/// The `InputStream` that `Channels.newInputStream` adapts a readable channel to.
+fn channel_input_stream(vm: &mut Vm<'_>, channel: ObjectRef) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/nio/channels/Channels")?;
+    let (declaring, method) = vm
+        .find_method(
+            class,
+            "newInputStream",
+            "(Ljava/nio/channels/ReadableByteChannel;)Ljava/io/InputStream;",
+        )
+        .ok_or_else(|| VmError::internal("Channels.newInputStream"))?;
+    Ok(vm
+        .invoke_method(declaring, method, vec![Value::Ref(channel)])?
+        .as_ref())
+}
+
+/// Resolve the charset argument to a `Charset` object (encoder/decoder expose `charset()`).
+fn resolve_charset(
+    vm: &mut Vm<'_>,
+    arg: Value,
+    kind: &WriterCharset,
+) -> Result<ObjectRef, VmError> {
+    match kind {
+        WriterCharset::Charset => Ok(arg.as_ref()),
+        WriterCharset::Encoder => {
+            let (class, method) =
+                vm.resolve_virtual_method(arg.as_ref(), "charset", "()Ljava/nio/charset/Charset;")?;
+            Ok(vm.invoke_method(class, method, vec![arg])?.as_ref())
+        }
+        WriterCharset::Name => {
+            let name = string_arg(vm, arg)?;
+            let class = vm.resolve_class("java/nio/charset/Charset")?;
+            let (declaring, method) = vm
+                .find_method(
+                    class,
+                    "forName",
+                    "(Ljava/lang/String;)Ljava/nio/charset/Charset;",
+                )
+                .ok_or_else(|| VmError::internal("Charset.forName"))?;
+            let text = vm.make_string(&name)?;
+            Ok(vm
+                .invoke_method(declaring, method, vec![Value::Ref(text)])?
+                .as_ref())
+        }
+    }
+}
+
+fn channels_new_writer(
+    vm: &mut Vm<'_>,
+    channel: ObjectRef,
+    charset_arg: Value,
+    kind: WriterCharset,
+) -> Result<Value, VmError> {
+    let out = channel_output_stream(vm, channel)?;
+    let charset = resolve_charset(vm, charset_arg, &kind)?;
+    let class = vm.resolve_class("java/io/OutputStreamWriter")?;
+    let (declaring, ctor) = vm
+        .find_method(
+            class,
+            "<init>",
+            "(Ljava/io/OutputStream;Ljava/nio/charset/Charset;)V",
+        )
+        .ok_or_else(|| VmError::internal("OutputStreamWriter(OutputStream, Charset)"))?;
+    let writer = vm.new_instance(class)?;
+    vm.invoke_method(
+        declaring,
+        ctor,
+        vec![Value::Ref(writer), Value::Ref(out), Value::Ref(charset)],
+    )?;
+    object(writer)
+}
+
+fn channels_new_reader(
+    vm: &mut Vm<'_>,
+    channel: ObjectRef,
+    charset_arg: Value,
+    kind: WriterCharset,
+) -> Result<Value, VmError> {
+    let input = channel_input_stream(vm, channel)?;
+    let charset = resolve_charset(vm, charset_arg, &kind)?;
+    let (class, method) = vm.resolve_virtual_method(charset, "name", "()Ljava/lang/String;")?;
+    let name = vm
+        .invoke_method(class, method, vec![Value::Ref(charset)])?
+        .as_ref();
+    let reader_class = vm.resolve_class("java/io/InputStreamReader")?;
+    let (declaring, ctor) = vm
+        .find_method(
+            reader_class,
+            "<init>",
+            "(Ljava/io/InputStream;Ljava/lang/String;)V",
+        )
+        .ok_or_else(|| VmError::internal("InputStreamReader(InputStream, String)"))?;
+    let reader = vm.new_instance(reader_class)?;
+    vm.invoke_method(
+        declaring,
+        ctor,
+        vec![Value::Ref(reader), Value::Ref(input), Value::Ref(name)],
+    )?;
+    object(reader)
+}
 
 pub(crate) const CHANNELS: oxjvm_vm::NativeClass = class(
     "java/nio/channels/Channels",

@@ -36,6 +36,7 @@ pub(crate) mod io;
 pub(crate) mod jar;
 pub(crate) mod lang;
 pub(crate) mod locale;
+pub(crate) mod locale_match;
 pub(crate) mod logging;
 pub(crate) mod management;
 pub(crate) mod math;
@@ -145,7 +146,7 @@ pub fn is_non_writable_property(key: &str) -> bool {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 986] = [
+static REGISTRY: [NativeClass; 988] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -498,6 +499,8 @@ static REGISTRY: [NativeClass; 986] = [
     util::EVENT_OBJECT,
     util::EVENT_LISTENER_PROXY,
     locale::LOCALE,
+    locale_match::LANGUAGE_RANGE,
+    locale_match::FILTERING_MODE,
     optional::OPTIONAL,
     util::ARRAYS,
     util::RANDOM_ACCESS,
