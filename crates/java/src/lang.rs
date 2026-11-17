@@ -8286,6 +8286,160 @@ pub(crate) const ZONE_ID: oxjvm_vm::NativeClass = class(
     Some(zone_id_clinit),
 );
 
+/// Format a fixed offset (in seconds) as a `ZoneOffset` id: `Z`, `+HH:MM` or `+HH:MM:SS`.
+fn zone_offset_id(total: i32) -> String {
+    if total == 0 {
+        return String::from("Z");
+    }
+    let sign = if total < 0 { '-' } else { '+' };
+    let abs = total.abs();
+    let hours = abs / 3600;
+    let minutes = (abs % 3600) / 60;
+    let seconds = abs % 60;
+    if seconds != 0 {
+        alloc::format!("{sign}{hours:02}:{minutes:02}:{seconds:02}")
+    } else {
+        alloc::format!("{sign}{hours:02}:{minutes:02}")
+    }
+}
+
+/// Build a `ZoneOffset` for a total-seconds offset, validating the ±18h range.
+fn zone_offset_new(vm: &mut Vm<'_>, total: i32) -> Result<ObjectRef, VmError> {
+    if !(-64800..=64800).contains(&total) {
+        return Err(vm.throw_new(
+            "java/time/DateTimeException",
+            Some("zone offset out of range"),
+        ));
+    }
+    let class = vm.resolve_class("java/time/ZoneOffset")?;
+    let instance = vm.new_instance(class)?;
+    write_int_field(vm, instance, "totalSeconds", total);
+    let id = zone_offset_id(total);
+    vm.set_string_field(instance, class, "id", &id)?;
+    Ok(instance)
+}
+
+/// Parse a `ZoneOffset.of` string: `Z`, `±HH`, `±HHMM`, `±HH:MM`, `±HHMMSS`, `±HH:MM:SS`.
+fn zone_offset_parse(text: &str) -> Option<i32> {
+    let text = text.trim();
+    if text == "Z" || text == "z" {
+        return Some(0);
+    }
+    let sign = match text.as_bytes().first()? {
+        b'+' => 1,
+        b'-' => -1,
+        _ => return None,
+    };
+    let rest = &text[1..];
+    let digit = |slice: &str| slice.parse::<i32>().ok();
+    let (hours, minutes, seconds) = match rest.len() {
+        2 => (digit(rest)?, 0, 0),
+        4 => (digit(&rest[..2])?, digit(&rest[2..])?, 0),
+        5 if rest.as_bytes()[2] == b':' => (digit(&rest[..2])?, digit(&rest[3..])?, 0),
+        6 => (digit(&rest[..2])?, digit(&rest[2..4])?, digit(&rest[4..])?),
+        8 if rest.as_bytes()[2] == b':' && rest.as_bytes()[5] == b':' => {
+            (digit(&rest[..2])?, digit(&rest[3..5])?, digit(&rest[6..])?)
+        }
+        _ => return None,
+    };
+    if hours > 18 || minutes > 59 || seconds > 59 {
+        return None;
+    }
+    Some(sign * (hours * 3600 + minutes * 60 + seconds))
+}
+
+const ZONE_OFFSET_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method(
+        "of",
+        "(Ljava/lang/String;)Ljava/time/ZoneOffset;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = string_arg(vm, args[0])?;
+            let total = zone_offset_parse(&text).ok_or_else(|| {
+                vm.throw_new("java/time/DateTimeException", Some("invalid zone offset"))
+            })?;
+            object(zone_offset_new(vm, total)?)
+        },
+    ),
+    method(
+        "ofHours",
+        "(I)Ljava/time/ZoneOffset;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| object(zone_offset_new(vm, int_arg(args, 0) * 3600)?),
+    ),
+    method(
+        "ofHoursMinutes",
+        "(II)Ljava/time/ZoneOffset;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let hours = int_arg(args, 0);
+            let minutes = int_arg(args, 1);
+            object(zone_offset_new(vm, hours * 3600 + minutes * 60)?)
+        },
+    ),
+    method(
+        "ofHoursMinutesSeconds",
+        "(III)Ljava/time/ZoneOffset;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let hours = int_arg(args, 0);
+            let minutes = int_arg(args, 1);
+            let seconds = int_arg(args, 2);
+            object(zone_offset_new(vm, hours * 3600 + minutes * 60 + seconds)?)
+        },
+    ),
+    method(
+        "ofTotalSeconds",
+        "(I)Ljava/time/ZoneOffset;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| object(zone_offset_new(vm, int_arg(args, 0))?),
+    ),
+    method("getTotalSeconds", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_int_field(vm, receiver(args), "totalSeconds"))
+    }),
+];
+
+fn zone_offset_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/time/ZoneOffset")?;
+    for (name, total) in [("UTC", 0), ("MIN", -64800), ("MAX", 64800)] {
+        let instance = zone_offset_new(vm, total)?;
+        vm.set_static_value(class, name, "Ljava/time/ZoneOffset;", Value::Ref(instance));
+    }
+    Ok(())
+}
+
+/// `java.time.ZoneOffset`: a fixed offset from UTC/Greenwich, modelled as a `ZoneId` whose id
+/// is the formatted offset. `getId`/`toString`/`normalized`/`equals` are inherited.
+pub(crate) const ZONE_OFFSET: oxjvm_vm::NativeClass = class(
+    "java/time/ZoneOffset",
+    Some("java/time/ZoneId"),
+    &["java/lang/Comparable", "java/io/Serializable"],
+    ACC_PUBLIC,
+    &[
+        field("totalSeconds", "I", ACC_PRIVATE, None),
+        field(
+            "UTC",
+            "Ljava/time/ZoneOffset;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "MIN",
+            "Ljava/time/ZoneOffset;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "MAX",
+            "Ljava/time/ZoneOffset;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+    ],
+    &ZONE_OFFSET_METHODS,
+    Some(zone_offset_clinit),
+);
+
 // -------------------------------------------------------------------------------------------
 // IO (JEP 512)
 // -------------------------------------------------------------------------------------------
