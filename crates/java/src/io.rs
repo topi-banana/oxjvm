@@ -3279,8 +3279,355 @@ pub(crate) const STRING_READER: oxjvm_vm::NativeClass = class(
 );
 
 // -------------------------------------------------------------------------------------------
-// RandomAccessFile (shell)
+// RandomAccessFile
 // -------------------------------------------------------------------------------------------
+
+/// Read the current contents of a `RandomAccessFile`'s backing byte array.
+fn raf_bytes(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Vec<u8>, VmError> {
+    let data = vm
+        .read_ref_field(this, vm.class_of(this), "data", "[B")
+        .unwrap_or(ObjectRef::NULL);
+    if data.is_null() {
+        return Ok(Vec::new());
+    }
+    crate::lang::array_bytes(vm, data)
+}
+
+/// Replace a `RandomAccessFile`'s backing byte array with `bytes`.
+fn raf_set_bytes(vm: &mut Vm<'_>, this: ObjectRef, bytes: &[u8]) -> Result<(), VmError> {
+    let data = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, bytes.len())?;
+    for (index, byte) in bytes.iter().enumerate() {
+        vm.array_set(
+            data,
+            index as i32,
+            Value::Int(i32::from(*byte as i8)),
+            false,
+        )?;
+    }
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, "data", "[B")?;
+    vm.set_instance_ref(this, declaring, field, data);
+    Ok(())
+}
+
+/// Flush a writable `RandomAccessFile`'s in-memory contents back to the host filesystem.
+fn raf_flush(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    let writable = vm
+        .read_instance_int_named(this, vm.class_of(this), "writable", "Z")
+        .unwrap_or(0)
+        != 0;
+    if !writable {
+        return Ok(());
+    }
+    let path = vm
+        .read_string_field(this, vm.class_of(this), "path")
+        .unwrap_or_default();
+    let bytes = raf_bytes(vm, this)?;
+    let ok = vm
+        .host
+        .filesystem()
+        .map(|fs| fs.write(&path, &bytes, false))
+        .unwrap_or(false);
+    if !ok {
+        return Err(vm.throw_new(
+            "java/io/IOException",
+            Some(&alloc::format!("Cannot write to {path}")),
+        ));
+    }
+    Ok(())
+}
+
+fn raf_init(vm: &mut Vm<'_>, this: ObjectRef, path: &str, mode: &str) -> Result<Value, VmError> {
+    let writable = mode != "r";
+    if !writable && mode != "r" {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some(&alloc::format!("Illegal mode \"{mode}\"")),
+        ));
+    }
+    let bytes = vm.host.filesystem().and_then(|fs| fs.read(path));
+    let bytes = match bytes {
+        Some(bytes) => bytes,
+        None if writable => Vec::new(),
+        None => {
+            return Err(vm.throw_new("java/io/FileNotFoundException", Some(path)));
+        }
+    };
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, "path", "Ljava/lang/String;")?;
+    let text = vm.make_string(path)?;
+    vm.set_instance_ref(this, declaring, field, text);
+    raf_set_bytes(vm, this, &bytes)?;
+    crate::lang::write_int_field(vm, this, "position", 0);
+    if let Some((declaring, field)) = vm.find_field_opt(class, "writable", "Z") {
+        vm.set_instance_int(this, declaring, field, i32::from(writable));
+    }
+    if writable {
+        raf_flush(vm, this)?;
+    }
+    void()
+}
+
+/// Write `bytes` at the current file pointer, extending the file as needed, then flush.
+fn raf_write(vm: &mut Vm<'_>, this: ObjectRef, bytes: &[u8]) -> Result<Value, VmError> {
+    let writable = vm
+        .read_instance_int_named(this, vm.class_of(this), "writable", "Z")
+        .unwrap_or(0)
+        != 0;
+    if !writable {
+        return Err(vm.throw_new("java/io/IOException", Some("Bad file descriptor")));
+    }
+    let position = crate::lang::read_int_field(vm, this, "position") as usize;
+    let mut data = raf_bytes(vm, this)?;
+    let end = position + bytes.len();
+    if end > data.len() {
+        data.resize(end, 0);
+    }
+    data[position..end].copy_from_slice(bytes);
+    raf_set_bytes(vm, this, &data)?;
+    crate::lang::write_int_field(vm, this, "position", end as i32);
+    raf_flush(vm, this)?;
+    void()
+}
+
+const RANDOM_ACCESS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
+    method(
+        "<init>",
+        "(Ljava/io/File;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let path = crate::file::file_path(vm, ref_arg(args, 1));
+            let mode = crate::string_arg(vm, args[2])?;
+            raf_init(vm, receiver(args), &path, &mode)
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let path = crate::string_arg(vm, args[1])?;
+            let mode = crate::string_arg(vm, args[2])?;
+            raf_init(vm, receiver(args), &path, &mode)
+        },
+    ),
+    method("length", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(raf_bytes(vm, receiver(args))?.len() as i64)
+    }),
+    method("getFilePointer", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(i64::from(crate::lang::read_int_field(
+            vm,
+            receiver(args),
+            "position",
+        )))
+    }),
+    method("seek", "(J)V", ACC_PUBLIC, |vm, _, args| {
+        let pos = crate::long_arg(args, 1);
+        if pos < 0 {
+            return Err(vm.throw_new("java/io/IOException", Some("Negative seek offset")));
+        }
+        crate::lang::write_int_field(vm, receiver(args), "position", pos as i32);
+        void()
+    }),
+    method("read", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let position = crate::lang::read_int_field(vm, this, "position") as usize;
+        let data = raf_bytes(vm, this)?;
+        if position >= data.len() {
+            return int(-1);
+        }
+        crate::lang::write_int_field(vm, this, "position", (position + 1) as i32);
+        int(i32::from(data[position]))
+    }),
+    method("read", "([B)I", ACC_PUBLIC, |vm, _, args| {
+        let target = ref_arg(args, 1);
+        let length = vm.array_length(target)? as i32;
+        raf_read_into(vm, receiver(args), target, 0, length)
+    }),
+    method("read", "([BII)I", ACC_PUBLIC, |vm, _, args| {
+        raf_read_into(
+            vm,
+            receiver(args),
+            ref_arg(args, 1),
+            int_arg(args, 2),
+            int_arg(args, 3),
+        )
+    }),
+    method("readFully", "([B)V", ACC_PUBLIC, |vm, _, args| {
+        let target = ref_arg(args, 1);
+        let length = vm.array_length(target)? as i32;
+        raf_read_fully(vm, receiver(args), target, 0, length)
+    }),
+    method("readFully", "([BII)V", ACC_PUBLIC, |vm, _, args| {
+        raf_read_fully(
+            vm,
+            receiver(args),
+            ref_arg(args, 1),
+            int_arg(args, 2),
+            int_arg(args, 3),
+        )
+    }),
+    method("skipBytes", "(I)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let n = int_arg(args, 1).max(0) as usize;
+        let position = crate::lang::read_int_field(vm, this, "position") as usize;
+        let length = raf_bytes(vm, this)?.len();
+        let next = (position + n).min(length);
+        crate::lang::write_int_field(vm, this, "position", next as i32);
+        int((next - position) as i32)
+    }),
+    method("write", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        raf_write(vm, receiver(args), &[int_arg(args, 1) as u8])
+    }),
+    method("write", "([B)V", ACC_PUBLIC, |vm, _, args| {
+        let bytes = crate::lang::array_bytes(vm, ref_arg(args, 1))?;
+        raf_write(vm, receiver(args), &bytes)
+    }),
+    method("write", "([BII)V", ACC_PUBLIC, |vm, _, args| {
+        let bytes = crate::lang::array_bytes(vm, ref_arg(args, 1))?;
+        let offset = int_arg(args, 2);
+        let count = int_arg(args, 3);
+        if offset < 0 || count < 0 || (offset + count) as usize > bytes.len() {
+            return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+        }
+        raf_write(
+            vm,
+            receiver(args),
+            &bytes[offset as usize..(offset + count) as usize],
+        )
+    }),
+    method(
+        "writeBytes",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let units = vm
+                .string_utf16(ref_arg(args, 1))
+                .map(<[u16]>::to_vec)
+                .unwrap_or_default();
+            let bytes: Vec<u8> = units.iter().map(|unit| *unit as u8).collect();
+            raf_write(vm, receiver(args), &bytes)
+        },
+    ),
+    method(
+        "writeChars",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let units = vm
+                .string_utf16(ref_arg(args, 1))
+                .map(<[u16]>::to_vec)
+                .unwrap_or_default();
+            let mut bytes = Vec::with_capacity(units.len() * 2);
+            for unit in units {
+                bytes.push((unit >> 8) as u8);
+                bytes.push(unit as u8);
+            }
+            raf_write(vm, receiver(args), &bytes)
+        },
+    ),
+    method(
+        "readLine",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let mut position = crate::lang::read_int_field(vm, this, "position") as usize;
+            let data = raf_bytes(vm, this)?;
+            if position >= data.len() {
+                return object(ObjectRef::NULL);
+            }
+            let mut line = String::new();
+            while position < data.len() {
+                let c = data[position];
+                position += 1;
+                if c == b'\n' {
+                    break;
+                }
+                if c == b'\r' {
+                    if position < data.len() && data[position] == b'\n' {
+                        position += 1;
+                    }
+                    break;
+                }
+                line.push(c as char);
+            }
+            crate::lang::write_int_field(vm, this, "position", position as i32);
+            object(vm.make_string(&line)?)
+        },
+    ),
+    method("setLength", "(J)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let new_length = crate::long_arg(args, 1);
+        if new_length < 0 {
+            return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+        }
+        let mut data = raf_bytes(vm, this)?;
+        data.resize(new_length as usize, 0);
+        raf_set_bytes(vm, this, &data)?;
+        raf_flush(vm, this)?;
+        void()
+    }),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        raf_flush(vm, receiver(args))?;
+        void()
+    }),
+    method(
+        "getFD",
+        "()Ljava/io/FileDescriptor;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/io/FileDescriptor")?;
+            object(vm.new_instance(class)?)
+        },
+    ),
+];
+
+fn raf_read_into(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    target: ObjectRef,
+    offset: i32,
+    length: i32,
+) -> Result<Value, VmError> {
+    let total = vm.array_length(target)? as i32;
+    if offset < 0 || length < 0 || offset + length > total {
+        return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+    }
+    if length == 0 {
+        return int(0);
+    }
+    let position = crate::lang::read_int_field(vm, this, "position") as usize;
+    let data = raf_bytes(vm, this)?;
+    if position >= data.len() {
+        return int(-1);
+    }
+    let count = (length as usize).min(data.len() - position);
+    for index in 0..count {
+        vm.array_set(
+            target,
+            offset + index as i32,
+            Value::Int(i32::from(data[position + index] as i8)),
+            false,
+        )?;
+    }
+    crate::lang::write_int_field(vm, this, "position", (position + count) as i32);
+    int(count as i32)
+}
+
+fn raf_read_fully(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    target: ObjectRef,
+    offset: i32,
+    length: i32,
+) -> Result<Value, VmError> {
+    let got = raf_read_into(vm, this, target, offset, length)?.as_int();
+    if got < length {
+        return Err(vm.throw_new("java/io/EOFException", None));
+    }
+    void()
+}
 
 pub(crate) const RANDOM_ACCESS_FILE: oxjvm_vm::NativeClass = class(
     "java/io/RandomAccessFile",
@@ -3291,8 +3638,13 @@ pub(crate) const RANDOM_ACCESS_FILE: oxjvm_vm::NativeClass = class(
         "java/io/DataOutput",
     ],
     ACC_PUBLIC,
-    &[],
-    &[],
+    &[
+        field("path", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("data", "[B", ACC_PRIVATE, None),
+        field("position", "I", ACC_PRIVATE, None),
+        field("writable", "Z", ACC_PRIVATE, None),
+    ],
+    &RANDOM_ACCESS_FILE_METHODS,
     None,
 );
 

@@ -2095,13 +2095,242 @@ pub(crate) const DATAGRAM_SOCKET: oxjvm_vm::NativeClass = class(
     None,
 );
 
+/// `DatagramPacket.setData`: validate the buffer range (the JDK reports an
+/// `IllegalArgumentException` here, not an `IndexOutOfBoundsException`) and store it.
+fn datagram_packet_set_data(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    buf: ObjectRef,
+    offset: i32,
+    length: i32,
+) -> Result<(), VmError> {
+    if buf.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let total = vm.array_length(buf)? as i32;
+    if offset < 0 || length < 0 || offset + length > total {
+        return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+    }
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, "buf", "[B")?;
+    vm.set_instance_ref(this, declaring, field, buf);
+    crate::lang::write_int_field(vm, this, "length", length);
+    crate::lang::write_int_field(vm, this, "offset", offset);
+    Ok(())
+}
+
+fn datagram_packet_set_endpoint(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    address: ObjectRef,
+    port: i32,
+) -> Result<(), VmError> {
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, "address", "Ljava/net/InetAddress;")?;
+    vm.set_instance_ref(this, declaring, field, address);
+    crate::lang::write_int_field(vm, this, "port", port);
+    Ok(())
+}
+
+const DATAGRAM_PACKET_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+    method("<init>", "([BI)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        datagram_packet_set_data(vm, this, ref_arg(args, 1), 0, int_arg(args, 2))?;
+        void()
+    }),
+    method("<init>", "([BII)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        datagram_packet_set_data(
+            vm,
+            this,
+            ref_arg(args, 1),
+            int_arg(args, 2),
+            int_arg(args, 3),
+        )?;
+        void()
+    }),
+    method(
+        "<init>",
+        "([BILjava/net/InetAddress;I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            datagram_packet_set_data(vm, this, ref_arg(args, 1), 0, int_arg(args, 2))?;
+            datagram_packet_set_endpoint(vm, this, ref_arg(args, 3), int_arg(args, 4))?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "([BIILjava/net/InetAddress;I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            datagram_packet_set_data(
+                vm,
+                this,
+                ref_arg(args, 1),
+                int_arg(args, 2),
+                int_arg(args, 3),
+            )?;
+            datagram_packet_set_endpoint(vm, this, ref_arg(args, 4), int_arg(args, 5))?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "([BILjava/net/SocketAddress;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            datagram_packet_set_data(vm, this, ref_arg(args, 1), 0, int_arg(args, 2))?;
+            datagram_packet_set_socket_address(vm, this, ref_arg(args, 3))?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "([BIILjava/net/SocketAddress;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            datagram_packet_set_data(
+                vm,
+                this,
+                ref_arg(args, 1),
+                int_arg(args, 2),
+                int_arg(args, 3),
+            )?;
+            datagram_packet_set_socket_address(vm, this, ref_arg(args, 4))?;
+            void()
+        },
+    ),
+    method("getLength", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "length"))
+    }),
+    method("getOffset", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "offset"))
+    }),
+    method("getData", "()[B", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        object(
+            vm.read_ref_field(this, vm.class_of(this), "buf", "[B")
+                .unwrap_or(ObjectRef::NULL),
+        )
+    }),
+    method(
+        "getAddress",
+        "()Ljava/net/InetAddress;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(
+                vm.read_ref_field(this, vm.class_of(this), "address", "Ljava/net/InetAddress;")
+                    .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method("getPort", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "port"))
+    }),
+    method("setLength", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let length = int_arg(args, 1);
+        let total = vm.array_length(
+            vm.read_ref_field(this, vm.class_of(this), "buf", "[B")
+                .unwrap_or(ObjectRef::NULL),
+        )? as i32;
+        let offset = crate::lang::read_int_field(vm, this, "offset");
+        if length < 0 || offset + length > total {
+            return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+        }
+        crate::lang::write_int_field(vm, this, "length", length);
+        void()
+    }),
+    method("setData", "([BII)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        datagram_packet_set_data(
+            vm,
+            this,
+            ref_arg(args, 1),
+            int_arg(args, 2),
+            int_arg(args, 3),
+        )?;
+        void()
+    }),
+    method(
+        "setAddress",
+        "(Ljava/net/InetAddress;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "address", "Ljava/net/InetAddress;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method("setPort", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        crate::lang::write_int_field(vm, receiver(args), "port", int_arg(args, 1));
+        void()
+    }),
+    method(
+        "getSocketAddress",
+        "()Ljava/net/SocketAddress;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let address = vm
+                .read_ref_field(this, vm.class_of(this), "address", "Ljava/net/InetAddress;")
+                .unwrap_or(ObjectRef::NULL);
+            if address.is_null() {
+                return object(ObjectRef::NULL);
+            }
+            let port = crate::lang::read_int_field(vm, this, "port");
+            let class = vm.resolve_class("java/net/InetSocketAddress")?;
+            let instance = vm.new_instance(class)?;
+            init_inet_socket_address(vm, instance, address, port)?;
+            object(instance)
+        },
+    ),
+];
+
+fn datagram_packet_set_socket_address(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    address: ObjectRef,
+) -> Result<(), VmError> {
+    if address.is_null() {
+        return datagram_packet_set_endpoint(vm, this, ObjectRef::NULL, 0);
+    }
+    if vm.class_name(vm.class_of(address)) != "java/net/InetSocketAddress" {
+        return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+    }
+    let inet = vm
+        .read_ref_field(
+            address,
+            vm.class_of(address),
+            "addr",
+            "Ljava/net/InetAddress;",
+        )
+        .unwrap_or(ObjectRef::NULL);
+    let port = crate::lang::read_int_field(vm, address, "port");
+    datagram_packet_set_endpoint(vm, this, inet, port)
+}
+
 pub(crate) const DATAGRAM_PACKET: oxjvm_vm::NativeClass = class(
     "java/net/DatagramPacket",
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC,
-    &[],
-    &[],
+    &[
+        field("buf", "[B", ACC_PRIVATE, None),
+        field("length", "I", ACC_PRIVATE, None),
+        field("offset", "I", ACC_PRIVATE, None),
+        field("address", "Ljava/net/InetAddress;", ACC_PRIVATE, None),
+        field("port", "I", ACC_PRIVATE, None),
+    ],
+    &DATAGRAM_PACKET_METHODS,
     None,
 );
 

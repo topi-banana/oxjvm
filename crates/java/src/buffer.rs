@@ -5,6 +5,7 @@
 //! backing array and carries an `offset` into it.
 
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use oxjvm_classfile::flags::*;
@@ -1301,6 +1302,107 @@ fn char_buffer_put(vm: &mut Vm<'_>, this: ObjectRef, value: u16) -> Result<(), V
     Ok(())
 }
 
+/// `CharBuffer.put(char[], int, int)`: bulk relative put with the JDK bounds checks.
+fn char_buffer_put_chars(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    src: ObjectRef,
+    offset: i32,
+    length: i32,
+) -> Result<(), VmError> {
+    if char_buffer_read_only(vm, this) {
+        return Err(vm.throw_new("java/nio/ReadOnlyBufferException", None));
+    }
+    let total = vm.array_length(src)? as i32;
+    if offset < 0 || length < 0 || offset + length > total {
+        return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+    }
+    let pos = buffer_position(vm, this);
+    if length > buffer_limit(vm, this) - pos {
+        return Err(vm.throw_new("java/nio/BufferOverflowException", None));
+    }
+    let chars = char_buffer_chars(vm, this);
+    let base = char_buffer_offset(vm, this) as usize + pos as usize;
+    for index in 0..length {
+        let value = vm.array_get(src, offset + index)?.as_int() as u16;
+        put_char_at(vm, chars, base + index as usize, value)?;
+    }
+    set_position(vm, this, pos + length);
+    Ok(())
+}
+
+/// `CharBuffer.put(String, int, int)`: bulk relative put of a string's UTF-16 units.
+fn char_buffer_put_text(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    text: ObjectRef,
+    start: i32,
+    end: i32,
+) -> Result<(), VmError> {
+    if char_buffer_read_only(vm, this) {
+        return Err(vm.throw_new("java/nio/ReadOnlyBufferException", None));
+    }
+    let units = vm
+        .string_utf16(text)
+        .map(<[u16]>::to_vec)
+        .unwrap_or_default();
+    let length = end - start;
+    if start < 0 || length < 0 || start + length > units.len() as i32 {
+        return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+    }
+    let pos = buffer_position(vm, this);
+    let rem = buffer_remaining(vm, this);
+    if length > rem {
+        return Err(vm.throw_new("java/nio/BufferOverflowException", None));
+    }
+    let chars = char_buffer_chars(vm, this);
+    let base = char_buffer_offset(vm, this) as usize + pos as usize;
+    for index in 0..length {
+        put_char_at(
+            vm,
+            chars,
+            base + index as usize,
+            units[(start + index) as usize],
+        )?;
+    }
+    set_position(vm, this, pos + length);
+    Ok(())
+}
+
+/// `CharBuffer.put(int, char)`: absolute put, leaving the position unchanged.
+fn char_buffer_put_at(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    index: i32,
+    value: u16,
+) -> Result<(), VmError> {
+    if char_buffer_read_only(vm, this) {
+        return Err(vm.throw_new("java/nio/ReadOnlyBufferException", None));
+    }
+    if index < 0 || index >= buffer_limit(vm, this) {
+        return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+    }
+    let at = char_buffer_offset(vm, this) as usize + index as usize;
+    put_char_at(vm, char_buffer_chars(vm, this), at, value)?;
+    Ok(())
+}
+
+/// The text of a `CharSequence` argument: `"null"` for null, the string itself for a
+/// `String`, otherwise its `toString()` (matching `CharBuffer.append`).
+fn char_sequence_text(vm: &mut Vm<'_>, sequence: ObjectRef) -> Result<ObjectRef, VmError> {
+    if sequence.is_null() {
+        return vm.make_string("null");
+    }
+    if vm.string_utf16(sequence).is_some() {
+        return Ok(sequence);
+    }
+    let (class, method) =
+        vm.resolve_virtual_method(sequence, "toString", "()Ljava/lang/String;")?;
+    Ok(vm
+        .invoke_method(class, method, vec![Value::Ref(sequence)])?
+        .as_ref())
+}
+
 pub(crate) fn char_buffer_text(vm: &mut Vm<'_>, this: ObjectRef) -> Result<String, VmError> {
     let length = buffer_remaining(vm, this);
     let chars = char_buffer_chars(vm, this);
@@ -1334,7 +1436,7 @@ pub(crate) fn char_buffer_from_text(vm: &mut Vm<'_>, text: &str) -> Result<Objec
     )
 }
 
-const CHAR_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
+const CHAR_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
     method(
         "allocate",
         "(I)Ljava/nio/CharBuffer;",
@@ -1504,6 +1606,167 @@ const CHAR_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
             return Err(vm.throw_new("java/nio/ReadOnlyBufferException", None));
         }
         object(char_buffer_chars(vm, this))
+    }),
+    method(
+        "put",
+        "([C)Ljava/nio/CharBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let src = ref_arg(args, 1);
+            let length = vm.array_length(src)? as i32;
+            char_buffer_put_chars(vm, this, src, 0, length)?;
+            object(this)
+        },
+    ),
+    method(
+        "put",
+        "([CII)Ljava/nio/CharBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            char_buffer_put_chars(
+                vm,
+                this,
+                ref_arg(args, 1),
+                crate::int_arg(args, 2),
+                crate::int_arg(args, 3),
+            )?;
+            object(this)
+        },
+    ),
+    method(
+        "put",
+        "(Ljava/lang/String;)Ljava/nio/CharBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = ref_arg(args, 1);
+            let length = vm.string_utf16(text).map_or(0, |units| units.len() as i32);
+            char_buffer_put_text(vm, this, text, 0, length)?;
+            object(this)
+        },
+    ),
+    method(
+        "put",
+        "(Ljava/lang/String;II)Ljava/nio/CharBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            char_buffer_put_text(
+                vm,
+                this,
+                ref_arg(args, 1),
+                crate::int_arg(args, 2),
+                crate::int_arg(args, 3),
+            )?;
+            object(this)
+        },
+    ),
+    method(
+        "put",
+        "(IC)Ljava/nio/CharBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            char_buffer_put_at(
+                vm,
+                this,
+                crate::int_arg(args, 1),
+                crate::int_arg(args, 2) as u16,
+            )?;
+            object(this)
+        },
+    ),
+    method(
+        "append",
+        "(C)Ljava/nio/CharBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            char_buffer_put(vm, this, crate::int_arg(args, 1) as u16)?;
+            object(this)
+        },
+    ),
+    method(
+        "append",
+        "(Ljava/lang/CharSequence;)Ljava/nio/CharBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let sequence = ref_arg(args, 1);
+            let text = char_sequence_text(vm, sequence)?;
+            let length = vm.string_utf16(text).map_or(0, |units| units.len() as i32);
+            char_buffer_put_text(vm, this, text, 0, length)?;
+            object(this)
+        },
+    ),
+    method(
+        "append",
+        "(Ljava/lang/CharSequence;II)Ljava/nio/CharBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let sequence = ref_arg(args, 1);
+            let start = crate::int_arg(args, 2);
+            let end = crate::int_arg(args, 3);
+            let text = char_sequence_text(vm, sequence)?;
+            let units = vm
+                .string_utf16(text)
+                .map(<[u16]>::to_vec)
+                .unwrap_or_default();
+            if start < 0 || end < start || end > units.len() as i32 {
+                return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+            }
+            let sub = vm.make_string(&String::from_utf16_lossy(
+                &units[start as usize..end as usize],
+            ))?;
+            char_buffer_put_text(vm, this, sub, 0, end - start)?;
+            object(this)
+        },
+    ),
+    method(
+        "slice",
+        "()Ljava/nio/CharBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let remaining = buffer_remaining(vm, this);
+            let offset = char_buffer_offset(vm, this) + buffer_position(vm, this);
+            object(new_char_buffer(
+                vm,
+                char_buffer_chars(vm, this),
+                offset,
+                remaining,
+                0,
+                remaining,
+                char_buffer_read_only(vm, this),
+            )?)
+        },
+    ),
+    method(
+        "asReadOnlyBuffer",
+        "()Ljava/nio/CharBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(new_char_buffer(
+                vm,
+                char_buffer_chars(vm, this),
+                char_buffer_offset(vm, this),
+                buffer_capacity(vm, this),
+                buffer_position(vm, this),
+                buffer_limit(vm, this),
+                true,
+            )?)
+        },
+    ),
+    method("order", "()Ljava/nio/ByteOrder;", ACC_PUBLIC, |vm, _, _| {
+        let class = vm.resolve_class("java/nio/ByteOrder")?;
+        let (declaring, method) = vm
+            .find_method(class, "nativeOrder", "()Ljava/nio/ByteOrder;")
+            .ok_or_else(|| VmError::internal("ByteOrder.nativeOrder missing"))?;
+        vm.invoke_method(declaring, method, vec![])
     }),
 ];
 
