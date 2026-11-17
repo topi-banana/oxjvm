@@ -2115,6 +2115,48 @@ macro_rules! array_mismatch {
     };
 }
 
+macro_rules! array_compare {
+    ($name:literal, $descriptor:literal, $mask:expr) => {
+        method(
+            $name,
+            $descriptor,
+            ACC_PUBLIC | ACC_STATIC,
+            |vm, _, args| {
+                int(arrays_compare(
+                    vm,
+                    ref_arg(args, 0),
+                    ref_arg(args, 1),
+                    $mask,
+                    ObjectRef::NULL,
+                )?)
+            },
+        )
+    };
+}
+
+macro_rules! array_compare_range {
+    ($name:literal, $descriptor:literal, $mask:expr) => {
+        method(
+            $name,
+            $descriptor,
+            ACC_PUBLIC | ACC_STATIC,
+            |vm, _, args| {
+                int(arrays_compare_range(
+                    vm,
+                    ref_arg(args, 0),
+                    int_arg(args, 1),
+                    int_arg(args, 2),
+                    ref_arg(args, 3),
+                    int_arg(args, 4),
+                    int_arg(args, 5),
+                    $mask,
+                    ObjectRef::NULL,
+                )?)
+            },
+        )
+    };
+}
+
 macro_rules! array_hash_code {
     ($descriptor:literal, $component:expr) => {
         method(
@@ -2126,7 +2168,7 @@ macro_rules! array_hash_code {
     };
 }
 
-const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 110] = [
+const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 140] = [
     method(
         "toString",
         "([I)Ljava/lang/String;",
@@ -2817,6 +2859,74 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 110] = [
             )?)
         },
     ),
+    array_compare!("compare", "([B[B)I", None),
+    array_compare_range!("compare", "([BIIBII)I", None),
+    array_compare!("compare", "([C[C)I", None),
+    array_compare_range!("compare", "([CIICII)I", None),
+    array_compare!("compare", "([S[S)I", None),
+    array_compare_range!("compare", "([SSI[SSI)I", None),
+    array_compare!("compare", "([I[I)I", None),
+    array_compare_range!("compare", "([III[III)I", None),
+    array_compare!("compare", "([J[J)I", None),
+    array_compare_range!("compare", "([JJI[JJI)I", None),
+    array_compare!("compare", "([F[F)I", None),
+    array_compare_range!("compare", "([FFI[FFI)I", None),
+    array_compare!("compare", "([D[D)I", None),
+    array_compare_range!("compare", "([DDI[DDI)I", None),
+    array_compare!("compare", "([Z[Z)I", None),
+    array_compare_range!("compare", "([ZZI[ZZI)I", None),
+    array_compare!(
+        "compare",
+        "([Ljava/lang/Comparable;[Ljava/lang/Comparable;)I",
+        None
+    ),
+    array_compare_range!(
+        "compare",
+        "([Ljava/lang/Comparable;II[Ljava/lang/Comparable;II)I",
+        None
+    ),
+    method(
+        "compare",
+        "([Ljava/lang/Object;[Ljava/lang/Object;Ljava/util/Comparator;)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            int(arrays_compare(
+                vm,
+                ref_arg(args, 0),
+                ref_arg(args, 1),
+                None,
+                ref_arg(args, 2),
+            )?)
+        },
+    ),
+    method(
+        "compare",
+        "([Ljava/lang/Object;II[Ljava/lang/Object;IILjava/util/Comparator;)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            int(arrays_compare_range(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                int_arg(args, 2),
+                ref_arg(args, 3),
+                int_arg(args, 4),
+                int_arg(args, 5),
+                None,
+                ref_arg(args, 6),
+            )?)
+        },
+    ),
+    array_compare!("compareUnsigned", "([B[B)I", Some(0xFFu32)),
+    array_compare_range!("compareUnsigned", "([BIIBII)I", Some(0xFFu32)),
+    array_compare!("compareUnsigned", "([C[C)I", Some(0xFFFFu32)),
+    array_compare_range!("compareUnsigned", "([CIICII)I", Some(0xFFFFu32)),
+    array_compare!("compareUnsigned", "([S[S)I", Some(0xFFFFu32)),
+    array_compare_range!("compareUnsigned", "([SSI[SSI)I", Some(0xFFFFu32)),
+    array_compare!("compareUnsigned", "([I[I)I", Some(u32::MAX)),
+    array_compare_range!("compareUnsigned", "([III[III)I", Some(u32::MAX)),
+    array_compare!("compareUnsigned", "([J[J)I", Some(u32::MAX)),
+    array_compare_range!("compareUnsigned", "([JJI[JJI)I", Some(u32::MAX)),
     method(
         "deepToString",
         "([Ljava/lang/Object;)Ljava/lang/String;",
@@ -3532,6 +3642,107 @@ fn arrays_mismatch_range(
         }
     }
     Ok(-1)
+}
+
+/// Lexicographic comparison of two whole arrays, per `Arrays.compare`.
+fn arrays_compare(
+    vm: &mut Vm<'_>,
+    a: ObjectRef,
+    b: ObjectRef,
+    unsigned_mask: Option<u32>,
+    comparator: ObjectRef,
+) -> Result<i32, VmError> {
+    if a.is_null() || b.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let a_len = vm.array_length(a)? as i32;
+    let b_len = vm.array_length(b)? as i32;
+    arrays_compare_range(vm, a, 0, a_len, b, 0, b_len, unsigned_mask, comparator)
+}
+
+/// Lexicographic comparison of two array ranges: element order first, then the length
+/// difference. `unsigned_mask` selects unsigned comparison for the integer types;
+/// `comparator` (when non-null) orders reference elements.
+fn arrays_compare_range(
+    vm: &mut Vm<'_>,
+    a: ObjectRef,
+    a_from: i32,
+    a_to: i32,
+    b: ObjectRef,
+    b_from: i32,
+    b_to: i32,
+    unsigned_mask: Option<u32>,
+    comparator: ObjectRef,
+) -> Result<i32, VmError> {
+    if a.is_null() || b.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let a_len = vm.array_length(a)? as i32;
+    let b_len = vm.array_length(b)? as i32;
+    arrays_range_check(vm, a_from, a_to, a_len as usize)?;
+    arrays_range_check(vm, b_from, b_to, b_len as usize)?;
+    let common = (a_to - a_from).min(b_to - b_from);
+    for offset in 0..common {
+        let left = vm.array_get(a, a_from + offset)?;
+        let right = vm.array_get(b, b_from + offset)?;
+        let ordering = array_element_compare(vm, left, right, unsigned_mask, comparator)?;
+        if ordering != 0 {
+            return Ok(ordering);
+        }
+    }
+    Ok((a_to - a_from) - (b_to - b_from))
+}
+
+/// Compare one pair of array elements the way the JDK's typed `Arrays.compare` does:
+/// signed or unsigned integers, `total_cmp` for floats (NaN greatest, -0.0 < 0.0),
+/// nulls-first natural order or the supplied comparator for references.
+fn array_element_compare(
+    vm: &mut Vm<'_>,
+    left: Value,
+    right: Value,
+    unsigned_mask: Option<u32>,
+    comparator: ObjectRef,
+) -> Result<i32, VmError> {
+    match (left, right) {
+        (Value::Int(x), Value::Int(y)) => Ok(match unsigned_mask {
+            Some(mask) => ((x as u32) & mask).cmp(&((y as u32) & mask)) as i32,
+            None => x.cmp(&y) as i32,
+        }),
+        (Value::Long(x), Value::Long(y)) => Ok(if unsigned_mask.is_some() {
+            (x as u64).cmp(&(y as u64)) as i32
+        } else {
+            x.cmp(&y) as i32
+        }),
+        (Value::Float(x), Value::Float(y)) => Ok(x.total_cmp(&y) as i32),
+        (Value::Double(x), Value::Double(y)) => Ok(x.total_cmp(&y) as i32),
+        (Value::Ref(x), Value::Ref(y)) => {
+            if x.is_null() || y.is_null() {
+                return Ok(match (x.is_null(), y.is_null()) {
+                    (true, true) => 0,
+                    (true, false) => -1,
+                    _ => 1,
+                });
+            }
+            let (class, method, call_args) = if comparator.is_null() {
+                let (class, method) =
+                    vm.resolve_virtual_method(x, "compareTo", "(Ljava/lang/Object;)I")?;
+                (class, method, vec![Value::Ref(x), Value::Ref(y)])
+            } else {
+                let (class, method) = vm.resolve_virtual_method(
+                    comparator,
+                    "compare",
+                    "(Ljava/lang/Object;Ljava/lang/Object;)I",
+                )?;
+                (
+                    class,
+                    method,
+                    vec![Value::Ref(comparator), Value::Ref(x), Value::Ref(y)],
+                )
+            };
+            Ok(vm.invoke_method(class, method, call_args)?.as_int())
+        }
+        _ => Ok(0),
+    }
 }
 
 fn array_values_equal(vm: &mut Vm<'_>, a: Value, b: Value) -> Result<bool, VmError> {
@@ -14922,5 +15133,130 @@ pub(crate) const STRING_JOINER: oxjvm_vm::NativeClass = class(
         field("started", "Z", ACC_PRIVATE, None),
     ],
     &STRING_JOINER_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// EventListener / EventObject / EventListenerProxy
+// -------------------------------------------------------------------------------------------
+
+/// `java.util.EventListener`: the marker interface for all event listener interfaces.
+pub(crate) const EVENT_LISTENER: oxjvm_vm::NativeClass = class(
+    "java/util/EventListener",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[],
+    None,
+);
+
+const EVENT_OBJECT_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method(
+        "<init>",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let source = ref_arg(args, 1);
+            if source.is_null() {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("null source")));
+            }
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "source", "Ljava/lang/Object;")?;
+            vm.set_instance_ref(this, declaring, field, source);
+            void()
+        },
+    ),
+    method(
+        "getSource",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(
+                vm.read_ref_field(this, vm.class_of(this), "source", "Ljava/lang/Object;")
+                    .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let source = vm
+                .read_ref_field(this, vm.class_of(this), "source", "Ljava/lang/Object;")
+                .unwrap_or(ObjectRef::NULL);
+            let source_text = if source.is_null() {
+                String::from("null")
+            } else {
+                vm.string_or_empty(source)
+            };
+            let name = vm.class_name(vm.class_of(this)).replace('/', ".");
+            let text = alloc::format!("{name}[source={source_text}]");
+            object(vm.make_string(&text)?)
+        },
+    ),
+];
+
+/// `java.util.EventObject`: the root of the event hierarchy, carrying its source.
+pub(crate) const EVENT_OBJECT: oxjvm_vm::NativeClass = class(
+    "java/util/EventObject",
+    Some("java/lang/Object"),
+    &["java/io/Serializable"],
+    ACC_PUBLIC,
+    &[field("source", "Ljava/lang/Object;", ACC_PROTECTED, None)],
+    &EVENT_OBJECT_METHODS,
+    None,
+);
+
+const EVENT_LISTENER_PROXY_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "<init>",
+        "(Ljava/util/EventListener;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let (declaring, field) =
+                vm.find_field(class, "listener", "Ljava/util/EventListener;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method(
+        "getListener",
+        "()Ljava/util/EventListener;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(
+                vm.read_ref_field(
+                    this,
+                    vm.class_of(this),
+                    "listener",
+                    "Ljava/util/EventListener;",
+                )
+                .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+];
+
+/// `java.util.EventListenerProxy`: wraps a listener with additional registration data.
+pub(crate) const EVENT_LISTENER_PROXY: oxjvm_vm::NativeClass = class(
+    "java/util/EventListenerProxy",
+    Some("java/lang/Object"),
+    &["java/util/EventListener"],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[field(
+        "listener",
+        "Ljava/util/EventListener;",
+        ACC_PRIVATE | ACC_FINAL,
+        None,
+    )],
+    &EVENT_LISTENER_PROXY_METHODS,
     None,
 );

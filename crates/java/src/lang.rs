@@ -5951,7 +5951,7 @@ pub(crate) const RUNTIME: oxjvm_vm::NativeClass = class(
 // Thread
 // -------------------------------------------------------------------------------------------
 
-const THREAD_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
+const THREAD_METHODS: [oxjvm_vm::NativeMethodDef; 51] = [
     method("<init>", "()V", ACC_PUBLIC, thread_init),
     method("<init>", "(Ljava/lang/Runnable;)V", ACC_PUBLIC, thread_init),
     method("<init>", "(Ljava/lang/String;)V", ACC_PUBLIC, thread_init),
@@ -6317,6 +6317,70 @@ const THREAD_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
             }
         },
     ),
+    method(
+        "setUncaughtExceptionHandler",
+        "(Ljava/lang/Thread$UncaughtExceptionHandler;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(
+                class,
+                "uncaughtExceptionHandler",
+                "Ljava/lang/Thread$UncaughtExceptionHandler;",
+            )?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method(
+        "getUncaughtExceptionHandler",
+        "()Ljava/lang/Thread$UncaughtExceptionHandler;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(
+                vm.read_ref_field(
+                    this,
+                    vm.class_of(this),
+                    "uncaughtExceptionHandler",
+                    "Ljava/lang/Thread$UncaughtExceptionHandler;",
+                )
+                .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method(
+        "setDefaultUncaughtExceptionHandler",
+        "(Ljava/lang/Thread$UncaughtExceptionHandler;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let class = vm.resolve_class("java/lang/Thread")?;
+            vm.set_static_value(
+                class,
+                "defaultUncaughtExceptionHandler",
+                "Ljava/lang/Thread$UncaughtExceptionHandler;",
+                Value::Ref(ref_arg(args, 0)),
+            );
+            void()
+        },
+    ),
+    method(
+        "getDefaultUncaughtExceptionHandler",
+        "()Ljava/lang/Thread$UncaughtExceptionHandler;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/lang/Thread")?;
+            object(
+                vm.read_static_ref_if_set(
+                    class,
+                    "defaultUncaughtExceptionHandler",
+                    "Ljava/lang/Thread$UncaughtExceptionHandler;",
+                )
+                .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
 ];
 
 fn thread_init(
@@ -6622,8 +6686,36 @@ pub(crate) const THREAD: oxjvm_vm::NativeClass = class(
             None,
         ),
         field("threadLocals", "Ljava/util/HashMap;", ACC_PRIVATE, None),
+        field(
+            "uncaughtExceptionHandler",
+            "Ljava/lang/Thread$UncaughtExceptionHandler;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field(
+            "defaultUncaughtExceptionHandler",
+            "Ljava/lang/Thread$UncaughtExceptionHandler;",
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
     ],
     &THREAD_METHODS,
+    None,
+);
+
+/// `Thread.UncaughtExceptionHandler`: notified when a thread terminates abruptly.
+pub(crate) const THREAD_UNCAUGHT_EXCEPTION_HANDLER: oxjvm_vm::NativeClass = class(
+    "java/lang/Thread$UncaughtExceptionHandler",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[method(
+        "uncaughtException",
+        "(Ljava/lang/Thread;Ljava/lang/Throwable;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    )],
     None,
 );
 
