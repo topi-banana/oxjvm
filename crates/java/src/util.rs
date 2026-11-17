@@ -2304,7 +2304,7 @@ macro_rules! array_hash_code {
     };
 }
 
-const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 148] = [
+const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 149] = [
     method(
         "toString",
         "([I)Ljava/lang/String;",
@@ -2630,6 +2630,21 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 148] = [
         "([Ljava/lang/Object;Ljava/lang/Object;)V",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| arrays_fill(vm, ref_arg(args, 0), Value::Ref(ref_arg(args, 1)), true),
+    ),
+    method(
+        "fill",
+        "([Ljava/lang/Object;IILjava/lang/Object;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_fill_range(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                int_arg(args, 2),
+                Value::Ref(ref_arg(args, 3)),
+                true,
+            )
+        },
     ),
     method("fill", "([JJ)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
         arrays_fill(vm, ref_arg(args, 0), Value::Long(long_arg(args, 1)), false)
@@ -3575,6 +3590,30 @@ fn arrays_fill(
     let length = vm.array_length(array)?;
     for index in 0..length {
         vm.array_set(array, index as i32, value, checked)?;
+    }
+    void()
+}
+
+/// `Arrays.fill(Object[], int, int, Object)`: the range is validated before any
+/// store (`ArrayIndexOutOfBoundsException`), then each element is written with
+/// the `ArrayStoreException` check when `checked`.
+fn arrays_fill_range(
+    vm: &mut Vm<'_>,
+    array: ObjectRef,
+    from: i32,
+    to: i32,
+    value: Value,
+    checked: bool,
+) -> Result<Value, VmError> {
+    if array.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let length = vm.array_length(array)? as i32;
+    if from < 0 || to > length || from > to {
+        return Err(vm.throw_new("java/lang/ArrayIndexOutOfBoundsException", None));
+    }
+    for index in from..to {
+        vm.array_set(array, index, value, checked)?;
     }
     void()
 }
