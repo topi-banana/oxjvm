@@ -1714,7 +1714,7 @@ pub(crate) const MAP: oxjvm_vm::NativeClass = class(
 // Objects
 // -------------------------------------------------------------------------------------------
 
-const OBJECTS_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const OBJECTS_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
     method(
         "equals",
         "(Ljava/lang/Object;Ljava/lang/Object;)Z",
@@ -1936,6 +1936,84 @@ const OBJECTS_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
                 ));
             }
             long(index)
+        },
+    ),
+    method(
+        "checkFromToIndex",
+        "(III)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let from = int_arg(args, 0);
+            let to = int_arg(args, 1);
+            let length = int_arg(args, 2);
+            if from < 0 || from > to || to > length {
+                return Err(vm.throw_new(
+                    "java/lang/IndexOutOfBoundsException",
+                    Some(&alloc::format!(
+                        "Range [{from}, {to}) out of bounds for length {length}"
+                    )),
+                ));
+            }
+            int(from)
+        },
+    ),
+    method(
+        "checkFromToIndex",
+        "(JJJ)J",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let from = long_arg(args, 0);
+            let to = long_arg(args, 1);
+            let length = long_arg(args, 2);
+            if from < 0 || from > to || to > length {
+                return Err(vm.throw_new(
+                    "java/lang/IndexOutOfBoundsException",
+                    Some(&alloc::format!(
+                        "Range [{from}, {to}) out of bounds for length {length}"
+                    )),
+                ));
+            }
+            long(from)
+        },
+    ),
+    method(
+        "checkFromIndexSize",
+        "(III)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let from = int_arg(args, 0);
+            let size = int_arg(args, 1);
+            let length = int_arg(args, 2);
+            if from < 0 || size < 0 || i64::from(from) + i64::from(size) > i64::from(length) {
+                return Err(vm.throw_new(
+                    "java/lang/IndexOutOfBoundsException",
+                    Some(&alloc::format!(
+                        "Range [{from}, {from} + {size}) out of bounds for length {length}"
+                    )),
+                ));
+            }
+            int(from)
+        },
+    ),
+    method(
+        "checkFromIndexSize",
+        "(JJJ)J",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let from = long_arg(args, 0);
+            let size = long_arg(args, 1);
+            let length = long_arg(args, 2);
+            let out_of_bounds =
+                from < 0 || size < 0 || from.checked_add(size).is_none_or(|end| end > length);
+            if out_of_bounds {
+                return Err(vm.throw_new(
+                    "java/lang/IndexOutOfBoundsException",
+                    Some(&alloc::format!(
+                        "Range [{from}, {from} + {size}) out of bounds for length {length}"
+                    )),
+                ));
+            }
+            long(from)
         },
     ),
     method(
@@ -4458,7 +4536,7 @@ pub(crate) fn array_list_elements(vm: &Vm<'_>, this: ObjectRef) -> Vec<ObjectRef
     }
 }
 
-fn array_list_store(
+pub(crate) fn array_list_store(
     vm: &mut Vm<'_>,
     this: ObjectRef,
     elements: &[ObjectRef],

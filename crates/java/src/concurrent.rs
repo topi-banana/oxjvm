@@ -6,6 +6,7 @@
 //! exactly when the count reaches zero.
 
 use alloc::vec;
+use alloc::vec::Vec;
 use oxjvm_classfile::flags::*;
 
 use crate::{boolean, class, field, int, long, method, object, receiver, ref_arg, void};
@@ -1398,3 +1399,586 @@ pub(crate) const COMPLETABLE_FUTURE: oxjvm_vm::NativeClass = class(
     &COMPLETABLE_FUTURE_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// BlockingQueue / ArrayBlockingQueue
+// -------------------------------------------------------------------------------------------
+
+/// `BlockingQueue`: a `Queue` with blocking `put`/`take` and timed variants.
+pub(crate) const BLOCKING_QUEUE: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/BlockingQueue",
+    Some("java/lang/Object"),
+    &["java/util/Queue"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &BLOCKING_QUEUE_METHODS,
+    None,
+);
+
+const BLOCKING_QUEUE_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method(
+        "put",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "take",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "poll",
+        "(JLjava/util/concurrent/TimeUnit;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "offer",
+        "(Ljava/lang/Object;JLjava/util/concurrent/TimeUnit;)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "remainingCapacity",
+        "()I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "drainTo",
+        "(Ljava/util/Collection;)I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "drainTo",
+        "(Ljava/util/Collection;I)I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
+/// `ArrayBlockingQueue`, backed by the same element array as `ArrayList` with a fixed
+/// capacity.  Blocking operations park on the queue's monitor; every mutation notifies all
+/// waiters so producers and consumers wake each other through the cooperative scheduler.
+pub(crate) const ARRAY_BLOCKING_QUEUE: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/ArrayBlockingQueue",
+    Some("java/util/ArrayList"),
+    &["java/util/concurrent/BlockingQueue", "java/io/Serializable"],
+    ACC_PUBLIC,
+    &[field("capacity", "I", ACC_PRIVATE, None)],
+    &ARRAY_BLOCKING_QUEUE_METHODS,
+    None,
+);
+
+const ARRAY_BLOCKING_QUEUE_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
+    method("<init>", "(I)V", ACC_PUBLIC, abq_init),
+    method("<init>", "(IZ)V", ACC_PUBLIC, abq_init),
+    method(
+        "<init>",
+        "(IZLjava/util/Collection;)V",
+        ACC_PUBLIC,
+        abq_init,
+    ),
+    method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if abq_size(vm, this) >= abq_capacity(vm, this) {
+            return Err(vm.throw_new("java/lang/IllegalStateException", Some("Queue full")));
+        }
+        abq_push(vm, this, ref_arg(args, 1))?;
+        boolean(true)
+    }),
+    method(
+        "offer",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if abq_size(vm, this) >= abq_capacity(vm, this) {
+                return boolean(false);
+            }
+            abq_push(vm, this, ref_arg(args, 1))?;
+            boolean(true)
+        },
+    ),
+    method(
+        "offer",
+        "(Ljava/lang/Object;JLjava/util/concurrent/TimeUnit;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let element = ref_arg(args, 1);
+            let millis = time_unit_to_millis(vm, ref_arg(args, 3), crate::long_arg(args, 2))?;
+            let deadline = vm.virtual_time_millis().saturating_add(millis.max(0));
+            loop {
+                if abq_size(vm, this) < abq_capacity(vm, this) {
+                    abq_push(vm, this, element)?;
+                    return boolean(true);
+                }
+                let remaining = deadline - vm.virtual_time_millis();
+                if remaining <= 0 {
+                    return boolean(false);
+                }
+                vm.park_until_notified(this, Some(remaining))?;
+            }
+        },
+    ),
+    method("put", "(Ljava/lang/Object;)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let element = ref_arg(args, 1);
+        loop {
+            if abq_size(vm, this) < abq_capacity(vm, this) {
+                abq_push(vm, this, element)?;
+                return void();
+            }
+            vm.park_until_notified(this, None)?;
+        }
+    }),
+    method("take", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        loop {
+            if abq_size(vm, this) > 0 {
+                return object(abq_pop_head(vm, this)?);
+            }
+            vm.park_until_notified(this, None)?;
+        }
+    }),
+    method("poll", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if abq_size(vm, this) == 0 {
+            return object(ObjectRef::NULL);
+        }
+        object(abq_pop_head(vm, this)?)
+    }),
+    method(
+        "poll",
+        "(JLjava/util/concurrent/TimeUnit;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let millis = time_unit_to_millis(vm, ref_arg(args, 2), crate::long_arg(args, 1))?;
+            let deadline = vm.virtual_time_millis().saturating_add(millis.max(0));
+            loop {
+                if abq_size(vm, this) > 0 {
+                    return object(abq_pop_head(vm, this)?);
+                }
+                let remaining = deadline - vm.virtual_time_millis();
+                if remaining <= 0 {
+                    return object(ObjectRef::NULL);
+                }
+                vm.park_until_notified(this, Some(remaining))?;
+            }
+        },
+    ),
+    method("peek", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let elements = crate::util::array_list_elements(vm, receiver(args));
+        object(elements.first().copied().unwrap_or(ObjectRef::NULL))
+    }),
+    method(
+        "element",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = crate::util::array_list_elements(vm, receiver(args));
+            match elements.first() {
+                Some(head) => object(*head),
+                None => Err(vm.throw_new("java/util/NoSuchElementException", None)),
+            }
+        },
+    ),
+    method(
+        "remove",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if abq_size(vm, this) == 0 {
+                return Err(vm.throw_new("java/util/NoSuchElementException", None));
+            }
+            object(abq_pop_head(vm, this)?)
+        },
+    ),
+    method(
+        "remove",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let super_class = vm.resolve_class("java/util/ArrayList")?;
+            let (declaring, method) = vm
+                .find_method(super_class, "remove", "(Ljava/lang/Object;)Z")
+                .ok_or_else(|| VmError::internal("ArrayList.remove(Object) missing"))?;
+            let result = vm.invoke_method(declaring, method, vec![args[0], args[1]])?;
+            if result.as_int() != 0 {
+                vm.monitor_notify(this, true);
+            }
+            Ok(result)
+        },
+    ),
+    method("remainingCapacity", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        int((abq_capacity(vm, this) - abq_size(vm, this)) as i32)
+    }),
+    method(
+        "drainTo",
+        "(Ljava/util/Collection;)I",
+        ACC_PUBLIC,
+        |vm, _, args| abq_drain_to(vm, args, usize::MAX),
+    ),
+    method(
+        "drainTo",
+        "(Ljava/util/Collection;I)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let max = crate::int_arg(args, 2).max(0) as usize;
+            abq_drain_to(vm, args, max)
+        },
+    ),
+    method(
+        "addAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let collection = ref_arg(args, 1);
+            if collection.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let extra = crate::util::collection_elements(vm, collection)?;
+            let mut elements = crate::util::array_list_elements(vm, this);
+            if elements.len() + extra.len() > abq_capacity(vm, this) {
+                return Err(vm.throw_new("java/lang/IllegalStateException", Some("Queue full")));
+            }
+            elements.extend(extra);
+            crate::util::array_list_store(vm, this, &elements)?;
+            vm.monitor_notify(this, true);
+            boolean(true)
+        },
+    ),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        crate::util::array_list_store(vm, this, &[])?;
+        vm.monitor_notify(this, true);
+        void()
+    }),
+];
+
+fn abq_init(
+    vm: &mut Vm<'_>,
+    context: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let capacity = crate::int_arg(args, 1);
+    if capacity <= 0 {
+        return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+    }
+    crate::lang::write_int_field(vm, this, "capacity", capacity);
+    let descriptor = vm.classes.get(context.class).methods[context.method as usize]
+        .descriptor
+        .as_str();
+    let mut elements = Vec::new();
+    if descriptor == "(IZLjava/util/Collection;)V" {
+        elements = crate::util::collection_elements(vm, ref_arg(args, 3))?;
+        if elements.len() > capacity as usize {
+            return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+        }
+    }
+    crate::util::array_list_store(vm, this, &elements)?;
+    void()
+}
+
+fn abq_size(vm: &Vm<'_>, this: ObjectRef) -> usize {
+    crate::lang::read_int_field(vm, this, "size").max(0) as usize
+}
+
+fn abq_capacity(vm: &Vm<'_>, this: ObjectRef) -> usize {
+    crate::lang::read_int_field(vm, this, "capacity").max(0) as usize
+}
+
+fn abq_push(vm: &mut Vm<'_>, this: ObjectRef, element: ObjectRef) -> Result<(), VmError> {
+    let mut elements = crate::util::array_list_elements(vm, this);
+    elements.push(element);
+    crate::util::array_list_store(vm, this, &elements)?;
+    vm.monitor_notify(this, true);
+    Ok(())
+}
+
+fn abq_pop_head(vm: &mut Vm<'_>, this: ObjectRef) -> Result<ObjectRef, VmError> {
+    let mut elements = crate::util::array_list_elements(vm, this);
+    let head = elements.remove(0);
+    crate::util::array_list_store(vm, this, &elements)?;
+    vm.monitor_notify(this, true);
+    Ok(head)
+}
+
+fn abq_drain_to(vm: &mut Vm<'_>, args: &[Value], max: usize) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let collection = ref_arg(args, 1);
+    if collection.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let elements = crate::util::array_list_elements(vm, this);
+    let mut transferred = 0usize;
+    for element in elements.iter().take(max) {
+        let (declaring, method) =
+            vm.resolve_virtual_method(collection, "add", "(Ljava/lang/Object;)Z")?;
+        let added = vm.invoke_method(
+            declaring,
+            method,
+            vec![Value::Ref(collection), Value::Ref(*element)],
+        )?;
+        if added.as_int() == 0 {
+            break;
+        }
+        transferred += 1;
+    }
+    if transferred > 0 {
+        crate::util::array_list_store(vm, this, &elements[transferred..])?;
+        vm.monitor_notify(this, true);
+    }
+    int(transferred as i32)
+}
+
+// -------------------------------------------------------------------------------------------
+// Phaser
+// -------------------------------------------------------------------------------------------
+
+/// `Phaser` with a single-level (root-only) party model.  Termination is encoded as a
+/// negative phase, matching the sign bit of the real implementation's state word.
+pub(crate) const PHASER: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/Phaser",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("phase", "I", ACC_PRIVATE, None),
+        field("registered", "I", ACC_PRIVATE, None),
+        field("arrived", "I", ACC_PRIVATE, None),
+    ],
+    &PHASER_METHODS,
+    None,
+);
+
+const PHASER_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
+    method("<init>", "()V", ACC_PUBLIC, phaser_init),
+    method("<init>", "(I)V", ACC_PUBLIC, phaser_init),
+    method(
+        "<init>",
+        "(Ljava/util/concurrent/Phaser;)V",
+        ACC_PUBLIC,
+        phaser_init,
+    ),
+    method(
+        "<init>",
+        "(Ljava/util/concurrent/Phaser;I)V",
+        ACC_PUBLIC,
+        phaser_init,
+    ),
+    method("register", "()I", ACC_PUBLIC, |vm, _, args| {
+        phaser_register(vm, receiver(args), 1)
+    }),
+    method("bulkRegister", "(I)I", ACC_PUBLIC, |vm, _, args| {
+        let parties = crate::int_arg(args, 1);
+        if parties < 0 {
+            return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+        }
+        phaser_register(vm, receiver(args), parties)
+    }),
+    method("arrive", "()I", ACC_PUBLIC, |vm, _, args| {
+        phaser_arrive(vm, receiver(args), false)
+    }),
+    method("arriveAndDeregister", "()I", ACC_PUBLIC, |vm, _, args| {
+        phaser_arrive(vm, receiver(args), true)
+    }),
+    method("arriveAndAwaitAdvance", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let phase = phaser_arrive(vm, this, false)?.as_int();
+        phaser_await_advance(vm, this, phase, None)
+    }),
+    method("awaitAdvance", "(I)I", ACC_PUBLIC, |vm, _, args| {
+        phaser_await_advance(vm, receiver(args), crate::int_arg(args, 1), None)
+    }),
+    method(
+        "awaitAdvanceInterruptibly",
+        "(I)I",
+        ACC_PUBLIC,
+        |vm, _, args| phaser_await_advance(vm, receiver(args), crate::int_arg(args, 1), None),
+    ),
+    method(
+        "awaitAdvanceInterruptibly",
+        "(IJLjava/util/concurrent/TimeUnit;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let millis = time_unit_to_millis(vm, ref_arg(args, 3), crate::long_arg(args, 2))?;
+            phaser_await_advance(vm, receiver(args), crate::int_arg(args, 1), Some(millis))
+        },
+    ),
+    method("forceTermination", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let phase = crate::lang::read_int_field(vm, this, "phase");
+        if phase >= 0 {
+            crate::lang::write_int_field(vm, this, "phase", phase | i32::MIN);
+            vm.monitor_notify(this, true);
+        }
+        void()
+    }),
+    method("isTerminated", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "phase") < 0)
+    }),
+    method("getPhase", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "phase"))
+    }),
+    method("getRegisteredParties", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(
+            vm,
+            receiver(args),
+            "registered",
+        ))
+    }),
+    method("getArrivedParties", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if crate::lang::read_int_field(vm, this, "phase") < 0 {
+            return int(0);
+        }
+        int(crate::lang::read_int_field(vm, this, "arrived"))
+    }),
+    method("getUnarrivedParties", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if crate::lang::read_int_field(vm, this, "phase") < 0 {
+            return int(0);
+        }
+        let registered = crate::lang::read_int_field(vm, this, "registered");
+        let arrived = crate::lang::read_int_field(vm, this, "arrived");
+        int(registered - arrived)
+    }),
+    method(
+        "getParent",
+        "()Ljava/util/concurrent/Phaser;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "getRoot",
+        "()Ljava/util/concurrent/Phaser;",
+        ACC_PUBLIC,
+        |_, _, args| object(receiver(args)),
+    ),
+    method("onAdvance", "(II)Z", ACC_PROTECTED, |_, _, args| {
+        boolean(crate::int_arg(args, 2) == 0)
+    }),
+];
+
+fn phaser_init(
+    vm: &mut Vm<'_>,
+    context: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let descriptor = vm.classes.get(context.class).methods[context.method as usize]
+        .descriptor
+        .as_str();
+    let parties = match descriptor {
+        "()V" | "(Ljava/util/concurrent/Phaser;)V" => 0,
+        _ => crate::int_arg(args, 1),
+    };
+    if parties < 0 {
+        return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+    }
+    crate::lang::write_int_field(vm, this, "phase", 0);
+    crate::lang::write_int_field(vm, this, "registered", parties);
+    crate::lang::write_int_field(vm, this, "arrived", 0);
+    void()
+}
+
+fn phaser_register(vm: &mut Vm<'_>, this: ObjectRef, parties: i32) -> Result<Value, VmError> {
+    let phase = crate::lang::read_int_field(vm, this, "phase");
+    if phase < 0 || parties == 0 {
+        return int(phase);
+    }
+    let registered = crate::lang::read_int_field(vm, this, "registered");
+    crate::lang::write_int_field(vm, this, "registered", registered + parties);
+    int(phase)
+}
+
+fn phaser_arrive(vm: &mut Vm<'_>, this: ObjectRef, deregister: bool) -> Result<Value, VmError> {
+    let phase = crate::lang::read_int_field(vm, this, "phase");
+    if phase < 0 {
+        return int(phase);
+    }
+    let registered = crate::lang::read_int_field(vm, this, "registered");
+    let arrived = crate::lang::read_int_field(vm, this, "arrived");
+    if registered == 0 {
+        return Err(vm.throw_new(
+            "java/lang/IllegalStateException",
+            Some("Phaser has no registered parties"),
+        ));
+    }
+    let next_registered = if deregister {
+        registered - 1
+    } else {
+        registered
+    };
+    crate::lang::write_int_field(vm, this, "registered", next_registered);
+    let next_arrived = arrived + 1;
+    if next_arrived >= next_registered {
+        crate::lang::write_int_field(vm, this, "arrived", 0);
+        phaser_advance(vm, this, phase, next_registered)?;
+    } else {
+        crate::lang::write_int_field(vm, this, "arrived", next_arrived);
+    }
+    int(phase)
+}
+
+/// Complete a phase: consult the overridable `onAdvance` hook, then bump or terminate.
+fn phaser_advance(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    phase: i32,
+    registered: i32,
+) -> Result<(), VmError> {
+    let (declaring, method) = vm.resolve_virtual_method(this, "onAdvance", "(II)Z")?;
+    let terminate = vm.invoke_method(
+        declaring,
+        method,
+        vec![Value::Ref(this), Value::Int(phase), Value::Int(registered)],
+    )?;
+    let next = if terminate.as_int() != 0 {
+        phase | i32::MIN
+    } else {
+        (phase + 1) & 0x7fff_ffff
+    };
+    crate::lang::write_int_field(vm, this, "phase", next);
+    vm.monitor_notify(this, true);
+    Ok(())
+}
+
+fn phaser_await_advance(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    phase: i32,
+    timeout: Option<i64>,
+) -> Result<Value, VmError> {
+    if phase < 0 {
+        return int(phase);
+    }
+    let deadline = timeout.map(|millis| vm.virtual_time_millis().saturating_add(millis.max(0)));
+    loop {
+        let current = crate::lang::read_int_field(vm, this, "phase");
+        if current != phase {
+            return int(current);
+        }
+        match deadline {
+            Some(deadline) => {
+                let remaining = deadline - vm.virtual_time_millis();
+                if remaining <= 0 {
+                    return int(phase);
+                }
+                vm.park_until_notified(this, Some(remaining))?;
+            }
+            None => vm.park_until_notified(this, None)?,
+        }
+    }
+}

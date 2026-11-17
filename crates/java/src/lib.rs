@@ -43,6 +43,7 @@ pub(crate) mod module;
 pub(crate) mod net;
 pub(crate) mod nio;
 pub(crate) mod optional;
+pub(crate) mod preconditions;
 pub(crate) mod primitive_stream;
 pub(crate) mod process;
 pub(crate) mod process_handle;
@@ -144,7 +145,7 @@ pub fn is_non_writable_property(key: &str) -> bool {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 968] = [
+static REGISTRY: [NativeClass; 974] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -485,6 +486,9 @@ static REGISTRY: [NativeClass; 968] = [
     util::MAP,
     util::ABSTRACT_MAP,
     util::OBJECTS,
+    preconditions::PRECONDITIONS,
+    preconditions::OOB_FORMATTER,
+    preconditions::EXCEPTION_FACTORY,
     util::STRING_JOINER,
     util::EVENT_LISTENER,
     util::EVENT_OBJECT,
@@ -1114,6 +1118,9 @@ static REGISTRY: [NativeClass; 968] = [
     concurrent::REENTRANT_LOCK,
     concurrent::LOCK_SUPPORT,
     concurrent::LOCK,
+    concurrent::BLOCKING_QUEUE,
+    concurrent::ARRAY_BLOCKING_QUEUE,
+    concurrent::PHASER,
     util::SORTED_SET,
     util::NAVIGABLE_SET,
 ];
