@@ -9,7 +9,7 @@ use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 use crate::lang::{read_int_field, read_long_field, write_int_field, write_long_field};
 use crate::{class, field, int, long, method, object, receiver, ref_arg};
 
-const DURATION_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const DURATION_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
     method(
         "ofNanos",
         "(J)Ljava/time/Duration;",
@@ -27,6 +27,45 @@ const DURATION_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         "(J)Ljava/time/Duration;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| duration_new(vm, crate::long_arg(args, 0).saturating_mul(1_000_000_000)),
+    ),
+    method(
+        "ofSeconds",
+        "(JJ)Ljava/time/Duration;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let nanos = crate::long_arg(args, 0)
+                .saturating_mul(1_000_000_000)
+                .saturating_add(crate::long_arg(args, 1));
+            duration_new(vm, nanos)
+        },
+    ),
+    method(
+        "ofMinutes",
+        "(J)Ljava/time/Duration;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| duration_new(vm, crate::long_arg(args, 0).saturating_mul(60_000_000_000)),
+    ),
+    method(
+        "ofHours",
+        "(J)Ljava/time/Duration;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            duration_new(
+                vm,
+                crate::long_arg(args, 0).saturating_mul(3_600_000_000_000),
+            )
+        },
+    ),
+    method(
+        "ofDays",
+        "(J)Ljava/time/Duration;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            duration_new(
+                vm,
+                crate::long_arg(args, 0).saturating_mul(86_400_000_000_000),
+            )
+        },
     ),
     method("toNanos", "()J", ACC_PUBLIC, |vm, _, args| {
         long(read_long_field(vm, receiver(args), "nanos"))
@@ -1106,7 +1145,22 @@ pub(crate) const LOCAL_TIME: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
+    method(
+        "of",
+        "(IIIII)Ljava/time/LocalDateTime;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let year = crate::int_arg(args, 0);
+            let month = crate::int_arg(args, 1);
+            let day = crate::int_arg(args, 2);
+            let hour = crate::int_arg(args, 3);
+            let minute = crate::int_arg(args, 4);
+            let epoch_day = days_from_civil(year, month, day);
+            let nano = (i64::from(hour) * 3600 + i64::from(minute) * 60) * 1_000_000_000;
+            object(local_date_time_new(vm, epoch_day, nano)?)
+        },
+    ),
     method(
         "of",
         "(IIIIII)Ljava/time/LocalDateTime;",
@@ -1121,6 +1175,25 @@ const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
             let epoch_day = days_from_civil(year, month, day);
             let nano = (i64::from(hour) * 3600 + i64::from(minute) * 60 + i64::from(second))
                 * 1_000_000_000;
+            object(local_date_time_new(vm, epoch_day, nano)?)
+        },
+    ),
+    method(
+        "of",
+        "(IIIIIII)Ljava/time/LocalDateTime;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let year = crate::int_arg(args, 0);
+            let month = crate::int_arg(args, 1);
+            let day = crate::int_arg(args, 2);
+            let hour = crate::int_arg(args, 3);
+            let minute = crate::int_arg(args, 4);
+            let second = crate::int_arg(args, 5);
+            let nano_of_second = crate::int_arg(args, 6);
+            let epoch_day = days_from_civil(year, month, day);
+            let nano = (i64::from(hour) * 3600 + i64::from(minute) * 60 + i64::from(second))
+                * 1_000_000_000
+                + i64::from(nano_of_second);
             object(local_date_time_new(vm, epoch_day, nano)?)
         },
     ),

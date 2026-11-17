@@ -335,7 +335,7 @@ pub(crate) const EXECUTOR: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const EXECUTOR_SERVICE_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const EXECUTOR_SERVICE_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method(
         "shutdown",
         "()V",
@@ -391,8 +391,20 @@ const EXECUTOR_SERVICE_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         crate::lang::abstract_method_pub,
     ),
     method(
+        "invokeAll",
+        "(Ljava/util/Collection;JLjava/util/concurrent/TimeUnit;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
         "invokeAny",
         "(Ljava/util/Collection;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "invokeAny",
+        "(Ljava/util/Collection;JLjava/util/concurrent/TimeUnit;)Ljava/lang/Object;",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
@@ -431,7 +443,7 @@ fn executor_execute(
     object(task)
 }
 
-const OJVM_EXECUTOR_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+const OJVM_EXECUTOR_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method(
         "execute",
         "(Ljava/lang/Runnable;)V",
@@ -508,8 +520,36 @@ const OJVM_EXECUTOR_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
         },
     ),
     method(
+        "invokeAll",
+        "(Ljava/util/Collection;JLjava/util/concurrent/TimeUnit;)Ljava/util/List;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let mut futures = Vec::new();
+            for element in crate::util::collection_elements(vm, ref_arg(args, 1))? {
+                let task = future_task_new(vm, element, ObjectRef::NULL, ObjectRef::NULL)?;
+                future_task_run(vm, task)?;
+                futures.push(task);
+            }
+            object(crate::util::array_list_from(vm, &futures)?)
+        },
+    ),
+    method(
         "invokeAny",
         "(Ljava/util/Collection;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = crate::util::collection_elements(vm, ref_arg(args, 1))?;
+            let Some(callable) = elements.first().copied() else {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            };
+            let (declaring, method) =
+                vm.resolve_virtual_method(callable, "call", "()Ljava/lang/Object;")?;
+            vm.invoke_method(declaring, method, vec![Value::Ref(callable)])
+        },
+    ),
+    method(
+        "invokeAny",
+        "(Ljava/util/Collection;JLjava/util/concurrent/TimeUnit;)Ljava/lang/Object;",
         ACC_PUBLIC,
         |vm, _, args| {
             let elements = crate::util::collection_elements(vm, ref_arg(args, 1))?;
@@ -568,6 +608,279 @@ pub(crate) const OJVM_EXECUTOR_SERVICE: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
     &[field("shutdown", "I", ACC_PRIVATE, None)],
     &OJVM_EXECUTOR_METHODS,
+    None,
+);
+
+/// Create a `ForkJoinTask` carrying a callable or runnable, run eagerly like `FutureTask`.
+fn fork_join_task_new(
+    vm: &mut Vm<'_>,
+    callable: ObjectRef,
+    runnable: ObjectRef,
+    result: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/concurrent/ForkJoinTask")?;
+    let task = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "callable", "Ljava/lang/Object;")?;
+    vm.set_instance_ref(task, declaring, field, callable);
+    let (declaring, field) = vm.find_field(class, "runnable", "Ljava/lang/Object;")?;
+    vm.set_instance_ref(task, declaring, field, runnable);
+    let (declaring, field) = vm.find_field(class, "result", "Ljava/lang/Object;")?;
+    vm.set_instance_ref(task, declaring, field, result);
+    let (declaring, field) = vm.find_field(class, "state", "I")?;
+    vm.set_instance_int(task, declaring, field, 0);
+    Ok(task)
+}
+
+const FORK_JOIN_TASK_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
+    method(
+        "fork",
+        "()Ljava/util/concurrent/ForkJoinTask;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            future_task_run(vm, this)?;
+            object(this)
+        },
+    ),
+    method("join", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        future_task_get(vm, receiver(args))
+    }),
+    method("get", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        future_task_get(vm, receiver(args))
+    }),
+    method(
+        "get",
+        "(JLjava/util/concurrent/TimeUnit;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| future_task_get(vm, receiver(args)),
+    ),
+    method("quietlyJoin", "()V", ACC_PUBLIC, |vm, _, args| {
+        future_task_get(vm, receiver(args))?;
+        void()
+    }),
+    method(
+        "invoke",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| future_task_get(vm, receiver(args)),
+    ),
+    method("isDone", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "state") != 0)
+    }),
+    method("isCancelled", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method("isCompletedAbnormally", "()Z", ACC_PUBLIC, |_, _, _| {
+        boolean(false)
+    }),
+    method("cancel", "(Z)Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method(
+        "adapt",
+        "(Ljava/lang/Runnable;)Ljava/util/concurrent/ForkJoinTask;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            object(fork_join_task_new(
+                vm,
+                ObjectRef::NULL,
+                ref_arg(args, 0),
+                ObjectRef::NULL,
+            )?)
+        },
+    ),
+    method(
+        "adapt",
+        "(Ljava/util/concurrent/Callable;)Ljava/util/concurrent/ForkJoinTask;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            object(fork_join_task_new(
+                vm,
+                ref_arg(args, 0),
+                ObjectRef::NULL,
+                ObjectRef::NULL,
+            )?)
+        },
+    ),
+    method(
+        "adapt",
+        "(Ljava/lang/Runnable;Ljava/lang/Object;)Ljava/util/concurrent/ForkJoinTask;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            object(fork_join_task_new(
+                vm,
+                ObjectRef::NULL,
+                ref_arg(args, 0),
+                ref_arg(args, 1),
+            )?)
+        },
+    ),
+];
+
+/// `java.util.concurrent.ForkJoinTask`: the eager future the fork/join pool hands out. It
+/// shares `FutureTask`'s field layout so the shared run/get helpers apply.
+pub(crate) const FORK_JOIN_TASK: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/ForkJoinTask",
+    Some("java/lang/Object"),
+    &["java/util/concurrent/Future", "java/io/Serializable"],
+    ACC_PUBLIC,
+    &[
+        field("callable", "Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("runnable", "Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("result", "Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("state", "I", ACC_PRIVATE, None),
+    ],
+    &FORK_JOIN_TASK_METHODS,
+    None,
+);
+
+const FORK_JOIN_POOL_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        crate::lang::write_int_field(vm, receiver(args), "parallelism", 1);
+        void()
+    }),
+    method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let parallelism = crate::int_arg(args, 1).max(1);
+        crate::lang::write_int_field(vm, receiver(args), "parallelism", parallelism);
+        void()
+    }),
+    method(
+        "commonPool",
+        "()Ljava/util/concurrent/ForkJoinPool;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/util/concurrent/ForkJoinPool")?;
+            if let Some(existing) =
+                vm.read_static_ref_if_set(class, "common", "Ljava/util/concurrent/ForkJoinPool;")
+            {
+                if !existing.is_null() {
+                    return object(existing);
+                }
+            }
+            let instance = vm.new_instance(class)?;
+            crate::lang::write_int_field(vm, instance, "parallelism", 1);
+            vm.set_static_value(
+                class,
+                "common",
+                "Ljava/util/concurrent/ForkJoinPool;",
+                Value::Ref(instance),
+            );
+            object(instance)
+        },
+    ),
+    method(
+        "getCommonPoolParallelism",
+        "()I",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, _| int(1),
+    ),
+    method("getParallelism", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "parallelism").max(1))
+    }),
+    method("getPoolSize", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method("getActiveThreadCount", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method("getRunningThreadCount", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method("getQueuedTaskCount", "()J", ACC_PUBLIC, |_, _, _| long(0)),
+    method("getDelayedTaskCount", "()J", ACC_PUBLIC, |_, _, _| long(0)),
+    method("getStealCount", "()J", ACC_PUBLIC, |_, _, _| long(0)),
+    method("isQuiescent", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
+    method(
+        "execute",
+        "(Ljava/lang/Runnable;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            executor_execute(vm, receiver(args), ref_arg(args, 1))?;
+            void()
+        },
+    ),
+    method(
+        "submit",
+        "(Ljava/util/concurrent/Callable;)Ljava/util/concurrent/ForkJoinTask;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let task = fork_join_task_new(vm, ref_arg(args, 1), ObjectRef::NULL, ObjectRef::NULL)?;
+            future_task_run(vm, task)?;
+            object(task)
+        },
+    ),
+    method(
+        "submit",
+        "(Ljava/lang/Runnable;)Ljava/util/concurrent/ForkJoinTask;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let task = fork_join_task_new(vm, ObjectRef::NULL, ref_arg(args, 1), ObjectRef::NULL)?;
+            future_task_run(vm, task)?;
+            object(task)
+        },
+    ),
+    method(
+        "submit",
+        "(Ljava/lang/Runnable;Ljava/lang/Object;)Ljava/util/concurrent/ForkJoinTask;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let task = fork_join_task_new(vm, ObjectRef::NULL, ref_arg(args, 1), ref_arg(args, 2))?;
+            future_task_run(vm, task)?;
+            object(task)
+        },
+    ),
+    method(
+        "invoke",
+        "(Ljava/util/concurrent/ForkJoinTask;)Ljava/util/concurrent/ForkJoinTask;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let task = ref_arg(args, 1);
+            future_task_run(vm, task)?;
+            object(task)
+        },
+    ),
+    method("shutdown", "()V", ACC_PUBLIC, |vm, _, args| {
+        crate::lang::write_int_field(vm, receiver(args), "shutdown", 1);
+        void()
+    }),
+    method(
+        "shutdownNow",
+        "()Ljava/util/List;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            crate::lang::write_int_field(vm, receiver(args), "shutdown", 1);
+            object(crate::util::new_array_list(vm)?)
+        },
+    ),
+    method("isShutdown", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "shutdown") != 0)
+    }),
+    method("isTerminated", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "shutdown") != 0)
+    }),
+    method(
+        "awaitTermination",
+        "(JLjava/util/concurrent/TimeUnit;)Z",
+        ACC_PUBLIC,
+        |_, _, _| boolean(true),
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| object(vm.make_string("java.util.concurrent.ForkJoinPool")?),
+    ),
+];
+
+/// `java.util.concurrent.ForkJoinPool`: backed by the eager executor model, so tasks run on
+/// submission. `commonPool()` hands out a shared singleton, which is what `CompletableFuture`
+/// and most `ExecutorService` callers need.
+pub(crate) const FORK_JOIN_POOL: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/ForkJoinPool",
+    Some("java/lang/Object"),
+    &["java/util/concurrent/ExecutorService"],
+    ACC_PUBLIC,
+    &[
+        field("parallelism", "I", ACC_PRIVATE, None),
+        field("shutdown", "I", ACC_PRIVATE, None),
+        field(
+            "common",
+            "Ljava/util/concurrent/ForkJoinPool;",
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
+    ],
+    &FORK_JOIN_POOL_METHODS,
     None,
 );
 

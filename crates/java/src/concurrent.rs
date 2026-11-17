@@ -1109,22 +1109,115 @@ pub(crate) const REENTRANT_READ_WRITE_LOCK: oxjvm_vm::NativeClass = class(
 // CompletableFuture (completed futures only)
 // -------------------------------------------------------------------------------------------
 
-const COMPLETABLE_FUTURE_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const COMPLETABLE_FUTURE_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
+    method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "completedFuture",
         "(Ljava/lang/Object;)Ljava/util/concurrent/CompletableFuture;",
         ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| completable_completed(vm, ref_arg(args, 0)),
+    ),
+    method(
+        "supplyAsync",
+        "(Ljava/util/function/Supplier;)Ljava/util/concurrent/CompletableFuture;",
+        ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            let class = vm.resolve_class("java/util/concurrent/CompletableFuture")?;
-            let instance = vm.new_instance(class)?;
-            let (declaring, field) = vm.find_field(class, "result", "Ljava/lang/Object;")?;
-            vm.set_instance_ref(instance, declaring, field, ref_arg(args, 0));
-            object(instance)
+            let supplier = ref_arg(args, 0);
+            let (declaring, method) =
+                vm.resolve_virtual_method(supplier, "get", "()Ljava/lang/Object;")?;
+            let result = vm
+                .invoke_method(declaring, method, vec![Value::Ref(supplier)])?
+                .as_ref();
+            completable_completed(vm, result)
+        },
+    ),
+    method(
+        "supplyAsync",
+        "(Ljava/util/function/Supplier;Ljava/util/concurrent/Executor;)Ljava/util/concurrent/CompletableFuture;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let supplier = ref_arg(args, 0);
+            let (declaring, method) =
+                vm.resolve_virtual_method(supplier, "get", "()Ljava/lang/Object;")?;
+            let result = vm
+                .invoke_method(declaring, method, vec![Value::Ref(supplier)])?
+                .as_ref();
+            completable_completed(vm, result)
+        },
+    ),
+    method(
+        "runAsync",
+        "(Ljava/lang/Runnable;)Ljava/util/concurrent/CompletableFuture;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let runnable = ref_arg(args, 0);
+            let (declaring, method) = vm.resolve_virtual_method(runnable, "run", "()V")?;
+            vm.invoke_method(declaring, method, vec![Value::Ref(runnable)])?;
+            completable_completed(vm, ObjectRef::NULL)
+        },
+    ),
+    method(
+        "runAsync",
+        "(Ljava/lang/Runnable;Ljava/util/concurrent/Executor;)Ljava/util/concurrent/CompletableFuture;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let runnable = ref_arg(args, 0);
+            let (declaring, method) = vm.resolve_virtual_method(runnable, "run", "()V")?;
+            vm.invoke_method(declaring, method, vec![Value::Ref(runnable)])?;
+            completable_completed(vm, ObjectRef::NULL)
         },
     ),
     method("join", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
         future_result(vm, args)
     }),
+    method(
+        "thenApply",
+        "(Ljava/util/function/Function;)Ljava/util/concurrent/CompletableFuture;",
+        ACC_PUBLIC,
+        |vm, _, args| cf_then_apply(vm, receiver(args), ref_arg(args, 1)),
+    ),
+    method(
+        "thenApplyAsync",
+        "(Ljava/util/function/Function;)Ljava/util/concurrent/CompletableFuture;",
+        ACC_PUBLIC,
+        |vm, _, args| cf_then_apply(vm, receiver(args), ref_arg(args, 1)),
+    ),
+    method(
+        "thenCompose",
+        "(Ljava/util/function/Function;)Ljava/util/concurrent/CompletableFuture;",
+        ACC_PUBLIC,
+        |vm, _, args| cf_then_compose(vm, receiver(args), ref_arg(args, 1)),
+    ),
+    method(
+        "thenComposeAsync",
+        "(Ljava/util/function/Function;)Ljava/util/concurrent/CompletableFuture;",
+        ACC_PUBLIC,
+        |vm, _, args| cf_then_compose(vm, receiver(args), ref_arg(args, 1)),
+    ),
+    method(
+        "thenAccept",
+        "(Ljava/util/function/Consumer;)Ljava/util/concurrent/CompletableFuture;",
+        ACC_PUBLIC,
+        |vm, _, args| cf_then_accept(vm, receiver(args), ref_arg(args, 1)),
+    ),
+    method(
+        "thenAcceptAsync",
+        "(Ljava/util/function/Consumer;)Ljava/util/concurrent/CompletableFuture;",
+        ACC_PUBLIC,
+        |vm, _, args| cf_then_accept(vm, receiver(args), ref_arg(args, 1)),
+    ),
+    method(
+        "thenRun",
+        "(Ljava/lang/Runnable;)Ljava/util/concurrent/CompletableFuture;",
+        ACC_PUBLIC,
+        |vm, _, args| cf_then_run(vm, ref_arg(args, 1)),
+    ),
+    method(
+        "thenRunAsync",
+        "(Ljava/lang/Runnable;)Ljava/util/concurrent/CompletableFuture;",
+        ACC_PUBLIC,
+        |vm, _, args| cf_then_run(vm, ref_arg(args, 1)),
+    ),
     method("get", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
         future_result(vm, args)
     }),
@@ -1147,6 +1240,24 @@ const COMPLETABLE_FUTURE_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         |_, _, _| boolean(true),
     ),
     method(
+        "completeExceptionally",
+        "(Ljava/lang/Throwable;)Z",
+        ACC_PUBLIC,
+        |_, _, _| boolean(true),
+    ),
+    method(
+        "orTimeout",
+        "(JLjava/util/concurrent/TimeUnit;)Ljava/util/concurrent/CompletableFuture;",
+        ACC_PUBLIC,
+        |_, _, args| object(receiver(args)),
+    ),
+    method(
+        "completeOnTimeout",
+        "(Ljava/lang/Object;JLjava/util/concurrent/TimeUnit;)Ljava/util/concurrent/CompletableFuture;",
+        ACC_PUBLIC,
+        |_, _, args| object(receiver(args)),
+    ),
+    method(
         "toString",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
@@ -1160,6 +1271,75 @@ fn future_result(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
         .read_ref_field(this, vm.class_of(this), "result", "Ljava/lang/Object;")
         .unwrap_or(ObjectRef::NULL);
     object(result)
+}
+
+/// A `CompletableFuture` already completed with `result`.
+fn completable_completed(vm: &mut Vm<'_>, result: ObjectRef) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/util/concurrent/CompletableFuture")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "result", "Ljava/lang/Object;")?;
+    vm.set_instance_ref(instance, declaring, field, result);
+    object(instance)
+}
+
+/// The result a completed `CompletableFuture` holds.
+fn completable_result(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "result", "Ljava/lang/Object;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+/// `thenApply`: map the result through a function into a new completed future.
+fn cf_then_apply(vm: &mut Vm<'_>, this: ObjectRef, function: ObjectRef) -> Result<Value, VmError> {
+    let result = completable_result(vm, this);
+    let (declaring, method) =
+        vm.resolve_virtual_method(function, "apply", "(Ljava/lang/Object;)Ljava/lang/Object;")?;
+    let mapped = vm
+        .invoke_method(
+            declaring,
+            method,
+            vec![Value::Ref(function), Value::Ref(result)],
+        )?
+        .as_ref();
+    completable_completed(vm, mapped)
+}
+
+/// `thenCompose`: flat-map the result through a function that returns a future.
+fn cf_then_compose(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    function: ObjectRef,
+) -> Result<Value, VmError> {
+    let result = completable_result(vm, this);
+    let (declaring, method) =
+        vm.resolve_virtual_method(function, "apply", "(Ljava/lang/Object;)Ljava/lang/Object;")?;
+    let next = vm
+        .invoke_method(
+            declaring,
+            method,
+            vec![Value::Ref(function), Value::Ref(result)],
+        )?
+        .as_ref();
+    object(next)
+}
+
+/// `thenAccept`: feed the result to a consumer, yielding a void future.
+fn cf_then_accept(vm: &mut Vm<'_>, this: ObjectRef, consumer: ObjectRef) -> Result<Value, VmError> {
+    let result = completable_result(vm, this);
+    let (declaring, method) =
+        vm.resolve_virtual_method(consumer, "accept", "(Ljava/lang/Object;)V")?;
+    vm.invoke_method(
+        declaring,
+        method,
+        vec![Value::Ref(consumer), Value::Ref(result)],
+    )?;
+    completable_completed(vm, ObjectRef::NULL)
+}
+
+/// `thenRun`: run an action after completion, yielding a void future.
+fn cf_then_run(vm: &mut Vm<'_>, action: ObjectRef) -> Result<Value, VmError> {
+    let (declaring, method) = vm.resolve_virtual_method(action, "run", "()V")?;
+    vm.invoke_method(declaring, method, vec![Value::Ref(action)])?;
+    completable_completed(vm, ObjectRef::NULL)
 }
 
 /// `CompletableFuture`: only the already-completed form the interpreter needs.
