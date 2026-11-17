@@ -54,6 +54,7 @@ pub(crate) mod serialization;
 pub(crate) mod service_loader;
 pub(crate) mod stack;
 pub(crate) mod stream;
+pub(crate) mod temporal;
 pub(crate) mod text;
 pub(crate) mod throwable;
 pub(crate) mod time;
@@ -143,7 +144,7 @@ pub fn is_non_writable_property(key: &str) -> bool {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 920] = [
+static REGISTRY: [NativeClass; 936] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -190,6 +191,21 @@ static REGISTRY: [NativeClass; 920] = [
     lang::RANDOM_GENERATOR,
     lang::ZONE_ID,
     lang::ZONE_OFFSET,
+    temporal::TEMPORAL_ACCESSOR,
+    temporal::TEMPORAL,
+    temporal::TEMPORAL_FIELD,
+    temporal::TEMPORAL_UNIT,
+    temporal::TEMPORAL_QUERY,
+    temporal::TEMPORAL_ADJUSTER,
+    temporal::TEMPORAL_AMOUNT,
+    temporal::VALUE_RANGE,
+    temporal::CHRONO_UNIT,
+    temporal::CHRONO_FIELD,
+    temporal::UNSUPPORTED_TEMPORAL_TYPE_EXCEPTION,
+    temporal::ISO_FIELDS,
+    temporal::ISO_FIELDS_FIELD,
+    temporal::WEEK_FIELDS,
+    temporal::WEEK_FIELDS_COMPUTED_DAY_OF_FIELD,
     module::MODULE_DESCRIPTOR,
     module::BUILDER,
     http::HTTP_CLIENT,
@@ -810,6 +826,7 @@ static REGISTRY: [NativeClass; 920] = [
     time::LOCAL_TIME,
     time::LOCAL_DATE_TIME,
     time::DAY_OF_WEEK,
+    time::MONTH,
     util::SORTED_MAP,
     util::NAVIGABLE_MAP,
     tree::TREE_MAP,

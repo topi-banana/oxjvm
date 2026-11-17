@@ -8303,7 +8303,19 @@ fn zone_offset_id(total: i32) -> String {
     }
 }
 
-/// Build a `ZoneOffset` for a total-seconds offset, validating the ±18h range.
+/// Allocate a fresh `ZoneOffset` instance (no validation or cache lookup); used by the
+/// class initializer to populate the identity cache.
+fn zone_offset_alloc(vm: &mut Vm<'_>, total: i32) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/time/ZoneOffset")?;
+    let instance = vm.new_instance(class)?;
+    write_int_field(vm, instance, "totalSeconds", total);
+    let id = zone_offset_id(total);
+    vm.set_string_field(instance, class, "id", &id)?;
+    Ok(instance)
+}
+
+/// Build a `ZoneOffset` for a total-seconds offset, validating the ±18h range and reusing
+/// the cached instance for whole quarter-hour offsets (the JDK's identity guarantee).
 fn zone_offset_new(vm: &mut Vm<'_>, total: i32) -> Result<ObjectRef, VmError> {
     if !(-64800..=64800).contains(&total) {
         return Err(vm.throw_new(
@@ -8312,11 +8324,14 @@ fn zone_offset_new(vm: &mut Vm<'_>, total: i32) -> Result<ObjectRef, VmError> {
         ));
     }
     let class = vm.resolve_class("java/time/ZoneOffset")?;
-    let instance = vm.new_instance(class)?;
-    write_int_field(vm, instance, "totalSeconds", total);
-    let id = zone_offset_id(total);
-    vm.set_string_field(instance, class, "id", &id)?;
-    Ok(instance)
+    vm.ensure_initialized(class)?;
+    if total % 900 == 0 {
+        if let Some(cache) = vm.read_static_ref_if_set(class, "CACHE", "[Ljava/time/ZoneOffset;") {
+            let index = (total + 64800) / 900;
+            return Ok(vm.array_get(cache, index)?.as_ref());
+        }
+    }
+    zone_offset_alloc(vm, total)
 }
 
 /// Parse a `ZoneOffset.of` string: `Z`, `±HH`, `±HHMM`, `±HH:MM`, `±HHMMSS`, `±HH:MM:SS`.
@@ -8348,7 +8363,12 @@ fn zone_offset_parse(text: &str) -> Option<i32> {
     Some(sign * (hours * 3600 + minutes * 60 + seconds))
 }
 
-const ZONE_OFFSET_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const ZONE_OFFSET_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method("<init>", "(I)V", ACC_PRIVATE, |vm, _, args| {
+        let this = receiver(args);
+        write_int_field(vm, this, "totalSeconds", int_arg(args, 1));
+        void()
+    }),
     method(
         "of",
         "(Ljava/lang/String;)Ljava/time/ZoneOffset;",
@@ -8401,8 +8421,18 @@ const ZONE_OFFSET_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
 
 fn zone_offset_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     let class = vm.resolve_class("java/time/ZoneOffset")?;
+    // Identity cache for whole quarter-hour offsets across [-18:00, +18:00].
+    let count = (129600 / 900) + 1;
+    let cache = vm.allocate_object_array(class, count)?;
+    for index in 0..count {
+        let total = -64800 + index as i32 * 900;
+        let instance = zone_offset_alloc(vm, total)?;
+        vm.array_set_ref(cache, index, instance)?;
+    }
+    vm.set_static_value(class, "CACHE", "[Ljava/time/ZoneOffset;", Value::Ref(cache));
     for (name, total) in [("UTC", 0), ("MIN", -64800), ("MAX", 64800)] {
-        let instance = zone_offset_new(vm, total)?;
+        let index = (total + 64800) / 900;
+        let instance = vm.array_get(cache, index)?.as_ref();
         vm.set_static_value(class, name, "Ljava/time/ZoneOffset;", Value::Ref(instance));
     }
     Ok(())
@@ -8414,9 +8444,9 @@ pub(crate) const ZONE_OFFSET: oxjvm_vm::NativeClass = class(
     "java/time/ZoneOffset",
     Some("java/time/ZoneId"),
     &["java/lang/Comparable", "java/io/Serializable"],
-    ACC_PUBLIC,
+    ACC_PUBLIC | ACC_FINAL,
     &[
-        field("totalSeconds", "I", ACC_PRIVATE, None),
+        field("totalSeconds", "I", ACC_PRIVATE | ACC_FINAL, None),
         field(
             "UTC",
             "Ljava/time/ZoneOffset;",
@@ -8433,6 +8463,12 @@ pub(crate) const ZONE_OFFSET: oxjvm_vm::NativeClass = class(
             "MAX",
             "Ljava/time/ZoneOffset;",
             ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "CACHE",
+            "[Ljava/time/ZoneOffset;",
+            ACC_PRIVATE | ACC_STATIC | ACC_FINAL,
             None,
         ),
     ],
