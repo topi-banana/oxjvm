@@ -195,7 +195,7 @@ pub enum NativeConstant {
 }
 
 /// A static or instance field contributed by a native class.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct NativeFieldDef {
     /// Name.
     pub name: &'static str,

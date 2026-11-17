@@ -2261,7 +2261,7 @@ fn buffered_reader_read_char(vm: &mut Vm<'_>, this: ObjectRef) -> Result<i32, Vm
         .as_int())
 }
 
-const BUFFERED_READER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const BUFFERED_READER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method(
         "<init>",
         "(Ljava/io/Reader;)V",
@@ -2362,6 +2362,31 @@ const BUFFERED_READER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         void()
     }),
     method("ready", "()Z", ACC_PUBLIC, |_, _, _| Ok(Value::Int(1))),
+    method("mark", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let reader = buffered_reader_in(vm, receiver(args));
+        if !reader.is_null() {
+            let (class, method) = vm.resolve_virtual_method(reader, "mark", "(I)V")?;
+            vm.invoke_method(class, method, vec![Value::Ref(reader), args[1]])?;
+        }
+        void()
+    }),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
+        let reader = buffered_reader_in(vm, receiver(args));
+        if !reader.is_null() {
+            let (class, method) = vm.resolve_virtual_method(reader, "reset", "()V")?;
+            vm.invoke_method(class, method, vec![Value::Ref(reader)])?;
+        }
+        void()
+    }),
+    method("markSupported", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let reader = buffered_reader_in(vm, receiver(args));
+        if reader.is_null() {
+            return boolean(false);
+        }
+        let (class, method) = vm.resolve_virtual_method(reader, "markSupported", "()Z")?;
+        let value = vm.invoke_method(class, method, vec![Value::Ref(reader)])?;
+        boolean(value.as_int() != 0)
+    }),
 ];
 
 pub(crate) const BUFFERED_READER: oxjvm_vm::NativeClass = class(
@@ -2371,6 +2396,316 @@ pub(crate) const BUFFERED_READER: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC,
     &[field("in", "Ljava/io/Reader;", ACC_PRIVATE, None)],
     &BUFFERED_READER_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// LineNumberReader
+// -------------------------------------------------------------------------------------------
+
+const LINE_NUMBER_NONE: i32 = 0;
+const LINE_NUMBER_CHAR: i32 = 1;
+const LINE_NUMBER_EOL: i32 = 2;
+const LINE_NUMBER_EOF: i32 = 3;
+
+fn line_number_flag(vm: &Vm<'_>, this: ObjectRef, name: &str) -> bool {
+    vm.read_instance_int_named(this, vm.class_of(this), name, "Z")
+        .unwrap_or(0)
+        != 0
+}
+
+fn line_number_set_flag(vm: &mut Vm<'_>, this: ObjectRef, name: &str, value: bool) {
+    let class = vm.class_of(this);
+    if let Some((declaring, field)) = vm.find_field_opt(class, name, "Z") {
+        vm.set_instance_int(this, declaring, field, i32::from(value));
+    }
+}
+
+fn line_number_prev(vm: &Vm<'_>, this: ObjectRef) -> i32 {
+    crate::lang::read_int_field(vm, this, "prevChar")
+}
+
+fn line_number_set_prev(vm: &mut Vm<'_>, this: ObjectRef, value: i32) {
+    crate::lang::write_int_field(vm, this, "prevChar", value);
+}
+
+fn line_number_bump(vm: &mut Vm<'_>, this: ObjectRef) {
+    let line = crate::lang::read_int_field(vm, this, "lineNumber");
+    crate::lang::write_int_field(vm, this, "lineNumber", line + 1);
+}
+
+/// `LineNumberReader.read()`: normalizes `\r` and `\r\n` to `\n` and counts lines.
+fn line_number_reader_read(vm: &mut Vm<'_>, this: ObjectRef) -> Result<i32, VmError> {
+    let mut c = buffered_reader_read_char(vm, this)?;
+    if line_number_flag(vm, this, "skipLF") {
+        if c == i32::from(b'\n') {
+            c = buffered_reader_read_char(vm, this)?;
+        }
+        line_number_set_flag(vm, this, "skipLF", false);
+    }
+    match c {
+        13 | 10 => {
+            if c == 13 {
+                line_number_set_flag(vm, this, "skipLF", true);
+            }
+            line_number_bump(vm, this);
+            line_number_set_prev(vm, this, LINE_NUMBER_EOL);
+            Ok(i32::from(b'\n'))
+        }
+        -1 => {
+            if line_number_prev(vm, this) == LINE_NUMBER_CHAR {
+                line_number_bump(vm, this);
+            }
+            line_number_set_prev(vm, this, LINE_NUMBER_EOF);
+            Ok(-1)
+        }
+        _ => {
+            line_number_set_prev(vm, this, LINE_NUMBER_CHAR);
+            Ok(c)
+        }
+    }
+}
+
+/// `LineNumberReader.read(char[], int, int)`: bulk read with line counting.
+fn line_number_reader_read_chars(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    array: ObjectRef,
+    offset: i32,
+    length: i32,
+) -> Result<i32, VmError> {
+    reader_check_range(vm, array, offset, length)?;
+    if length == 0 {
+        return Ok(0);
+    }
+    let mut count = 0;
+    while count < length {
+        let value = buffered_reader_read_char(vm, this)?;
+        if value < 0 {
+            break;
+        }
+        vm.array_set(array, offset + count, Value::Int(value), false)?;
+        count += 1;
+    }
+    if count == 0 {
+        if line_number_prev(vm, this) == LINE_NUMBER_CHAR {
+            line_number_bump(vm, this);
+        }
+        line_number_set_prev(vm, this, LINE_NUMBER_EOF);
+        return Ok(-1);
+    }
+    let mut skip_lf = line_number_flag(vm, this, "skipLF");
+    for index in offset..offset + count {
+        let c = vm.array_get(array, index)?.as_int();
+        if skip_lf {
+            skip_lf = false;
+            if c == i32::from(b'\n') {
+                continue;
+            }
+        }
+        if c == 13 {
+            skip_lf = true;
+            line_number_bump(vm, this);
+        } else if c == 10 {
+            line_number_bump(vm, this);
+        }
+    }
+    line_number_set_flag(vm, this, "skipLF", skip_lf);
+    let last = vm.array_get(array, offset + count - 1)?.as_int();
+    line_number_set_prev(
+        vm,
+        this,
+        if last == 13 || last == 10 {
+            LINE_NUMBER_EOL
+        } else {
+            LINE_NUMBER_CHAR
+        },
+    );
+    Ok(count)
+}
+
+const LINE_NUMBER_READER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+    method(
+        "<init>",
+        "(Ljava/io/Reader;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) = vm.find_field(vm.class_of(this), "in", "Ljava/io/Reader;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/Reader;I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) = vm.find_field(vm.class_of(this), "in", "Ljava/io/Reader;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method("setLineNumber", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        crate::lang::write_int_field(vm, receiver(args), "lineNumber", int_arg(args, 1));
+        void()
+    }),
+    method("getLineNumber", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(
+            vm,
+            receiver(args),
+            "lineNumber",
+        ))
+    }),
+    method("read", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(line_number_reader_read(vm, receiver(args))?)
+    }),
+    method("read", "([CII)I", ACC_PUBLIC, |vm, _, args| {
+        int(line_number_reader_read_chars(
+            vm,
+            receiver(args),
+            ref_arg(args, 1),
+            int_arg(args, 2),
+            int_arg(args, 3),
+        )?)
+    }),
+    method(
+        "readLine",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let mut line = String::new();
+            let mut read_any = false;
+            let mut terminated = false;
+            let mut ended_cr = false;
+            let mut omit_lf = line_number_flag(vm, this, "skipLF");
+            loop {
+                let c = buffered_reader_read_char(vm, this)?;
+                if c < 0 {
+                    break;
+                }
+                if omit_lf {
+                    omit_lf = false;
+                    if c == i32::from(b'\n') {
+                        continue;
+                    }
+                }
+                if c == 10 || c == 13 {
+                    terminated = true;
+                    ended_cr = c == 13;
+                    break;
+                }
+                read_any = true;
+                line.push(char::from_u32(c as u32).unwrap_or('\u{FFFD}'));
+            }
+            line_number_set_flag(vm, this, "skipLF", ended_cr);
+            if read_any || terminated {
+                line_number_bump(vm, this);
+                line_number_set_prev(
+                    vm,
+                    this,
+                    if terminated {
+                        LINE_NUMBER_EOL
+                    } else {
+                        LINE_NUMBER_EOF
+                    },
+                );
+                object(vm.make_string(&line)?)
+            } else {
+                if line_number_prev(vm, this) == LINE_NUMBER_CHAR {
+                    line_number_bump(vm, this);
+                }
+                line_number_set_prev(vm, this, LINE_NUMBER_EOF);
+                object(ObjectRef::NULL)
+            }
+        },
+    ),
+    method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let n = crate::long_arg(args, 1);
+        if n < 0 {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("skip() value is negative"),
+            ));
+        }
+        let chunk = n.min(8192) as usize;
+        let buffer = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Char, chunk)?;
+        let (class, method) = vm.resolve_virtual_method(this, "read", "([CII)I")?;
+        let mut remaining = n;
+        while remaining > 0 {
+            let want = remaining.min(chunk as i64) as i32;
+            let got = vm
+                .invoke_method(
+                    class,
+                    method,
+                    vec![
+                        Value::Ref(this),
+                        Value::Ref(buffer),
+                        Value::Int(0),
+                        Value::Int(want),
+                    ],
+                )?
+                .as_int();
+            if got < 0 {
+                break;
+            }
+            remaining -= i64::from(got);
+        }
+        if n - remaining > 0 {
+            line_number_set_prev(vm, this, LINE_NUMBER_NONE);
+        }
+        long(n - remaining)
+    }),
+    method("mark", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let mut limit = int_arg(args, 1);
+        if line_number_flag(vm, this, "skipLF") {
+            limit += 1;
+        }
+        let super_class = vm.resolve_class("java/io/BufferedReader")?;
+        let (declaring, method) = vm
+            .find_method(super_class, "mark", "(I)V")
+            .ok_or_else(|| VmError::internal("BufferedReader.mark missing"))?;
+        vm.invoke_method(declaring, method, vec![Value::Ref(this), Value::Int(limit)])?;
+        let line = crate::lang::read_int_field(vm, this, "lineNumber");
+        crate::lang::write_int_field(vm, this, "markedLineNumber", line);
+        let skip = line_number_flag(vm, this, "skipLF");
+        line_number_set_flag(vm, this, "markedSkipLF", skip);
+        void()
+    }),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let super_class = vm.resolve_class("java/io/BufferedReader")?;
+        let (declaring, method) = vm
+            .find_method(super_class, "reset", "()V")
+            .ok_or_else(|| VmError::internal("BufferedReader.reset missing"))?;
+        vm.invoke_method(declaring, method, vec![Value::Ref(this)])?;
+        let marked = crate::lang::read_int_field(vm, this, "markedLineNumber");
+        crate::lang::write_int_field(vm, this, "lineNumber", marked);
+        let skip = line_number_flag(vm, this, "markedSkipLF");
+        line_number_set_flag(vm, this, "skipLF", skip);
+        void()
+    }),
+];
+
+/// `java.io.LineNumberReader`: a buffered reader that tracks line numbers, treating
+/// `\n`, `\r`, and `\r\n` as line terminators.
+pub(crate) const LINE_NUMBER_READER: oxjvm_vm::NativeClass = class(
+    "java/io/LineNumberReader",
+    Some("java/io/BufferedReader"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("lineNumber", "I", ACC_PRIVATE, None),
+        field("markedLineNumber", "I", ACC_PRIVATE, None),
+        field("skipLF", "Z", ACC_PRIVATE, None),
+        field("markedSkipLF", "Z", ACC_PRIVATE, None),
+        field("prevChar", "I", ACC_PRIVATE, None),
+    ],
+    &LINE_NUMBER_READER_METHODS,
     None,
 );
 
@@ -2853,7 +3188,7 @@ pub(crate) const OBJECT_STREAM_FIELD: oxjvm_vm::NativeClass = class(
 // StringReader
 // -------------------------------------------------------------------------------------------
 
-const STRING_READER_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+const STRING_READER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -2913,6 +3248,19 @@ const STRING_READER_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         int(count as i32)
     }),
     method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("mark", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let next = crate::lang::read_int_field(vm, this, "next");
+        crate::lang::write_int_field(vm, this, "mark", next);
+        void()
+    }),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let mark = crate::lang::read_int_field(vm, this, "mark");
+        crate::lang::write_int_field(vm, this, "next", mark);
+        void()
+    }),
+    method("markSupported", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
 ];
 
 /// `java.io.StringReader`: reads UTF-16 units from a string.
@@ -2924,6 +3272,7 @@ pub(crate) const STRING_READER: oxjvm_vm::NativeClass = class(
     &[
         field("str", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("next", "I", ACC_PRIVATE, None),
+        field("mark", "I", ACC_PRIVATE, None),
     ],
     &STRING_READER_METHODS,
     None,

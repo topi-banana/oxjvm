@@ -183,6 +183,23 @@ fn new_class_desc(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
     Ok(desc)
 }
 
+/// `ClassDesc.displayName()`: the simple name (after the last package separator), with
+/// `[]` pairs re-appended for array types. Nested-class `$` and primitive names are kept.
+fn class_desc_display_name(name: &str) -> String {
+    let mut dimensions = 0;
+    let mut base = name;
+    while let Some(stripped) = base.strip_suffix("[]") {
+        dimensions += 1;
+        base = stripped;
+    }
+    let simple = base.rsplit('.').next().unwrap_or(base);
+    let mut display = String::from(simple);
+    for _ in 0..dimensions {
+        display.push_str("[]");
+    }
+    display
+}
+
 const CLASS_DESC_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
@@ -233,7 +250,8 @@ const CLASS_DESC_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let name = string_field(vm, receiver(args), "name");
-            object(vm.make_string(&name)?)
+            let display = class_desc_display_name(&name);
+            object(vm.make_string(&display)?)
         },
     ),
     method(
@@ -1251,3 +1269,132 @@ pub(crate) const METHOD_TYPE_DESC: oxjvm_vm::NativeClass = class(
     &[],
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// ConstantDescs
+// -------------------------------------------------------------------------------------------
+
+/// The `CD_*` class descriptors exposed by `java.lang.constant.ConstantDescs`, paired with
+/// the binary name (or primitive name) each descriptor denotes.
+const CONSTANT_DESCS_CLASSES: [(&str, &str); 46] = [
+    ("CD_Object", "java.lang.Object"),
+    ("CD_String", "java.lang.String"),
+    ("CD_Class", "java.lang.Class"),
+    ("CD_Number", "java.lang.Number"),
+    ("CD_Integer", "java.lang.Integer"),
+    ("CD_Long", "java.lang.Long"),
+    ("CD_Float", "java.lang.Float"),
+    ("CD_Double", "java.lang.Double"),
+    ("CD_Short", "java.lang.Short"),
+    ("CD_Byte", "java.lang.Byte"),
+    ("CD_Character", "java.lang.Character"),
+    ("CD_Boolean", "java.lang.Boolean"),
+    ("CD_Void", "java.lang.Void"),
+    ("CD_Throwable", "java.lang.Throwable"),
+    ("CD_Exception", "java.lang.Exception"),
+    ("CD_Enum", "java.lang.Enum"),
+    ("CD_VarHandle", "java.lang.invoke.VarHandle"),
+    ("CD_MethodHandles", "java.lang.invoke.MethodHandles"),
+    (
+        "CD_MethodHandles_Lookup",
+        "java.lang.invoke.MethodHandles$Lookup",
+    ),
+    ("CD_MethodHandle", "java.lang.invoke.MethodHandle"),
+    ("CD_MethodType", "java.lang.invoke.MethodType"),
+    ("CD_CallSite", "java.lang.invoke.CallSite"),
+    ("CD_Collection", "java.util.Collection"),
+    ("CD_List", "java.util.List"),
+    ("CD_Set", "java.util.Set"),
+    ("CD_Map", "java.util.Map"),
+    ("CD_ConstantDesc", "java.lang.constant.ConstantDesc"),
+    ("CD_ClassDesc", "java.lang.constant.ClassDesc"),
+    ("CD_EnumDesc", "java.lang.Enum$EnumDesc"),
+    ("CD_MethodTypeDesc", "java.lang.constant.MethodTypeDesc"),
+    ("CD_MethodHandleDesc", "java.lang.constant.MethodHandleDesc"),
+    (
+        "CD_DirectMethodHandleDesc",
+        "java.lang.constant.DirectMethodHandleDesc",
+    ),
+    (
+        "CD_VarHandleDesc",
+        "java.lang.invoke.VarHandle$VarHandleDesc",
+    ),
+    (
+        "CD_MethodHandleDesc_Kind",
+        "java.lang.constant.DirectMethodHandleDesc$Kind",
+    ),
+    (
+        "CD_DynamicConstantDesc",
+        "java.lang.constant.DynamicConstantDesc",
+    ),
+    (
+        "CD_DynamicCallSiteDesc",
+        "java.lang.constant.DynamicCallSiteDesc",
+    ),
+    (
+        "CD_ConstantBootstraps",
+        "java.lang.invoke.ConstantBootstraps",
+    ),
+    ("CD_int", "int"),
+    ("CD_long", "long"),
+    ("CD_float", "float"),
+    ("CD_double", "double"),
+    ("CD_short", "short"),
+    ("CD_byte", "byte"),
+    ("CD_char", "char"),
+    ("CD_boolean", "boolean"),
+    ("CD_void", "void"),
+];
+
+fn constant_descs_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/lang/constant/ConstantDescs")?;
+    let name = vm.make_string("_")?;
+    vm.set_static_value(
+        class,
+        "DEFAULT_NAME",
+        "Ljava/lang/String;",
+        Value::Ref(name),
+    );
+    for (field_name, binary_name) in CONSTANT_DESCS_CLASSES {
+        let desc = new_class_desc(vm, binary_name)?;
+        vm.set_static_value(
+            class,
+            field_name,
+            "Ljava/lang/constant/ClassDesc;",
+            Value::Ref(desc),
+        );
+    }
+    Ok(())
+}
+
+/// `java.lang.constant.ConstantDescs`: the predefined `ClassDesc` constants.
+pub(crate) const CONSTANT_DESCS: oxjvm_vm::NativeClass = {
+    const FIELDS: [oxjvm_vm::NativeFieldDef; 47] = {
+        let mut fields: [oxjvm_vm::NativeFieldDef; 47] = [field(
+            "DEFAULT_NAME",
+            "Ljava/lang/String;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ); 47];
+        let mut index = 1;
+        while index < 47 {
+            fields[index] = field(
+                CONSTANT_DESCS_CLASSES[index - 1].0,
+                "Ljava/lang/constant/ClassDesc;",
+                ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+                None,
+            );
+            index += 1;
+        }
+        fields
+    };
+    class(
+        "java/lang/constant/ConstantDescs",
+        Some("java/lang/Object"),
+        &[],
+        ACC_PUBLIC | ACC_FINAL,
+        &FIELDS,
+        &[],
+        Some(constant_descs_clinit),
+    )
+};

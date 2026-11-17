@@ -1455,7 +1455,7 @@ pub(crate) const CLASS: oxjvm_vm::NativeClass = class(
 // String
 // -------------------------------------------------------------------------------------------
 
-const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 60] = [
+const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 63] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "<init>",
@@ -1592,6 +1592,19 @@ const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 60] = [
         "(Ljava/lang/String;I)I",
         ACC_PUBLIC,
         string_index_of_string_from,
+    ),
+    method(
+        "indexOf",
+        "(Ljava/lang/String;II)I",
+        ACC_PUBLIC,
+        string_index_of_string_range,
+    ),
+    method("indexOf", "(III)I", ACC_PUBLIC, string_index_of_char_range),
+    method(
+        "codePointCount",
+        "(II)I",
+        ACC_PUBLIC,
+        string_code_point_count,
     ),
     method("lastIndexOf", "(I)I", ACC_PUBLIC, string_last_index_of_char),
     method("lastIndexOf", "(II)I", ACC_PUBLIC, |vm, _, args| {
@@ -2513,6 +2526,127 @@ fn string_index_of_string_from(
         .ok_or_else(|| vm.throw_new("java/lang/NullPointerException", None))?;
     let from = int_arg(args, 2).max(0) as usize;
     int(find_units(&haystack, &needle, from))
+}
+
+/// `String.indexOf(String, int, int)`: search within `[beginIndex, endIndex)`.
+fn string_index_of_string_range(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let haystack = vm
+        .string_utf16(receiver(args))
+        .map(<[u16]>::to_vec)
+        .unwrap_or_default();
+    let needle = vm
+        .string_utf16(ref_arg(args, 1))
+        .map(<[u16]>::to_vec)
+        .ok_or_else(|| vm.throw_new("java/lang/NullPointerException", None))?;
+    let begin = int_arg(args, 2);
+    let end = int_arg(args, 3);
+    let length = haystack.len() as i32;
+    if begin < 0 || end > length || begin > end {
+        return Err(vm.throw_new(
+            "java/lang/StringIndexOutOfBoundsException",
+            Some(&alloc::format!(
+                "Range [{begin}, {end}) out of bounds for length {length}"
+            )),
+        ));
+    }
+    if needle.is_empty() {
+        return int(begin);
+    }
+    let limit = end as usize;
+    if needle.len() > limit {
+        return int(-1);
+    }
+    for start in begin as usize..=limit - needle.len() {
+        if haystack[start..start + needle.len()] == needle[..] {
+            return int(start as i32);
+        }
+    }
+    int(-1)
+}
+
+/// `String.indexOf(int, int, int)`: code-point search within `[beginIndex, endIndex)`.
+fn string_index_of_char_range(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let units = vm
+        .string_utf16(receiver(args))
+        .map(<[u16]>::to_vec)
+        .unwrap_or_default();
+    let ch = int_arg(args, 1);
+    let begin = int_arg(args, 2);
+    let end = int_arg(args, 3);
+    let length = units.len() as i32;
+    if begin < 0 || end > length || begin > end {
+        return Err(vm.throw_new(
+            "java/lang/StringIndexOutOfBoundsException",
+            Some(&alloc::format!(
+                "Range [{begin}, {end}) out of bounds for length {length}"
+            )),
+        ));
+    }
+    if (0..0x10000).contains(&ch) {
+        let unit = ch as u16;
+        for index in begin..end {
+            if units[index as usize] == unit {
+                return int(index);
+            }
+        }
+    } else if (0x10000..=0x10FFFF).contains(&ch) {
+        let high = (0xD800 + ((ch - 0x10000) >> 10)) as u16;
+        let low = (0xDC00 + ((ch - 0x10000) & 0x3FF)) as u16;
+        for index in begin..end - 1 {
+            let at = index as usize;
+            if units[at] == high && units[at + 1] == low {
+                return int(index);
+            }
+        }
+    }
+    int(-1)
+}
+
+/// `String.codePointCount(int, int)`: code points in `[beginIndex, endIndex)`, counting
+/// unpaired surrogates as one code point each.
+fn string_code_point_count(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let units = vm
+        .string_utf16(receiver(args))
+        .map(<[u16]>::to_vec)
+        .unwrap_or_default();
+    let begin = int_arg(args, 1);
+    let end = int_arg(args, 2);
+    let length = units.len() as i32;
+    if begin < 0 || end > length || begin > end {
+        return Err(vm.throw_new(
+            "java/lang/IndexOutOfBoundsException",
+            Some(&alloc::format!(
+                "Range [{begin}, {end}) out of bounds for length {length}"
+            )),
+        ));
+    }
+    let mut count = 0;
+    let mut index = begin as usize;
+    while index < end as usize {
+        let first = u32::from(units[index]);
+        if (0xD800..0xDC00).contains(&first)
+            && index + 1 < end as usize
+            && (0xDC00..0xE000).contains(&u32::from(units[index + 1]))
+        {
+            index += 2;
+        } else {
+            index += 1;
+        }
+        count += 1;
+    }
+    int(count)
 }
 
 /// The last occurrence of `needle` at or before `from` (JDK's `lastIndexOf(String, int)`).
