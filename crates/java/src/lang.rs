@@ -5696,7 +5696,7 @@ fn process_builder_store_command(
     object(this)
 }
 
-const PROCESS_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+const PROCESS_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method(
         "<init>",
         "([Ljava/lang/String;)V",
@@ -5763,6 +5763,24 @@ const PROCESS_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method(
         "redirectError",
         "(Ljava/lang/ProcessBuilder$Redirect;)Ljava/lang/ProcessBuilder;",
+        ACC_PUBLIC,
+        |_, _, args| object(receiver(args)),
+    ),
+    method(
+        "redirectInput",
+        "(Ljava/io/File;)Ljava/lang/ProcessBuilder;",
+        ACC_PUBLIC,
+        |_, _, args| object(receiver(args)),
+    ),
+    method(
+        "redirectOutput",
+        "(Ljava/io/File;)Ljava/lang/ProcessBuilder;",
+        ACC_PUBLIC,
+        |_, _, args| object(receiver(args)),
+    ),
+    method(
+        "redirectError",
+        "(Ljava/io/File;)Ljava/lang/ProcessBuilder;",
         ACC_PUBLIC,
         |_, _, args| object(receiver(args)),
     ),

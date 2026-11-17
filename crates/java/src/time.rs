@@ -632,7 +632,7 @@ pub(crate) const DATE_TIME_FORMATTER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method(
         "now",
         "()Ljava/time/ZonedDateTime;",
@@ -640,6 +640,23 @@ const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         |vm, _, _| {
             let millis = vm.host_time_millis();
             zoned_date_time_new(vm, millis)
+        },
+    ),
+    method(
+        "of",
+        "(Ljava/time/LocalDateTime;Ljava/time/ZoneId;)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let local = ref_arg(args, 0);
+            let zone = ref_arg(args, 1);
+            if local.is_null() || zone.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let epoch_day = read_long_field(vm, local, "epochDay");
+            let nano_of_day = read_long_field(vm, local, "nanoOfDay");
+            let local_second = epoch_day * 86_400 + nano_of_day / 1_000_000_000;
+            let offset = zone_offset_seconds(vm, zone);
+            zoned_date_time_new(vm, (local_second - i64::from(offset)) * 1000)
         },
     ),
     method(
