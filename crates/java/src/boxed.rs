@@ -765,6 +765,11 @@ fn decode_integer(text: &str) -> Option<i128> {
     } else {
         (10u32, rest)
     };
+    // A sign is only permitted at the very start (before any radix prefix);
+    // `from_str_radix` would otherwise accept `0x+10`/`0x-10`.
+    if digits.starts_with('+') || digits.starts_with('-') {
+        return None;
+    }
     let magnitude = u128::from_str_radix(digits, radix).ok()?;
     Some(if negative {
         -(magnitude as i128)
