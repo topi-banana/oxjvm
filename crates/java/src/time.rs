@@ -5095,6 +5095,56 @@ fn clock_zone_id(vm: &mut Vm<'_>, zone: ObjectRef) -> Result<alloc::string::Stri
     Ok(vm.string_value(result.as_ref()).unwrap_or_default())
 }
 
+/// The stored base clock of an offset/tick clock (null when absent).
+fn clock_base_ref(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "base", "Ljava/time/Clock;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+/// Build a `TickClock` wrapping a base clock with a nanosecond tick granularity.
+fn clock_tick_new(vm: &mut Vm<'_>, base: ObjectRef, tick_nanos: i64) -> Result<ObjectRef, VmError> {
+    let zone = clock_zone(vm, base)?;
+    let instance = clock_new(
+        vm,
+        zone,
+        read_int_field(vm, base, "fixed") != 0,
+        read_long_field(vm, base, "epochSecond"),
+        read_int_field(vm, base, "nano"),
+        read_long_field(vm, base, "offsetNanos"),
+    )?;
+    write_int_field(vm, instance, "kind", 3);
+    write_long_field(vm, instance, "tickNanos", tick_nanos);
+    let class = vm.class_of(instance);
+    if let Some((declaring, field)) = vm.find_field_opt(class, "base", "Ljava/time/Clock;") {
+        vm.set_instance_ref(instance, declaring, field, base);
+    }
+    Ok(instance)
+}
+
+/// The instant exposed by a `TickClock`: the base instant truncated to the tick
+/// granularity (whole milliseconds when the tick divides evenly into a ms).
+fn clock_tick_instant(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError> {
+    let base = clock_base_ref(vm, this);
+    let tick_nanos = read_long_field(vm, this, "tickNanos");
+    if tick_nanos % 1_000_000 == 0 {
+        let (bc, bm) = vm.resolve_virtual_method(base, "millis", "()J")?;
+        let base_millis = vm.invoke_method(bc, bm, vec![Value::Ref(base)])?.as_long();
+        let tick_millis = tick_nanos / 1_000_000;
+        let millis = base_millis - base_millis.rem_euclid(tick_millis);
+        return instant_new(
+            vm,
+            millis.div_euclid(1000),
+            (millis.rem_euclid(1000) * 1_000_000) as i32,
+        );
+    }
+    let (bc, bm) = vm.resolve_virtual_method(base, "instant", "()Ljava/time/Instant;")?;
+    let base_instant = vm.invoke_method(bc, bm, vec![Value::Ref(base)])?.as_ref();
+    let epoch_second = read_long_field(vm, base_instant, "epochSecond");
+    let nano = i64::from(read_int_field(vm, base_instant, "nano"));
+    let adjust = nano.rem_euclid(tick_nanos);
+    instant_new(vm, epoch_second, (nano - adjust) as i32)
+}
+
 /// The zone of a clock argument, falling back to UTC when null.
 fn clock_zone(vm: &mut Vm<'_>, clock: ObjectRef) -> Result<ObjectRef, VmError> {
     let zone = vm
@@ -5120,7 +5170,7 @@ fn clock_local_parts(vm: &mut Vm<'_>, clock: ObjectRef) -> Result<(i64, i64), Vm
     Ok((epoch_day, nano_of_day))
 }
 
-const CLOCK_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const CLOCK_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     method(
         "systemUTC",
         "()Ljava/time/Clock;",
@@ -5202,16 +5252,61 @@ const CLOCK_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         },
     ),
     method(
+        "tick",
+        "(Ljava/time/Clock;Ljava/time/Duration;)Ljava/time/Clock;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let base = ref_arg(args, 0);
+            let duration = ref_arg(args, 1);
+            if base.is_null() || duration.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let tick_nanos = read_long_field(vm, duration, "nanos");
+            if tick_nanos < 0 {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("Tick duration must not be negative"),
+                ));
+            }
+            if tick_nanos % 1_000_000 != 0 && (tick_nanos == 0 || 1_000_000_000 % tick_nanos != 0) {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("Invalid tick duration"),
+                ));
+            }
+            if tick_nanos <= 1 {
+                return object(base);
+            }
+            object(clock_tick_new(vm, base, tick_nanos)?)
+        },
+    ),
+    method(
         "instant",
         "()Ljava/time/Instant;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let (second, nano) = clock_instant_parts(vm, receiver(args));
+            let this = receiver(args);
+            if read_int_field(vm, this, "kind") == 3 {
+                return clock_tick_instant(vm, this);
+            }
+            let (second, nano) = clock_instant_parts(vm, this);
             instant_new(vm, second, nano)
         },
     ),
     method("millis", "()J", ACC_PUBLIC, |vm, _, args| {
-        let (second, nano) = clock_instant_parts(vm, receiver(args));
+        let this = receiver(args);
+        if read_int_field(vm, this, "kind") == 3 {
+            let base = clock_base_ref(vm, this);
+            let tick_nanos = read_long_field(vm, this, "tickNanos");
+            let (bc, bm) = vm.resolve_virtual_method(base, "millis", "()J")?;
+            let base_millis = vm.invoke_method(bc, bm, vec![Value::Ref(base)])?.as_long();
+            if tick_nanos < 1_000_000 {
+                return long(base_millis);
+            }
+            let tick_millis = tick_nanos / 1_000_000;
+            return long(base_millis - base_millis.rem_euclid(tick_millis));
+        }
+        let (second, nano) = clock_instant_parts(vm, this);
         long(second.saturating_mul(1000) + i64::from(nano) / 1_000_000)
     }),
     method(
@@ -5239,6 +5334,19 @@ const CLOCK_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
                 return object(this);
             }
             let kind = read_int_field(vm, this, "kind");
+            if kind == 3 {
+                let base = clock_base_ref(vm, this);
+                let tick_nanos = read_long_field(vm, this, "tickNanos");
+                let (bc, bm) = vm.resolve_virtual_method(
+                    base,
+                    "withZone",
+                    "(Ljava/time/ZoneId;)Ljava/time/Clock;",
+                )?;
+                let new_base = vm
+                    .invoke_method(bc, bm, vec![Value::Ref(base), Value::Ref(new_zone)])?
+                    .as_ref();
+                return object(clock_tick_new(vm, new_base, tick_nanos)?);
+            }
             if kind == 2 {
                 let base = vm
                     .read_ref_field(this, vm.class_of(this), "base", "Ljava/time/Clock;")
@@ -5305,6 +5413,14 @@ const CLOCK_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
                     let off_str = clock_obj_string(vm, offset)?;
                     alloc::format!("OffsetClock[{base_str},{off_str}]")
                 }
+                3 => {
+                    let base = clock_base_ref(vm, this);
+                    let tick_nanos = read_long_field(vm, this, "tickNanos");
+                    let base_str = clock_obj_string(vm, base)?;
+                    let duration = duration_new(vm, tick_nanos)?;
+                    let dur_str = clock_obj_string(vm, duration.as_ref())?;
+                    alloc::format!("TickClock[{base_str},{dur_str}]")
+                }
                 _ => alloc::format!("SystemClock[{zone_id}]"),
             };
             object(vm.make_string(&text)?)
@@ -5351,6 +5467,7 @@ pub(crate) const CLOCK: oxjvm_vm::NativeClass = class(
         field("offsetNanos", "J", ACC_PRIVATE, None),
         field("base", "Ljava/time/Clock;", ACC_PRIVATE, None),
         field("offset", "Ljava/time/Duration;", ACC_PRIVATE, None),
+        field("tickNanos", "J", ACC_PRIVATE, None),
     ],
     &CLOCK_METHODS,
     None,
