@@ -1755,7 +1755,7 @@ const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 60] = [
 
 // The remaining `String.valueOf` overloads and `format` are declared in a second array so the
 // first stays readable; both are concatenated below.
-const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 21] = [
+const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 22] = [
     method(
         "valueOf",
         "(Z)Ljava/lang/String;",
@@ -1797,6 +1797,22 @@ const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 21] = [
         "(Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String;",
         ACC_PUBLIC | ACC_STATIC,
         string_format,
+    ),
+    method(
+        "format",
+        "(Ljava/util/Locale;Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let format = string_arg(vm, args[1])?;
+            let mut arguments = Vec::new();
+            if let Some(oxjvm_vm::ObjectData::Array(oxjvm_vm::ArrayData::Reference(elements))) =
+                vm.heap.get(ref_arg(args, 2)).map(|object| &object.data)
+            {
+                arguments = elements.clone();
+            }
+            let text = format_string(vm, &format, &arguments)?;
+            object(vm.make_string(&text)?)
+        },
     ),
     method(
         "join",

@@ -463,7 +463,7 @@ pub(crate) const SEQUENCED_MAP: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
+const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 43] = [
     method(
         "getFirst",
         "()Ljava/lang/Object;",
@@ -929,6 +929,15 @@ const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
             object(array_list_from(vm, &elements)?)
         },
     ),
+    method(
+        "copyOf",
+        "(Ljava/util/Collection;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let elements = collection_elements(vm, ref_arg(args, 0))?;
+            object(list_of_values(vm, &elements)?)
+        },
+    ),
 ];
 
 pub(crate) const LIST: oxjvm_vm::NativeClass = class(
@@ -941,7 +950,7 @@ pub(crate) const LIST: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const SET_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
+const SET_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
     method(
         "of",
         "()Ljava/util/Set;",
@@ -1196,6 +1205,15 @@ const SET_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
         "(Ljava/util/function/Consumer;)V",
         ACC_PUBLIC,
         collection_for_each,
+    ),
+    method(
+        "copyOf",
+        "(Ljava/util/Collection;)Ljava/util/Set;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let elements = collection_elements(vm, ref_arg(args, 0))?;
+            object(set_of_values(vm, &elements)?)
+        },
     ),
 ];
 

@@ -702,7 +702,7 @@ pub(crate) fn new_path(vm: &mut Vm<'_>, path: &str) -> Result<Value, VmError> {
 // Files
 // -------------------------------------------------------------------------------------------
 
-const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 57] = [
+const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 58] = [
     method(
         "createDirectories",
         "(Ljava/nio/file/Path;[Ljava/nio/file/attribute/FileAttribute;)Ljava/nio/file/Path;",
@@ -971,6 +971,15 @@ const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 57] = [
     method(
         "writeString",
         "(Ljava/nio/file/Path;Ljava/lang/CharSequence;[Ljava/nio/file/OpenOption;)Ljava/nio/file/Path;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = vm.string_or_empty(ref_arg(args, 1));
+            files_write_text(vm, ref_arg(args, 0), &text)
+        },
+    ),
+    method(
+        "writeString",
+        "(Ljava/nio/file/Path;Ljava/lang/CharSequence;Ljava/nio/charset/Charset;[Ljava/nio/file/OpenOption;)Ljava/nio/file/Path;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let text = vm.string_or_empty(ref_arg(args, 1));

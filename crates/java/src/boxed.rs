@@ -753,7 +753,30 @@ pub(crate) const INTEGER: oxjvm_vm::NativeClass = class(
 // Long
 // -------------------------------------------------------------------------------------------
 
-const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
+/// The unsigned radix representation of a 64-bit value, the way `Long.toUnsignedString`
+/// and `Integer.toUnsignedString` write it.
+fn unsigned_radix_string(mut value: u64, radix: i32) -> String {
+    let radix = if (2..=36).contains(&radix) {
+        radix as u64
+    } else {
+        10
+    };
+    if radix == 10 {
+        return alloc::format!("{value}");
+    }
+    if value == 0 {
+        return String::from("0");
+    }
+    let mut digits = Vec::new();
+    while value != 0 {
+        let digit = (value % radix) as u32;
+        digits.push(char::from_digit(digit, radix as u32).unwrap_or('0'));
+        value /= radix;
+    }
+    digits.iter().rev().collect()
+}
+
+const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
     method("<init>", "(J)V", ACC_PUBLIC, |vm, _, args| {
         write_value_long(vm, receiver(args), long_arg(args, 1));
         void()
@@ -877,6 +900,24 @@ const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let text = format::long_to_radix_string(long_arg(args, 0), 2);
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "toUnsignedString",
+        "(J)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = alloc::format!("{}", long_arg(args, 0) as u64);
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "toUnsignedString",
+        "(JI)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = unsigned_radix_string(long_arg(args, 0) as u64, int_arg(args, 1));
             object(vm.make_string(&text)?)
         },
     ),
