@@ -3749,7 +3749,7 @@ pub(crate) const CASE_INSENSITIVE_COMPARATOR: oxjvm_vm::NativeClass = class(
 // StringBuilder / StringBuffer
 // -------------------------------------------------------------------------------------------
 
-const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
+const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
     method("<init>", "()V", ACC_PUBLIC, builder_init),
     method("<init>", "(I)V", ACC_PUBLIC, builder_init_capacity),
     method(
@@ -3862,6 +3862,24 @@ const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
         builder_insert_string,
     ),
     method(
+        "insert",
+        "(IZ)Ljava/lang/StringBuilder;",
+        ACC_PUBLIC,
+        builder_insert_bool,
+    ),
+    method(
+        "insert",
+        "(ILjava/lang/CharSequence;II)Ljava/lang/StringBuilder;",
+        ACC_PUBLIC,
+        builder_insert_sequence_range,
+    ),
+    method(
+        "insert",
+        "(I[CII)Ljava/lang/StringBuilder;",
+        ACC_PUBLIC,
+        builder_insert_chars_range,
+    ),
+    method(
         "delete",
         "(II)Ljava/lang/StringBuilder;",
         ACC_PUBLIC,
@@ -3930,7 +3948,7 @@ const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
     ),
 ];
 
-const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
+const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
     method("<init>", "()V", ACC_PUBLIC, builder_init),
     method("<init>", "(I)V", ACC_PUBLIC, builder_init_capacity),
     method(
@@ -4087,6 +4105,24 @@ const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
         "(ILjava/lang/String;)Ljava/lang/StringBuffer;",
         ACC_PUBLIC,
         builder_insert_string,
+    ),
+    method(
+        "insert",
+        "(IZ)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_insert_bool,
+    ),
+    method(
+        "insert",
+        "(ILjava/lang/CharSequence;II)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_insert_sequence_range,
+    ),
+    method(
+        "insert",
+        "(I[CII)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_insert_chars_range,
     ),
     method(
         "replace",
@@ -4534,6 +4570,83 @@ fn builder_insert_string(
     out.append(&mut tail);
     builder_store(vm, receiver(args), &out, out.len())?;
     object(receiver(args))
+}
+
+/// Splice `inserted` at a pre-validated `offset`, the shared tail of the
+/// `insert` overloads that do not take a plain `String`.
+fn builder_insert_units(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    offset: i32,
+    inserted: &[u16],
+) -> Result<Value, VmError> {
+    let (units, count) = builder_state(vm, this);
+    if offset < 0 || offset > count as i32 {
+        return Err(vm.throw_new(
+            "java/lang/StringIndexOutOfBoundsException",
+            Some(&alloc::format!("offset {offset}, length {count}")),
+        ));
+    }
+    let mut out: Vec<u16> = units[..count.min(units.len())].to_vec();
+    let mut tail = out.split_off(offset as usize);
+    out.extend_from_slice(inserted);
+    out.append(&mut tail);
+    builder_store(vm, this, &out, out.len())?;
+    object(this)
+}
+
+fn builder_insert_bool(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let inserted: Vec<u16> = if bool_arg(args, 2) { "true" } else { "false" }
+        .encode_utf16()
+        .collect();
+    builder_insert_units(vm, receiver(args), int_arg(args, 1), &inserted)
+}
+
+fn builder_insert_sequence_range(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let reference = ref_arg(args, 2);
+    let start = int_arg(args, 3);
+    let end = int_arg(args, 4);
+    let sequence = if reference.is_null() {
+        "null".encode_utf16().collect::<Vec<u16>>()
+    } else {
+        char_sequence_units(vm, reference)?
+    };
+    if start < 0 || end > sequence.len() as i32 || start > end {
+        return Err(vm.throw_new(
+            "java/lang/IndexOutOfBoundsException",
+            Some(&alloc::format!(
+                "start {start}, end {end}, length {}",
+                sequence.len()
+            )),
+        ));
+    }
+    let slice = sequence[start as usize..end as usize].to_vec();
+    builder_insert_units(vm, receiver(args), int_arg(args, 1), &slice)
+}
+
+fn builder_insert_chars_range(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let units = char_array(vm, ref_arg(args, 2))?;
+    let offset = int_arg(args, 3);
+    let length = int_arg(args, 4);
+    // `offset + length` is computed with Java int overflow, as the JDK does.
+    let to = offset.wrapping_add(length);
+    if offset < 0 || to > units.len() as i32 || offset > to {
+        return Err(vm.throw_new("java/lang/StringIndexOutOfBoundsException", None));
+    }
+    let slice = units[offset as usize..to as usize].to_vec();
+    builder_insert_units(vm, receiver(args), int_arg(args, 1), &slice)
 }
 
 fn builder_delete(
