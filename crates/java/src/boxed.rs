@@ -79,7 +79,7 @@ pub(crate) const NUMBER: oxjvm_vm::NativeClass = class(
 // Integer
 // -------------------------------------------------------------------------------------------
 
-const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
+const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 50] = [
     method("<init>", "(I)V", ACC_PUBLIC, boxed_int_init),
     method("intValue", "()I", ACC_PUBLIC, |vm, _, args| {
         int(read_value_int(vm, receiver(args)))
@@ -167,6 +167,25 @@ const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
         "(Ljava/lang/String;I)I",
         ACC_PUBLIC | ACC_STATIC,
         parse_int_radix,
+    ),
+    method(
+        "parseInt",
+        "(Ljava/lang/CharSequence;III)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = charsequence_text(vm, ref_arg(args, 0))?;
+            let begin = int_arg(args, 1);
+            let end = int_arg(args, 2);
+            let radix = int_arg(args, 3);
+            let sub = charsequence_sub(vm, &text, begin, end)?;
+            match format::parse_int_radix(&sub, radix as u32) {
+                Some(value) => int(value),
+                None => Err(vm.throw_new(
+                    "java/lang/NumberFormatException",
+                    Some(&alloc::format!("For input string: \"{sub}\"")),
+                )),
+            }
+        },
     ),
     method(
         "parseUnsignedInt",
@@ -970,7 +989,7 @@ fn unsigned_radix_string(mut value: u64, radix: i32) -> String {
     digits.iter().rev().collect()
 }
 
-const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
+const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
     method("<init>", "(J)V", ACC_PUBLIC, |vm, _, args| {
         write_value_long(vm, receiver(args), long_arg(args, 1));
         void()
@@ -1038,6 +1057,25 @@ const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
         "(Ljava/lang/String;)J",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| long(parse_long_arg(vm, args[0])?),
+    ),
+    method(
+        "parseLong",
+        "(Ljava/lang/CharSequence;III)J",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = charsequence_text(vm, ref_arg(args, 0))?;
+            let begin = int_arg(args, 1);
+            let end = int_arg(args, 2);
+            let radix = int_arg(args, 3);
+            let sub = charsequence_sub(vm, &text, begin, end)?;
+            match format::parse_long_radix(&sub, radix as u32) {
+                Some(value) => long(value),
+                None => Err(vm.throw_new(
+                    "java/lang/NumberFormatException",
+                    Some(&alloc::format!("For input string: \"{sub}\"")),
+                )),
+            }
+        },
     ),
     method(
         "parseUnsignedLong",
