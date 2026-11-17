@@ -3749,7 +3749,7 @@ pub(crate) const CASE_INSENSITIVE_COMPARATOR: oxjvm_vm::NativeClass = class(
 // StringBuilder / StringBuffer
 // -------------------------------------------------------------------------------------------
 
-const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 43] = [
+const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
     method("<init>", "()V", ACC_PUBLIC, builder_init),
     method("<init>", "(I)V", ACC_PUBLIC, builder_init_capacity),
     method(
@@ -3869,6 +3869,42 @@ const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 43] = [
     ),
     method(
         "insert",
+        "(IC)Ljava/lang/StringBuilder;",
+        ACC_PUBLIC,
+        builder_insert_char,
+    ),
+    method(
+        "insert",
+        "(II)Ljava/lang/StringBuilder;",
+        ACC_PUBLIC,
+        builder_insert_int,
+    ),
+    method(
+        "insert",
+        "(IJ)Ljava/lang/StringBuilder;",
+        ACC_PUBLIC,
+        builder_insert_long,
+    ),
+    method(
+        "insert",
+        "(IF)Ljava/lang/StringBuilder;",
+        ACC_PUBLIC,
+        builder_insert_float,
+    ),
+    method(
+        "insert",
+        "(ID)Ljava/lang/StringBuilder;",
+        ACC_PUBLIC,
+        builder_insert_double,
+    ),
+    method(
+        "insert",
+        "(ILjava/lang/Object;)Ljava/lang/StringBuilder;",
+        ACC_PUBLIC,
+        builder_insert_object,
+    ),
+    method(
+        "insert",
         "(IZ)Ljava/lang/StringBuilder;",
         ACC_PUBLIC,
         builder_insert_bool,
@@ -3915,6 +3951,31 @@ const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 43] = [
         ACC_PUBLIC,
         builder_index_of,
     ),
+    method(
+        "indexOf",
+        "(Ljava/lang/String;I)I",
+        ACC_PUBLIC,
+        builder_index_of_from,
+    ),
+    method(
+        "lastIndexOf",
+        "(Ljava/lang/String;)I",
+        ACC_PUBLIC,
+        builder_last_index_of,
+    ),
+    method(
+        "lastIndexOf",
+        "(Ljava/lang/String;I)I",
+        ACC_PUBLIC,
+        builder_last_index_of_from,
+    ),
+    method(
+        "substring",
+        "(I)Ljava/lang/String;",
+        ACC_PUBLIC,
+        builder_substring_from,
+    ),
+    method("getChars", "(II[CI)V", ACC_PUBLIC, builder_get_chars),
     method("capacity", "()I", ACC_PUBLIC, builder_capacity_method),
     method(
         "ensureCapacity",
@@ -3971,7 +4032,7 @@ const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 43] = [
     ),
 ];
 
-const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 45] = [
+const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 51] = [
     method("<init>", "()V", ACC_PUBLIC, builder_init),
     method("<init>", "(I)V", ACC_PUBLIC, builder_init_capacity),
     method(
@@ -4134,6 +4195,42 @@ const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 45] = [
         "(ILjava/lang/CharSequence;)Ljava/lang/StringBuffer;",
         ACC_PUBLIC,
         builder_insert_sequence,
+    ),
+    method(
+        "insert",
+        "(IC)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_insert_char,
+    ),
+    method(
+        "insert",
+        "(II)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_insert_int,
+    ),
+    method(
+        "insert",
+        "(IJ)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_insert_long,
+    ),
+    method(
+        "insert",
+        "(IF)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_insert_float,
+    ),
+    method(
+        "insert",
+        "(ID)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_insert_double,
+    ),
+    method(
+        "insert",
+        "(ILjava/lang/Object;)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_insert_object,
     ),
     method(
         "insert",
@@ -4465,6 +4562,81 @@ fn builder_insert_sequence(
         builder_read_sequence(vm, reference)?
     };
     builder_insert_units(vm, receiver(args), int_arg(args, 1), &units)
+}
+
+/// Splice the UTF-16 encoding of `text` at a pre-validated `offset`.
+fn builder_insert_text(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    offset: i32,
+    text: &str,
+) -> Result<Value, VmError> {
+    let inserted: Vec<u16> = text.encode_utf16().collect();
+    builder_insert_units(vm, this, offset, &inserted)
+}
+
+fn builder_insert_char(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let unit = int_arg(args, 2) as u32 & 0xFFFF;
+    let ch = char::from_u32(unit).unwrap_or('\u{FFFD}');
+    let mut buf = [0u8; 4];
+    builder_insert_text(
+        vm,
+        receiver(args),
+        int_arg(args, 1),
+        ch.encode_utf8(&mut buf),
+    )
+}
+
+fn builder_insert_int(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let text = oxjvm_vm::format::int_to_string(int_arg(args, 2));
+    builder_insert_text(vm, receiver(args), int_arg(args, 1), &text)
+}
+
+fn builder_insert_long(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let text = oxjvm_vm::format::long_to_string(long_arg(args, 2));
+    builder_insert_text(vm, receiver(args), int_arg(args, 1), &text)
+}
+
+fn builder_insert_float(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let text = oxjvm_vm::format::float_to_string(float_arg(args, 2));
+    builder_insert_text(vm, receiver(args), int_arg(args, 1), &text)
+}
+
+fn builder_insert_double(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let text = oxjvm_vm::format::double_to_string(double_arg(args, 2));
+    builder_insert_text(vm, receiver(args), int_arg(args, 1), &text)
+}
+
+fn builder_insert_object(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let text = vm.display_value(
+        &oxjvm_classfile::FieldType::Object("java/lang/Object".into()),
+        args[2],
+    )?;
+    builder_insert_text(vm, receiver(args), int_arg(args, 1), &text)
 }
 
 fn builder_append_sequence_range(
@@ -4954,7 +5126,7 @@ fn builder_index_of(
     let needle = vm
         .string_utf16(ref_arg(args, 1))
         .map(<[u16]>::to_vec)
-        .unwrap_or_default();
+        .ok_or_else(|| vm.throw_new("java/lang/NullPointerException", None))?;
     int(find_units(&units[..count.min(units.len())], &needle, 0))
 }
 
