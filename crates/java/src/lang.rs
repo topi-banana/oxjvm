@@ -8918,3 +8918,105 @@ pub(crate) const DATA_FLAVOR: oxjvm_vm::NativeClass = class(
     &[],
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// ScopedValue (preview API, minimal model)
+// -------------------------------------------------------------------------------------------
+
+const SCOPED_VALUE_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method(
+        "newInstance",
+        "()Ljava/lang/ScopedValue;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/lang/ScopedValue")?;
+            object(vm.new_instance(class)?)
+        },
+    ),
+    method("get", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/util/NoSuchElementException", None))
+    }),
+    method("isBound", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method(
+        "orElse",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |_, _, args| Ok(args[1]),
+    ),
+    method(
+        "orElseThrow",
+        "(Ljava/util/function/Supplier;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let supplier = ref_arg(args, 1);
+            let (class, method) =
+                vm.resolve_virtual_method(supplier, "get", "()Ljava/lang/Object;")?;
+            let exception = vm
+                .invoke_method(class, method, vec![Value::Ref(supplier)])?
+                .as_ref();
+            Err(VmError::Thrown(exception))
+        },
+    ),
+    method(
+        "where",
+        "(Ljava/lang/ScopedValue;Ljava/lang/Object;)Ljava/lang/ScopedValue$Carrier;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/lang/ScopedValue$Carrier")?;
+            object(vm.new_instance(class)?)
+        },
+    ),
+];
+
+/// `java.lang.ScopedValue`: a preview scoped-value API (bindings are not modelled).
+pub(crate) const SCOPED_VALUE: oxjvm_vm::NativeClass = class(
+    "java/lang/ScopedValue",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[],
+    &SCOPED_VALUE_METHODS,
+    None,
+);
+
+const SCOPED_VALUE_CARRIER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method(
+        "where",
+        "(Ljava/lang/ScopedValue;Ljava/lang/Object;)Ljava/lang/ScopedValue$Carrier;",
+        ACC_PUBLIC,
+        |_, _, args| object(receiver(args)),
+    ),
+    method(
+        "run",
+        "(Ljava/lang/Runnable;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let runnable = ref_arg(args, 1);
+            let (class, method) = vm.resolve_virtual_method(runnable, "run", "()V")?;
+            vm.invoke_method(class, method, vec![Value::Ref(runnable)])?;
+            void()
+        },
+    ),
+    method(
+        "call",
+        "(Ljava/util/concurrent/Callable;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let callable = ref_arg(args, 1);
+            let (class, method) =
+                vm.resolve_virtual_method(callable, "call", "()Ljava/lang/Object;")?;
+            vm.invoke_method(class, method, vec![Value::Ref(callable)])
+        },
+    ),
+];
+
+/// `java.lang.ScopedValue$Carrier`: accumulates scoped bindings (not modelled).
+pub(crate) const SCOPED_VALUE_CARRIER: oxjvm_vm::NativeClass = class(
+    "java/lang/ScopedValue$Carrier",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[],
+    &SCOPED_VALUE_CARRIER_METHODS,
+    None,
+);

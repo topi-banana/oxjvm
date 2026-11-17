@@ -699,3 +699,189 @@ pub(crate) const STRING_CHARACTER_ITERATOR: oxjvm_vm::NativeClass = class(
     &STRING_CHARACTER_ITERATOR_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// Normalizer
+// -------------------------------------------------------------------------------------------
+
+const NORMALIZER_FORM_NAMES: [&str; 4] = ["NFD", "NFC", "NFKD", "NFKC"];
+
+const NORMALIZER_FORM_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method("name", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
+        let class = vm.class_of(receiver(args));
+        object(
+            vm.make_string(
+                &vm.read_string_field(receiver(args), class, "name")
+                    .unwrap_or_default(),
+            )?,
+        )
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = vm.class_of(receiver(args));
+            object(
+                vm.make_string(
+                    &vm.read_string_field(receiver(args), class, "name")
+                        .unwrap_or_default(),
+                )?,
+            )
+        },
+    ),
+    method("ordinal", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_int_field(vm, receiver(args), "ordinal"))
+    }),
+    method(
+        "values",
+        "()[Ljava/text/Normalizer$Form;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/text/Normalizer$Form")?;
+            vm.ensure_initialized(class)?;
+            let array = vm.allocate_object_array(class, NORMALIZER_FORM_NAMES.len())?;
+            for (index, name) in NORMALIZER_FORM_NAMES.iter().enumerate() {
+                if let Some(value) =
+                    vm.read_static_ref_if_set(class, name, "Ljava/text/Normalizer$Form;")
+                {
+                    vm.array_set_ref(array, index, value)?;
+                }
+            }
+            object(array)
+        },
+    ),
+    method(
+        "valueOf",
+        "(Ljava/lang/String;)Ljava/text/Normalizer$Form;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = vm.string_or_empty(ref_arg(args, 0));
+            let class = vm.resolve_class("java/text/Normalizer$Form")?;
+            vm.ensure_initialized(class)?;
+            if NORMALIZER_FORM_NAMES.contains(&name.as_str()) {
+                if let Some(value) =
+                    vm.read_static_ref_if_set(class, &name, "Ljava/text/Normalizer$Form;")
+                {
+                    return object(value);
+                }
+            }
+            Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some(&alloc::format!(
+                    "No enum constant java.text.Normalizer.Form.{name}"
+                )),
+            ))
+        },
+    ),
+];
+
+fn normalizer_form_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/text/Normalizer$Form")?;
+    for (ordinal, name) in NORMALIZER_FORM_NAMES.iter().enumerate() {
+        let instance = vm.new_instance(class)?;
+        vm.set_string_field(instance, class, "name", name)?;
+        write_int_field(vm, instance, "ordinal", ordinal as i32);
+        vm.set_static_value(
+            class,
+            name,
+            "Ljava/text/Normalizer$Form;",
+            Value::Ref(instance),
+        );
+    }
+    Ok(())
+}
+
+/// `java.text.Normalizer$Form`: the four Unicode normalization forms.
+pub(crate) const NORMALIZER_FORM: oxjvm_vm::NativeClass = class(
+    "java/text/Normalizer$Form",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL | ACC_ENUM,
+    &[
+        field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("ordinal", "I", ACC_PRIVATE, None),
+        field(
+            "NFD",
+            "Ljava/text/Normalizer$Form;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "NFC",
+            "Ljava/text/Normalizer$Form;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "NFKD",
+            "Ljava/text/Normalizer$Form;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "NFKC",
+            "Ljava/text/Normalizer$Form;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+    ],
+    &NORMALIZER_FORM_METHODS,
+    Some(normalizer_form_clinit),
+);
+
+/// The UTF-16 units of a `CharSequence` argument (via `toString` for non-Strings).
+fn normalizer_units(vm: &mut Vm<'_>, sequence: ObjectRef) -> Result<Vec<u16>, VmError> {
+    if sequence.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    if let Some(units) = vm.string_utf16(sequence) {
+        return Ok(units.to_vec());
+    }
+    let (class, method) =
+        vm.resolve_virtual_method(sequence, "toString", "()Ljava/lang/String;")?;
+    let text = vm
+        .invoke_method(class, method, vec![Value::Ref(sequence)])?
+        .as_ref();
+    Ok(vm
+        .string_utf16(text)
+        .map_or_else(Vec::new, |units| units.to_vec()))
+}
+
+const NORMALIZER_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "normalize",
+        "(Ljava/lang/CharSequence;Ljava/text/Normalizer$Form;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let units = normalizer_units(vm, ref_arg(args, 0))?;
+            // ASCII text is already in every normalization form; the full Unicode
+            // normalization tables are not modelled, so non-ASCII passes through.
+            let text = String::from_utf16_lossy(&units);
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "isNormalized",
+        "(Ljava/lang/CharSequence;Ljava/text/Normalizer$Form;)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let units = normalizer_units(vm, ref_arg(args, 0))?;
+            // Without the Unicode tables, treat ASCII as normalized and report
+            // non-ASCII conservatively as normalized too (best effort).
+            let _ = units;
+            crate::boolean(true)
+        },
+    ),
+];
+
+/// `java.text.Normalizer`: Unicode normalization (ASCII passthrough; tables not modelled).
+pub(crate) const NORMALIZER: oxjvm_vm::NativeClass = class(
+    "java/text/Normalizer",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[],
+    &NORMALIZER_METHODS,
+    None,
+);

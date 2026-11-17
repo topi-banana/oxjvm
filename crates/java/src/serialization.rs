@@ -553,3 +553,161 @@ fn object_input_filter_status_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     }
     Ok(())
 }
+
+const OBJECT_INPUT_FILTER_CONFIG_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method(
+        "getSerialFilter",
+        "()Ljava/io/ObjectInputFilter;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/io/ObjectInputFilter$Config")?;
+            object(
+                vm.read_static_ref_if_set(class, "serialFilter", "Ljava/io/ObjectInputFilter;")
+                    .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method(
+        "setSerialFilter",
+        "(Ljava/io/ObjectInputFilter;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let filter = ref_arg(args, 0);
+            if filter.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let class = vm.resolve_class("java/io/ObjectInputFilter$Config")?;
+            if vm
+                .read_static_ref_if_set(class, "serialFilter", "Ljava/io/ObjectInputFilter;")
+                .is_some()
+            {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalStateException",
+                    Some("serial filter already set"),
+                ));
+            }
+            vm.set_static_value(
+                class,
+                "serialFilter",
+                "Ljava/io/ObjectInputFilter;",
+                Value::Ref(filter),
+            );
+            void()
+        },
+    ),
+    method(
+        "getSerialFilterFactory",
+        "()Ljava/util/function/BinaryOperator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/io/ObjectInputFilter$Config")?;
+            object(
+                vm.read_static_ref_if_set(
+                    class,
+                    "serialFilterFactory",
+                    "Ljava/util/function/BinaryOperator;",
+                )
+                .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method(
+        "setSerialFilterFactory",
+        "(Ljava/util/function/BinaryOperator;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let factory = ref_arg(args, 0);
+            if factory.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let class = vm.resolve_class("java/io/ObjectInputFilter$Config")?;
+            if vm
+                .read_static_ref_if_set(
+                    class,
+                    "serialFilterFactory",
+                    "Ljava/util/function/BinaryOperator;",
+                )
+                .is_some()
+            {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalStateException",
+                    Some("serial filter factory already set"),
+                ));
+            }
+            vm.set_static_value(
+                class,
+                "serialFilterFactory",
+                "Ljava/util/function/BinaryOperator;",
+                Value::Ref(factory),
+            );
+            void()
+        },
+    ),
+    method(
+        "createFilter",
+        "(Ljava/lang/String;)Ljava/io/ObjectInputFilter;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let pattern = ref_arg(args, 0);
+            if pattern.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let class = vm.resolve_class("java/io/OjvmObjectInputFilter")?;
+            let instance = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "pattern", "Ljava/lang/String;")?;
+            vm.set_instance_ref(instance, declaring, field, pattern);
+            object(instance)
+        },
+    ),
+];
+
+/// `java.io.ObjectInputFilter$Config`: the process-wide serial filter configuration.
+pub(crate) const OBJECT_INPUT_FILTER_CONFIG: oxjvm_vm::NativeClass = class(
+    "java/io/ObjectInputFilter$Config",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field(
+            "serialFilter",
+            "Ljava/io/ObjectInputFilter;",
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
+        field(
+            "serialFilterFactory",
+            "Ljava/util/function/BinaryOperator;",
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
+    ],
+    &OBJECT_INPUT_FILTER_CONFIG_METHODS,
+    None,
+);
+
+const OJVM_OBJECT_INPUT_FILTER_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "checkInput",
+    "(Ljava/io/ObjectInputFilter$FilterInfo;)Ljava/io/ObjectInputFilter$Status;",
+    ACC_PUBLIC,
+    |vm, _, _| {
+        // The compact in-process stream does not expose the full filter pattern
+        // language; report UNDECIDED so the stream's own checks decide.
+        let class = vm.resolve_class("java/io/ObjectInputFilter$Status")?;
+        vm.ensure_initialized(class)?;
+        object(
+            vm.read_static_ref_if_set(class, "UNDECIDED", "Ljava/io/ObjectInputFilter$Status;")
+                .unwrap_or(ObjectRef::NULL),
+        )
+    },
+)];
+
+/// A pattern-backed `ObjectInputFilter` produced by `Config.createFilter`.
+pub(crate) const OJVM_OBJECT_INPUT_FILTER: oxjvm_vm::NativeClass = class(
+    "java/io/OjvmObjectInputFilter",
+    Some("java/lang/Object"),
+    &["java/io/ObjectInputFilter"],
+    ACC_PUBLIC,
+    &[field("pattern", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &OJVM_OBJECT_INPUT_FILTER_METHODS,
+    None,
+);

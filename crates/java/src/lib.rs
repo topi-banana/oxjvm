@@ -144,7 +144,7 @@ pub fn is_non_writable_property(key: &str) -> bool {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 950] = [
+static REGISTRY: [NativeClass; 962] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -267,6 +267,8 @@ static REGISTRY: [NativeClass; 950] = [
     lang::ENUM,
     lang::RECORD,
     lang::CHAR_SEQUENCE,
+    lang::SCOPED_VALUE,
+    lang::SCOPED_VALUE_CARRIER,
     lang::COMPARABLE,
     lang::RUNNABLE,
     lang::CLONEABLE,
@@ -459,6 +461,8 @@ static REGISTRY: [NativeClass; 950] = [
     serialization::OBJECT_INPUT_VALIDATION,
     serialization::OBJECT_INPUT_FILTER,
     serialization::OBJECT_INPUT_FILTER_STATUS,
+    serialization::OBJECT_INPUT_FILTER_CONFIG,
+    serialization::OJVM_OBJECT_INPUT_FILTER,
     io::OBJECT_STREAM_FIELD,
     io::STRING_READER,
     io::OUTPUT_STREAM_WRITER,
@@ -827,6 +831,8 @@ static REGISTRY: [NativeClass; 950] = [
     text::SIMPLE_DATE_FORMAT,
     text::CHARACTER_ITERATOR,
     text::STRING_CHARACTER_ITERATOR,
+    text::NORMALIZER,
+    text::NORMALIZER_FORM,
     time::DURATION,
     time::DATE_TIME_FORMATTER,
     time::FORMAT_STYLE,
@@ -983,7 +989,13 @@ static REGISTRY: [NativeClass; 950] = [
     module::PROVIDES,
     module::REQUIRES_MODIFIER,
     module::DESCRIPTOR_MODIFIER,
+    module::EXPORTS_MODIFIER,
+    module::OPENS_MODIFIER,
     module::VERSION,
+    module::MODULE_REFERENCE,
+    module::OJVM_MODULE_REFERENCE,
+    module::MODULE_FINDER,
+    module::OJVM_MODULE_FINDER,
     nio::FILE_VISIT_RESULT,
     nio::FILE_VISITOR,
     nio::SIMPLE_FILE_VISITOR,

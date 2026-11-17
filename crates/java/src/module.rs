@@ -283,7 +283,7 @@ pub(crate) const REQUIRES: oxjvm_vm::NativeClass = class(
 
 macro_rules! qualified_methods {
     ($constant:ident, $class_name:literal) => {
-        const $constant: [oxjvm_vm::NativeMethodDef; 6] = [
+        const $constant: [oxjvm_vm::NativeMethodDef; 7] = [
             method(
                 "source",
                 "()Ljava/lang/String;",
@@ -291,6 +291,16 @@ macro_rules! qualified_methods {
                 |vm, _, args| {
                     let source = field_string(vm, receiver(args), "source");
                     object(vm.make_string(&source)?)
+                },
+            ),
+            method(
+                "modifiers",
+                "()Ljava/util/Set;",
+                ACC_PUBLIC,
+                |vm, _, args| {
+                    let this = receiver(args);
+                    let modifiers = field_set(vm, this, "modifiers")?;
+                    object(modifiers)
                 },
             ),
             method("targets", "()Ljava/util/Set;", ACC_PUBLIC, |vm, _, args| {
@@ -601,6 +611,22 @@ enum_class!(
     ["OPEN", "AUTOMATIC", "SYNTHETIC", "MANDATED"]
 );
 
+enum_class!(
+    EXPORTS_MODIFIER,
+    EXPORTS_MODIFIER_METHODS,
+    exports_modifier_clinit,
+    "java/lang/module/ModuleDescriptor$Exports$Modifier",
+    ["SYNTHETIC", "MANDATED"]
+);
+
+enum_class!(
+    OPENS_MODIFIER,
+    OPENS_MODIFIER_METHODS,
+    opens_modifier_clinit,
+    "java/lang/module/ModuleDescriptor$Opens$Modifier",
+    ["SYNTHETIC", "MANDATED"]
+);
+
 fn modifier_set(vm: &mut Vm<'_>, class_name: &str, names: &[&str]) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class(class_name)?;
     vm.ensure_initialized(class)?;
@@ -619,7 +645,173 @@ fn modifier_set(vm: &mut Vm<'_>, class_name: &str, names: &[&str]) -> Result<Obj
 // ModuleDescriptor.Version
 // -------------------------------------------------------------------------------------------
 
-const VERSION_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+/// A parsed module-version token: numeric tokens compare as integers, others lexicographically.
+enum VersionToken {
+    Num(i64),
+    Str(String),
+}
+
+impl VersionToken {
+    fn text(&self) -> String {
+        match self {
+            Self::Num(n) => alloc::format!("{n}"),
+            Self::Str(s) => s.clone(),
+        }
+    }
+}
+
+/// Take a run of decimal digits as a numeric token, returning the next index.
+fn version_take_number(chars: &[char], mut i: usize, acc: &mut Vec<VersionToken>) -> usize {
+    let mut n: i64 = 0;
+    while i < chars.len() && chars[i].is_ascii_digit() {
+        n = n
+            .saturating_mul(10)
+            .saturating_add(i64::from(chars[i] as u32 - '0' as u32));
+        i += 1;
+    }
+    acc.push(VersionToken::Num(n));
+    i
+}
+
+/// Take a run of non-separator, non-digit characters as a string token.
+fn version_take_string(chars: &[char], start: usize, acc: &mut Vec<VersionToken>) -> usize {
+    let mut i = start + 1;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '.' || c == '-' || c == '+' || c.is_ascii_digit() {
+            break;
+        }
+        i += 1;
+    }
+    acc.push(VersionToken::Str(chars[start..i].iter().collect()));
+    i
+}
+
+/// The sequence, pre-release and build token lists of a parsed module version.
+type VersionTokens = (Vec<VersionToken>, Vec<VersionToken>, Vec<VersionToken>);
+
+/// Parse a version string into its sequence, pre-release and build token lists, following
+/// the reference grammar `tok+ ('-' tok+)? ('+' tok+)?`.
+fn version_parse(vm: &mut Vm<'_>, v: &str) -> Result<VersionTokens, VmError> {
+    let chars: Vec<char> = v.chars().collect();
+    let n = chars.len();
+    if n == 0 || !chars[0].is_ascii_digit() {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some(&alloc::format!(
+                "{v}: Version string does not start with a number"
+            )),
+        ));
+    }
+    let mut sequence = Vec::new();
+    let mut pre = Vec::new();
+    let mut build = Vec::new();
+    let mut i = version_take_number(&chars, 0, &mut sequence);
+    let mut c = if i < n { chars[i] } else { '\0' };
+    while i < n {
+        c = chars[i];
+        if c == '.' {
+            i += 1;
+            continue;
+        }
+        if c == '-' || c == '+' {
+            i += 1;
+            break;
+        }
+        if c.is_ascii_digit() {
+            i = version_take_number(&chars, i, &mut sequence);
+        } else {
+            i = version_take_string(&chars, i, &mut sequence);
+        }
+    }
+    if c == '-' {
+        while i < n {
+            c = chars[i];
+            if c == '.' || c == '-' {
+                i += 1;
+                continue;
+            }
+            if c == '+' {
+                i += 1;
+                break;
+            }
+            if c.is_ascii_digit() {
+                i = version_take_number(&chars, i, &mut pre);
+            } else {
+                i = version_take_string(&chars, i, &mut pre);
+            }
+        }
+    }
+    if c == '+' {
+        while i < n {
+            c = chars[i];
+            if c == '.' || c == '-' || c == '+' {
+                i += 1;
+                continue;
+            }
+            if c.is_ascii_digit() {
+                i = version_take_number(&chars, i, &mut build);
+            } else {
+                i = version_take_string(&chars, i, &mut build);
+            }
+        }
+    }
+    Ok((sequence, pre, build))
+}
+
+fn version_compare_tokens(ts1: &[VersionToken], ts2: &[VersionToken]) -> i32 {
+    let n = ts1.len().min(ts2.len());
+    for index in 0..n {
+        let c = match (&ts1[index], &ts2[index]) {
+            (VersionToken::Num(a), VersionToken::Num(b)) => a.cmp(b),
+            (VersionToken::Str(a), VersionToken::Str(b)) => a.cmp(b),
+            (a, b) => a.text().cmp(&b.text()),
+        };
+        if c != core::cmp::Ordering::Equal {
+            return match c {
+                core::cmp::Ordering::Less => -1,
+                core::cmp::Ordering::Equal => 0,
+                core::cmp::Ordering::Greater => 1,
+            };
+        }
+    }
+    let (rest, rest_len) = if ts1.len() > ts2.len() {
+        (ts1, ts1.len())
+    } else {
+        (ts2, ts2.len())
+    };
+    for token in &rest[n..rest_len] {
+        if matches!(token, VersionToken::Num(0)) {
+            continue;
+        }
+        return (ts1.len() as i32) - (ts2.len() as i32);
+    }
+    0
+}
+
+/// `ModuleDescriptor.Version.compareTo`: sequence, then pre-release presence, then pre/build.
+fn version_compare(vm: &mut Vm<'_>, left: &str, right: &str) -> Result<i32, VmError> {
+    let (seq1, pre1, build1) = version_parse(vm, left)?;
+    let (seq2, pre2, build2) = version_parse(vm, right)?;
+    let c = version_compare_tokens(&seq1, &seq2);
+    if c != 0 {
+        return Ok(c);
+    }
+    if pre1.is_empty() {
+        if !pre2.is_empty() {
+            return Ok(1);
+        }
+    } else if pre2.is_empty() {
+        return Ok(-1);
+    }
+    let c = version_compare_tokens(&pre1, &pre2);
+    if c != 0 {
+        return Ok(c);
+    }
+    Ok(version_compare_tokens(&build1, &build2))
+}
+
+const VERSION_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     method(
         "parse",
         "(Ljava/lang/String;)Ljava/lang/module/ModuleDescriptor$Version;",
@@ -671,11 +863,17 @@ const VERSION_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         |vm, _, args| {
             let left = field_string(vm, receiver(args), "text");
             let right = field_string(vm, ref_arg(args, 1), "text");
-            int(match left.cmp(&right) {
-                core::cmp::Ordering::Less => -1,
-                core::cmp::Ordering::Equal => 0,
-                core::cmp::Ordering::Greater => 1,
-            })
+            int(version_compare(vm, &left, &right)?)
+        },
+    ),
+    method(
+        "compareTo",
+        "(Ljava/lang/module/ModuleDescriptor$Version;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let left = field_string(vm, receiver(args), "text");
+            let right = field_string(vm, ref_arg(args, 1), "text");
+            int(version_compare(vm, &left, &right)?)
         },
     ),
 ];
@@ -1353,5 +1551,166 @@ pub(crate) const MODULE_DESCRIPTOR: oxjvm_vm::NativeClass = class(
         field("mainClass", "Ljava/lang/String;", ACC_PRIVATE, None),
     ],
     &DESCRIPTOR_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// ModuleReference / ModuleFinder
+// -------------------------------------------------------------------------------------------
+
+fn module_empty_optional(vm: &mut Vm<'_>) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/util/Optional")?;
+    let (declaring, method) = vm
+        .find_method(class, "empty", "()Ljava/util/Optional;")
+        .ok_or_else(|| VmError::internal("Optional.empty"))?;
+    vm.invoke_method(declaring, method, vec![])
+}
+
+const MODULE_REFERENCE_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method(
+        "descriptor",
+        "()Ljava/lang/module/ModuleDescriptor;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(
+                vm.read_ref_field(
+                    this,
+                    vm.class_of(this),
+                    "descriptor",
+                    "Ljava/lang/module/ModuleDescriptor;",
+                )
+                .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method(
+        "location",
+        "()Ljava/util/Optional;",
+        ACC_PUBLIC,
+        |vm, _, _| module_empty_optional(vm),
+    ),
+    method(
+        "open",
+        "()Ljava/lang/module/ModuleReader;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        |_, _, _| Err(VmError::internal("abstract ModuleReference.open")),
+    ),
+];
+
+/// `java.lang.module.ModuleReference`: a reference to a module's content.
+pub(crate) const MODULE_REFERENCE: oxjvm_vm::NativeClass = class(
+    "java/lang/module/ModuleReference",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[field(
+        "descriptor",
+        "Ljava/lang/module/ModuleDescriptor;",
+        ACC_PRIVATE,
+        None,
+    )],
+    &MODULE_REFERENCE_METHODS,
+    None,
+);
+
+const OJVM_MODULE_REFERENCE_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "open",
+    "()Ljava/lang/module/ModuleReader;",
+    ACC_PUBLIC,
+    |vm, _, _| {
+        Err(vm.throw_new(
+            "java/lang/UnsupportedOperationException",
+            Some("module content is not modelled"),
+        ))
+    },
+)];
+
+/// A concrete `ModuleReference` carrying a descriptor.
+pub(crate) const OJVM_MODULE_REFERENCE: oxjvm_vm::NativeClass = class(
+    "java/lang/module/OjvmModuleReference",
+    Some("java/lang/module/ModuleReference"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &OJVM_MODULE_REFERENCE_METHODS,
+    None,
+);
+
+const MODULE_FINDER_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "find",
+        "(Ljava/lang/String;)Ljava/util/Optional;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        |_, _, _| Err(VmError::internal("abstract ModuleFinder.find")),
+    ),
+    method(
+        "findAll",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        |_, _, _| Err(VmError::internal("abstract ModuleFinder.findAll")),
+    ),
+    method(
+        "of",
+        "([Ljava/nio/file/Path;)Ljava/lang/module/ModuleFinder;",
+        ACC_PUBLIC | ACC_STATIC | ACC_VARARGS,
+        |vm, _, _| new_module_finder(vm),
+    ),
+    method(
+        "ofSystem",
+        "()Ljava/lang/module/ModuleFinder;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| new_module_finder(vm),
+    ),
+];
+
+fn new_module_finder(vm: &mut Vm<'_>) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/lang/module/OjvmModuleFinder")?;
+    let instance = vm.new_instance(class)?;
+    let modules = new_hash_set(vm)?;
+    let (declaring, field) = vm.find_field(class, "modules", "Ljava/util/Set;")?;
+    vm.set_instance_ref(instance, declaring, field, modules);
+    object(instance)
+}
+
+/// `java.lang.module.ModuleFinder`: finds modules on a module path (not modelled; empty).
+pub(crate) const MODULE_FINDER: oxjvm_vm::NativeClass = class(
+    "java/lang/module/ModuleFinder",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &MODULE_FINDER_METHODS,
+    None,
+);
+
+const OJVM_MODULE_FINDER_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "find",
+        "(Ljava/lang/String;)Ljava/util/Optional;",
+        ACC_PUBLIC,
+        |vm, _, _| module_empty_optional(vm),
+    ),
+    method("findAll", "()Ljava/util/Set;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let modules = vm
+            .read_ref_field(this, vm.class_of(this), "modules", "Ljava/util/Set;")
+            .unwrap_or(ObjectRef::NULL);
+        if modules.is_null() {
+            object(new_hash_set(vm)?)
+        } else {
+            object(modules)
+        }
+    }),
+];
+
+/// A concrete `ModuleFinder` over an in-memory set of module references.
+pub(crate) const OJVM_MODULE_FINDER: oxjvm_vm::NativeClass = class(
+    "java/lang/module/OjvmModuleFinder",
+    Some("java/lang/Object"),
+    &["java/lang/module/ModuleFinder"],
+    ACC_PUBLIC,
+    &[field("modules", "Ljava/util/Set;", ACC_PRIVATE, None)],
+    &OJVM_MODULE_FINDER_METHODS,
     None,
 );
