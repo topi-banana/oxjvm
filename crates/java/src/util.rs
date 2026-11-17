@@ -4126,12 +4126,13 @@ fn array_list_sort(
     context: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
+    let list = receiver(args);
+    check_mutable(vm, list)?;
     let comparator = ref_arg(args, 1);
     if comparator.is_null() {
         collections_sort(vm, context, &[args[0]])?;
         return void();
     }
-    let list = receiver(args);
     let mut elements = array_list_elements(vm, list);
     for index in 1..elements.len() {
         let mut cursor = index;
@@ -4237,12 +4238,23 @@ fn array_list_init(
     void()
 }
 
+/// Throw `UnsupportedOperationException` when a collection was produced by an immutable
+/// factory (`List.of`, `Set.of`, `Map.of`, or `copyOf`). Mutable collections leave the
+/// `immutable` flag unset, which reads as 0.
+fn check_mutable(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    if crate::lang::read_int_field(vm, this, "immutable") != 0 {
+        return Err(vm.throw_new("java/lang/UnsupportedOperationException", None));
+    }
+    Ok(())
+}
+
 fn array_list_add(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
     let this = receiver(args);
+    check_mutable(vm, this)?;
     let mut elements = array_list_elements(vm, this);
     elements.push(ref_arg(args, 1));
     array_list_store(vm, this, &elements)?;
@@ -4282,6 +4294,7 @@ fn array_list_add_all(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let this = receiver(args);
+    check_mutable(vm, this)?;
     let incoming = collection_elements(vm, ref_arg(args, 1))?;
     let changed = !incoming.is_empty();
     let mut elements = array_list_elements(vm, this);
@@ -4297,6 +4310,7 @@ fn array_list_add_all_at(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let this = receiver(args);
+    check_mutable(vm, this)?;
     let index = int_arg(args, 1);
     let incoming = collection_elements(vm, ref_arg(args, 2))?;
     let mut elements = array_list_elements(vm, this);
@@ -4342,6 +4356,7 @@ fn array_list_set(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let this = receiver(args);
+    check_mutable(vm, this)?;
     let mut elements = array_list_elements(vm, this);
     let index = int_arg(args, 1);
     if index < 0 || index as usize >= elements.len() {
@@ -4359,6 +4374,7 @@ fn array_list_insert(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let this = receiver(args);
+    check_mutable(vm, this)?;
     let mut elements = array_list_elements(vm, this);
     let index = int_arg(args, 1);
     if index < 0 || index as usize > elements.len() {
@@ -4375,6 +4391,7 @@ fn array_list_remove(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let this = receiver(args);
+    check_mutable(vm, this)?;
     let mut elements = array_list_elements(vm, this);
     let index = int_arg(args, 1);
     if index < 0 || index as usize >= elements.len() {
@@ -4391,6 +4408,7 @@ fn array_list_remove_object(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let this = receiver(args);
+    check_mutable(vm, this)?;
     let target = ref_arg(args, 1);
     let index = array_list_index_of(vm, this, target)?;
     if index < 0 {
@@ -4421,7 +4439,9 @@ fn array_list_clear(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    array_list_store(vm, receiver(args), &[])?;
+    let this = receiver(args);
+    check_mutable(vm, this)?;
+    array_list_store(vm, this, &[])?;
     void()
 }
 
@@ -4577,6 +4597,7 @@ pub(crate) const ARRAY_LIST: oxjvm_vm::NativeClass = class(
     &[
         field("elementData", "[Ljava/lang/Object;", ACC_PRIVATE, None),
         field("size", "I", ACC_PRIVATE, None),
+        field("immutable", "I", ACC_PRIVATE, None),
     ],
     &ARRAY_LIST_METHODS,
     None,
@@ -6207,7 +6228,7 @@ const HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
     method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
         boolean(crate::lang::read_int_field(vm, receiver(args), "size") == 0)
     }),
-    method("clear", "()V", ACC_PUBLIC, hash_map_init),
+    method("clear", "()V", ACC_PUBLIC, hash_map_clear),
     method("keySet", "()Ljava/util/Set;", ACC_PUBLIC, hash_map_key_set),
     method(
         "values",
@@ -6324,6 +6345,16 @@ fn hash_map_init(
     void()
 }
 
+/// `Map.clear`: rejected on an immutable factory map, otherwise re-initializes the store.
+fn hash_map_clear(
+    vm: &mut Vm<'_>,
+    context: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    check_mutable(vm, receiver(args))?;
+    hash_map_init(vm, context, args)
+}
+
 fn hash_map_index_of(vm: &mut Vm<'_>, this: ObjectRef, key: ObjectRef) -> Result<i32, VmError> {
     map_index_of(vm, this, key, false)
 }
@@ -6437,6 +6468,7 @@ fn hash_map_put(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let this = receiver(args);
+    check_mutable(vm, this)?;
     let key = ref_arg(args, 1);
     let value = ref_arg(args, 2);
     let mut pairs = hash_map_pairs(vm, this);
@@ -6605,6 +6637,7 @@ fn hash_map_remove(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let this = receiver(args);
+    check_mutable(vm, this)?;
     let index = hash_map_index_of(vm, this, ref_arg(args, 1))?;
     if index < 0 {
         return object(ObjectRef::NULL);
@@ -6647,7 +6680,14 @@ fn hash_map_values_of(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Vec<ObjectRef>
 
 /// `List.of(...)`: an `ArrayList` with the given elements.
 fn list_of_values(vm: &mut Vm<'_>, elements: &[ObjectRef]) -> Result<ObjectRef, VmError> {
-    array_list_from(vm, elements)
+    for element in elements {
+        if element.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+    }
+    let list = array_list_from(vm, elements)?;
+    crate::lang::write_int_field(vm, list, "immutable", 1);
+    Ok(list)
 }
 
 /// The elements of an object array (empty for anything else).
@@ -6716,6 +6756,7 @@ pub(crate) const HASH_MAP: oxjvm_vm::NativeClass = class(
         field("keys", "[Ljava/lang/Object;", ACC_PRIVATE, None),
         field("values", "[Ljava/lang/Object;", ACC_PRIVATE, None),
         field("size", "I", ACC_PRIVATE, None),
+        field("immutable", "I", ACC_PRIVATE, None),
     ],
     &HASH_MAP_METHODS,
     None,
@@ -6807,7 +6848,7 @@ const IDENTITY_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
     method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
         boolean(crate::lang::read_int_field(vm, receiver(args), "size") == 0)
     }),
-    method("clear", "()V", ACC_PUBLIC, hash_map_init),
+    method("clear", "()V", ACC_PUBLIC, hash_map_clear),
     method("keySet", "()Ljava/util/Set;", ACC_PUBLIC, hash_map_key_set),
     method(
         "values",
@@ -8924,6 +8965,7 @@ pub(crate) fn collection_remove_all(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let this = receiver(args);
+    check_mutable(vm, this)?;
     let others = collection_elements(vm, ref_arg(args, 1))?;
     let mut changed = false;
     for element in others {
@@ -8945,6 +8987,7 @@ pub(crate) fn collection_retain_all(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let this = receiver(args);
+    check_mutable(vm, this)?;
     let other = ref_arg(args, 1);
     let elements = collection_elements(vm, this)?;
     let mut changed = false;
@@ -9003,6 +9046,7 @@ fn set_of_values(vm: &mut Vm<'_>, elements: &[ObjectRef]) -> Result<ObjectRef, V
             &[Value::Ref(*element), Value::Ref(present)],
         )?;
     }
+    crate::lang::write_int_field(vm, set, "immutable", 1);
     Ok(set)
 }
 
@@ -9443,9 +9487,17 @@ fn map_of_pairs(vm: &mut Vm<'_>, pairs: &[(ObjectRef, ObjectRef)]) -> Result<Val
         }
     }
     let map = new_hash_map(vm)?;
-    for (key, value) in pairs {
+    for (index, (key, value)) in pairs.iter().enumerate() {
+        for (other_key, _) in &pairs[..index] {
+            if keys_equal(vm, *other_key, *key).unwrap_or(false) {
+                return Err(
+                    vm.throw_new("java/lang/IllegalArgumentException", Some("duplicate key"))
+                );
+            }
+        }
         hash_map_insert(vm, map, *key, *value)?;
     }
+    crate::lang::write_int_field(vm, map, "immutable", 1);
     object(map)
 }
 
@@ -9576,6 +9628,7 @@ const HASH_SET_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
     ),
     method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        check_mutable(vm, this)?;
         let map = hash_set_map(vm, this);
         let present = hash_set_present(vm)?;
         let previous = hash_map_call(
@@ -9592,7 +9645,9 @@ const HASH_SET_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
         "(Ljava/lang/Object;)Z",
         ACC_PUBLIC,
         |vm, _, args| {
-            let map = hash_set_map(vm, receiver(args));
+            let this = receiver(args);
+            check_mutable(vm, this)?;
+            let map = hash_set_map(vm, this);
             let previous = hash_map_call(
                 vm,
                 map,
@@ -9627,7 +9682,9 @@ const HASH_SET_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
         hash_map_call(vm, map, "isEmpty", "()Z", &[])
     }),
     method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
-        let map = hash_set_map(vm, receiver(args));
+        let this = receiver(args);
+        check_mutable(vm, this)?;
+        let map = hash_set_map(vm, this);
         hash_map_call(vm, map, "clear", "()V", &[])
     }),
     method(
@@ -9649,6 +9706,7 @@ const HASH_SET_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
+            check_mutable(vm, this)?;
             let map = hash_set_map(vm, this);
             let present = hash_set_present(vm)?;
             let mut changed = false;
@@ -9814,7 +9872,10 @@ pub(crate) const HASH_SET: oxjvm_vm::NativeClass = class(
         "java/io/Serializable",
     ],
     ACC_PUBLIC,
-    &[field("map", "Ljava/util/HashMap;", ACC_PRIVATE, None)],
+    &[
+        field("map", "Ljava/util/HashMap;", ACC_PRIVATE, None),
+        field("immutable", "I", ACC_PRIVATE, None),
+    ],
     &HASH_SET_METHODS,
     None,
 );
