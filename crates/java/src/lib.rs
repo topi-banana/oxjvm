@@ -36,6 +36,7 @@ pub(crate) mod io;
 pub(crate) mod jar;
 pub(crate) mod lang;
 pub(crate) mod locale;
+pub(crate) mod locale_display;
 pub(crate) mod locale_iso;
 pub(crate) mod locale_match;
 pub(crate) mod logging;

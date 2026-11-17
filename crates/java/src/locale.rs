@@ -9,7 +9,7 @@ use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
 use crate::{boolean, class, field, int, method, object, receiver, ref_arg, string_arg, void};
 
-const LOCALE_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
+const LOCALE_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -147,7 +147,61 @@ const LOCALE_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
         "getDisplayName",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
-        locale_display_name,
+        |vm, _, args| crate::locale_display::locale_display_name_target(vm, args, false),
+    ),
+    method(
+        "getDisplayName",
+        "(Ljava/util/Locale;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| crate::locale_display::locale_display_name_target(vm, args, true),
+    ),
+    method(
+        "getDisplayLanguage",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| crate::locale_display::locale_display_language(vm, args, false),
+    ),
+    method(
+        "getDisplayLanguage",
+        "(Ljava/util/Locale;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| crate::locale_display::locale_display_language(vm, args, true),
+    ),
+    method(
+        "getDisplayCountry",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| crate::locale_display::locale_display_country(vm, args, false),
+    ),
+    method(
+        "getDisplayCountry",
+        "(Ljava/util/Locale;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| crate::locale_display::locale_display_country(vm, args, true),
+    ),
+    method(
+        "getDisplayVariant",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| crate::locale_display::locale_display_variant(vm, args, false),
+    ),
+    method(
+        "getDisplayVariant",
+        "(Ljava/util/Locale;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| crate::locale_display::locale_display_variant(vm, args, true),
+    ),
+    method(
+        "getDisplayScript",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| crate::locale_display::locale_display_script(vm, args),
+    ),
+    method(
+        "getDisplayScript",
+        "(Ljava/util/Locale;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| crate::locale_display::locale_display_script(vm, args),
     ),
     method(
         "toString",
@@ -724,72 +778,6 @@ fn locale_string_field(vm: &mut Vm<'_>, this: ObjectRef, name: &str) -> Result<V
         Some(reference) if !reference.is_null() => object(reference),
         _ => object(vm.make_string("")?),
     }
-}
-
-/// The name of a language, the way the JDK writes it.
-fn language_display_name(language: &str) -> &'static str {
-    match language {
-        "en" => "English",
-        "fr" => "French",
-        "de" => "German",
-        "it" => "Italian",
-        "ja" => "Japanese",
-        "ko" => "Korean",
-        "zh" => "Chinese",
-        "es" => "Spanish",
-        "pt" => "Portuguese",
-        "ru" => "Russian",
-        other => {
-            let _ = other;
-            ""
-        }
-    }
-}
-
-/// The name of a country, the way the JDK writes it.
-fn country_display_name(country: &str) -> &'static str {
-    match country {
-        "US" => "United States",
-        "GB" => "United Kingdom",
-        "CA" => "Canada",
-        "FR" => "France",
-        "DE" => "Germany",
-        "IT" => "Italy",
-        "JP" => "Japan",
-        "KR" => "South Korea",
-        "CN" => "China",
-        "TW" => "Taiwan",
-        "AU" => "Australia",
-        "IN" => "India",
-        other => {
-            let _ = other;
-            ""
-        }
-    }
-}
-
-/// `Locale.getDisplayName`: the language in words, with the country in brackets.
-fn locale_display_name(
-    vm: &mut Vm<'_>,
-    _c: oxjvm_vm::NativeContext,
-    args: &[Value],
-) -> Result<Value, VmError> {
-    let this = receiver(args);
-    let language = vm
-        .read_string_field(this, vm.class_of(this), "language")
-        .unwrap_or_default();
-    let country = vm
-        .read_string_field(this, vm.class_of(this), "country")
-        .unwrap_or_default();
-    let language_name = language_display_name(&language);
-    let country_name = country_display_name(&country);
-    let text = match (language_name.is_empty(), country_name.is_empty()) {
-        (true, true) => language.clone(),
-        (false, true) => language_name.to_string(),
-        (true, false) => country_name.to_string(),
-        (false, false) => alloc::format!("{language_name} ({country_name})"),
-    };
-    object(vm.make_string(&text)?)
 }
 
 fn locale_to_string(
