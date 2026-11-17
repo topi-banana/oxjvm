@@ -525,7 +525,7 @@ fn byte_buffer_put_short(vm: &mut Vm<'_>, this: ObjectRef, value: i16) -> Result
     Ok(())
 }
 
-const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
+const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 50] = [
     method(
         "allocate",
         "(I)Ljava/nio/ByteBuffer;",
@@ -809,6 +809,38 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
         |vm, _, args| {
             let this = receiver(args);
             byte_buffer_put_short(vm, this, crate::int_arg(args, 1) as i16)?;
+            object(this)
+        },
+    ),
+    method(
+        "putShort",
+        "(IS)Ljava/nio/ByteBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if byte_buffer_read_only(vm, this) {
+                return Err(vm.throw_new("java/nio/ReadOnlyBufferException", None));
+            }
+            let index = crate::int_arg(args, 1);
+            if index < 0 || index + 2 > buffer_limit(vm, this) {
+                return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+            }
+            let bytes = byte_buffer_bytes(vm, this);
+            let little = byte_order_little(vm, byte_buffer_order(vm, this));
+            let raw = crate::int_arg(args, 2) as u16;
+            for offset in 0..2 {
+                let byte = if little {
+                    (raw >> (8 * offset)) as u8
+                } else {
+                    (raw >> (8 * (1 - offset))) as u8
+                };
+                put_byte_at(
+                    vm,
+                    bytes,
+                    byte_buffer_absolute(vm, this, index + offset),
+                    byte,
+                )?;
+            }
             object(this)
         },
     ),

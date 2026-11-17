@@ -533,7 +533,7 @@ pub(crate) const CODER_RESULT: oxjvm_vm::NativeClass = class(
     Some(coder_result_clinit),
 );
 
-const CHARSET_ENCODER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const CHARSET_ENCODER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method(
         "charset",
         "()Ljava/nio/charset/Charset;",
@@ -611,6 +611,7 @@ const CHARSET_ENCODER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         ACC_PUBLIC,
         |_, _, _| boolean(true),
     ),
+    method("canEncode", "(C)Z", ACC_PUBLIC, |_, _, _| boolean(true)),
 ];
 
 fn coder_result(vm: &mut Vm<'_>, kind: i32) -> Result<ObjectRef, VmError> {

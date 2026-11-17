@@ -805,7 +805,7 @@ pub(crate) const BYTE_ARRAY_INPUT_STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const BYTE_ARRAY_OUTPUT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const BYTE_ARRAY_OUTPUT_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method("<init>", "()V", ACC_PUBLIC, byte_array_output_init),
     method("<init>", "(I)V", ACC_PUBLIC, byte_array_output_init),
     method("write", "(I)V", ACC_PUBLIC, byte_array_output_write),
@@ -861,7 +861,44 @@ const BYTE_ARRAY_OUTPUT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let bytes = byte_array_output_bytes(vm, receiver(args))?;
-            object(vm.make_string(&String::from_utf8_lossy(&bytes))?)
+            let name = crate::string_arg(vm, args[1])?;
+            let text = match crate::charset::canonical_name(&name) {
+                Some(canonical) => {
+                    String::from_utf16_lossy(&crate::charset::decode(&bytes, canonical))
+                }
+                None => String::from_utf8_lossy(&bytes).into_owned(),
+            };
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "toString",
+        "(I)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let bytes = byte_array_output_bytes(vm, receiver(args))?;
+            let hibyte = (int_arg(args, 1) & 0xff) as u16;
+            let units: Vec<u16> = bytes
+                .iter()
+                .map(|byte| (hibyte << 8) | u16::from(*byte))
+                .collect();
+            object(vm.make_string(&String::from_utf16_lossy(&units))?)
+        },
+    ),
+    method(
+        "toString",
+        "(Ljava/nio/charset/Charset;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let bytes = byte_array_output_bytes(vm, receiver(args))?;
+            let name = crate::charset::name_of(vm, ref_arg(args, 1));
+            let text = match crate::charset::canonical_name(&name) {
+                Some(canonical) => {
+                    String::from_utf16_lossy(&crate::charset::decode(&bytes, canonical))
+                }
+                None => String::from_utf8_lossy(&bytes).into_owned(),
+            };
+            object(vm.make_string(&text)?)
         },
     ),
     method(

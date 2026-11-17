@@ -8037,7 +8037,16 @@ pub(crate) const VALUE_LAYOUT: oxjvm_vm::NativeClass = class(
 // RandomGenerator (shell)
 // -------------------------------------------------------------------------------------------
 
-const RANDOM_GENERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const RANDOM_GENERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method(
+        "getDefault",
+        "()Ljava/util/random/RandomGenerator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/util/Random")?;
+            object(vm.new_instance(class)?)
+        },
+    ),
     method("nextInt", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let (class, method) = vm.resolve_virtual_method(this, "nextInt", "()I")?;

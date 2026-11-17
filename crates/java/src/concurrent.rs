@@ -363,7 +363,7 @@ const CYCLIC_BARRIER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     }),
     method(
         "await",
-        "(JLjava/util/concurrent/TimeUnit;)Z",
+        "(JLjava/util/concurrent/TimeUnit;)I",
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
@@ -373,11 +373,11 @@ const CYCLIC_BARRIER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
             if waiting >= parties {
                 crate::lang::write_int_field(vm, this, "count", 0);
                 vm.monitor_notify(this, true);
-                boolean(true)
+                int(parties - waiting)
             } else {
                 let millis = time_unit_to_millis(vm, ref_arg(args, 2), crate::long_arg(args, 1))?;
                 vm.park_until_notified(this, Some(millis));
-                boolean(true)
+                int(parties - waiting)
             }
         },
     ),
