@@ -1109,7 +1109,7 @@ pub(crate) const REENTRANT_READ_WRITE_LOCK: oxjvm_vm::NativeClass = class(
 // CompletableFuture (completed futures only)
 // -------------------------------------------------------------------------------------------
 
-const COMPLETABLE_FUTURE_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
+const COMPLETABLE_FUTURE_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "completedFuture",
@@ -1222,12 +1222,36 @@ const COMPLETABLE_FUTURE_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
         future_result(vm, args)
     }),
     method(
+        "getNow",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let done = vm
+                .read_instance_int_named(this, vm.class_of(this), "done", "Z")
+                .unwrap_or(0)
+                != 0;
+            if done {
+                future_result(vm, args)
+            } else {
+                Ok(args[1])
+            }
+        },
+    ),
+    method(
         "get",
         "(JLjava/util/concurrent/TimeUnit;)Ljava/lang/Object;",
         ACC_PUBLIC,
         |vm, _, args| future_result(vm, args),
     ),
-    method("isDone", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
+    method("isDone", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        boolean(
+            vm.read_instance_int_named(this, vm.class_of(this), "done", "Z")
+                .unwrap_or(0)
+                != 0,
+        )
+    }),
     method("isCancelled", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
     method("isCompletedExceptionally", "()Z", ACC_PUBLIC, |_, _, _| {
         boolean(false)
@@ -1237,7 +1261,23 @@ const COMPLETABLE_FUTURE_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
         "complete",
         "(Ljava/lang/Object;)Z",
         ACC_PUBLIC,
-        |_, _, _| boolean(true),
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let done = vm
+                .read_instance_int_named(this, class, "done", "Z")
+                .unwrap_or(0)
+                != 0;
+            if done {
+                return boolean(false);
+            }
+            let (declaring, field) = vm.find_field(class, "result", "Ljava/lang/Object;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            if let Some((declaring, field)) = vm.find_field_opt(class, "done", "Z") {
+                vm.set_instance_int(this, declaring, field, 1);
+            }
+            boolean(true)
+        },
     ),
     method(
         "completeExceptionally",
@@ -1279,6 +1319,9 @@ fn completable_completed(vm: &mut Vm<'_>, result: ObjectRef) -> Result<Value, Vm
     let instance = vm.new_instance(class)?;
     let (declaring, field) = vm.find_field(class, "result", "Ljava/lang/Object;")?;
     vm.set_instance_ref(instance, declaring, field, result);
+    if let Some((declaring, field)) = vm.find_field_opt(class, "done", "Z") {
+        vm.set_instance_int(instance, declaring, field, 1);
+    }
     object(instance)
 }
 
@@ -1348,7 +1391,10 @@ pub(crate) const COMPLETABLE_FUTURE: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &["java/util/concurrent/Future"],
     ACC_PUBLIC,
-    &[field("result", "Ljava/lang/Object;", ACC_PRIVATE, None)],
+    &[
+        field("result", "Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("done", "Z", ACC_PRIVATE, None),
+    ],
     &COMPLETABLE_FUTURE_METHODS,
     None,
 );

@@ -218,12 +218,24 @@ pub(crate) const LIST_ITERATOR: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method(
         "size",
         "()I",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
+    ),
+    method(
+        "removeAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        collection_remove_all,
+    ),
+    method(
+        "retainAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        collection_retain_all,
     ),
     method(
         "addAll",
@@ -1380,12 +1392,43 @@ macro_rules! map_of {
     };
 }
 
-const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
+const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
     method(
         "entry",
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map$Entry;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| object(new_entry(vm, ref_arg(args, 0), ref_arg(args, 1))?),
+    ),
+    method(
+        "ofEntries",
+        "([Ljava/util/Map$Entry;)Ljava/util/Map;",
+        ACC_PUBLIC | ACC_STATIC | ACC_VARARGS,
+        |vm, _, args| {
+            let entries = ref_arg(args, 0);
+            if entries.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let length = vm.array_length(entries)?;
+            let mut pairs = Vec::with_capacity(length);
+            for index in 0..length {
+                let entry = vm.array_get(entries, index as i32)?.as_ref();
+                if entry.is_null() {
+                    return Err(vm.throw_new("java/lang/NullPointerException", None));
+                }
+                let (key_class, key_method) =
+                    vm.resolve_virtual_method(entry, "getKey", "()Ljava/lang/Object;")?;
+                let key = vm
+                    .invoke_method(key_class, key_method, vec![Value::Ref(entry)])?
+                    .as_ref();
+                let (value_class, value_method) =
+                    vm.resolve_virtual_method(entry, "getValue", "()Ljava/lang/Object;")?;
+                let value = vm
+                    .invoke_method(value_class, value_method, vec![Value::Ref(entry)])?
+                    .as_ref();
+                pairs.push((key, value));
+            }
+            map_of_pairs(vm, &pairs)
+        },
     ),
     method(
         "computeIfPresent",
@@ -7935,7 +7978,7 @@ fn properties_set_property(
 // Collections
 // -------------------------------------------------------------------------------------------
 
-const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 69] = [
+const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 70] = [
     method(
         "sort",
         "(Ljava/util/List;)V",
@@ -8151,6 +8194,33 @@ const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 69] = [
             let set = vm.new_instance(class)?;
             let (declaring, field) = vm.find_field(class, "map", "Ljava/util/HashMap;")?;
             vm.set_instance_ref(set, declaring, field, ref_arg(args, 0));
+            object(set)
+        },
+    ),
+    method(
+        "newSequencedSetFromMap",
+        "(Ljava/util/SequencedMap;)Ljava/util/SequencedSet;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let map = ref_arg(args, 0);
+            if map.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let (empty_class, empty_method) = vm.resolve_virtual_method(map, "isEmpty", "()Z")?;
+            let empty = vm
+                .invoke_method(empty_class, empty_method, vec![Value::Ref(map)])?
+                .as_int()
+                != 0;
+            if !empty {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("Map is non-empty"),
+                ));
+            }
+            let class = vm.resolve_class("java/util/LinkedHashSet")?;
+            let set = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "map", "Ljava/util/HashMap;")?;
+            vm.set_instance_ref(set, declaring, field, map);
             object(set)
         },
     ),
@@ -10096,7 +10166,7 @@ pub(crate) const HASH_SET: oxjvm_vm::NativeClass = class(
 pub(crate) const LINKED_HASH_SET: oxjvm_vm::NativeClass = class(
     "java/util/LinkedHashSet",
     Some("java/util/HashSet"),
-    &[],
+    &["java/util/SequencedSet"],
     ACC_PUBLIC,
     &[],
     &[],
