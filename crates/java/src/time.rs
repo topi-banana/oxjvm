@@ -3962,6 +3962,21 @@ fn month_new(vm: &mut Vm<'_>, value: i32) -> Result<ObjectRef, VmError> {
     Ok(instance)
 }
 
+/// `Month.of`/`plus`/`minus`: `Month` is an enum, so return the cached singleton
+/// for the value rather than a fresh instance (identity semantics).
+fn month_of(vm: &mut Vm<'_>, value: i32) -> Result<ObjectRef, VmError> {
+    if !(1..=12).contains(&value) {
+        return Err(vm.throw_new("java/time/DateTimeException", Some("Invalid month")));
+    }
+    let class = vm.resolve_class("java/time/Month")?;
+    vm.ensure_initialized(class)?;
+    let name = MONTH_NAMES[(value - 1) as usize];
+    if let Some(cached) = vm.read_static_ref_if_set(class, name, "Ljava/time/Month;") {
+        return Ok(cached);
+    }
+    month_new(vm, value)
+}
+
 fn month_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     let class = vm.resolve_class("java/time/Month")?;
     for (index, name) in MONTH_NAMES.iter().enumerate() {
@@ -3976,7 +3991,7 @@ const MONTH_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "of",
         "(I)Ljava/time/Month;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| object(month_new(vm, crate::int_arg(args, 0))?),
+        |vm, _, args| object(month_of(vm, crate::int_arg(args, 0))?),
     ),
     method("getValue", "()I", ACC_PUBLIC, |vm, _, args| {
         int(read_int_field(vm, receiver(args), "value"))
@@ -3998,7 +4013,7 @@ const MONTH_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         let value = read_int_field(vm, receiver(args), "value");
         let amount = crate::long_arg(args, 1);
         let shifted = (i64::from(value - 1) + amount).rem_euclid(12) + 1;
-        object(month_new(vm, shifted as i32)?)
+        object(month_of(vm, shifted as i32)?)
     }),
     method(
         "minus",
@@ -4008,7 +4023,7 @@ const MONTH_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
             let value = read_int_field(vm, receiver(args), "value");
             let amount = crate::long_arg(args, 1);
             let shifted = (i64::from(value - 1) - amount).rem_euclid(12) + 1;
-            object(month_new(vm, shifted as i32)?)
+            object(month_of(vm, shifted as i32)?)
         },
     ),
     method(
@@ -4222,6 +4237,19 @@ fn period_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     Ok(())
 }
 
+/// `Period.of` and the single-unit factories: a zero period is the `ZERO`
+/// singleton, matching the JDK's identity guarantee.
+fn period_of(vm: &mut Vm<'_>, years: i32, months: i32, days: i32) -> Result<ObjectRef, VmError> {
+    if years == 0 && months == 0 && days == 0 {
+        let class = vm.resolve_class("java/time/Period")?;
+        vm.ensure_initialized(class)?;
+        if let Some(zero) = vm.read_static_ref_if_set(class, "ZERO", "Ljava/time/Period;") {
+            return Ok(zero);
+        }
+    }
+    period_new(vm, years, months, days)
+}
+
 /// A `ChronoUnit` singleton by name, for `Period` arithmetic delegation.
 fn chrono_unit_named(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class("java/time/temporal/ChronoUnit")?;
@@ -4275,13 +4303,13 @@ fn period_shift(
     Ok(result)
 }
 
-const PERIOD_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const PERIOD_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     method(
         "of",
         "(III)Ljava/time/Period;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            object(period_new(
+            object(period_of(
                 vm,
                 crate::int_arg(args, 0),
                 crate::int_arg(args, 1),
@@ -4289,6 +4317,33 @@ const PERIOD_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
             )?)
         },
     ),
+    method(
+        "ofYears",
+        "(I)Ljava/time/Period;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| object(period_of(vm, crate::int_arg(args, 0), 0, 0)?),
+    ),
+    method(
+        "ofMonths",
+        "(I)Ljava/time/Period;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| object(period_of(vm, 0, crate::int_arg(args, 0), 0)?),
+    ),
+    method(
+        "ofDays",
+        "(I)Ljava/time/Period;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| object(period_of(vm, 0, 0, crate::int_arg(args, 0))?),
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let years = read_int_field(vm, this, "years");
+        let months = read_int_field(vm, this, "months");
+        let days = read_int_field(vm, this, "days");
+        int(years
+            .wrapping_add(months.rotate_left(8))
+            .wrapping_add(days.rotate_left(16)))
+    }),
     method("getYears", "()I", ACC_PUBLIC, |vm, _, args| {
         int(read_int_field(vm, receiver(args), "years"))
     }),
@@ -4750,7 +4805,7 @@ fn offset_date_time_epoch_second(vm: &Vm<'_>, this: ObjectRef) -> i64 {
     epoch_day * 86_400 + nano_of_day / 1_000_000_000 - i64::from(offset)
 }
 
-const OFFSET_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+const OFFSET_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
     method(
         "of",
         "(IIIIIIILjava/time/ZoneOffset;)Ljava/time/OffsetDateTime;",
@@ -4783,6 +4838,103 @@ const OFFSET_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
                 read_long_field(vm, date_time, "nanoOfDay"),
                 ref_arg(args, 1),
             )?)
+        },
+    ),
+    method(
+        "of",
+        "(Ljava/time/LocalDate;Ljava/time/LocalTime;Ljava/time/ZoneOffset;)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let date = ref_arg(args, 0);
+            let time = ref_arg(args, 1);
+            let offset = ref_arg(args, 2);
+            if date.is_null() || time.is_null() || offset.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(offset_date_time_new(
+                vm,
+                read_long_field(vm, date, "epochDay"),
+                read_long_field(vm, time, "nanoOfDay"),
+                offset,
+            )?)
+        },
+    ),
+    method(
+        "ofInstant",
+        "(Ljava/time/Instant;Ljava/time/ZoneId;)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let instant = ref_arg(args, 0);
+            let zone = ref_arg(args, 1);
+            if instant.is_null() || zone.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let offset_seconds = zone_offset_seconds(vm, zone);
+            let epoch_second = read_long_field(vm, instant, "epochSecond");
+            let nano = read_int_field(vm, instant, "nano");
+            let local_second = epoch_second.saturating_add(i64::from(offset_seconds));
+            let epoch_day = local_second.div_euclid(86_400);
+            let min = days_from_civil(-999_999_999, 1, 1);
+            let max = days_from_civil(999_999_999, 12, 31);
+            if epoch_day < min || epoch_day > max {
+                return Err(vm.throw_new("java/time/DateTimeException", Some("Invalid epoch day")));
+            }
+            let secs_of_day = local_second.rem_euclid(86_400);
+            let nano_of_day = secs_of_day * 1_000_000_000 + i64::from(nano);
+            let offset = crate::lang::zone_offset_new(vm, offset_seconds)?;
+            object(offset_date_time_new(vm, epoch_day, nano_of_day, offset)?)
+        },
+    ),
+    method(
+        "getMonth",
+        "()Ljava/time/Month;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let epoch_day = read_long_field(vm, receiver(args), "epochDay");
+            let (_, month, _) = civil_from_days(epoch_day);
+            let class = vm.resolve_class("java/time/Month")?;
+            let (declaring, method) = vm
+                .find_method(class, "of", "(I)Ljava/time/Month;")
+                .ok_or_else(|| VmError::internal("Month lacks of"))?;
+            vm.invoke_method(declaring, method, vec![Value::Int(month)])
+        },
+    ),
+    method(
+        "plusDays",
+        "(J)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let days = crate::long_arg(args, 1);
+            if days == 0 {
+                return object(this);
+            }
+            object(offset_date_time_new(
+                vm,
+                read_long_field(vm, this, "epochDay") + days,
+                read_long_field(vm, this, "nanoOfDay"),
+                offset_date_time_offset(vm, this),
+            )?)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let class = vm.resolve_class("java/time/OffsetDateTime")?;
+            if !vm.is_instance(other, class) {
+                return crate::boolean(false);
+            }
+            crate::boolean(
+                read_long_field(vm, this, "epochDay") == read_long_field(vm, other, "epochDay")
+                    && read_long_field(vm, this, "nanoOfDay")
+                        == read_long_field(vm, other, "nanoOfDay")
+                    && zone_offset_seconds(vm, offset_date_time_offset(vm, this))
+                        == zone_offset_seconds(vm, offset_date_time_offset(vm, other)),
+            )
         },
     ),
     method("getYear", "()I", ACC_PUBLIC, |vm, _, args| {
