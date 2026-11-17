@@ -1781,11 +1781,117 @@ fn local_date_time_new(
     epoch_day: i64,
     nano_of_day: i64,
 ) -> Result<ObjectRef, VmError> {
+    let date = local_date_new(vm, epoch_day)?;
+    let time = local_time_new(vm, nano_of_day)?;
+    local_date_time_with_parts(vm, date, time)
+}
+
+/// Build a `LocalDateTime` from existing `LocalDate`/`LocalTime` instances. The
+/// JDK stores both parts as fields, so `toLocalDate()`/`toLocalTime()` return the
+/// very same objects across arithmetic that does not change the respective part.
+fn local_date_time_with_parts(
+    vm: &mut Vm<'_>,
+    date: ObjectRef,
+    time: ObjectRef,
+) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class("java/time/LocalDateTime")?;
     let instance = vm.new_instance(class)?;
-    write_long_field(vm, instance, "epochDay", epoch_day);
-    write_long_field(vm, instance, "nanoOfDay", nano_of_day);
+    write_long_field(
+        vm,
+        instance,
+        "epochDay",
+        read_long_field(vm, date, "epochDay"),
+    );
+    write_long_field(
+        vm,
+        instance,
+        "nanoOfDay",
+        read_long_field(vm, time, "nanoOfDay"),
+    );
+    if let Some((declaring, field)) = vm.find_field_opt(class, "date", "Ljava/time/LocalDate;") {
+        vm.set_instance_ref(instance, declaring, field, date);
+    }
+    if let Some((declaring, field)) = vm.find_field_opt(class, "time", "Ljava/time/LocalTime;") {
+        vm.set_instance_ref(instance, declaring, field, time);
+    }
     Ok(instance)
+}
+
+/// The stored `LocalDate` part of a `LocalDateTime` (null when absent).
+fn ldt_date_ref(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "date", "Ljava/time/LocalDate;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+/// The stored `LocalTime` part of a `LocalDateTime` (null when absent).
+fn ldt_time_ref(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "time", "Ljava/time/LocalTime;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+/// Finish a `LocalDateTime` shift, preserving identity when nothing changes and
+/// reusing whichever stored part (date or time) is unaffected.
+fn ldt_finish(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    old_epoch: i64,
+    old_nano: i64,
+    new_epoch: i64,
+    new_nano: i64,
+) -> Result<Value, VmError> {
+    if new_epoch == old_epoch && new_nano == old_nano {
+        return object(this);
+    }
+    let date = if new_epoch == old_epoch {
+        let stored = ldt_date_ref(vm, this);
+        if stored.is_null() {
+            local_date_new(vm, new_epoch)?
+        } else {
+            stored
+        }
+    } else {
+        local_date_new(vm, new_epoch)?
+    };
+    let time = if new_nano == old_nano {
+        let stored = ldt_time_ref(vm, this);
+        if stored.is_null() {
+            local_time_new(vm, new_nano)?
+        } else {
+            stored
+        }
+    } else {
+        local_time_new(vm, new_nano)?
+    };
+    object(local_date_time_with_parts(vm, date, time)?)
+}
+
+/// Add a signed `ChronoUnit` amount to a `LocalDateTime`, preserving identity
+/// for no-op arithmetic and the stored `LocalTime` when only the date moves.
+fn ldt_shift_unit(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    amount: i64,
+    unit: ObjectRef,
+) -> Result<Value, VmError> {
+    if amount == 0 {
+        return object(this);
+    }
+    let epoch_day = read_long_field(vm, this, "epochDay");
+    let nano = read_long_field(vm, this, "nanoOfDay");
+    let ordinal = chrono_unit_ordinal(vm, unit).ok_or_else(|| unsupported_unit(vm))?;
+    let (new_epoch, new_nano) = if let Some(unit_nanos) = time_unit_nanos(ordinal) {
+        let total = nano + amount * unit_nanos;
+        (
+            epoch_day + total.div_euclid(NANOS_PER_DAY),
+            total.rem_euclid(NANOS_PER_DAY),
+        )
+    } else {
+        (
+            date_plus(epoch_day, amount, ordinal).ok_or_else(|| unsupported_unit(vm))?,
+            nano,
+        )
+    };
+    ldt_finish(vm, this, epoch_day, nano, new_epoch, new_nano)
 }
 
 /// Shift a `LocalDateTime` by a nanosecond delta, carrying whole days.
@@ -1794,12 +1900,16 @@ fn ldt_shift_nanos(vm: &mut Vm<'_>, this: ObjectRef, delta: i64) -> Result<Value
         return object(this);
     }
     let epoch_day = read_long_field(vm, this, "epochDay");
-    let total = read_long_field(vm, this, "nanoOfDay") + delta;
-    object(local_date_time_new(
+    let nano = read_long_field(vm, this, "nanoOfDay");
+    let total = nano + delta;
+    ldt_finish(
         vm,
+        this,
+        epoch_day,
+        nano,
         epoch_day + total.div_euclid(NANOS_PER_DAY),
         total.rem_euclid(NANOS_PER_DAY),
-    )?)
+    )
 }
 
 /// Shift a `LocalDateTime`'s date part by a date-based `ChronoUnit` amount.
@@ -1815,7 +1925,7 @@ fn ldt_shift_date(
     let epoch_day = read_long_field(vm, this, "epochDay");
     let nano = read_long_field(vm, this, "nanoOfDay");
     let new_epoch = date_plus(epoch_day, amount, ordinal).ok_or_else(|| unsupported_unit(vm))?;
-    object(local_date_time_new(vm, new_epoch, nano)?)
+    ldt_finish(vm, this, epoch_day, nano, new_epoch, nano)
 }
 
 /// Nanoseconds per base unit of a time-based `ChronoField` (ordinals 0..=14).
@@ -1830,6 +1940,21 @@ fn time_field_unit_nanos(ordinal: i32) -> Option<i64> {
         14 => 43_200_000_000_000,
         _ => return None,
     })
+}
+
+/// `LocalDateTime.with(field, value)`: dispatch to the time or date part.
+fn ldt_with_field(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    field: ObjectRef,
+    value: i64,
+) -> Result<Value, VmError> {
+    let ordinal = chrono_field_ordinal(vm, field).ok_or_else(|| unsupported_field(vm))?;
+    if ordinal <= 14 {
+        ldt_with_time_field(vm, this, ordinal, value)
+    } else {
+        ldt_with_date_field(vm, this, ordinal, value)
+    }
 }
 
 /// Replace a time-based field of a `LocalDateTime` with a new value.
@@ -1984,10 +2109,7 @@ fn ldt_with_date_field(
         }
         _ => return Err(unsupported_field(vm)),
     };
-    if new_epoch == epoch_day {
-        return object(this);
-    }
-    object(local_date_time_new(vm, new_epoch, nano)?)
+    ldt_finish(vm, this, epoch_day, nano, new_epoch, nano)
 }
 
 fn local_date_string(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError> {
@@ -2679,7 +2801,7 @@ pub(crate) const LOCAL_DATE: oxjvm_vm::NativeClass = class(
     Some(local_date_clinit),
 );
 
-const LOCAL_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
+const LOCAL_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
     method(
         "of",
         "(II)Ljava/time/LocalTime;",
@@ -2920,6 +3042,35 @@ const LOCAL_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
             long((end - start) / unit_nanos)
         },
     ),
+    method(
+        "adjustInto",
+        "(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let temporal = ref_arg(args, 1);
+            let nano_of_day = read_long_field(vm, this, "nanoOfDay");
+            let field = vm.resolve_class("java/time/temporal/ChronoField")?;
+            vm.ensure_initialized(field)?;
+            let nano_of_day_field = vm
+                .read_static_ref_if_set(field, "NANO_OF_DAY", "Ljava/time/temporal/ChronoField;")
+                .unwrap_or(ObjectRef::NULL);
+            let (class, method) = vm.resolve_virtual_method(
+                temporal,
+                "with",
+                "(Ljava/time/temporal/TemporalField;J)Ljava/time/temporal/Temporal;",
+            )?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![
+                    Value::Ref(temporal),
+                    Value::Ref(nano_of_day_field),
+                    long(nano_of_day)?,
+                ],
+            )
+        },
+    ),
 ];
 
 pub(crate) const LOCAL_TIME: oxjvm_vm::NativeClass = class(
@@ -2928,6 +3079,7 @@ pub(crate) const LOCAL_TIME: oxjvm_vm::NativeClass = class(
     &[
         "java/time/temporal/TemporalAccessor",
         "java/time/temporal/Temporal",
+        "java/time/temporal/TemporalAdjuster",
         "java/lang/Comparable",
         "java/io/Serializable",
     ],
@@ -2969,7 +3121,7 @@ pub(crate) const LOCAL_TIME: oxjvm_vm::NativeClass = class(
     Some(local_time_clinit),
 );
 
-const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 55] = [
+const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
     method(
         "of",
         "(IIIII)Ljava/time/LocalDateTime;",
@@ -3028,11 +3180,7 @@ const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 55] = [
         |vm, _, args| {
             let date = ref_arg(args, 0);
             let time = ref_arg(args, 1);
-            object(local_date_time_new(
-                vm,
-                read_long_field(vm, date, "epochDay"),
-                read_long_field(vm, time, "nanoOfDay"),
-            )?)
+            object(local_date_time_with_parts(vm, date, time)?)
         },
     ),
     method(
@@ -3080,10 +3228,12 @@ const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 55] = [
         "()Ljava/time/LocalDate;",
         ACC_PUBLIC,
         |vm, _, args| {
-            object(local_date_new(
-                vm,
-                read_long_field(vm, receiver(args), "epochDay"),
-            )?)
+            let this = receiver(args);
+            let date = ldt_date_ref(vm, this);
+            if !date.is_null() {
+                return object(date);
+            }
+            object(local_date_new(vm, read_long_field(vm, this, "epochDay"))?)
         },
     ),
     method(
@@ -3091,51 +3241,36 @@ const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 55] = [
         "()Ljava/time/LocalTime;",
         ACC_PUBLIC,
         |vm, _, args| {
-            object(local_time_new(
-                vm,
-                read_long_field(vm, receiver(args), "nanoOfDay"),
-            )?)
+            let this = receiver(args);
+            let time = ldt_time_ref(vm, this);
+            if !time.is_null() {
+                return object(time);
+            }
+            object(local_time_new(vm, read_long_field(vm, this, "nanoOfDay"))?)
         },
     ),
     method(
         "plusDays",
         "(J)Ljava/time/LocalDateTime;",
         ACC_PUBLIC,
-        |vm, _, args| {
-            let this = receiver(args);
-            object(local_date_time_new(
-                vm,
-                read_long_field(vm, this, "epochDay") + crate::long_arg(args, 1),
-                read_long_field(vm, this, "nanoOfDay"),
-            )?)
-        },
+        |vm, _, args| ldt_shift_date(vm, receiver(args), crate::long_arg(args, 1), 7),
     ),
     method(
         "minusDays",
         "(J)Ljava/time/LocalDateTime;",
         ACC_PUBLIC,
-        |vm, _, args| {
-            let this = receiver(args);
-            object(local_date_time_new(
-                vm,
-                read_long_field(vm, this, "epochDay") - crate::long_arg(args, 1),
-                read_long_field(vm, this, "nanoOfDay"),
-            )?)
-        },
+        |vm, _, args| ldt_shift_date(vm, receiver(args), -crate::long_arg(args, 1), 7),
     ),
     method(
         "plusHours",
         "(J)Ljava/time/LocalDateTime;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let this = receiver(args);
-            let total = read_long_field(vm, this, "nanoOfDay")
-                + crate::long_arg(args, 1) * 3_600_000_000_000;
-            object(local_date_time_new(
+            ldt_shift_nanos(
                 vm,
-                read_long_field(vm, this, "epochDay") + total.div_euclid(86_400_000_000_000),
-                total.rem_euclid(86_400_000_000_000),
-            )?)
+                receiver(args),
+                crate::long_arg(args, 1) * 3_600_000_000_000,
+            )
         },
     ),
     method(
@@ -3296,6 +3431,14 @@ const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 55] = [
             ldt_with_date_field(vm, receiver(args), 18, i64::from(crate::int_arg(args, 1)))
         },
     ),
+    method(
+        "withDayOfYear",
+        "(I)Ljava/time/LocalDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            ldt_with_date_field(vm, receiver(args), 19, i64::from(crate::int_arg(args, 1)))
+        },
+    ),
     method("getDayOfYear", "()I", ACC_PUBLIC, |vm, _, args| {
         let epoch_day = read_long_field(vm, receiver(args), "epochDay");
         let (year, _, _) = civil_from_days(epoch_day);
@@ -3309,15 +3452,25 @@ const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 55] = [
         "(Ljava/time/temporal/TemporalField;J)Ljava/time/LocalDateTime;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let this = receiver(args);
-            let value = crate::long_arg(args, 2);
-            let ordinal =
-                chrono_field_ordinal(vm, ref_arg(args, 1)).ok_or_else(|| unsupported_field(vm))?;
-            if ordinal <= 14 {
-                ldt_with_time_field(vm, this, ordinal, value)
-            } else {
-                ldt_with_date_field(vm, this, ordinal, value)
-            }
+            ldt_with_field(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                crate::long_arg(args, 2),
+            )
+        },
+    ),
+    method(
+        "with",
+        "(Ljava/time/temporal/TemporalField;J)Ljava/time/temporal/Temporal;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            ldt_with_field(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                crate::long_arg(args, 2),
+            )
         },
     ),
     method(
@@ -3482,28 +3635,41 @@ const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 55] = [
     ),
     method(
         "plus",
+        "(JLjava/time/temporal/TemporalUnit;)Ljava/time/LocalDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            ldt_shift_unit(
+                vm,
+                receiver(args),
+                crate::long_arg(args, 1),
+                ref_arg(args, 2),
+            )
+        },
+    ),
+    method(
+        "plus",
         "(JLjava/time/temporal/TemporalUnit;)Ljava/time/temporal/Temporal;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let this = receiver(args);
-            let epoch_day = read_long_field(vm, this, "epochDay");
-            let nano = read_long_field(vm, this, "nanoOfDay");
-            let amount = crate::long_arg(args, 1);
-            let ordinal =
-                chrono_unit_ordinal(vm, ref_arg(args, 2)).ok_or_else(|| unsupported_unit(vm))?;
-            let (new_epoch, new_nano) = if let Some(unit_nanos) = time_unit_nanos(ordinal) {
-                let total = nano + amount * unit_nanos;
-                (
-                    epoch_day + total.div_euclid(NANOS_PER_DAY),
-                    total.rem_euclid(NANOS_PER_DAY),
-                )
-            } else {
-                (
-                    date_plus(epoch_day, amount, ordinal).ok_or_else(|| unsupported_unit(vm))?,
-                    nano,
-                )
-            };
-            object(local_date_time_new(vm, new_epoch, new_nano)?)
+            ldt_shift_unit(
+                vm,
+                receiver(args),
+                crate::long_arg(args, 1),
+                ref_arg(args, 2),
+            )
+        },
+    ),
+    method(
+        "minus",
+        "(JLjava/time/temporal/TemporalUnit;)Ljava/time/LocalDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            ldt_shift_unit(
+                vm,
+                receiver(args),
+                -crate::long_arg(args, 1),
+                ref_arg(args, 2),
+            )
         },
     ),
     method(
@@ -3511,25 +3677,57 @@ const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 55] = [
         "(JLjava/time/temporal/TemporalUnit;)Ljava/time/temporal/Temporal;",
         ACC_PUBLIC,
         |vm, _, args| {
+            ldt_shift_unit(
+                vm,
+                receiver(args),
+                -crate::long_arg(args, 1),
+                ref_arg(args, 2),
+            )
+        },
+    ),
+    method(
+        "plus",
+        "(Ljava/time/temporal/TemporalAmount;)Ljava/time/LocalDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
             let this = receiver(args);
-            let epoch_day = read_long_field(vm, this, "epochDay");
-            let nano = read_long_field(vm, this, "nanoOfDay");
-            let amount = crate::long_arg(args, 1);
-            let ordinal =
-                chrono_unit_ordinal(vm, ref_arg(args, 2)).ok_or_else(|| unsupported_unit(vm))?;
-            let (new_epoch, new_nano) = if let Some(unit_nanos) = time_unit_nanos(ordinal) {
-                let total = nano - amount * unit_nanos;
-                (
-                    epoch_day + total.div_euclid(NANOS_PER_DAY),
-                    total.rem_euclid(NANOS_PER_DAY),
-                )
-            } else {
-                (
-                    date_plus(epoch_day, -amount, ordinal).ok_or_else(|| unsupported_unit(vm))?,
-                    nano,
-                )
-            };
-            object(local_date_time_new(vm, new_epoch, new_nano)?)
+            let amount = ref_arg(args, 1);
+            let (class, method) = vm.resolve_virtual_method(
+                amount,
+                "addTo",
+                "(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;",
+            )?;
+            vm.invoke_method(class, method, vec![Value::Ref(amount), Value::Ref(this)])
+        },
+    ),
+    method(
+        "minus",
+        "(Ljava/time/temporal/TemporalAmount;)Ljava/time/LocalDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let amount = ref_arg(args, 1);
+            let (class, method) = vm.resolve_virtual_method(
+                amount,
+                "subtractFrom",
+                "(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;",
+            )?;
+            vm.invoke_method(class, method, vec![Value::Ref(amount), Value::Ref(this)])
+        },
+    ),
+    method(
+        "with",
+        "(Ljava/time/temporal/TemporalAdjuster;)Ljava/time/LocalDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let adjuster = ref_arg(args, 1);
+            let (class, method) = vm.resolve_virtual_method(
+                adjuster,
+                "adjustInto",
+                "(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;",
+            )?;
+            vm.invoke_method(class, method, vec![Value::Ref(adjuster), Value::Ref(this)])
         },
     ),
     method(
@@ -3601,6 +3799,18 @@ pub(crate) const LOCAL_DATE_TIME: oxjvm_vm::NativeClass = class(
     &[
         field("epochDay", "J", ACC_PRIVATE | ACC_FINAL, None),
         field("nanoOfDay", "J", ACC_PRIVATE | ACC_FINAL, None),
+        field(
+            "date",
+            "Ljava/time/LocalDate;",
+            ACC_PRIVATE | ACC_FINAL,
+            None,
+        ),
+        field(
+            "time",
+            "Ljava/time/LocalTime;",
+            ACC_PRIVATE | ACC_FINAL,
+            None,
+        ),
     ],
     &LOCAL_DATE_TIME_METHODS,
     None,
@@ -3974,6 +4184,189 @@ pub(crate) const MONTH: oxjvm_vm::NativeClass = class(
     ],
     &MONTH_METHODS,
     Some(month_clinit),
+);
+
+// -------------------------------------------------------------------------------------------
+// java.time.Period
+// -------------------------------------------------------------------------------------------
+
+fn period_new(vm: &mut Vm<'_>, years: i32, months: i32, days: i32) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/time/Period")?;
+    let instance = vm.new_instance(class)?;
+    write_int_field(vm, instance, "years", years);
+    write_int_field(vm, instance, "months", months);
+    write_int_field(vm, instance, "days", days);
+    Ok(instance)
+}
+
+fn period_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/time/Period")?;
+    let zero = period_new(vm, 0, 0, 0)?;
+    vm.set_static_value(class, "ZERO", "Ljava/time/Period;", Value::Ref(zero));
+    Ok(())
+}
+
+/// A `ChronoUnit` singleton by name, for `Period` arithmetic delegation.
+fn chrono_unit_named(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/time/temporal/ChronoUnit")?;
+    vm.ensure_initialized(class)?;
+    Ok(vm
+        .read_static_ref_if_set(class, name, "Ljava/time/temporal/ChronoUnit;")
+        .unwrap_or(ObjectRef::NULL))
+}
+
+/// `Period.addTo`/`subtractFrom`: add the total months then the days, mirroring
+/// the JDK (a zero period returns the temporal unchanged).
+fn period_shift(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    temporal: ObjectRef,
+    negate: bool,
+) -> Result<Value, VmError> {
+    let sign = if negate { -1i64 } else { 1i64 };
+    let years = i64::from(read_int_field(vm, this, "years"));
+    let months = i64::from(read_int_field(vm, this, "months"));
+    let days = i64::from(read_int_field(vm, this, "days"));
+    let total_months = (years * 12 + months) * sign;
+    let mut result = Value::Ref(temporal);
+    if total_months != 0 {
+        let unit = chrono_unit_named(vm, "MONTHS")?;
+        let (class, method) = vm.resolve_virtual_method(
+            temporal,
+            "plus",
+            "(JLjava/time/temporal/TemporalUnit;)Ljava/time/temporal/Temporal;",
+        )?;
+        result = vm.invoke_method(
+            class,
+            method,
+            vec![result, long(total_months)?, Value::Ref(unit)],
+        )?;
+    }
+    if days != 0 {
+        let unit = chrono_unit_named(vm, "DAYS")?;
+        let receiver = result.as_ref();
+        let (class, method) = vm.resolve_virtual_method(
+            receiver,
+            "plus",
+            "(JLjava/time/temporal/TemporalUnit;)Ljava/time/temporal/Temporal;",
+        )?;
+        result = vm.invoke_method(
+            class,
+            method,
+            vec![result, long(days * sign)?, Value::Ref(unit)],
+        )?;
+    }
+    Ok(result)
+}
+
+const PERIOD_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+    method(
+        "of",
+        "(III)Ljava/time/Period;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            object(period_new(
+                vm,
+                crate::int_arg(args, 0),
+                crate::int_arg(args, 1),
+                crate::int_arg(args, 2),
+            )?)
+        },
+    ),
+    method("getYears", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_int_field(vm, receiver(args), "years"))
+    }),
+    method("getMonths", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_int_field(vm, receiver(args), "months"))
+    }),
+    method("getDays", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_int_field(vm, receiver(args), "days"))
+    }),
+    method("isZero", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        crate::boolean(
+            read_int_field(vm, this, "years") == 0
+                && read_int_field(vm, this, "months") == 0
+                && read_int_field(vm, this, "days") == 0,
+        )
+    }),
+    method(
+        "addTo",
+        "(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;",
+        ACC_PUBLIC,
+        |vm, _, args| period_shift(vm, receiver(args), ref_arg(args, 1), false),
+    ),
+    method(
+        "subtractFrom",
+        "(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;",
+        ACC_PUBLIC,
+        |vm, _, args| period_shift(vm, receiver(args), ref_arg(args, 1), true),
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let years = read_int_field(vm, this, "years");
+            let months = read_int_field(vm, this, "months");
+            let days = read_int_field(vm, this, "days");
+            let text = if years == 0 && months == 0 && days == 0 {
+                alloc::string::String::from("P0D")
+            } else {
+                let mut s = alloc::string::String::from("P");
+                if years != 0 {
+                    s.push_str(&alloc::format!("{years}Y"));
+                }
+                if months != 0 {
+                    s.push_str(&alloc::format!("{months}M"));
+                }
+                if days != 0 {
+                    s.push_str(&alloc::format!("{days}D"));
+                }
+                s
+            };
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let class = vm.resolve_class("java/time/Period")?;
+            if !vm.is_instance(other, class) {
+                return crate::boolean(false);
+            }
+            crate::boolean(
+                read_int_field(vm, this, "years") == read_int_field(vm, other, "years")
+                    && read_int_field(vm, this, "months") == read_int_field(vm, other, "months")
+                    && read_int_field(vm, this, "days") == read_int_field(vm, other, "days"),
+            )
+        },
+    ),
+];
+
+pub(crate) const PERIOD: oxjvm_vm::NativeClass = class(
+    "java/time/Period",
+    Some("java/lang/Object"),
+    &["java/time/temporal/TemporalAmount", "java/io/Serializable"],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("years", "I", ACC_PRIVATE | ACC_FINAL, None),
+        field("months", "I", ACC_PRIVATE | ACC_FINAL, None),
+        field("days", "I", ACC_PRIVATE | ACC_FINAL, None),
+        field(
+            "ZERO",
+            "Ljava/time/Period;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+    ],
+    &PERIOD_METHODS,
+    Some(period_clinit),
 );
 
 // -------------------------------------------------------------------------------------------
