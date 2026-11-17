@@ -3930,7 +3930,7 @@ const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
     ),
 ];
 
-const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
+const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
     method("<init>", "()V", ACC_PUBLIC, builder_init),
     method("<init>", "(I)V", ACC_PUBLIC, builder_init_capacity),
     method(
@@ -4040,11 +4040,36 @@ const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
         builder_index_of,
     ),
     method(
+        "indexOf",
+        "(Ljava/lang/String;I)I",
+        ACC_PUBLIC,
+        builder_index_of_from,
+    ),
+    method(
+        "lastIndexOf",
+        "(Ljava/lang/String;)I",
+        ACC_PUBLIC,
+        builder_last_index_of,
+    ),
+    method(
+        "lastIndexOf",
+        "(Ljava/lang/String;I)I",
+        ACC_PUBLIC,
+        builder_last_index_of_from,
+    ),
+    method(
+        "substring",
+        "(I)Ljava/lang/String;",
+        ACC_PUBLIC,
+        builder_substring_from,
+    ),
+    method(
         "substring",
         "(II)Ljava/lang/String;",
         ACC_PUBLIC,
         builder_substring,
     ),
+    method("getChars", "(II[CI)V", ACC_PUBLIC, builder_get_chars),
     method(
         "delete",
         "(II)Ljava/lang/StringBuffer;",
@@ -4550,6 +4575,125 @@ fn builder_index_of(
         .map(<[u16]>::to_vec)
         .unwrap_or_default();
     int(find_units(&units[..count.min(units.len())], &needle, 0))
+}
+
+fn builder_index_of_from(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let (units, count) = builder_state(vm, receiver(args));
+    let needle = vm
+        .string_utf16(ref_arg(args, 1))
+        .map(<[u16]>::to_vec)
+        .ok_or_else(|| vm.throw_new("java/lang/NullPointerException", None))?;
+    let from = int_arg(args, 2).max(0) as usize;
+    int(find_units(&units[..count.min(units.len())], &needle, from))
+}
+
+fn builder_last_index_of(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let (_, count) = builder_state(vm, receiver(args));
+    builder_last_index_of_at(vm, receiver(args), ref_arg(args, 1), count as i32)
+}
+
+fn builder_last_index_of_from(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    builder_last_index_of_at(vm, receiver(args), ref_arg(args, 1), int_arg(args, 2))
+}
+
+/// The shared backward search for `lastIndexOf(String[, int])`: the empty needle
+/// matches at `min(fromIndex, length)`, otherwise the largest start `<= fromIndex`.
+fn builder_last_index_of_at(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    needle_ref: ObjectRef,
+    from: i32,
+) -> Result<Value, VmError> {
+    let (units, count) = builder_state(vm, this);
+    let haystack = &units[..count.min(units.len())];
+    let needle = vm
+        .string_utf16(needle_ref)
+        .map(<[u16]>::to_vec)
+        .ok_or_else(|| vm.throw_new("java/lang/NullPointerException", None))?;
+    if needle.is_empty() {
+        let index = (from as isize).clamp(0, haystack.len() as isize);
+        return int(index as i32);
+    }
+    let limit = (from as isize).min(haystack.len() as isize - needle.len() as isize);
+    if limit < 0 {
+        return int(-1);
+    }
+    for start in (0..=limit as usize).rev() {
+        if haystack[start..].starts_with(&needle) {
+            return int(start as i32);
+        }
+    }
+    int(-1)
+}
+
+fn builder_substring_from(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let (units, count) = builder_state(vm, receiver(args));
+    let start = int_arg(args, 1);
+    let usable = count.min(units.len());
+    if start < 0 || start > usable as i32 {
+        return Err(vm.throw_new("java/lang/StringIndexOutOfBoundsException", None));
+    }
+    object(vm.make_string_utf16(units[start as usize..usable].to_vec())?)
+}
+
+fn builder_get_chars(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let (units, count) = builder_state(vm, receiver(args));
+    let begin = int_arg(args, 1);
+    let end = int_arg(args, 2);
+    let destination = ref_arg(args, 3);
+    let offset = int_arg(args, 4);
+    let length = count.min(units.len()) as i32;
+    if begin < 0 || end > length || begin > end {
+        return Err(vm.throw_new(
+            "java/lang/StringIndexOutOfBoundsException",
+            Some(&alloc::format!(
+                "Range [{begin}, {end}) out of bounds for length {length}"
+            )),
+        ));
+    }
+    if destination.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let dst_length = vm.array_length(destination)? as i32;
+    let copied = end - begin;
+    if offset < 0 || offset > dst_length - copied {
+        return Err(vm.throw_new(
+            "java/lang/IndexOutOfBoundsException",
+            Some(&alloc::format!(
+                "Range [{offset}, {} + {copied}) out of bounds for length {dst_length}",
+                offset
+            )),
+        ));
+    }
+    for (index, unit) in units[begin as usize..end as usize].iter().enumerate() {
+        vm.array_set(
+            destination,
+            offset + index as i32,
+            Value::Int(i32::from(*unit)),
+            false,
+        )?;
+    }
+    void()
 }
 
 fn builder_replace(
