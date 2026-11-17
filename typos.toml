@@ -26,6 +26,14 @@ IST = "IST"
 # `EDE` is the triple-DES "encrypt-decrypt-encrypt" mode in the JDK security algorithm names
 # (`3DES_EDE_CBC`, `TLS_RSA_WITH_3DES_EDE_CBC_SHA`); not a misspelling of "edge".
 EDE = "EDE"
-# `tha` is the ISO 639-2 three-letter code for Thai (`Locale.getISO3Language` maps `th` to it);
-# not a misspelling of "than"/"that"/"the".
+# ISO 639 language codes used by `Locale.getISO3Language`/`getISOLanguages`; these are
+# standard codes, not misspellings of the English words typos suggests.
 tha = "tha"
+ba = "ba"
+bre = "bre"
+fo = "fo"
+ful = "ful"
+nd = "nd"
+sme = "sme"
+som = "som"
+yor = "yor"

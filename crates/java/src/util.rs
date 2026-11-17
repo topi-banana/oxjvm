@@ -6235,10 +6235,231 @@ const ABSTRACT_SET_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     ),
 ];
 
+/// `java.util.AbstractCollection`: the `iterator`/`size`-driven base for collections.
+pub(crate) const ABSTRACT_COLLECTION: oxjvm_vm::NativeClass = class(
+    "java/util/AbstractCollection",
+    Some("java/lang/Object"),
+    &["java/util/Collection"],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[],
+    &ABSTRACT_COLLECTION_METHODS,
+    None,
+);
+
+const ABSTRACT_COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+    method(
+        "size",
+        "()I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "iterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(invoke_int(vm, receiver(args), "size")? == 0)
+    }),
+    method(
+        "contains",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let target = ref_arg(args, 1);
+            let elements = collection_elements(vm, receiver(args))?;
+            for element in elements {
+                if objects_equals(vm, element, target)? {
+                    return boolean(true);
+                }
+            }
+            boolean(false)
+        },
+    ),
+    method(
+        "toArray",
+        "()[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = collection_elements(vm, receiver(args))?;
+            let object_class = vm.resolve_class("java/lang/Object")?;
+            let array = vm.allocate_object_array(object_class, elements.len())?;
+            for (index, element) in elements.iter().enumerate() {
+                vm.array_set_ref(array, index, *element)?;
+            }
+            object(array)
+        },
+    ),
+    method(
+        "toArray",
+        "([Ljava/lang/Object;)[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = collection_elements(vm, receiver(args))?;
+            collection_to_array_into(vm, &elements, ref_arg(args, 1))
+        },
+    ),
+    method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/UnsupportedOperationException", None))
+    }),
+    method(
+        "remove",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let target = ref_arg(args, 1);
+            let (iter_class, iter_method) =
+                vm.resolve_virtual_method(this, "iterator", "()Ljava/util/Iterator;")?;
+            let iterator = vm
+                .invoke_method(iter_class, iter_method, vec![Value::Ref(this)])?
+                .as_ref();
+            let (has_next_class, has_next) =
+                vm.resolve_virtual_method(iterator, "hasNext", "()Z")?;
+            let (next_class, next) =
+                vm.resolve_virtual_method(iterator, "next", "()Ljava/lang/Object;")?;
+            loop {
+                if vm
+                    .invoke_method(has_next_class, has_next, vec![Value::Ref(iterator)])?
+                    .as_int()
+                    == 0
+                {
+                    return boolean(false);
+                }
+                let element = vm
+                    .invoke_method(next_class, next, vec![Value::Ref(iterator)])?
+                    .as_ref();
+                if objects_equals(vm, element, target)? {
+                    let (remove_class, remove_method) =
+                        vm.resolve_virtual_method(iterator, "remove", "()V")?;
+                    vm.invoke_method(remove_class, remove_method, vec![Value::Ref(iterator)])?;
+                    return boolean(true);
+                }
+            }
+        },
+    ),
+    method(
+        "containsAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let others = collection_elements(vm, ref_arg(args, 1))?;
+            for element in others {
+                let contains = invoke_virtual_bool(
+                    vm,
+                    this,
+                    "contains",
+                    "(Ljava/lang/Object;)Z",
+                    &[Value::Ref(element)],
+                )?;
+                if !contains {
+                    return boolean(false);
+                }
+            }
+            boolean(true)
+        },
+    ),
+    method(
+        "addAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let incoming = collection_elements(vm, ref_arg(args, 1))?;
+            let mut changed = false;
+            for element in incoming {
+                changed |= invoke_virtual_bool(
+                    vm,
+                    this,
+                    "add",
+                    "(Ljava/lang/Object;)Z",
+                    &[Value::Ref(element)],
+                )?;
+            }
+            boolean(changed)
+        },
+    ),
+    method(
+        "removeAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        collection_remove_all,
+    ),
+    method(
+        "retainAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        collection_retain_all,
+    ),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let (iter_class, iter_method) =
+            vm.resolve_virtual_method(this, "iterator", "()Ljava/util/Iterator;")?;
+        let iterator = vm
+            .invoke_method(iter_class, iter_method, vec![Value::Ref(this)])?
+            .as_ref();
+        let (has_next_class, has_next) = vm.resolve_virtual_method(iterator, "hasNext", "()Z")?;
+        let (next_class, next) =
+            vm.resolve_virtual_method(iterator, "next", "()Ljava/lang/Object;")?;
+        let (remove_class, remove_method) = vm.resolve_virtual_method(iterator, "remove", "()V")?;
+        loop {
+            if vm
+                .invoke_method(has_next_class, has_next, vec![Value::Ref(iterator)])?
+                .as_int()
+                == 0
+            {
+                return void();
+            }
+            vm.invoke_method(next_class, next, vec![Value::Ref(iterator)])?;
+            vm.invoke_method(remove_class, remove_method, vec![Value::Ref(iterator)])?;
+        }
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = collection_elements(vm, receiver(args))?;
+            let mut text = String::from("[");
+            for (index, element) in elements.iter().enumerate() {
+                if index > 0 {
+                    text.push_str(", ");
+                }
+                text.push_str(&value_to_string(vm, *element)?);
+            }
+            text.push(']');
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "removeIf",
+        "(Ljava/util/function/Predicate;)Z",
+        ACC_PUBLIC,
+        collection_remove_if,
+    ),
+    method(
+        "spliterator",
+        "()Ljava/util/Spliterator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = collection_elements(vm, receiver(args))?;
+            object(crate::stream::spliterator_from(vm, &elements)?)
+        },
+    ),
+    method(
+        "forEach",
+        "(Ljava/util/function/Consumer;)V",
+        ACC_PUBLIC,
+        collection_for_each,
+    ),
+];
+
 /// `java.util.AbstractSet`: the `iterator`/`size`-driven base for sets.
 pub(crate) const ABSTRACT_SET: oxjvm_vm::NativeClass = class(
     "java/util/AbstractSet",
-    Some("java/lang/Object"),
+    Some("java/util/AbstractCollection"),
     &["java/util/Set"],
     ACC_PUBLIC | ACC_ABSTRACT,
     &[],
@@ -6454,7 +6675,7 @@ const ABSTRACT_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
 /// `java.util.AbstractList`: the `get`/`size`-driven base for lists.
 pub(crate) const ABSTRACT_LIST: oxjvm_vm::NativeClass = class(
     "java/util/AbstractList",
-    Some("java/lang/Object"),
+    Some("java/util/AbstractCollection"),
     &["java/util/List"],
     ACC_PUBLIC | ACC_ABSTRACT,
     &[],
