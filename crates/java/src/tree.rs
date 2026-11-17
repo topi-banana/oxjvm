@@ -152,6 +152,16 @@ fn put_value(
     key: ObjectRef,
     value: ObjectRef,
 ) -> Result<ObjectRef, VmError> {
+    // The first insertion type-checks the key the way `TreeMap.put` does with
+    // `compare(key, key)`: natural order rejects null and non-Comparable keys.
+    if vm.sorted_map(this).map_or(0, |map| map.len()) == 0 && ordering_of(vm, this).is_null() {
+        if key.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        if find_compare_to(vm, key).is_none() {
+            return Err(vm.throw_new("java/lang/ClassCastException", None));
+        }
+    }
     let (index, found) = search_key(vm, this, key)?;
     let Some(map) = vm.sorted_map_mut(this) else {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
@@ -1540,6 +1550,26 @@ pub(crate) const CONCURRENT_SKIP_LIST_MAP: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC,
     &[],
     &TREE_MAP_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// ConcurrentSkipListSet (a concurrent sorted set; reuses the TreeSet sorted-map storage and
+// methods, which satisfies the functional NavigableSet/Set contract tests)
+// -------------------------------------------------------------------------------------------
+
+pub(crate) const CONCURRENT_SKIP_LIST_SET: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/ConcurrentSkipListSet",
+    Some("java/lang/Object"),
+    &[
+        "java/util/NavigableSet",
+        "java/util/Set",
+        "java/lang/Cloneable",
+        "java/io/Serializable",
+    ],
+    ACC_PUBLIC,
+    &[],
+    &TREE_SET_METHODS,
     None,
 );
 

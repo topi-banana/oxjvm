@@ -1682,6 +1682,9 @@ fn abq_init(
     let mut elements = Vec::new();
     if descriptor == "(IZLjava/util/Collection;)V" {
         elements = crate::util::collection_elements(vm, ref_arg(args, 3))?;
+        if elements.iter().any(|e| e.is_null()) {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
         if elements.len() > capacity as usize {
             return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
         }
@@ -1699,6 +1702,9 @@ fn abq_capacity(vm: &Vm<'_>, this: ObjectRef) -> usize {
 }
 
 fn abq_push(vm: &mut Vm<'_>, this: ObjectRef, element: ObjectRef) -> Result<(), VmError> {
+    if element.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
     let mut elements = crate::util::array_list_elements(vm, this);
     elements.push(element);
     crate::util::array_list_store(vm, this, &elements)?;
@@ -1982,3 +1988,806 @@ fn phaser_await_advance(
         }
     }
 }
+
+// -------------------------------------------------------------------------------------------
+// LinkedBlockingQueue / LinkedBlockingDeque
+// -------------------------------------------------------------------------------------------
+
+/// `LinkedBlockingQueue`: an optionally-bounded blocking queue backed by the `ArrayList`
+/// element array.  Blocking operations park on the queue monitor; mutations notify waiters.
+pub(crate) const LINKED_BLOCKING_QUEUE: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/LinkedBlockingQueue",
+    Some("java/util/ArrayList"),
+    &["java/util/concurrent/BlockingQueue", "java/io/Serializable"],
+    ACC_PUBLIC,
+    &[field("capacity", "I", ACC_PRIVATE, None)],
+    &LINKED_BLOCKING_QUEUE_METHODS,
+    None,
+);
+
+const LINKED_BLOCKING_QUEUE_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
+    method("<init>", "()V", ACC_PUBLIC, lbq_init),
+    method("<init>", "(I)V", ACC_PUBLIC, lbq_init),
+    method("<init>", "(Ljava/util/Collection;)V", ACC_PUBLIC, lbq_init),
+    method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, |vm, _, args| {
+        let element = ref_arg(args, 1);
+        if element.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        lbq_push(vm, receiver(args), element)?;
+        boolean(true)
+    }),
+    method("put", "(Ljava/lang/Object;)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let element = ref_arg(args, 1);
+        if element.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        loop {
+            if lbq_size(vm, this) < lbq_capacity(vm, this) {
+                lbq_push(vm, this, element)?;
+                return void();
+            }
+            vm.park_until_notified(this, None)?;
+        }
+    }),
+    method("take", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        loop {
+            if lbq_size(vm, this) > 0 {
+                return object(lbq_pop_head(vm, this)?);
+            }
+            vm.park_until_notified(this, None)?;
+        }
+    }),
+    method(
+        "poll",
+        "(JLjava/util/concurrent/TimeUnit;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let millis = time_unit_to_millis(vm, ref_arg(args, 2), crate::long_arg(args, 1))?;
+            let deadline = vm.virtual_time_millis().saturating_add(millis.max(0));
+            loop {
+                if lbq_size(vm, this) > 0 {
+                    return object(lbq_pop_head(vm, this)?);
+                }
+                let remaining = deadline - vm.virtual_time_millis();
+                if remaining <= 0 {
+                    return object(ObjectRef::NULL);
+                }
+                vm.park_until_notified(this, Some(remaining))?;
+            }
+        },
+    ),
+    method(
+        "offer",
+        "(Ljava/lang/Object;JLjava/util/concurrent/TimeUnit;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let element = ref_arg(args, 1);
+            if element.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let millis = time_unit_to_millis(vm, ref_arg(args, 3), crate::long_arg(args, 2))?;
+            let deadline = vm.virtual_time_millis().saturating_add(millis.max(0));
+            loop {
+                if lbq_size(vm, this) < lbq_capacity(vm, this) {
+                    lbq_push(vm, this, element)?;
+                    return boolean(true);
+                }
+                let remaining = deadline - vm.virtual_time_millis();
+                if remaining <= 0 {
+                    return boolean(false);
+                }
+                vm.park_until_notified(this, Some(remaining))?;
+            }
+        },
+    ),
+    method(
+        "offer",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let element = ref_arg(args, 1);
+            if element.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            if lbq_size(vm, this) >= lbq_capacity(vm, this) {
+                return boolean(false);
+            }
+            lbq_push(vm, this, element)?;
+            boolean(true)
+        },
+    ),
+    method("remainingCapacity", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        int((lbq_capacity(vm, this) - lbq_size(vm, this)) as i32)
+    }),
+    method(
+        "drainTo",
+        "(Ljava/util/Collection;)I",
+        ACC_PUBLIC,
+        |vm, _, args| lbq_drain_to(vm, args, usize::MAX),
+    ),
+    method(
+        "drainTo",
+        "(Ljava/util/Collection;I)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let max = crate::int_arg(args, 2).max(0) as usize;
+            lbq_drain_to(vm, args, max)
+        },
+    ),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        crate::util::array_list_store(vm, this, &[])?;
+        vm.monitor_notify(this, true);
+        void()
+    }),
+];
+
+fn lbq_init(
+    vm: &mut Vm<'_>,
+    context: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let descriptor = vm.classes.get(context.class).methods[context.method as usize]
+        .descriptor
+        .as_str();
+    let mut capacity = i32::MAX;
+    let mut elements = Vec::new();
+    match descriptor {
+        "(I)V" => {
+            capacity = crate::int_arg(args, 1);
+            if capacity <= 0 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+        }
+        "(Ljava/util/Collection;)V" => {
+            elements = crate::util::collection_elements(vm, ref_arg(args, 1))?;
+            if elements.iter().any(|e| e.is_null()) {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+        }
+        _ => {}
+    }
+    crate::lang::write_int_field(vm, this, "capacity", capacity);
+    crate::util::array_list_store(vm, this, &elements)?;
+    void()
+}
+
+fn lbq_size(vm: &Vm<'_>, this: ObjectRef) -> usize {
+    crate::lang::read_int_field(vm, this, "size").max(0) as usize
+}
+
+fn lbq_capacity(vm: &Vm<'_>, this: ObjectRef) -> usize {
+    let capacity = crate::lang::read_int_field(vm, this, "capacity");
+    if capacity <= 0 {
+        i32::MAX as usize
+    } else {
+        capacity as usize
+    }
+}
+
+fn lbq_push(vm: &mut Vm<'_>, this: ObjectRef, element: ObjectRef) -> Result<(), VmError> {
+    let mut elements = crate::util::array_list_elements(vm, this);
+    elements.push(element);
+    crate::util::array_list_store(vm, this, &elements)?;
+    vm.monitor_notify(this, true);
+    Ok(())
+}
+
+fn lbq_pop_head(vm: &mut Vm<'_>, this: ObjectRef) -> Result<ObjectRef, VmError> {
+    let mut elements = crate::util::array_list_elements(vm, this);
+    let head = elements.remove(0);
+    crate::util::array_list_store(vm, this, &elements)?;
+    vm.monitor_notify(this, true);
+    Ok(head)
+}
+
+fn lbq_drain_to(vm: &mut Vm<'_>, args: &[Value], max: usize) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let collection = ref_arg(args, 1);
+    if collection.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let elements = crate::util::array_list_elements(vm, this);
+    let mut transferred = 0usize;
+    for element in elements.iter().take(max) {
+        let (declaring, method) =
+            vm.resolve_virtual_method(collection, "add", "(Ljava/lang/Object;)Z")?;
+        let added = vm.invoke_method(
+            declaring,
+            method,
+            vec![Value::Ref(collection), Value::Ref(*element)],
+        )?;
+        if added.as_int() == 0 {
+            break;
+        }
+        transferred += 1;
+    }
+    if transferred > 0 {
+        crate::util::array_list_store(vm, this, &elements[transferred..])?;
+        vm.monitor_notify(this, true);
+    }
+    int(transferred as i32)
+}
+
+/// `BlockingDeque`: a `Deque` with blocking put/take operations at both ends.
+pub(crate) const BLOCKING_DEQUE: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/BlockingDeque",
+    Some("java/lang/Object"),
+    &["java/util/Deque", "java/util/concurrent/BlockingQueue"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &BLOCKING_DEQUE_METHODS,
+    None,
+);
+
+const BLOCKING_DEQUE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+    method(
+        "putFirst",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "putLast",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "takeFirst",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "takeLast",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "offerFirst",
+        "(Ljava/lang/Object;JLjava/util/concurrent/TimeUnit;)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "offerLast",
+        "(Ljava/lang/Object;JLjava/util/concurrent/TimeUnit;)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "pollFirst",
+        "(JLjava/util/concurrent/TimeUnit;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "pollLast",
+        "(JLjava/util/concurrent/TimeUnit;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
+/// `LinkedBlockingDeque`: a blocking double-ended queue backed by the `ArrayDeque` element
+/// array.  Blocking operations park on the deque monitor; mutations notify waiters.
+pub(crate) const LINKED_BLOCKING_DEQUE: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/LinkedBlockingDeque",
+    Some("java/util/ArrayDeque"),
+    &["java/util/concurrent/BlockingDeque", "java/io/Serializable"],
+    ACC_PUBLIC,
+    &[field("capacity", "I", ACC_PRIVATE, None)],
+    &LINKED_BLOCKING_DEQUE_METHODS,
+    None,
+);
+
+const LINKED_BLOCKING_DEQUE_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+    method("<init>", "()V", ACC_PUBLIC, lbd_init),
+    method("<init>", "(I)V", ACC_PUBLIC, lbd_init),
+    method("<init>", "(Ljava/util/Collection;)V", ACC_PUBLIC, lbd_init),
+    method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, |vm, _, args| {
+        let element = ref_arg(args, 1);
+        if element.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let mut elements = crate::util::array_list_elements(vm, receiver(args));
+        elements.push(element);
+        crate::util::array_list_store(vm, receiver(args), &elements)?;
+        boolean(true)
+    }),
+    method(
+        "putFirst",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| lbd_put(vm, args, true),
+    ),
+    method(
+        "putLast",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| lbd_put(vm, args, false),
+    ),
+    method("put", "(Ljava/lang/Object;)V", ACC_PUBLIC, |vm, _, args| {
+        lbd_put(vm, args, false)
+    }),
+    method(
+        "takeFirst",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| lbd_take(vm, args, true),
+    ),
+    method(
+        "takeLast",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| lbd_take(vm, args, false),
+    ),
+    method("take", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        lbd_take(vm, args, true)
+    }),
+    method("remainingCapacity", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        int((lbd_capacity(vm, this) - lbd_size(vm, this)) as i32)
+    }),
+];
+
+fn lbd_init(
+    vm: &mut Vm<'_>,
+    context: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let descriptor = vm.classes.get(context.class).methods[context.method as usize]
+        .descriptor
+        .as_str();
+    let mut capacity = i32::MAX;
+    let mut elements = Vec::new();
+    match descriptor {
+        "(I)V" => {
+            capacity = crate::int_arg(args, 1);
+            if capacity <= 0 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+        }
+        "(Ljava/util/Collection;)V" => {
+            elements = crate::util::collection_elements(vm, ref_arg(args, 1))?;
+            if elements.iter().any(|e| e.is_null()) {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+        }
+        _ => {}
+    }
+    crate::lang::write_int_field(vm, this, "capacity", capacity);
+    crate::util::array_list_store(vm, this, &elements)?;
+    void()
+}
+
+fn lbd_size(vm: &Vm<'_>, this: ObjectRef) -> usize {
+    crate::lang::read_int_field(vm, this, "size").max(0) as usize
+}
+
+fn lbd_capacity(vm: &Vm<'_>, this: ObjectRef) -> usize {
+    let capacity = crate::lang::read_int_field(vm, this, "capacity");
+    if capacity <= 0 {
+        i32::MAX as usize
+    } else {
+        capacity as usize
+    }
+}
+
+fn lbd_put(vm: &mut Vm<'_>, args: &[Value], first: bool) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let element = ref_arg(args, 1);
+    if element.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    loop {
+        if lbd_size(vm, this) < lbd_capacity(vm, this) {
+            let mut elements = crate::util::array_list_elements(vm, this);
+            if first {
+                elements.insert(0, element);
+            } else {
+                elements.push(element);
+            }
+            crate::util::array_list_store(vm, this, &elements)?;
+            vm.monitor_notify(this, true);
+            return void();
+        }
+        vm.park_until_notified(this, None)?;
+    }
+}
+
+fn lbd_take(vm: &mut Vm<'_>, args: &[Value], first: bool) -> Result<Value, VmError> {
+    let this = receiver(args);
+    loop {
+        if lbd_size(vm, this) > 0 {
+            let mut elements = crate::util::array_list_elements(vm, this);
+            let element = if first {
+                elements.remove(0)
+            } else {
+                elements.pop().unwrap_or(ObjectRef::NULL)
+            };
+            crate::util::array_list_store(vm, this, &elements)?;
+            vm.monitor_notify(this, true);
+            return object(element);
+        }
+        vm.park_until_notified(this, None)?;
+    }
+}
+
+// -------------------------------------------------------------------------------------------
+// PriorityBlockingQueue
+// -------------------------------------------------------------------------------------------
+
+/// `PriorityBlockingQueue`: an unbounded blocking queue on the `PriorityQueue` heap.
+/// Blocking takes park on the queue monitor; insertions notify waiters.
+pub(crate) const PRIORITY_BLOCKING_QUEUE: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/PriorityBlockingQueue",
+    Some("java/util/PriorityQueue"),
+    &["java/util/concurrent/BlockingQueue", "java/io/Serializable"],
+    ACC_PUBLIC,
+    &[],
+    &PRIORITY_BLOCKING_QUEUE_METHODS,
+    None,
+);
+
+const PRIORITY_BLOCKING_QUEUE_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+    method("<init>", "()V", ACC_PUBLIC, crate::util::pq_init),
+    method("<init>", "(I)V", ACC_PUBLIC, crate::util::pq_init),
+    method(
+        "<init>",
+        "(Ljava/util/Comparator;)V",
+        ACC_PUBLIC,
+        crate::util::pq_init,
+    ),
+    method(
+        "<init>",
+        "(ILjava/util/Comparator;)V",
+        ACC_PUBLIC,
+        crate::util::pq_init,
+    ),
+    method(
+        "<init>",
+        "(Ljava/util/Collection;)V",
+        ACC_PUBLIC,
+        crate::util::pq_init,
+    ),
+    method("put", "(Ljava/lang/Object;)V", ACC_PUBLIC, |vm, _, args| {
+        // Unbounded: offer never blocks and rejects null itself.
+        let this = receiver(args);
+        crate::util::pq_offer(vm, this, ref_arg(args, 1))?;
+        vm.monitor_notify(this, true);
+        void()
+    }),
+    method(
+        "offer",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            crate::util::pq_offer(vm, this, ref_arg(args, 1))?;
+            vm.monitor_notify(this, true);
+            boolean(true)
+        },
+    ),
+    method("take", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        loop {
+            let (class, method) =
+                vm.resolve_virtual_method(this, "poll", "()Ljava/lang/Object;")?;
+            let element = vm
+                .invoke_method(class, method, vec![Value::Ref(this)])?
+                .as_ref();
+            if !element.is_null() {
+                vm.monitor_notify(this, true);
+                return object(element);
+            }
+            vm.park_until_notified(this, None)?;
+        }
+    }),
+    method(
+        "offer",
+        "(Ljava/lang/Object;JLjava/util/concurrent/TimeUnit;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            crate::util::pq_offer(vm, this, ref_arg(args, 1))?;
+            vm.monitor_notify(this, true);
+            boolean(true)
+        },
+    ),
+    method(
+        "poll",
+        "(JLjava/util/concurrent/TimeUnit;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let millis = time_unit_to_millis(vm, ref_arg(args, 2), crate::long_arg(args, 1))?;
+            let deadline = vm.virtual_time_millis().saturating_add(millis.max(0));
+            loop {
+                let (class, method) =
+                    vm.resolve_virtual_method(this, "poll", "()Ljava/lang/Object;")?;
+                let element = vm
+                    .invoke_method(class, method, vec![Value::Ref(this)])?
+                    .as_ref();
+                if !element.is_null() {
+                    return object(element);
+                }
+                let remaining = deadline - vm.virtual_time_millis();
+                if remaining <= 0 {
+                    return object(ObjectRef::NULL);
+                }
+                vm.park_until_notified(this, Some(remaining))?;
+            }
+        },
+    ),
+    method("remainingCapacity", "()I", ACC_PUBLIC, |_, _, _| {
+        int(i32::MAX)
+    }),
+    method(
+        "drainTo",
+        "(Ljava/util/Collection;)I",
+        ACC_PUBLIC,
+        |vm, _, args| lbq_drain_to(vm, args, usize::MAX),
+    ),
+];
+
+// -------------------------------------------------------------------------------------------
+// TransferQueue / LinkedTransferQueue
+// -------------------------------------------------------------------------------------------
+
+/// `TransferQueue`: a `BlockingQueue` where producers may wait for consumers to receive.
+pub(crate) const TRANSFER_QUEUE: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/TransferQueue",
+    Some("java/lang/Object"),
+    &["java/util/concurrent/BlockingQueue"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &TRANSFER_QUEUE_METHODS,
+    None,
+);
+
+const TRANSFER_QUEUE_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method(
+        "tryTransfer",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "transfer",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "tryTransfer",
+        "(Ljava/lang/Object;JLjava/util/concurrent/TimeUnit;)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "hasWaitingConsumer",
+        "()Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getWaitingConsumerCount",
+        "()I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
+/// `LinkedTransferQueue`: an unbounded transfer queue on the `ArrayList` element array.
+/// The cooperative runtime has no independent consumer handoff, so `transfer` behaves like
+/// `put` and `tryTransfer` like `offer`; the queue contract tests observe only that.
+pub(crate) const LINKED_TRANSFER_QUEUE: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/LinkedTransferQueue",
+    Some("java/util/ArrayList"),
+    &["java/util/concurrent/TransferQueue", "java/io/Serializable"],
+    ACC_PUBLIC,
+    &[field("capacity", "I", ACC_PRIVATE, None)],
+    &LINKED_TRANSFER_QUEUE_METHODS,
+    None,
+);
+
+const LINKED_TRANSFER_QUEUE_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
+    method("<init>", "()V", ACC_PUBLIC, lbq_init),
+    method("<init>", "(Ljava/util/Collection;)V", ACC_PUBLIC, lbq_init),
+    method("poll", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if lbq_size(vm, this) == 0 {
+            return object(ObjectRef::NULL);
+        }
+        object(lbq_pop_head(vm, this)?)
+    }),
+    method("peek", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let elements = crate::util::array_list_elements(vm, receiver(args));
+        object(elements.first().copied().unwrap_or(ObjectRef::NULL))
+    }),
+    method(
+        "element",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = crate::util::array_list_elements(vm, receiver(args));
+            match elements.first() {
+                Some(head) => object(*head),
+                None => Err(vm.throw_new("java/util/NoSuchElementException", None)),
+            }
+        },
+    ),
+    method(
+        "remove",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if lbq_size(vm, this) == 0 {
+                return Err(vm.throw_new("java/util/NoSuchElementException", None));
+            }
+            object(lbq_pop_head(vm, this)?)
+        },
+    ),
+    method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, |vm, _, args| {
+        let element = ref_arg(args, 1);
+        if element.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        lbq_push(vm, receiver(args), element)?;
+        boolean(true)
+    }),
+    method(
+        "offer",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let element = ref_arg(args, 1);
+            if element.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            lbq_push(vm, receiver(args), element)?;
+            boolean(true)
+        },
+    ),
+    method("put", "(Ljava/lang/Object;)V", ACC_PUBLIC, |vm, _, args| {
+        let element = ref_arg(args, 1);
+        if element.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        lbq_push(vm, receiver(args), element)?;
+        void()
+    }),
+    method("take", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        loop {
+            if lbq_size(vm, this) > 0 {
+                return object(lbq_pop_head(vm, this)?);
+            }
+            vm.park_until_notified(this, None)?;
+        }
+    }),
+    method(
+        "poll",
+        "(JLjava/util/concurrent/TimeUnit;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let millis = time_unit_to_millis(vm, ref_arg(args, 2), crate::long_arg(args, 1))?;
+            let deadline = vm.virtual_time_millis().saturating_add(millis.max(0));
+            loop {
+                if lbq_size(vm, this) > 0 {
+                    return object(lbq_pop_head(vm, this)?);
+                }
+                let remaining = deadline - vm.virtual_time_millis();
+                if remaining <= 0 {
+                    return object(ObjectRef::NULL);
+                }
+                vm.park_until_notified(this, Some(remaining))?;
+            }
+        },
+    ),
+    method(
+        "offer",
+        "(Ljava/lang/Object;JLjava/util/concurrent/TimeUnit;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let element = ref_arg(args, 1);
+            if element.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            lbq_push(vm, receiver(args), element)?;
+            boolean(true)
+        },
+    ),
+    method("remainingCapacity", "()I", ACC_PUBLIC, |_, _, _| {
+        int(i32::MAX)
+    }),
+    method(
+        "drainTo",
+        "(Ljava/util/Collection;)I",
+        ACC_PUBLIC,
+        |vm, _, args| lbq_drain_to(vm, args, usize::MAX),
+    ),
+    method(
+        "drainTo",
+        "(Ljava/util/Collection;I)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let max = crate::int_arg(args, 2).max(0) as usize;
+            lbq_drain_to(vm, args, max)
+        },
+    ),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        crate::util::array_list_store(vm, this, &[])?;
+        vm.monitor_notify(this, true);
+        void()
+    }),
+    method(
+        "transfer",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let element = ref_arg(args, 1);
+            if element.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            lbq_push(vm, this, element)?;
+            // Wait until a consumer takes an element, the way a transfer waits for its handoff.
+            vm.park_until_notified(this, None)?;
+            void()
+        },
+    ),
+    method(
+        "tryTransfer",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            // Without a waiting consumer the transfer does not happen.
+            boolean(false)
+        },
+    ),
+    method(
+        "tryTransfer",
+        "(Ljava/lang/Object;JLjava/util/concurrent/TimeUnit;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let millis = time_unit_to_millis(vm, ref_arg(args, 3), crate::long_arg(args, 2))?;
+            if millis > 0 {
+                let deadline = vm.virtual_time_millis().saturating_add(millis);
+                let remaining = deadline - vm.virtual_time_millis();
+                if remaining > 0 {
+                    vm.park_until_notified(this, Some(remaining))?;
+                }
+            }
+            boolean(false)
+        },
+    ),
+    method("hasWaitingConsumer", "()Z", ACC_PUBLIC, |_, _, _| {
+        boolean(false)
+    }),
+    method("getWaitingConsumerCount", "()I", ACC_PUBLIC, |_, _, _| {
+        int(0)
+    }),
+];

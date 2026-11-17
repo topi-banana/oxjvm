@@ -5460,7 +5460,7 @@ fn deque_remove_occurrence(vm: &mut Vm<'_>, args: &[Value], first: bool) -> Resu
     boolean(true)
 }
 
-const ARRAY_DEQUE_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
+const ARRAY_DEQUE_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
     method("<init>", "()V", ACC_PUBLIC, array_list_init),
     method("<init>", "(I)V", ACC_PUBLIC, array_list_init),
     method(
@@ -5634,6 +5634,15 @@ const ARRAY_DEQUE_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
         array_list_to_array,
     ),
     method(
+        "toArray",
+        "([Ljava/lang/Object;)[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = array_list_elements(vm, receiver(args));
+            collection_to_array_into(vm, &elements, ref_arg(args, 1))
+        },
+    ),
+    method(
         "toString",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
@@ -5653,6 +5662,634 @@ const ARRAY_DEQUE_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
     ),
 ];
 
+/// `java.util.PriorityQueue`: a binary min-heap ordered by a `Comparator` or natural order.
+pub(crate) const PRIORITY_QUEUE: oxjvm_vm::NativeClass = class(
+    "java/util/PriorityQueue",
+    Some("java/util/AbstractQueue"),
+    &["java/io/Serializable"],
+    ACC_PUBLIC,
+    &[
+        field("elementData", "[Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("size", "I", ACC_PRIVATE, None),
+        field("comparator", "Ljava/util/Comparator;", ACC_PRIVATE, None),
+        field("modCount", "I", ACC_PRIVATE, None),
+    ],
+    &PRIORITY_QUEUE_METHODS,
+    None,
+);
+
+const PRIORITY_QUEUE_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
+    method("<init>", "()V", ACC_PUBLIC, pq_init),
+    method("<init>", "(I)V", ACC_PUBLIC, pq_init),
+    method("<init>", "(Ljava/util/Comparator;)V", ACC_PUBLIC, pq_init),
+    method("<init>", "(ILjava/util/Comparator;)V", ACC_PUBLIC, pq_init),
+    method("<init>", "(Ljava/util/Collection;)V", ACC_PUBLIC, pq_init),
+    method("<init>", "(Ljava/util/SortedSet;)V", ACC_PUBLIC, pq_init),
+    method(
+        "<init>",
+        "(Ljava/util/PriorityQueue;)V",
+        ACC_PUBLIC,
+        pq_init,
+    ),
+    method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, |vm, _, args| {
+        pq_offer(vm, receiver(args), ref_arg(args, 1))?;
+        boolean(true)
+    }),
+    method(
+        "offer",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            pq_offer(vm, receiver(args), ref_arg(args, 1))?;
+            boolean(true)
+        },
+    ),
+    method("poll", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        pq_poll(vm, receiver(args))
+    }),
+    method("peek", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let heap = pq_heap(vm, receiver(args));
+        object(heap.first().copied().unwrap_or(ObjectRef::NULL))
+    }),
+    method(
+        "element",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let heap = pq_heap(vm, receiver(args));
+            match heap.first() {
+                Some(root) => object(*root),
+                None => Err(vm.throw_new("java/util/NoSuchElementException", None)),
+            }
+        },
+    ),
+    method(
+        "remove",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let target = ref_arg(args, 1);
+            let heap = pq_heap(vm, this);
+            let mut index = None;
+            for (i, element) in heap.iter().enumerate() {
+                if objects_equals(vm, *element, target)? {
+                    index = Some(i);
+                    break;
+                }
+            }
+            match index {
+                Some(i) => {
+                    pq_remove_at(vm, this, i)?;
+                    boolean(true)
+                }
+                None => boolean(false),
+            }
+        },
+    ),
+    method(
+        "comparator",
+        "()Ljava/util/Comparator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(
+                vm.read_ref_field(
+                    this,
+                    vm.class_of(this),
+                    "comparator",
+                    "Ljava/util/Comparator;",
+                )
+                .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "size"))
+    }),
+    method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "size") == 0)
+    }),
+    method(
+        "contains",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let target = ref_arg(args, 1);
+            for element in pq_heap(vm, receiver(args)) {
+                if objects_equals(vm, element, target)? {
+                    return boolean(true);
+                }
+            }
+            boolean(false)
+        },
+    ),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        pq_store(vm, this, &[])?;
+        pq_bump_mod_count(vm, this);
+        void()
+    }),
+    method(
+        "iterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let itr_class = vm.resolve_class("java/util/PriorityQueue$Itr")?;
+            let iterator = vm.new_instance(itr_class)?;
+            let (declaring, field) =
+                vm.find_field(itr_class, "queue", "Ljava/util/PriorityQueue;")?;
+            vm.set_instance_ref(iterator, declaring, field, this);
+            crate::lang::write_int_field(vm, iterator, "cursor", 0);
+            crate::lang::write_int_field(vm, iterator, "lastRet", -1);
+            crate::lang::write_int_field(
+                vm,
+                iterator,
+                "expectedModCount",
+                crate::lang::read_int_field(vm, this, "modCount"),
+            );
+            object(iterator)
+        },
+    ),
+    method(
+        "toArray",
+        "()[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = pq_heap(vm, receiver(args));
+            let object_class = vm.resolve_class("java/lang/Object")?;
+            let array = vm.allocate_object_array(object_class, elements.len())?;
+            for (index, element) in elements.iter().enumerate() {
+                vm.array_set_ref(array, index, *element)?;
+            }
+            object(array)
+        },
+    ),
+];
+
+/// `java.util.PriorityQueue$Itr`: the heap-array iterator with `forgetMeNot` rescue list,
+/// exactly as the JDK implements it so removals keep the iteration complete.
+pub(crate) const PRIORITY_QUEUE_ITR: oxjvm_vm::NativeClass = class(
+    "java/util/PriorityQueue$Itr",
+    Some("java/lang/Object"),
+    &["java/util/Iterator"],
+    ACC_PUBLIC,
+    &[
+        field("queue", "Ljava/util/PriorityQueue;", ACC_PRIVATE, None),
+        field("cursor", "I", ACC_PRIVATE, None),
+        field("lastRet", "I", ACC_PRIVATE, None),
+        field("forgetMeNot", "Ljava/util/ArrayDeque;", ACC_PRIVATE, None),
+        field("lastRetElt", "Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("expectedModCount", "I", ACC_PRIVATE, None),
+    ],
+    &PRIORITY_QUEUE_ITR_METHODS,
+    None,
+);
+
+const PRIORITY_QUEUE_ITR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method("hasNext", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let queue = pq_itr_queue(vm, this);
+        let cursor = crate::lang::read_int_field(vm, this, "cursor");
+        let size = crate::lang::read_int_field(vm, queue, "size");
+        if cursor < size {
+            return boolean(true);
+        }
+        let forget = pq_itr_field(vm, this, "forgetMeNot", "Ljava/util/ArrayDeque;");
+        if forget.is_null() {
+            return boolean(false);
+        }
+        let empty = invoke_virtual_bool(vm, forget, "isEmpty", "()Z", &[])?;
+        boolean(!empty)
+    }),
+    method("next", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let queue = pq_itr_queue(vm, this);
+        pq_itr_check_mod_count(vm, this, queue)?;
+        let cursor = crate::lang::read_int_field(vm, this, "cursor");
+        let size = crate::lang::read_int_field(vm, queue, "size");
+        if cursor < size {
+            let heap = pq_heap(vm, queue);
+            let element = heap[cursor as usize];
+            crate::lang::write_int_field(vm, this, "lastRet", cursor);
+            crate::lang::write_int_field(vm, this, "cursor", cursor + 1);
+            return object(element);
+        }
+        let forget = pq_itr_field(vm, this, "forgetMeNot", "Ljava/util/ArrayDeque;");
+        if !forget.is_null() {
+            crate::lang::write_int_field(vm, this, "lastRet", -1);
+            let (class, method) =
+                vm.resolve_virtual_method(forget, "poll", "()Ljava/lang/Object;")?;
+            let element = vm
+                .invoke_method(class, method, vec![Value::Ref(forget)])?
+                .as_ref();
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "lastRetElt", "Ljava/lang/Object;")?;
+            vm.set_instance_ref(this, declaring, field, element);
+            if !element.is_null() {
+                return object(element);
+            }
+        }
+        Err(vm.throw_new("java/util/NoSuchElementException", None))
+    }),
+    method("remove", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let queue = pq_itr_queue(vm, this);
+        pq_itr_check_mod_count(vm, this, queue)?;
+        let last_ret = crate::lang::read_int_field(vm, this, "lastRet");
+        if last_ret != -1 {
+            let moved = pq_remove_at(vm, queue, last_ret as usize)?;
+            crate::lang::write_int_field(vm, this, "lastRet", -1);
+            match moved {
+                None => {
+                    let cursor = crate::lang::read_int_field(vm, this, "cursor");
+                    crate::lang::write_int_field(vm, this, "cursor", cursor - 1);
+                }
+                Some(moved) => {
+                    let mut forget =
+                        pq_itr_field(vm, this, "forgetMeNot", "Ljava/util/ArrayDeque;");
+                    if forget.is_null() {
+                        let deque_class = vm.resolve_class("java/util/ArrayDeque")?;
+                        forget = vm.new_instance(deque_class)?;
+                        let (declaring, field) = vm.find_field(
+                            vm.class_of(this),
+                            "forgetMeNot",
+                            "Ljava/util/ArrayDeque;",
+                        )?;
+                        vm.set_instance_ref(this, declaring, field, forget);
+                    }
+                    invoke_virtual_bool(
+                        vm,
+                        forget,
+                        "add",
+                        "(Ljava/lang/Object;)Z",
+                        &[Value::Ref(moved)],
+                    )?;
+                }
+            }
+        } else {
+            let last_elt = pq_itr_field(vm, this, "lastRetElt", "Ljava/lang/Object;");
+            if last_elt.is_null() {
+                return Err(vm.throw_new("java/lang/IllegalStateException", None));
+            }
+            pq_remove_eq(vm, queue, last_elt)?;
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "lastRetElt", "Ljava/lang/Object;")?;
+            vm.set_instance_ref(this, declaring, field, ObjectRef::NULL);
+        }
+        crate::lang::write_int_field(
+            vm,
+            this,
+            "expectedModCount",
+            crate::lang::read_int_field(vm, queue, "modCount"),
+        );
+        void()
+    }),
+];
+
+fn pq_itr_queue(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    pq_itr_field(vm, this, "queue", "Ljava/util/PriorityQueue;")
+}
+
+fn pq_itr_field(vm: &Vm<'_>, this: ObjectRef, name: &str, descriptor: &str) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), name, descriptor)
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn pq_itr_check_mod_count(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    queue: ObjectRef,
+) -> Result<(), VmError> {
+    let expected = crate::lang::read_int_field(vm, this, "expectedModCount");
+    let actual = crate::lang::read_int_field(vm, queue, "modCount");
+    if expected != actual {
+        return Err(vm.throw_new("java/util/ConcurrentModificationException", None));
+    }
+    Ok(())
+}
+
+/// `java.util.AbstractQueue`: the `add`/`offer`/`poll`-driven base for queues.
+pub(crate) const ABSTRACT_QUEUE: oxjvm_vm::NativeClass = class(
+    "java/util/AbstractQueue",
+    Some("java/util/AbstractCollection"),
+    &["java/util/Queue"],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[],
+    &ABSTRACT_QUEUE_METHODS,
+    None,
+);
+
+const ABSTRACT_QUEUE_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, |vm, _, args| {
+        let offered = invoke_virtual_bool(
+            vm,
+            receiver(args),
+            "offer",
+            "(Ljava/lang/Object;)Z",
+            &[args[1]],
+        )?;
+        if !offered {
+            return Err(vm.throw_new("java/lang/IllegalStateException", Some("Queue full")));
+        }
+        boolean(true)
+    }),
+    method(
+        "remove",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (class, method) =
+                vm.resolve_virtual_method(receiver(args), "poll", "()Ljava/lang/Object;")?;
+            let result = vm.invoke_method(class, method, vec![args[0]])?;
+            if result.as_ref().is_null() {
+                return Err(vm.throw_new("java/util/NoSuchElementException", None));
+            }
+            Ok(result)
+        },
+    ),
+    method(
+        "element",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (class, method) =
+                vm.resolve_virtual_method(receiver(args), "peek", "()Ljava/lang/Object;")?;
+            let result = vm.invoke_method(class, method, vec![args[0]])?;
+            if result.as_ref().is_null() {
+                return Err(vm.throw_new("java/util/NoSuchElementException", None));
+            }
+            Ok(result)
+        },
+    ),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        loop {
+            let (class, method) =
+                vm.resolve_virtual_method(this, "poll", "()Ljava/lang/Object;")?;
+            let result = vm.invoke_method(class, method, vec![Value::Ref(this)])?;
+            if result.as_ref().is_null() {
+                return void();
+            }
+        }
+    }),
+];
+
+pub(crate) fn pq_init(
+    vm: &mut Vm<'_>,
+    context: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let descriptor = vm.classes.get(context.class).methods[context.method as usize]
+        .descriptor
+        .as_str();
+    let mut comparator = ObjectRef::NULL;
+    let mut elements: Vec<ObjectRef> = Vec::new();
+    let mut heapify = false;
+    match descriptor {
+        "(Ljava/util/Comparator;)V" => comparator = ref_arg(args, 1),
+        "(ILjava/util/Comparator;)V" => {
+            if int_arg(args, 1) < 1 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            comparator = ref_arg(args, 2);
+        }
+        "(I)V" => {
+            if int_arg(args, 1) < 1 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+        }
+        "(Ljava/util/Collection;)V"
+        | "(Ljava/util/SortedSet;)V"
+        | "(Ljava/util/PriorityQueue;)V" => {
+            let source = ref_arg(args, 1);
+            if source.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let sorted_set = vm.resolve_class("java/util/SortedSet")?;
+            let pq_class = vm.resolve_class("java/util/PriorityQueue")?;
+            if vm.is_instance(source, sorted_set) {
+                let (class, method) =
+                    vm.resolve_virtual_method(source, "comparator", "()Ljava/util/Comparator;")?;
+                comparator = vm
+                    .invoke_method(class, method, vec![Value::Ref(source)])?
+                    .as_ref();
+                elements = pq_to_array(vm, source)?;
+            } else if vm.is_instance(source, pq_class) {
+                if let Some((declaring, _field)) =
+                    vm.find_field_opt(vm.class_of(source), "comparator", "Ljava/util/Comparator;")
+                {
+                    comparator = vm
+                        .read_ref_field(source, declaring, "comparator", "Ljava/util/Comparator;")
+                        .unwrap_or(ObjectRef::NULL);
+                }
+                elements = pq_to_array(vm, source)?;
+                // An exact PriorityQueue copies the heap array as-is; a subclass
+                // (whose toArray may differ) goes through heapify.
+                heapify = vm.class_of(source) != pq_class;
+            } else {
+                elements = pq_to_array(vm, source)?;
+                heapify = true;
+            }
+            if elements.iter().any(|e| e.is_null()) {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+        }
+        _ => {}
+    }
+    let class = vm.class_of(this);
+    if let Some((declaring, field)) =
+        vm.find_field_opt(class, "comparator", "Ljava/util/Comparator;")
+    {
+        vm.set_instance_ref(this, declaring, field, comparator);
+    }
+    if heapify {
+        pq_heapify(vm, this, &mut elements)?;
+    }
+    pq_store(vm, this, &elements)?;
+    void()
+}
+
+/// Read a collection's elements through its (possibly overridden) `toArray()`.
+fn pq_to_array(vm: &mut Vm<'_>, source: ObjectRef) -> Result<Vec<ObjectRef>, VmError> {
+    let (class, method) = vm.resolve_virtual_method(source, "toArray", "()[Ljava/lang/Object;")?;
+    let array = vm
+        .invoke_method(class, method, vec![Value::Ref(source)])?
+        .as_ref();
+    if array.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    match vm.heap.get(array).map(|o| &o.data) {
+        Some(ObjectData::Array(ArrayData::Reference(elements))) => Ok(elements.clone()),
+        _ => Ok(Vec::new()),
+    }
+}
+
+/// Floyd's heapify: sift every non-leaf down, from the last parent to the root.
+fn pq_heapify(vm: &mut Vm<'_>, this: ObjectRef, heap: &mut [ObjectRef]) -> Result<(), VmError> {
+    let comparator = pq_comparator(vm, this);
+    if comparator.is_none() {
+        let comparable = vm.resolve_class("java/lang/Comparable")?;
+        for element in heap.iter() {
+            if !vm.is_instance(*element, comparable) {
+                return Err(vm.throw_new("java/lang/ClassCastException", None));
+            }
+        }
+    }
+    for index in (0..heap.len() / 2).rev() {
+        pq_sift_down(vm, this, heap, index)?;
+    }
+    Ok(())
+}
+
+fn pq_heap(vm: &Vm<'_>, this: ObjectRef) -> Vec<ObjectRef> {
+    array_list_elements(vm, this)
+}
+
+fn pq_store(vm: &mut Vm<'_>, this: ObjectRef, heap: &[ObjectRef]) -> Result<(), VmError> {
+    array_list_store(vm, this, heap)
+}
+
+fn pq_bump_mod_count(vm: &mut Vm<'_>, this: ObjectRef) {
+    let count = crate::lang::read_int_field(vm, this, "modCount");
+    crate::lang::write_int_field(vm, this, "modCount", count.wrapping_add(1));
+}
+
+fn pq_comparator(vm: &Vm<'_>, this: ObjectRef) -> Option<ObjectRef> {
+    vm.read_ref_field(
+        this,
+        vm.class_of(this),
+        "comparator",
+        "Ljava/util/Comparator;",
+    )
+    .filter(|c| !c.is_null())
+}
+
+pub(crate) fn pq_offer(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    element: ObjectRef,
+) -> Result<(), VmError> {
+    if element.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    if pq_comparator(vm, this).is_none() {
+        let comparable = vm.resolve_class("java/lang/Comparable")?;
+        if !vm.is_instance(element, comparable) {
+            return Err(vm.throw_new("java/lang/ClassCastException", None));
+        }
+    }
+    let mut heap = pq_heap(vm, this);
+    heap.push(element);
+    let index = heap.len() - 1;
+    pq_sift_up(vm, this, &mut heap, index)?;
+    pq_store(vm, this, &heap)?;
+    pq_bump_mod_count(vm, this);
+    Ok(())
+}
+
+fn pq_poll(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError> {
+    let mut heap = pq_heap(vm, this);
+    if heap.is_empty() {
+        return object(ObjectRef::NULL);
+    }
+    let root = heap[0];
+    let last = heap.pop().unwrap_or(ObjectRef::NULL);
+    if !heap.is_empty() {
+        heap[0] = last;
+        pq_sift_down(vm, this, &mut heap, 0)?;
+    }
+    pq_store(vm, this, &heap)?;
+    pq_bump_mod_count(vm, this);
+    object(root)
+}
+
+/// The JDK `removeAt`: replace the slot with the last element, sift it down, and sift up
+/// when it stayed put.  Returns the moved element when it ended up before `index`, which
+/// the iterator rescues through `forgetMeNot`.
+fn pq_remove_at(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    index: usize,
+) -> Result<Option<ObjectRef>, VmError> {
+    let mut heap = pq_heap(vm, this);
+    pq_bump_mod_count(vm, this);
+    let s = heap.len() - 1;
+    let moved = heap.pop().unwrap_or(ObjectRef::NULL);
+    if s != index {
+        heap[index] = moved;
+        pq_sift_down(vm, this, &mut heap, index)?;
+        if heap[index] == moved {
+            pq_sift_up(vm, this, &mut heap, index)?;
+            if heap[index] != moved {
+                pq_store(vm, this, &heap)?;
+                return Ok(Some(moved));
+            }
+        }
+    }
+    pq_store(vm, this, &heap)?;
+    Ok(None)
+}
+
+/// The JDK `removeEq`: remove the first identity-equal element.
+fn pq_remove_eq(vm: &mut Vm<'_>, this: ObjectRef, target: ObjectRef) -> Result<(), VmError> {
+    let heap = pq_heap(vm, this);
+    for (index, element) in heap.iter().enumerate() {
+        if *element == target {
+            pq_remove_at(vm, this, index)?;
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+fn pq_sift_up(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    heap: &mut [ObjectRef],
+    mut index: usize,
+) -> Result<(), VmError> {
+    let comparator = pq_comparator(vm, this);
+    while index > 0 {
+        let parent = (index - 1) / 2;
+        if arrays_bsearch_compare(vm, heap[index], heap[parent], comparator)? < 0 {
+            heap.swap(index, parent);
+            index = parent;
+        } else {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn pq_sift_down(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    heap: &mut [ObjectRef],
+    mut index: usize,
+) -> Result<(), VmError> {
+    let comparator = pq_comparator(vm, this);
+    let len = heap.len();
+    loop {
+        let left = 2 * index + 1;
+        let right = 2 * index + 2;
+        let mut smallest = index;
+        if left < len && arrays_bsearch_compare(vm, heap[left], heap[smallest], comparator)? < 0 {
+            smallest = left;
+        }
+        if right < len && arrays_bsearch_compare(vm, heap[right], heap[smallest], comparator)? < 0 {
+            smallest = right;
+        }
+        if smallest == index {
+            break;
+        }
+        heap.swap(index, smallest);
+        index = smallest;
+    }
+    Ok(())
+}
 /// `ArrayDeque`: an element-array-backed deque.
 pub(crate) const ARRAY_DEQUE: oxjvm_vm::NativeClass = class(
     "java/util/ArrayDeque",
@@ -5695,6 +6332,132 @@ pub(crate) const COPY_ON_WRITE_ARRAY_LIST: oxjvm_vm::NativeClass = class(
     &[],
     None,
 );
+
+/// `CopyOnWriteArraySet`: a set on the same element array, with add-if-absent writes.
+/// The snapshot iterator and per-write copying are unobservable in a cooperative runtime.
+pub(crate) const COPY_ON_WRITE_ARRAY_SET: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/CopyOnWriteArraySet",
+    Some("java/util/AbstractSet"),
+    &["java/io/Serializable"],
+    ACC_PUBLIC,
+    &[
+        field("elementData", "[Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("size", "I", ACC_PRIVATE, None),
+    ],
+    &COPY_ON_WRITE_ARRAY_SET_METHODS,
+    None,
+);
+
+const COPY_ON_WRITE_ARRAY_SET_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        array_list_store(vm, receiver(args), &[])?;
+        void()
+    }),
+    method(
+        "<init>",
+        "(Ljava/util/Collection;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let incoming = collection_elements(vm, ref_arg(args, 1))?;
+            let mut elements: Vec<ObjectRef> = Vec::new();
+            for element in incoming {
+                let mut present = false;
+                for existing in &elements {
+                    if objects_equals(vm, *existing, element)? {
+                        present = true;
+                        break;
+                    }
+                }
+                if !present {
+                    elements.push(element);
+                }
+            }
+            array_list_store(vm, this, &elements)?;
+            void()
+        },
+    ),
+    method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let element = ref_arg(args, 1);
+        let mut elements = array_list_elements(vm, this);
+        for existing in &elements {
+            if objects_equals(vm, *existing, element)? {
+                return boolean(false);
+            }
+        }
+        elements.push(element);
+        array_list_store(vm, this, &elements)?;
+        boolean(true)
+    }),
+    method(
+        "addAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let incoming = collection_elements(vm, ref_arg(args, 1))?;
+            let mut changed = false;
+            for element in incoming {
+                changed |= invoke_virtual_bool(
+                    vm,
+                    this,
+                    "add",
+                    "(Ljava/lang/Object;)Z",
+                    &[Value::Ref(element)],
+                )?;
+            }
+            boolean(changed)
+        },
+    ),
+    method(
+        "remove",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let target = ref_arg(args, 1);
+            let mut elements = array_list_elements(vm, this);
+            let mut index = None;
+            for (i, element) in elements.iter().enumerate() {
+                if objects_equals(vm, *element, target)? {
+                    index = Some(i);
+                    break;
+                }
+            }
+            match index {
+                Some(i) => {
+                    elements.remove(i);
+                    array_list_store(vm, this, &elements)?;
+                    boolean(true)
+                }
+                None => boolean(false),
+            }
+        },
+    ),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
+        array_list_store(vm, receiver(args), &[])?;
+        void()
+    }),
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "size"))
+    }),
+    method(
+        "iterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = array_list_elements(vm, receiver(args));
+            let snapshot = array_list_from(vm, &elements)?;
+            let itr_class = vm.resolve_class("java/util/ArrayList$Itr")?;
+            let iterator = vm.new_instance(itr_class)?;
+            let (declaring, field) = vm.find_field(itr_class, "list", "Ljava/util/List;")?;
+            vm.set_instance_ref(iterator, declaring, field, snapshot);
+            crate::lang::write_int_field(vm, iterator, "cursor", 0);
+            object(iterator)
+        },
+    ),
+];
 
 /// `ConcurrentLinkedQueue`, backed by the same element array as `ArrayList`.
 pub(crate) const CONCURRENT_LINKED_QUEUE: oxjvm_vm::NativeClass = class(
@@ -11184,7 +11947,7 @@ pub(crate) const HASHTABLE: oxjvm_vm::NativeClass = class(
 // Vector (ArrayList plus the legacy element API)
 // -------------------------------------------------------------------------------------------
 
-const VECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
+const VECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
     method("<init>", "()V", ACC_PUBLIC, array_list_init),
     method("<init>", "(I)V", ACC_PUBLIC, array_list_init),
     method("<init>", "(II)V", ACC_PUBLIC, array_list_init),
@@ -11484,6 +12247,21 @@ const VECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
         "()Ljava/util/Iterator;",
         ACC_PUBLIC,
         array_list_iterator,
+    ),
+    method(
+        "toArray",
+        "()[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        array_list_to_array,
+    ),
+    method(
+        "toArray",
+        "([Ljava/lang/Object;)[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = array_list_elements(vm, receiver(args));
+            collection_to_array_into(vm, &elements, ref_arg(args, 1))
+        },
     ),
     method(
         "elements",

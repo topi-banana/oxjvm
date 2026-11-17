@@ -145,7 +145,7 @@ pub fn is_non_writable_property(key: &str) -> bool {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 975] = [
+static REGISTRY: [NativeClass; 986] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -480,6 +480,9 @@ static REGISTRY: [NativeClass; 975] = [
     util::LIST,
     util::SET,
     util::ABSTRACT_COLLECTION,
+    util::ABSTRACT_QUEUE,
+    util::PRIORITY_QUEUE,
+    util::PRIORITY_QUEUE_ITR,
     util::ABSTRACT_SET,
     util::ABSTRACT_LIST,
     util::ABSTRACT_LIST_ITR,
@@ -509,6 +512,7 @@ static REGISTRY: [NativeClass; 975] = [
     util::LIST_ITERATOR,
     util::LINKED_LIST,
     util::COPY_ON_WRITE_ARRAY_LIST,
+    util::COPY_ON_WRITE_ARRAY_SET,
     util::CONCURRENT_LINKED_QUEUE,
     util::PROPERTIES,
     util::CALENDAR,
@@ -856,6 +860,7 @@ static REGISTRY: [NativeClass; 975] = [
     util::NAVIGABLE_MAP,
     tree::TREE_MAP,
     tree::CONCURRENT_SKIP_LIST_MAP,
+    tree::CONCURRENT_SKIP_LIST_SET,
     tree::OXJVM_ENTRY_ORDER,
     tree::OXJVM_REVERSED_ORDER,
     intstream::INT_STREAM,
@@ -1121,6 +1126,12 @@ static REGISTRY: [NativeClass; 975] = [
     concurrent::LOCK,
     concurrent::BLOCKING_QUEUE,
     concurrent::ARRAY_BLOCKING_QUEUE,
+    concurrent::BLOCKING_DEQUE,
+    concurrent::TRANSFER_QUEUE,
+    concurrent::LINKED_TRANSFER_QUEUE,
+    concurrent::LINKED_BLOCKING_QUEUE,
+    concurrent::LINKED_BLOCKING_DEQUE,
+    concurrent::PRIORITY_BLOCKING_QUEUE,
     concurrent::PHASER,
     util::SORTED_SET,
     util::NAVIGABLE_SET,
