@@ -22,7 +22,7 @@ fn crc32(bytes: &[u8]) -> u32 {
     !crc
 }
 
-const ZIP_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+const ZIP_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -50,6 +50,12 @@ const ZIP_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
             }
             let method = read_int_field(vm, other, "method");
             write_int_field_named(vm, this, "method", method);
+            if let Some(extra) = read_ref_field(vm, other, "extra", "[B") {
+                write_ref_field(vm, this, "extra", "[B", extra);
+            }
+            if let Some(comment) = read_string_field(vm, other, "comment") {
+                write_string_field(vm, this, "comment", &comment);
+            }
             void()
         },
     ),
@@ -121,12 +127,93 @@ const ZIP_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
             None => object(ObjectRef::NULL),
         },
     ),
+    method("setExtra", "([B)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let extra = ref_arg(args, 1);
+        if !extra.is_null() {
+            let length = vm.array_length(extra)?;
+            if length > 0xFFFF {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("invalid extra field length"),
+                ));
+            }
+        }
+        write_ref_field(vm, this, "extra", "[B", extra);
+        void()
+    }),
+    method("getExtra", "()[B", ACC_PUBLIC, |vm, _, args| {
+        object(read_ref_field(vm, receiver(args), "extra", "[B").unwrap_or(ObjectRef::NULL))
+    }),
+    method(
+        "setComment",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let comment = ref_arg(args, 1);
+            if !comment.is_null() {
+                let units = vm.string_utf16(comment).unwrap_or_default();
+                let encoded = crate::io::modified_utf8(units).len();
+                if encoded > 0xFFFF {
+                    return Err(vm.throw_new(
+                        "java/lang/IllegalArgumentException",
+                        Some("invalid entry comment length"),
+                    ));
+                }
+            }
+            write_ref_field(vm, this, "comment", "Ljava/lang/String;", comment);
+            void()
+        },
+    ),
+    method(
+        "getComment",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(
+                read_ref_field(vm, receiver(args), "comment", "Ljava/lang/String;")
+                    .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method("isDirectory", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let is_dir =
+            read_string_field(vm, receiver(args), "name").is_some_and(|name| name.ends_with('/'));
+        crate::boolean(is_dir)
+    }),
+    method(
+        "clone",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.resolve_class("java/util/zip/ZipEntry")?;
+            let copy = vm.new_instance(class)?;
+            if let Some(name) = read_string_field(vm, this, "name") {
+                write_string_field(vm, copy, "name", &name);
+            }
+            for name in ["time", "size", "compressedSize", "crc", "offset"] {
+                let value = read_long_field(vm, this, name);
+                write_long_field(vm, copy, name, value);
+            }
+            let method = read_int_field(vm, this, "method");
+            write_int_field_named(vm, copy, "method", method);
+            if let Some(extra) = read_ref_field(vm, this, "extra", "[B") {
+                write_ref_field(vm, copy, "extra", "[B", extra);
+            }
+            if let Some(comment) = read_string_field(vm, this, "comment") {
+                write_string_field(vm, copy, "comment", &comment);
+            }
+            object(copy)
+        },
+    ),
 ];
 
 pub(crate) const ZIP_ENTRY: oxjvm_vm::NativeClass = class(
     "java/util/zip/ZipEntry",
     Some("java/lang/Object"),
-    &[],
+    &["java/lang/Cloneable"],
     ACC_PUBLIC,
     &[
         field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
@@ -136,6 +223,8 @@ pub(crate) const ZIP_ENTRY: oxjvm_vm::NativeClass = class(
         field("crc", "J", ACC_PRIVATE, None),
         field("method", "I", ACC_PRIVATE, None),
         field("offset", "J", ACC_PRIVATE, None),
+        field("extra", "[B", ACC_PRIVATE, None),
+        field("comment", "Ljava/lang/String;", ACC_PRIVATE, None),
     ],
     &ZIP_ENTRY_METHODS,
     None,

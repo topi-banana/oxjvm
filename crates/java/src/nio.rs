@@ -441,12 +441,32 @@ pub(crate) const OXJVM_PATH: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PATH_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
+const PATH_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
     method(
         "of",
         "(Ljava/lang/String;[Ljava/lang/String;)Ljava/nio/file/Path;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| path_of(vm, args),
+    ),
+    method(
+        "of",
+        "(Ljava/net/URI;)Ljava/nio/file/Path;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let uri = ref_arg(args, 0);
+            let (class, method) =
+                vm.resolve_virtual_method(uri, "toString", "()Ljava/lang/String;")?;
+            let text = vm.invoke_method(class, method, vec![Value::Ref(uri)])?;
+            let text = vm.string_or_empty(text.as_ref());
+            let path = text
+                .strip_prefix("file:")
+                .unwrap_or(&text)
+                .trim_start_matches("//")
+                .to_string();
+            let path = path.trim_end_matches('/');
+            let path = if path.is_empty() { "/" } else { path };
+            new_path(vm, path)
+        },
     ),
     method(
         "compareTo",
@@ -632,7 +652,9 @@ const PATHS_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
                 .unwrap_or(&text)
                 .trim_start_matches("//")
                 .to_string();
-            new_path(vm, &path)
+            let path = path.trim_end_matches('/');
+            let path = if path.is_empty() { "/" } else { path };
+            new_path(vm, path)
         },
     ),
 ];

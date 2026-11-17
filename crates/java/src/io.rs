@@ -3390,7 +3390,7 @@ fn raf_write(vm: &mut Vm<'_>, this: ObjectRef, bytes: &[u8]) -> Result<Value, Vm
     void()
 }
 
-const RANDOM_ACCESS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
+const RANDOM_ACCESS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
     method(
         "<init>",
         "(Ljava/io/File;Ljava/lang/String;)V",
@@ -3581,6 +3581,120 @@ const RANDOM_ACCESS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
             object(vm.new_instance(class)?)
         },
     ),
+    method("readBoolean", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let bytes = raf_read_n(vm, receiver(args), 1)?;
+        boolean(bytes[0] != 0)
+    }),
+    method("readByte", "()B", ACC_PUBLIC, |vm, _, args| {
+        let bytes = raf_read_n(vm, receiver(args), 1)?;
+        int(i32::from(bytes[0] as i8))
+    }),
+    method("readUnsignedByte", "()I", ACC_PUBLIC, |vm, _, args| {
+        let bytes = raf_read_n(vm, receiver(args), 1)?;
+        int(i32::from(bytes[0]))
+    }),
+    method("readShort", "()S", ACC_PUBLIC, |vm, _, args| {
+        let bytes = raf_read_n(vm, receiver(args), 2)?;
+        int(i32::from(be16(&bytes) as i16))
+    }),
+    method("readUnsignedShort", "()I", ACC_PUBLIC, |vm, _, args| {
+        let bytes = raf_read_n(vm, receiver(args), 2)?;
+        int(i32::from(be16(&bytes)))
+    }),
+    method("readChar", "()C", ACC_PUBLIC, |vm, _, args| {
+        let bytes = raf_read_n(vm, receiver(args), 2)?;
+        int(i32::from(be16(&bytes)))
+    }),
+    method("readInt", "()I", ACC_PUBLIC, |vm, _, args| {
+        let bytes = raf_read_n(vm, receiver(args), 4)?;
+        int(be32(&bytes) as i32)
+    }),
+    method("readLong", "()J", ACC_PUBLIC, |vm, _, args| {
+        let bytes = raf_read_n(vm, receiver(args), 8)?;
+        long(be64(&bytes) as i64)
+    }),
+    method("readFloat", "()F", ACC_PUBLIC, |vm, _, args| {
+        let bytes = raf_read_n(vm, receiver(args), 4)?;
+        crate::float(f32::from_bits(be32(&bytes)))
+    }),
+    method("readDouble", "()D", ACC_PUBLIC, |vm, _, args| {
+        let bytes = raf_read_n(vm, receiver(args), 8)?;
+        crate::double(f64::from_bits(be64(&bytes)))
+    }),
+    method(
+        "readUTF",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let header = raf_read_n(vm, this, 2)?;
+            let length = usize::from(be16(&header));
+            let bytes = raf_read_n(vm, this, length)?;
+            let units = decode_modified_utf8(&bytes)
+                .map_err(|_| vm.throw_new("java/io/UTFDataFormatException", None))?;
+            object(vm.make_string_utf16(units)?)
+        },
+    ),
+    method("writeBoolean", "(Z)V", ACC_PUBLIC, |vm, _, args| {
+        raf_write(
+            vm,
+            receiver(args),
+            &[if int_arg(args, 1) != 0 { 1 } else { 0 }],
+        )
+    }),
+    method("writeByte", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        raf_write(vm, receiver(args), &[(int_arg(args, 1) & 0xFF) as u8])
+    }),
+    method("writeShort", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let value = int_arg(args, 1) as u16;
+        raf_write(vm, receiver(args), &value.to_be_bytes())
+    }),
+    method("writeChar", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let value = int_arg(args, 1) as u16;
+        raf_write(vm, receiver(args), &value.to_be_bytes())
+    }),
+    method("writeInt", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        raf_write(vm, receiver(args), &int_arg(args, 1).to_be_bytes())
+    }),
+    method("writeLong", "(J)V", ACC_PUBLIC, |vm, _, args| {
+        raf_write(vm, receiver(args), &crate::long_arg(args, 1).to_be_bytes())
+    }),
+    method("writeFloat", "(F)V", ACC_PUBLIC, |vm, _, args| {
+        raf_write(
+            vm,
+            receiver(args),
+            &crate::float_arg(args, 1).to_bits().to_be_bytes(),
+        )
+    }),
+    method("writeDouble", "(D)V", ACC_PUBLIC, |vm, _, args| {
+        raf_write(
+            vm,
+            receiver(args),
+            &crate::double_arg(args, 1).to_bits().to_be_bytes(),
+        )
+    }),
+    method(
+        "writeUTF",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let units = vm
+                .string_utf16(ref_arg(args, 1))
+                .map(<[u16]>::to_vec)
+                .unwrap_or_default();
+            let encoded = modified_utf8(&units);
+            if encoded.len() > 0xFFFF {
+                return Err(vm.throw_new(
+                    "java/io/UTFDataFormatException",
+                    Some("encoded string too long"),
+                ));
+            }
+            let mut bytes = Vec::with_capacity(encoded.len() + 2);
+            bytes.extend_from_slice(&(encoded.len() as u16).to_be_bytes());
+            bytes.extend_from_slice(&encoded);
+            raf_write(vm, receiver(args), &bytes)
+        },
+    ),
 ];
 
 fn raf_read_into(
@@ -3627,6 +3741,18 @@ fn raf_read_fully(
         return Err(vm.throw_new("java/io/EOFException", None));
     }
     void()
+}
+
+/// Read exactly `count` bytes at the file pointer, advancing it; `EOFException` if short.
+fn raf_read_n(vm: &mut Vm<'_>, this: ObjectRef, count: usize) -> Result<Vec<u8>, VmError> {
+    let position = crate::lang::read_int_field(vm, this, "position") as usize;
+    let data = raf_bytes(vm, this)?;
+    if position + count > data.len() {
+        return Err(vm.throw_new("java/io/EOFException", None));
+    }
+    let bytes = data[position..position + count].to_vec();
+    crate::lang::write_int_field(vm, this, "position", (position + count) as i32);
+    Ok(bytes)
 }
 
 pub(crate) const RANDOM_ACCESS_FILE: oxjvm_vm::NativeClass = class(
@@ -3952,7 +4078,7 @@ fn be64(bytes: &[u8]) -> u64 {
 }
 
 /// Encode a string as JDK "modified UTF-8" (the `DataOutput.writeUTF` format).
-fn modified_utf8(units: &[u16]) -> Vec<u8> {
+pub(crate) fn modified_utf8(units: &[u16]) -> Vec<u8> {
     let mut out = Vec::new();
     let mut index = 0;
     while index < units.len() {
