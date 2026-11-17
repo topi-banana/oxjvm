@@ -148,7 +148,7 @@ pub fn is_non_writable_property(key: &str) -> bool {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 990] = [
+static REGISTRY: [NativeClass; 991] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -208,6 +208,7 @@ static REGISTRY: [NativeClass; 990] = [
     temporal::UNSUPPORTED_TEMPORAL_TYPE_EXCEPTION,
     temporal::ISO_FIELDS,
     temporal::ISO_FIELDS_FIELD,
+    temporal::ISO_FIELDS_UNIT,
     temporal::WEEK_FIELDS,
     temporal::WEEK_FIELDS_COMPUTED_DAY_OF_FIELD,
     module::MODULE_DESCRIPTOR,

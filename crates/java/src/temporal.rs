@@ -1394,8 +1394,121 @@ fn iso_fields_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
             Value::Ref(instance),
         );
     }
+    let unit_class = vm.resolve_class("java/time/temporal/IsoFields$Unit")?;
+    let quarter_years = vm.new_instance(unit_class)?;
+    write_int_field(vm, quarter_years, "ordinal", 0);
+    vm.set_static_value(
+        class,
+        "QUARTER_YEARS",
+        "Ljava/time/temporal/TemporalUnit;",
+        Value::Ref(quarter_years),
+    );
     Ok(())
 }
+
+/// The `ChronoUnit.MONTHS` singleton, used by the ISO quarter-year unit.
+fn chrono_months(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/time/temporal/ChronoUnit")?;
+    vm.ensure_initialized(class)?;
+    Ok(vm
+        .read_static_ref_if_set(class, "MONTHS", "Ljava/time/temporal/ChronoUnit;")
+        .unwrap_or(ObjectRef::NULL))
+}
+
+const ISO_FIELDS_UNIT_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+    method("ordinal", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_int_field(vm, receiver(args), "ordinal"))
+    }),
+    method("name", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, _| {
+        object(vm.make_string("QUARTER_YEARS")?)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| object(vm.make_string("QuarterYears")?),
+    ),
+    method("isDateBased", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
+    method("isTimeBased", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method("isDurationEstimated", "()Z", ACC_PUBLIC, |_, _, _| {
+        boolean(true)
+    }),
+    method(
+        "addTo",
+        "(Ljava/time/temporal/Temporal;J)Ljava/time/temporal/Temporal;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let temporal = ref_arg(args, 1);
+            let amount = long_arg(args, 2).saturating_mul(3);
+            let months = chrono_months(vm)?;
+            let (class, method) = vm.resolve_virtual_method(
+                temporal,
+                "plus",
+                "(JLjava/time/temporal/TemporalUnit;)Ljava/time/temporal/Temporal;",
+            )?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![Value::Ref(temporal), long(amount)?, Value::Ref(months)],
+            )
+        },
+    ),
+    method(
+        "subtractFrom",
+        "(Ljava/time/temporal/Temporal;J)Ljava/time/temporal/Temporal;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let temporal = ref_arg(args, 1);
+            let amount = long_arg(args, 2).saturating_mul(3);
+            let months = chrono_months(vm)?;
+            let (class, method) = vm.resolve_virtual_method(
+                temporal,
+                "minus",
+                "(JLjava/time/temporal/TemporalUnit;)Ljava/time/temporal/Temporal;",
+            )?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![Value::Ref(temporal), long(amount)?, Value::Ref(months)],
+            )
+        },
+    ),
+    method(
+        "between",
+        "(Ljava/time/temporal/Temporal;Ljava/time/temporal/Temporal;)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let start = ref_arg(args, 1);
+            let end = ref_arg(args, 2);
+            let months = chrono_months(vm)?;
+            let (class, method) = vm.resolve_virtual_method(
+                start,
+                "until",
+                "(Ljava/time/temporal/Temporal;Ljava/time/temporal/TemporalUnit;)J",
+            )?;
+            let total = vm.invoke_method(
+                class,
+                method,
+                vec![Value::Ref(start), Value::Ref(end), Value::Ref(months)],
+            )?;
+            match total {
+                Value::Long(months) => long(months / 3),
+                _ => long(0),
+            }
+        },
+    ),
+];
+
+/// `java.time.temporal.IsoFields$Unit`: the quarter-year temporal unit.
+pub(crate) const ISO_FIELDS_UNIT: oxjvm_vm::NativeClass = class(
+    "java/time/temporal/IsoFields$Unit",
+    Some("java/lang/Object"),
+    &["java/time/temporal/TemporalUnit"],
+    ACC_PUBLIC | ACC_FINAL,
+    &[field("ordinal", "I", ACC_PRIVATE | ACC_FINAL, None)],
+    &ISO_FIELDS_UNIT_METHODS,
+    None,
+);
 
 const ISO_FIELDS_FIELD_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
     method("ordinal", "()I", ACC_PUBLIC, |vm, _, args| {
@@ -1470,6 +1583,12 @@ pub(crate) const ISO_FIELDS: oxjvm_vm::NativeClass = class(
         field(
             "WEEK_BASED_YEAR",
             "Ljava/time/temporal/TemporalField;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "QUARTER_YEARS",
+            "Ljava/time/temporal/TemporalUnit;",
             ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
             None,
         ),

@@ -10,7 +10,7 @@ use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 use crate::lang::{read_int_field, read_long_field, write_int_field, write_long_field};
 use crate::{class, field, int, long, method, object, receiver, ref_arg};
 
-const DURATION_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
+const DURATION_METHODS: [oxjvm_vm::NativeMethodDef; 45] = [
     method(
         "ofNanos",
         "(J)Ljava/time/Duration;",
@@ -66,6 +66,23 @@ const DURATION_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
                 vm,
                 crate::long_arg(args, 0).saturating_mul(86_400_000_000_000),
             )
+        },
+    ),
+    method(
+        "between",
+        "(Ljava/time/temporal/Temporal;Ljava/time/temporal/Temporal;)Ljava/time/Duration;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let start = ref_arg(args, 0);
+            let end = ref_arg(args, 1);
+            let secs = read_long_field(vm, end, "epochSecond").saturating_sub(read_long_field(
+                vm,
+                start,
+                "epochSecond",
+            ));
+            let nanos = i64::from(read_int_field(vm, end, "nano"))
+                - i64::from(read_int_field(vm, start, "nano"));
+            duration_of_seconds(vm, secs, nanos)
         },
     ),
     method(
@@ -447,6 +464,14 @@ fn format_duration(nanos: i64) -> alloc::string::String {
     text
 }
 
+/// Build a `Duration` from a seconds/nanos pair (as `Duration.ofSeconds(JJ)`).
+fn duration_of_seconds(vm: &mut Vm<'_>, seconds: i64, nano: i64) -> Result<Value, VmError> {
+    duration_new(
+        vm,
+        seconds.saturating_mul(1_000_000_000).saturating_add(nano),
+    )
+}
+
 fn duration_new(vm: &mut Vm<'_>, nanos: i64) -> Result<Value, VmError> {
     let class = vm.resolve_class("java/time/Duration")?;
     // Zero durations share the `Duration.ZERO` singleton, as in the JDK.
@@ -495,7 +520,7 @@ pub(crate) const DURATION: oxjvm_vm::NativeClass = class(
     Some(duration_clinit),
 );
 
-const INSTANT_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
+const INSTANT_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
     method(
         "now",
         "()Ljava/time/Instant;",
@@ -629,9 +654,30 @@ const INSTANT_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
     }),
     method("toEpochMilli", "()J", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        let seconds = read_long_field(vm, this, "epochSecond");
+        let nanos = i64::from(read_int_field(vm, this, "nano"));
+        // Mirror the JDK: for negative seconds with a positive nano part, shift
+        // by one second so the multiplication cannot overflow prematurely.
+        let (millis, adjustment) = if seconds < 0 && nanos > 0 {
+            (
+                seconds
+                    .checked_add(1)
+                    .and_then(|s| s.checked_mul(1000))
+                    .ok_or_else(|| arithmetic_overflow(vm))?,
+                nanos / 1_000_000 - 1000,
+            )
+        } else {
+            (
+                seconds
+                    .checked_mul(1000)
+                    .ok_or_else(|| arithmetic_overflow(vm))?,
+                nanos / 1_000_000,
+            )
+        };
         long(
-            read_long_field(vm, this, "epochSecond").saturating_mul(1000)
-                + i64::from(read_int_field(vm, this, "nano")) / 1_000_000,
+            millis
+                .checked_add(adjustment)
+                .ok_or_else(|| arithmetic_overflow(vm))?,
         )
     }),
     method(
@@ -808,6 +854,54 @@ const INSTANT_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
             object(vm.make_string(&text)?)
         },
     ),
+    method(
+        "until",
+        "(Ljava/time/temporal/Temporal;Ljava/time/temporal/TemporalUnit;)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let end = ref_arg(args, 1);
+            let start_s = read_long_field(vm, this, "epochSecond");
+            let start_n = read_int_field(vm, this, "nano");
+            let end_s = read_long_field(vm, end, "epochSecond");
+            let end_n = read_int_field(vm, end, "nano");
+            let ordinal =
+                chrono_unit_ordinal(vm, ref_arg(args, 2)).ok_or_else(|| unsupported_unit(vm))?;
+            let result = match ordinal {
+                0 => end_s
+                    .checked_sub(start_s)
+                    .and_then(|s| s.checked_mul(1_000_000_000))
+                    .and_then(|n| n.checked_add(i64::from(end_n) - i64::from(start_n))),
+                1 => instant_micros_until(start_s, start_n, end_s, end_n),
+                2 => instant_millis_until(start_s, start_n, end_s, end_n),
+                3 => instant_seconds_until(start_s, start_n, end_s, end_n),
+                4 => instant_seconds_until(start_s, start_n, end_s, end_n).map(|s| s / 60),
+                5 => instant_seconds_until(start_s, start_n, end_s, end_n).map(|s| s / 3600),
+                6 => instant_seconds_until(start_s, start_n, end_s, end_n).map(|s| s / 43_200),
+                7 => instant_seconds_until(start_s, start_n, end_s, end_n).map(|s| s / 86_400),
+                _ => return Err(unsupported_unit(vm)),
+            };
+            long(result.ok_or_else(|| arithmetic_overflow(vm))?)
+        },
+    ),
+    method(
+        "until",
+        "(Ljava/time/Instant;)Ljava/time/Duration;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let end = ref_arg(args, 1);
+            if end.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let secs = read_long_field(vm, end, "epochSecond")
+                .checked_sub(read_long_field(vm, this, "epochSecond"))
+                .ok_or_else(|| arithmetic_overflow(vm))?;
+            let nanos = i64::from(read_int_field(vm, end, "nano"))
+                - i64::from(read_int_field(vm, this, "nano"));
+            duration_of_seconds(vm, secs, nanos)
+        },
+    ),
 ];
 
 fn instant_new(vm: &mut Vm<'_>, epoch_second: i64, nano: i32) -> Result<Value, VmError> {
@@ -840,7 +934,8 @@ fn instant_parse(vm: &mut Vm<'_>, text: &str) -> Result<Value, VmError> {
     if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return Err(instant_parse_error(vm, text));
     }
-    // The time must end in `Z` (UTC) or a numeric offset.
+    // The time must end in `Z` (UTC) or a numeric offset (`+HH`, `+HHMM`,
+    // `+HHMMSS`, or the colon-separated `+HH:MM[:SS]` forms).
     let (clock, offset_seconds) = if let Some(stripped) = time_part.strip_suffix('Z') {
         (stripped, 0i64)
     } else if let Some(pos) = time_part.rfind(['+', '-']) {
@@ -850,17 +945,56 @@ fn instant_parse(vm: &mut Vm<'_>, text: &str) -> Result<Value, VmError> {
         } else {
             1
         };
-        let offset_fields: Vec<&str> = offset_text.split(':').collect();
-        if offset_fields.len() < 2 {
+        let two_digits = |field: &str| -> Option<i64> {
+            if field.len() == 2 && field.bytes().all(|b| b.is_ascii_digit()) {
+                field.parse().ok()
+            } else {
+                None
+            }
+        };
+        let total = if offset_text.contains(':') {
+            let fields: Vec<&str> = offset_text.split(':').collect();
+            if fields.len() != 2 && fields.len() != 3 {
+                return Err(instant_parse_error(vm, text));
+            }
+            let oh = two_digits(fields[0]).ok_or_else(|| instant_parse_error(vm, text))?;
+            let om = two_digits(fields[1]).ok_or_else(|| instant_parse_error(vm, text))?;
+            let os = if fields.len() == 3 {
+                two_digits(fields[2]).ok_or_else(|| instant_parse_error(vm, text))?
+            } else {
+                0
+            };
+            oh * 3600 + om * 60 + os
+        } else {
+            let len = offset_text.len();
+            if (len != 2 && len != 4 && len != 6)
+                || !offset_text.bytes().all(|b| b.is_ascii_digit())
+            {
+                return Err(instant_parse_error(vm, text));
+            }
+            let oh: i64 = offset_text[..2]
+                .parse()
+                .map_err(|_| instant_parse_error(vm, text))?;
+            let om: i64 = if len >= 4 {
+                offset_text[2..4]
+                    .parse()
+                    .map_err(|_| instant_parse_error(vm, text))?
+            } else {
+                0
+            };
+            let os: i64 = if len == 6 {
+                offset_text[4..6]
+                    .parse()
+                    .map_err(|_| instant_parse_error(vm, text))?
+            } else {
+                0
+            };
+            oh * 3600 + om * 60 + os
+        };
+        if total > 18 * 3600 {
             return Err(instant_parse_error(vm, text));
         }
-        let oh: i64 = offset_fields[0]
-            .parse()
-            .map_err(|_| instant_parse_error(vm, text))?;
-        let om: i64 = offset_fields[1]
-            .parse()
-            .map_err(|_| instant_parse_error(vm, text))?;
-        (&time_part[..pos], sign * (oh * 3600 + om * 60))
+        (&time_part[..pos], sign * total)
     } else {
         return Err(instant_parse_error(vm, text));
     };
@@ -1304,6 +1438,19 @@ fn local_date_new(vm: &mut Vm<'_>, epoch_day: i64) -> Result<ObjectRef, VmError>
     Ok(instance)
 }
 
+/// Initialize the `LocalDate.MIN` / `LocalDate.MAX` constants.
+fn local_date_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/time/LocalDate")?;
+    for (name, epoch_day) in [
+        ("MIN", days_from_civil(-999_999_999, 1, 1)),
+        ("MAX", days_from_civil(999_999_999, 12, 31)),
+    ] {
+        let instance = local_date_new(vm, epoch_day)?;
+        vm.set_static_value(class, name, "Ljava/time/LocalDate;", Value::Ref(instance));
+    }
+    Ok(())
+}
+
 // -------------------------------------------------------------------------------------------
 // TemporalAccessor wiring shared by the date/time classes
 // -------------------------------------------------------------------------------------------
@@ -1458,6 +1605,49 @@ fn unsupported_unit(vm: &mut Vm<'_>) -> VmError {
         "java/time/temporal/UnsupportedTemporalTypeException",
         Some("unsupported unit"),
     )
+}
+
+fn arithmetic_overflow(vm: &mut Vm<'_>) -> VmError {
+    vm.throw_new("java/lang/ArithmeticException", Some("long overflow"))
+}
+
+/// Whole seconds from `start` to `end`, borrowing across the nano boundary so
+/// the result is truncated toward zero (as `Instant.secondsUntil` does).
+fn instant_seconds_until(start_s: i64, start_n: i32, end_s: i64, end_n: i32) -> Option<i64> {
+    let mut secs = end_s.checked_sub(start_s)?;
+    let nanos = i64::from(end_n) - i64::from(start_n);
+    if secs > 0 && nanos < 0 {
+        secs -= 1;
+    } else if secs < 0 && nanos > 0 {
+        secs += 1;
+    }
+    Some(secs)
+}
+
+/// Milliseconds from `start` to `end`, avoiding overflow for extreme instants.
+fn instant_millis_until(start_s: i64, start_n: i32, end_s: i64, end_n: i32) -> Option<i64> {
+    let millis = end_s.checked_sub(start_s)?.checked_mul(1000)?;
+    let nanos = i64::from(end_n) - i64::from(start_n);
+    if millis > 0 && nanos < 0 {
+        Some((millis - 1000) + (nanos + 1_000_000_000) / 1_000_000)
+    } else if millis < 0 && nanos > 0 {
+        Some((millis + 1000) + (nanos - 1_000_000_000) / 1_000_000)
+    } else {
+        millis.checked_add(nanos / 1_000_000)
+    }
+}
+
+/// Microseconds from `start` to `end`, avoiding overflow for extreme instants.
+fn instant_micros_until(start_s: i64, start_n: i32, end_s: i64, end_n: i32) -> Option<i64> {
+    let micros = end_s.checked_sub(start_s)?.checked_mul(1_000_000)?;
+    let nanos = i64::from(end_n) - i64::from(start_n);
+    if micros > 0 && nanos < 0 {
+        Some((micros - 1_000_000) + (nanos + 1_000_000_000) / 1_000)
+    } else if micros < 0 && nanos > 0 {
+        Some((micros + 1_000_000) + (nanos - 1_000_000_000) / 1_000)
+    } else {
+        micros.checked_add(nanos / 1_000)
+    }
 }
 
 const NANOS_PER_DAY: i64 = 86_400_000_000_000;
@@ -1659,6 +1849,117 @@ fn ldt_with_time_field(
 }
 
 /// Replace a date-based field of a `LocalDateTime` with a new value.
+/// `LocalDate.plus(amount, unit)`: ChronoUnit arithmetic, or delegate to the
+/// unit's `addTo` for non-Chrono units (e.g. `IsoFields.QUARTER_YEARS`).
+fn local_date_plus_unit(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    amount: i64,
+    unit: ObjectRef,
+) -> Result<Value, VmError> {
+    if amount == 0 {
+        return object(this);
+    }
+    if let Some(ordinal) = chrono_unit_ordinal(vm, unit) {
+        let epoch_day = read_long_field(vm, this, "epochDay");
+        let new_epoch =
+            date_plus(epoch_day, amount, ordinal).ok_or_else(|| unsupported_unit(vm))?;
+        if new_epoch == epoch_day {
+            return object(this);
+        }
+        object(local_date_new(vm, new_epoch)?)
+    } else {
+        let (class, method) = vm.resolve_virtual_method(
+            unit,
+            "addTo",
+            "(Ljava/time/temporal/Temporal;J)Ljava/time/temporal/Temporal;",
+        )?;
+        vm.invoke_method(
+            class,
+            method,
+            vec![Value::Ref(unit), Value::Ref(this), long(amount)?],
+        )
+    }
+}
+
+/// `LocalDate.minus(amount, unit)`, mirroring [`local_date_plus_unit`].
+fn local_date_minus_unit(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    amount: i64,
+    unit: ObjectRef,
+) -> Result<Value, VmError> {
+    if amount == 0 {
+        return object(this);
+    }
+    if let Some(ordinal) = chrono_unit_ordinal(vm, unit) {
+        let epoch_day = read_long_field(vm, this, "epochDay");
+        let new_epoch =
+            date_plus(epoch_day, -amount, ordinal).ok_or_else(|| unsupported_unit(vm))?;
+        if new_epoch == epoch_day {
+            return object(this);
+        }
+        object(local_date_new(vm, new_epoch)?)
+    } else {
+        let (class, method) = vm.resolve_virtual_method(
+            unit,
+            "subtractFrom",
+            "(Ljava/time/temporal/Temporal;J)Ljava/time/temporal/Temporal;",
+        )?;
+        vm.invoke_method(
+            class,
+            method,
+            vec![Value::Ref(unit), Value::Ref(this), long(amount)?],
+        )
+    }
+}
+
+/// `LocalDate.with(field, value)`: replace a date field, returning the receiver
+/// unchanged when the value does not change the date.
+fn local_date_with_field(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    field: ObjectRef,
+    value: i64,
+) -> Result<Value, VmError> {
+    let epoch_day = read_long_field(vm, this, "epochDay");
+    let ordinal = chrono_field_ordinal(vm, field).ok_or_else(|| unsupported_field(vm))?;
+    let new_epoch =
+        date_with_field(epoch_day, ordinal, value).ok_or_else(|| unsupported_field(vm))?;
+    if new_epoch == epoch_day {
+        return object(this);
+    }
+    object(local_date_new(vm, new_epoch)?)
+}
+
+/// Replace a date-based `ChronoField` of an epoch day with a new value.
+fn date_with_field(epoch_day: i64, ordinal: i32, value: i64) -> Option<i64> {
+    let (year, month, day) = civil_from_days(epoch_day);
+    Some(match ordinal {
+        15 => epoch_day + (value - ((epoch_day + 3).rem_euclid(7) + 1)),
+        18 => days_from_civil(year, month, value as i32),
+        19 => days_from_civil(year, 1, 1) + value - 1,
+        20 => value,
+        23 => {
+            let new_month = value as i32;
+            let new_day = day.min(length_of_month(year, new_month));
+            days_from_civil(year, new_month, new_day)
+        }
+        24 => {
+            let new_year = value.div_euclid(12) as i32;
+            let new_month = (value.rem_euclid(12) + 1) as i32;
+            let new_day = day.min(length_of_month(new_year, new_month));
+            days_from_civil(new_year, new_month, new_day)
+        }
+        26 => {
+            let new_year = value as i32;
+            let new_day = day.min(length_of_month(new_year, month));
+            days_from_civil(new_year, month, new_day)
+        }
+        _ => return None,
+    })
+}
+
 fn ldt_with_date_field(
     vm: &mut Vm<'_>,
     this: ObjectRef,
@@ -1691,7 +1992,11 @@ fn ldt_with_date_field(
 
 fn local_date_string(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError> {
     let (year, month, day) = civil_from_days(read_long_field(vm, this, "epochDay"));
-    let text = alloc::format!("{year:04}-{month:02}-{day:02}");
+    let text = if year > 9999 {
+        alloc::format!("+{year}-{month:02}-{day:02}")
+    } else {
+        alloc::format!("{year:04}-{month:02}-{day:02}")
+    };
     object(vm.make_string(&text)?)
 }
 
@@ -1724,7 +2029,7 @@ fn local_time_string(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError>
     object(vm.make_string(&text)?)
 }
 
-const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
+const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 50] = [
     method(
         "of",
         "(III)Ljava/time/LocalDate;",
@@ -1757,7 +2062,15 @@ const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
         "ofEpochDay",
         "(J)Ljava/time/LocalDate;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| object(local_date_new(vm, crate::long_arg(args, 0))?),
+        |vm, _, args| {
+            let epoch_day = crate::long_arg(args, 0);
+            let min = days_from_civil(-999_999_999, 1, 1);
+            let max = days_from_civil(999_999_999, 12, 31);
+            if epoch_day < min || epoch_day > max {
+                return Err(vm.throw_new("java/time/DateTimeException", Some("Invalid epoch day")));
+            }
+            object(local_date_new(vm, epoch_day)?)
+        },
     ),
     method(
         "now",
@@ -1923,6 +2236,91 @@ const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
                 vm,
                 days_from_civil(new_year, month, new_day),
             )?)
+        },
+    ),
+    method(
+        "minusWeeks",
+        "(J)Ljava/time/LocalDate;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let amount = crate::long_arg(args, 1);
+            if amount == 0 {
+                return object(this);
+            }
+            object(local_date_new(
+                vm,
+                read_long_field(vm, this, "epochDay") - amount * 7,
+            )?)
+        },
+    ),
+    method(
+        "minusMonths",
+        "(J)Ljava/time/LocalDate;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let amount = crate::long_arg(args, 1);
+            if amount == 0 {
+                return object(this);
+            }
+            let (year, month, day) = civil_from_days(read_long_field(vm, this, "epochDay"));
+            let total = i64::from(year) * 12 + i64::from(month - 1) - amount;
+            let new_year = total.div_euclid(12) as i32;
+            let new_month = (total.rem_euclid(12) + 1) as i32;
+            let new_day = day.min(length_of_month(new_year, new_month));
+            object(local_date_new(
+                vm,
+                days_from_civil(new_year, new_month, new_day),
+            )?)
+        },
+    ),
+    method(
+        "minusYears",
+        "(J)Ljava/time/LocalDate;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let amount = crate::long_arg(args, 1);
+            if amount == 0 {
+                return object(this);
+            }
+            let (year, month, day) = civil_from_days(read_long_field(vm, this, "epochDay"));
+            let new_year = (i64::from(year) - amount) as i32;
+            let new_day = day.min(length_of_month(new_year, month));
+            object(local_date_new(
+                vm,
+                days_from_civil(new_year, month, new_day),
+            )?)
+        },
+    ),
+    method(
+        "getMonth",
+        "()Ljava/time/Month;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let epoch_day = read_long_field(vm, receiver(args), "epochDay");
+            let (_, month, _) = civil_from_days(epoch_day);
+            let class = vm.resolve_class("java/time/Month")?;
+            let (declaring, method) = vm
+                .find_method(class, "of", "(I)Ljava/time/Month;")
+                .ok_or_else(|| VmError::internal("Month lacks of"))?;
+            vm.invoke_method(declaring, method, vec![Value::Int(month)])
+        },
+    ),
+    method(
+        "with",
+        "(Ljava/time/temporal/TemporalAdjuster;)Ljava/time/LocalDate;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let adjuster = ref_arg(args, 1);
+            let (class, method) = vm.resolve_virtual_method(
+                adjuster,
+                "adjustInto",
+                "(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;",
+            )?;
+            vm.invoke_method(class, method, vec![Value::Ref(adjuster), Value::Ref(this)])
         },
     ),
     method(
@@ -2118,15 +2516,41 @@ const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
     ),
     method(
         "plus",
+        "(JLjava/time/temporal/TemporalUnit;)Ljava/time/LocalDate;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            local_date_plus_unit(
+                vm,
+                receiver(args),
+                crate::long_arg(args, 1),
+                ref_arg(args, 2),
+            )
+        },
+    ),
+    method(
+        "plus",
         "(JLjava/time/temporal/TemporalUnit;)Ljava/time/temporal/Temporal;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let epoch_day = read_long_field(vm, receiver(args), "epochDay");
-            let ordinal =
-                chrono_unit_ordinal(vm, ref_arg(args, 2)).ok_or_else(|| unsupported_unit(vm))?;
-            let new_epoch = date_plus(epoch_day, crate::long_arg(args, 1), ordinal)
-                .ok_or_else(|| unsupported_unit(vm))?;
-            object(local_date_new(vm, new_epoch)?)
+            local_date_plus_unit(
+                vm,
+                receiver(args),
+                crate::long_arg(args, 1),
+                ref_arg(args, 2),
+            )
+        },
+    ),
+    method(
+        "minus",
+        "(JLjava/time/temporal/TemporalUnit;)Ljava/time/LocalDate;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            local_date_minus_unit(
+                vm,
+                receiver(args),
+                crate::long_arg(args, 1),
+                ref_arg(args, 2),
+            )
         },
     ),
     method(
@@ -2134,12 +2558,68 @@ const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
         "(JLjava/time/temporal/TemporalUnit;)Ljava/time/temporal/Temporal;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let epoch_day = read_long_field(vm, receiver(args), "epochDay");
-            let ordinal =
-                chrono_unit_ordinal(vm, ref_arg(args, 2)).ok_or_else(|| unsupported_unit(vm))?;
-            let new_epoch = date_plus(epoch_day, -crate::long_arg(args, 1), ordinal)
-                .ok_or_else(|| unsupported_unit(vm))?;
-            object(local_date_new(vm, new_epoch)?)
+            local_date_minus_unit(
+                vm,
+                receiver(args),
+                crate::long_arg(args, 1),
+                ref_arg(args, 2),
+            )
+        },
+    ),
+    method(
+        "plus",
+        "(Ljava/time/temporal/TemporalAmount;)Ljava/time/LocalDate;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let amount = ref_arg(args, 1);
+            let (class, method) = vm.resolve_virtual_method(
+                amount,
+                "addTo",
+                "(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;",
+            )?;
+            vm.invoke_method(class, method, vec![Value::Ref(amount), Value::Ref(this)])
+        },
+    ),
+    method(
+        "minus",
+        "(Ljava/time/temporal/TemporalAmount;)Ljava/time/LocalDate;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let amount = ref_arg(args, 1);
+            let (class, method) = vm.resolve_virtual_method(
+                amount,
+                "subtractFrom",
+                "(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;",
+            )?;
+            vm.invoke_method(class, method, vec![Value::Ref(amount), Value::Ref(this)])
+        },
+    ),
+    method(
+        "with",
+        "(Ljava/time/temporal/TemporalField;J)Ljava/time/LocalDate;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            local_date_with_field(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                crate::long_arg(args, 2),
+            )
+        },
+    ),
+    method(
+        "with",
+        "(Ljava/time/temporal/TemporalField;J)Ljava/time/temporal/Temporal;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            local_date_with_field(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                crate::long_arg(args, 2),
+            )
         },
     ),
     method(
@@ -2147,11 +2627,25 @@ const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
         "(Ljava/time/temporal/Temporal;Ljava/time/temporal/TemporalUnit;)J",
         ACC_PUBLIC,
         |vm, _, args| {
-            let start = read_long_field(vm, receiver(args), "epochDay");
-            let end = read_long_field(vm, ref_arg(args, 1), "epochDay");
-            let ordinal =
-                chrono_unit_ordinal(vm, ref_arg(args, 2)).ok_or_else(|| unsupported_unit(vm))?;
-            long(date_until(start, end, ordinal).ok_or_else(|| unsupported_unit(vm))?)
+            let this = receiver(args);
+            let end = ref_arg(args, 1);
+            let unit = ref_arg(args, 2);
+            if let Some(ordinal) = chrono_unit_ordinal(vm, unit) {
+                let start = read_long_field(vm, this, "epochDay");
+                let end_day = read_long_field(vm, end, "epochDay");
+                long(date_until(start, end_day, ordinal).ok_or_else(|| unsupported_unit(vm))?)
+            } else {
+                let (class, method) = vm.resolve_virtual_method(
+                    unit,
+                    "between",
+                    "(Ljava/time/temporal/Temporal;Ljava/time/temporal/Temporal;)J",
+                )?;
+                vm.invoke_method(
+                    class,
+                    method,
+                    vec![Value::Ref(unit), Value::Ref(this), Value::Ref(end)],
+                )
+            }
         },
     ),
 ];
@@ -2166,9 +2660,23 @@ pub(crate) const LOCAL_DATE: oxjvm_vm::NativeClass = class(
         "java/io/Serializable",
     ],
     ACC_PUBLIC | ACC_FINAL,
-    &[field("epochDay", "J", ACC_PRIVATE | ACC_FINAL, None)],
+    &[
+        field("epochDay", "J", ACC_PRIVATE | ACC_FINAL, None),
+        field(
+            "MIN",
+            "Ljava/time/LocalDate;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "MAX",
+            "Ljava/time/LocalDate;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+    ],
     &LOCAL_DATE_METHODS,
-    None,
+    Some(local_date_clinit),
 );
 
 const LOCAL_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
@@ -3237,7 +3745,7 @@ fn month_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     Ok(())
 }
 
-const MONTH_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const MONTH_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method(
         "of",
         "(I)Ljava/time/Month;",
@@ -3333,6 +3841,50 @@ const MONTH_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
                 return Err(unsupported_field(vm));
             }
             long(i64::from(read_int_field(vm, receiver(args), "value")))
+        },
+    ),
+    method("length", "(Z)I", ACC_PUBLIC, |vm, _, args| {
+        let value = read_int_field(vm, receiver(args), "value");
+        let leap = crate::int_arg(args, 1) != 0;
+        int(match value {
+            2 => {
+                if leap {
+                    29
+                } else {
+                    28
+                }
+            }
+            4 | 6 | 9 | 11 => 30,
+            _ => 31,
+        })
+    }),
+    method(
+        "adjustInto",
+        "(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let temporal = ref_arg(args, 1);
+            let value = i64::from(read_int_field(vm, this, "value"));
+            let field = vm.resolve_class("java/time/temporal/ChronoField")?;
+            vm.ensure_initialized(field)?;
+            let month_of_year = vm
+                .read_static_ref_if_set(field, "MONTH_OF_YEAR", "Ljava/time/temporal/ChronoField;")
+                .unwrap_or(ObjectRef::NULL);
+            let (class, method) = vm.resolve_virtual_method(
+                temporal,
+                "with",
+                "(Ljava/time/temporal/TemporalField;J)Ljava/time/temporal/Temporal;",
+            )?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![
+                    Value::Ref(temporal),
+                    Value::Ref(month_of_year),
+                    long(value)?,
+                ],
+            )
         },
     ),
 ];
