@@ -827,6 +827,36 @@ fn boxed_long_decode(
     }
 }
 
+fn boxed_short_decode(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let text = string_arg(vm, args[0])?;
+    match decode_integer(&text).and_then(|value| i16::try_from(value).ok()) {
+        Some(value) => box_integer_like(vm, "java/lang/Short", b'S', i32::from(value)),
+        None => Err(vm.throw_new(
+            "java/lang/NumberFormatException",
+            Some(&alloc::format!("For input string: \"{text}\"")),
+        )),
+    }
+}
+
+fn boxed_byte_decode(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let text = string_arg(vm, args[0])?;
+    match decode_integer(&text).and_then(|value| i8::try_from(value).ok()) {
+        Some(value) => box_integer_like(vm, "java/lang/Byte", b'B', i32::from(value)),
+        None => Err(vm.throw_new(
+            "java/lang/NumberFormatException",
+            Some(&alloc::format!("For input string: \"{text}\"")),
+        )),
+    }
+}
+
 fn parse_int_radix(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
@@ -1500,7 +1530,7 @@ pub(crate) const LONG: oxjvm_vm::NativeClass = class(
 // Short / Byte / Boolean / Character / Float / Double / Void
 // -------------------------------------------------------------------------------------------
 
-const SHORT_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+const SHORT_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method("<init>", "(S)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), int_arg(args, 1));
         void()
@@ -1572,6 +1602,12 @@ const SHORT_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
         |vm, _, args| box_integer_like(vm, "java/lang/Short", b'S', int_arg(args, 0)),
     ),
     method(
+        "decode",
+        "(Ljava/lang/String;)Ljava/lang/Short;",
+        ACC_PUBLIC | ACC_STATIC,
+        boxed_short_decode,
+    ),
+    method(
         "compareTo",
         "(Ljava/lang/Short;)I",
         ACC_PUBLIC,
@@ -1630,7 +1666,7 @@ pub(crate) const SHORT: oxjvm_vm::NativeClass = class(
     Some(short_clinit),
 );
 
-const BYTE_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const BYTE_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method("<init>", "(B)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), int_arg(args, 1));
         void()
@@ -1682,6 +1718,12 @@ const BYTE_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         "(B)Ljava/lang/Byte;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| box_integer_like(vm, "java/lang/Byte", b'B', int_arg(args, 0)),
+    ),
+    method(
+        "decode",
+        "(Ljava/lang/String;)Ljava/lang/Byte;",
+        ACC_PUBLIC | ACC_STATIC,
+        boxed_byte_decode,
     ),
     method(
         "compareTo",
