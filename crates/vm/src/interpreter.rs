@@ -168,6 +168,13 @@ impl<'a> Vm<'a> {
 
     /// Execute one instruction or resume action of the current thread.
     pub(crate) fn step(&mut self) -> Result<Step, VmError> {
+        // A worker whose body is a native SAM method (a lambda) has no code frame; invoke its
+        // native entry point once, then let the thread terminate.
+        if let Some((class, method, args)) = self.current_thread_mut().entry_native.take() {
+            return self
+                .call_native_fn(class, method, &args)
+                .map(|_| Step::Terminated);
+        }
         if self.current_thread().frames.is_empty() {
             return Ok(Step::Terminated);
         }
@@ -785,10 +792,15 @@ impl<'a> Vm<'a> {
     /// Park the current thread until it is notified on `object`, without requiring
     /// (or re-acquiring) the object's monitor.
     ///
-    /// Natives cannot express a wait loop: parking returns to Rust immediately, so
-    /// the caller must return and let the interpreter suspend the thread.  Used by
-    /// `CountDownLatch.await`, which wakes up (once) when the count reaches zero.
-    pub fn park_until_notified(&mut self, object: ObjectRef, timeout: Option<i64>) {
+    /// The caller is a native running on the current thread, so this drives the *other*
+    /// threads until the waiter is notified (or its deadline expires) and only then returns.
+    /// That lets natives express wait loops (`ReentrantLock.lock`, blocking queue `take`/`put`)
+    /// as well as park-and-return waits (`CountDownLatch.await`).
+    pub fn park_until_notified(
+        &mut self,
+        object: ObjectRef,
+        timeout: Option<i64>,
+    ) -> Result<(), VmError> {
         if let Some(heap_object) = self.heap.get_mut(object) {
             heap_object.monitor.waiters.push_back(self.current);
         }
@@ -800,6 +812,47 @@ impl<'a> Vm<'a> {
             monitor: object,
             deadline,
         });
+        self.drive_others_until_runnable()
+    }
+
+    /// Run other threads until the current (parked) thread becomes runnable again.
+    ///
+    /// The current thread is mid-native and must never be stepped here; only other threads
+    /// execute until the waiter is notified or a deadline wakes it. Returns a deadlock error
+    /// when no thread can make progress.
+    fn drive_others_until_runnable(&mut self) -> Result<(), VmError> {
+        let waiter = self.current;
+        loop {
+            if self.threads[waiter].is_runnable() {
+                self.current = waiter;
+                return Ok(());
+            }
+            match self.pick_thread() {
+                Some(next) if next != waiter => {
+                    self.current = next;
+                    match self.step() {
+                        Ok(Step::Terminated) => self.terminate_current(),
+                        Ok(Step::Executed) => self.preempt_after_slice(),
+                        Ok(Step::Suspended) => {}
+                        Err(VmError::Thrown(exception)) => {
+                            self.handle_uncaught(self.current, exception);
+                        }
+                        Err(other) => return Err(other),
+                    }
+                }
+                _ => {
+                    if self.threads[waiter].is_runnable() {
+                        self.current = waiter;
+                        return Ok(());
+                    }
+                    if !self.advance_virtual_time() {
+                        return Err(VmError::internal(
+                            "deadlock: every thread is blocked or sleeping",
+                        ));
+                    }
+                }
+            }
+        }
     }
 
     /// Wake one or all threads waiting on a monitor.

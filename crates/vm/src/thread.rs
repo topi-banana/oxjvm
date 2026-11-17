@@ -67,6 +67,10 @@ pub struct JavaThread {
     pub started: bool,
     /// A pending resume action after a cooperative suspension.
     pub resume: crate::Resume,
+    /// A native entry point to invoke as the thread's body. Lambda SAM methods carry no
+    /// bytecode, so a worker running one cannot be given a code frame; the scheduler invokes
+    /// this native instead, then terminates the thread.
+    pub entry_native: Option<(crate::class::ClassId, u32, Vec<Value>)>,
     /// Exception-unwind floor: unwinding below this depth returns to the nested caller.
     pub floor: usize,
     /// Instructions executed in the current scheduling slice (for time-slice preemption).
@@ -89,6 +93,7 @@ impl JavaThread {
             interrupted: false,
             started: false,
             resume: crate::Resume::None,
+            entry_native: None,
             floor: 0,
             slice_steps: 0,
         }
@@ -292,10 +297,19 @@ impl<'a> Vm<'a> {
                 Some(target) if !target.is_null() => {
                     let (target_class, target_method) =
                         self.resolve_virtual_method(target, "run", "()V")?;
-                    let has_code = self.classes.get(target_class).methods[target_method as usize]
-                        .code
-                        .is_some();
-                    if !has_code {
+                    let definition =
+                        &self.classes.get(target_class).methods[target_method as usize];
+                    if definition.code.is_none() {
+                        // A lambda's SAM body is a native method: schedule it as the thread's
+                        // native entry point rather than treating the worker as empty.
+                        if definition.native.is_some() {
+                            self.threads[index].entry_native = Some((
+                                target_class,
+                                target_method,
+                                alloc::vec![Value::Ref(target)],
+                            ));
+                            return Ok(());
+                        }
                         self.threads[index].state = ThreadState::Terminated;
                         return Ok(());
                     }

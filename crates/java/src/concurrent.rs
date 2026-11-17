@@ -264,7 +264,7 @@ const COUNT_DOWN_LATCH_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     method("await", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         if crate::lang::read_int_field(vm, this, "count") > 0 {
-            vm.park_until_notified(this, None);
+            vm.park_until_notified(this, None)?;
         }
         void()
     }),
@@ -279,7 +279,7 @@ const COUNT_DOWN_LATCH_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
                 return boolean(true);
             }
             let millis = time_unit_to_millis(vm, ref_arg(args, 2), crate::long_arg(args, 1))?;
-            vm.park_until_notified(this, Some(millis));
+            vm.park_until_notified(this, Some(millis))?;
             // The thread continues here once notified (or once the deadline passed; the
             // cooperative scheduler does not distinguish the two for native waiters).
             boolean(true)
@@ -357,7 +357,7 @@ const CYCLIC_BARRIER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
             vm.monitor_notify(this, true);
             int(parties - waiting)
         } else {
-            vm.park_until_notified(this, None);
+            vm.park_until_notified(this, None)?;
             int(parties - waiting)
         }
     }),
@@ -376,7 +376,7 @@ const CYCLIC_BARRIER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
                 int(parties - waiting)
             } else {
                 let millis = time_unit_to_millis(vm, ref_arg(args, 2), crate::long_arg(args, 1))?;
-                vm.park_until_notified(this, Some(millis));
+                vm.park_until_notified(this, Some(millis))?;
                 int(parties - waiting)
             }
         },
@@ -537,16 +537,16 @@ fn set_lock_owner(vm: &mut Vm<'_>, this: ObjectRef, owner: ObjectRef) {
 ///
 /// Threads run cooperatively, so a contended acquisition parks the caller until
 /// `ReentrantLock.unlock` notifies the monitor; the loop then re-checks the owner.
-fn reentrant_lock_acquire(vm: &mut Vm<'_>, lock: ObjectRef) {
+fn reentrant_lock_acquire(vm: &mut Vm<'_>, lock: ObjectRef) -> Result<(), VmError> {
     let current = vm.current_thread_object();
     loop {
         let held = crate::lang::read_int_field(vm, lock, "holdCount");
         if held == 0 || lock_owner(vm, lock) == current {
             crate::lang::write_int_field(vm, lock, "holdCount", held + 1);
             set_lock_owner(vm, lock, current);
-            return;
+            return Ok(());
         }
-        vm.park_until_notified(lock, None);
+        vm.park_until_notified(lock, None)?;
     }
 }
 
@@ -575,7 +575,7 @@ fn reentrant_lock_lock(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let this = receiver(args);
-    reentrant_lock_acquire(vm, this);
+    reentrant_lock_acquire(vm, this)?;
     void()
 }
 
@@ -725,7 +725,7 @@ fn condition_await(vm: &mut Vm<'_>, this: ObjectRef, timeout: Option<i64>) -> Re
         )
         .unwrap_or(ObjectRef::NULL);
     if lock.is_null() {
-        vm.park_until_notified(this, timeout);
+        vm.park_until_notified(this, timeout)?;
         return Ok(());
     }
     let held = crate::lang::read_int_field(vm, lock, "holdCount");
@@ -734,8 +734,8 @@ fn condition_await(vm: &mut Vm<'_>, this: ObjectRef, timeout: Option<i64>) -> Re
     if held > 0 {
         vm.monitor_notify(lock, true);
     }
-    vm.park_until_notified(this, timeout);
-    reentrant_lock_acquire(vm, lock);
+    vm.park_until_notified(this, timeout)?;
+    reentrant_lock_acquire(vm, lock)?;
     Ok(())
 }
 
