@@ -2256,12 +2256,26 @@ fn day_of_week_new(vm: &mut Vm<'_>, value: i32) -> Result<ObjectRef, VmError> {
     Ok(instance)
 }
 
-const DAY_OF_WEEK_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const DAY_OF_WEEK_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     method(
         "of",
         "(I)Ljava/time/DayOfWeek;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| object(day_of_week_new(vm, crate::int_arg(args, 0))?),
+    ),
+    method(
+        "values",
+        "()[Ljava/time/DayOfWeek;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/time/DayOfWeek")?;
+            let array = vm.allocate_object_array(class, 7)?;
+            for value in 1..=7 {
+                let instance = day_of_week_new(vm, value)?;
+                vm.array_set_ref(array, (value - 1) as usize, instance)?;
+            }
+            object(array)
+        },
     ),
     method("getValue", "()I", ACC_PUBLIC, |vm, _, args| {
         int(read_int_field(vm, receiver(args), "value"))

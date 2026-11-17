@@ -218,7 +218,7 @@ pub(crate) const LIST_ITERATOR: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+const COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
     method(
         "size",
         "()I",
@@ -293,6 +293,21 @@ const COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
         "(Ljava/util/function/Consumer;)V",
         ACC_PUBLIC,
         collection_for_each,
+    ),
+    method(
+        "removeIf",
+        "(Ljava/util/function/Predicate;)Z",
+        ACC_PUBLIC,
+        collection_remove_if,
+    ),
+    method(
+        "spliterator",
+        "()Ljava/util/Spliterator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = collection_elements(vm, receiver(args))?;
+            object(crate::stream::spliterator_from(vm, &elements)?)
+        },
     ),
     method(
         "toArray",
@@ -2289,7 +2304,7 @@ macro_rules! array_hash_code {
     };
 }
 
-const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 140] = [
+const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 148] = [
     method(
         "toString",
         "([I)Ljava/lang/String;",
@@ -2670,6 +2685,67 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 140] = [
         "([CC)I",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| arrays_binary_search_char(vm, ref_arg(args, 0), int_arg(args, 1) as u16),
+    ),
+    method(
+        "binarySearch",
+        "([II)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_binary_search_int(vm, ref_arg(args, 0), i64::from(int_arg(args, 1))),
+    ),
+    method(
+        "binarySearch",
+        "([JJ)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_binary_search_int(vm, ref_arg(args, 0), long_arg(args, 1)),
+    ),
+    method(
+        "binarySearch",
+        "([BB)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_binary_search_int(vm, ref_arg(args, 0), i64::from(int_arg(args, 1) as i8))
+        },
+    ),
+    method(
+        "binarySearch",
+        "([SS)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_binary_search_int(vm, ref_arg(args, 0), i64::from(int_arg(args, 1) as i16))
+        },
+    ),
+    method(
+        "binarySearch",
+        "([DD)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_binary_search_double(vm, ref_arg(args, 0), crate::double_arg(args, 1)),
+    ),
+    method(
+        "binarySearch",
+        "([FF)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_binary_search_double(vm, ref_arg(args, 0), f64::from(crate::float_arg(args, 1)))
+        },
+    ),
+    method(
+        "binarySearch",
+        "([Ljava/lang/Object;Ljava/lang/Object;)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_binary_search_object(vm, ref_arg(args, 0), ref_arg(args, 1), None),
+    ),
+    method(
+        "binarySearch",
+        "([Ljava/lang/Object;Ljava/lang/Object;Ljava/util/Comparator;)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_binary_search_object(
+                vm,
+                ref_arg(args, 0),
+                ref_arg(args, 1),
+                Some(ref_arg(args, 2)),
+            )
+        },
     ),
     method("sort", "([B)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
         arrays_sort_byte(vm, ref_arg(args, 0))
@@ -3156,6 +3232,119 @@ fn arrays_binary_search_char(
         }
     }
     int(!lo)
+}
+
+/// Binary search over an integral primitive array (`byte`/`short`/`int`/`long`).
+fn arrays_binary_search_int(vm: &mut Vm<'_>, array: ObjectRef, key: i64) -> Result<Value, VmError> {
+    if array.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let values: Vec<i64> = match vm.heap.get(array).map(|o| &o.data) {
+        Some(ObjectData::Array(ArrayData::Int(v))) => v.iter().map(|&x| i64::from(x)).collect(),
+        Some(ObjectData::Array(ArrayData::Long(v))) => v.clone(),
+        Some(ObjectData::Array(ArrayData::Byte(v))) => v.iter().map(|&x| i64::from(x)).collect(),
+        Some(ObjectData::Array(ArrayData::Short(v))) => v.iter().map(|&x| i64::from(x)).collect(),
+        _ => return Err(vm.throw_new("java/lang/NullPointerException", None)),
+    };
+    let mut lo: i32 = 0;
+    let mut hi: i32 = values.len() as i32 - 1;
+    while lo <= hi {
+        let mid = ((lo as usize) + (hi as usize)) / 2;
+        let v = values[mid];
+        if v == key {
+            return int(mid as i32);
+        } else if v < key {
+            lo = mid as i32 + 1;
+        } else {
+            hi = mid as i32 - 1;
+        }
+    }
+    int(!lo)
+}
+
+/// Binary search over a floating-point primitive array (`float`/`double`).
+fn arrays_binary_search_double(
+    vm: &mut Vm<'_>,
+    array: ObjectRef,
+    key: f64,
+) -> Result<Value, VmError> {
+    if array.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let values: Vec<f64> = match vm.heap.get(array).map(|o| &o.data) {
+        Some(ObjectData::Array(ArrayData::Double(v))) => v.clone(),
+        Some(ObjectData::Array(ArrayData::Float(v))) => v.iter().map(|&x| f64::from(x)).collect(),
+        _ => return Err(vm.throw_new("java/lang/NullPointerException", None)),
+    };
+    let mut lo: i32 = 0;
+    let mut hi: i32 = values.len() as i32 - 1;
+    while lo <= hi {
+        let mid = ((lo as usize) + (hi as usize)) / 2;
+        let v = values[mid];
+        if v == key {
+            return int(mid as i32);
+        } else if v < key {
+            lo = mid as i32 + 1;
+        } else {
+            hi = mid as i32 - 1;
+        }
+    }
+    int(!lo)
+}
+
+/// Binary search over an object array using a `Comparator` or natural `Comparable` order.
+fn arrays_binary_search_object(
+    vm: &mut Vm<'_>,
+    array: ObjectRef,
+    key: ObjectRef,
+    comparator: Option<ObjectRef>,
+) -> Result<Value, VmError> {
+    if array.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let elements: Vec<ObjectRef> = match vm.heap.get(array).map(|o| &o.data) {
+        Some(ObjectData::Array(ArrayData::Reference(v))) => v.clone(),
+        _ => return Err(vm.throw_new("java/lang/NullPointerException", None)),
+    };
+    let mut lo: i32 = 0;
+    let mut hi: i32 = elements.len() as i32 - 1;
+    while lo <= hi {
+        let mid = ((lo as usize) + (hi as usize)) / 2;
+        let cmp = arrays_bsearch_compare(vm, elements[mid], key, comparator)?;
+        if cmp == 0 {
+            return int(mid as i32);
+        } else if cmp < 0 {
+            lo = mid as i32 + 1;
+        } else {
+            hi = mid as i32 - 1;
+        }
+    }
+    int(!lo)
+}
+
+/// Compare two objects for `Arrays.binarySearch`: comparator first, else `compareTo`.
+fn arrays_bsearch_compare(
+    vm: &mut Vm<'_>,
+    left: ObjectRef,
+    right: ObjectRef,
+    comparator: Option<ObjectRef>,
+) -> Result<i32, VmError> {
+    if let Some(comparator) = comparator.filter(|c| !c.is_null()) {
+        let (class, method) = vm.resolve_virtual_method(
+            comparator,
+            "compare",
+            "(Ljava/lang/Object;Ljava/lang/Object;)I",
+        )?;
+        let result = vm.invoke_method(
+            class,
+            method,
+            vec![Value::Ref(comparator), Value::Ref(left), Value::Ref(right)],
+        )?;
+        return Ok(result.as_int());
+    }
+    let (class, method) = vm.resolve_virtual_method(left, "compareTo", "(Ljava/lang/Object;)I")?;
+    let result = vm.invoke_method(class, method, vec![Value::Ref(left), Value::Ref(right)])?;
+    Ok(result.as_int())
 }
 
 fn arrays_sort_byte(vm: &mut Vm<'_>, array: ObjectRef) -> Result<Value, VmError> {
@@ -4514,6 +4703,41 @@ fn collection_for_each(
         )?;
     }
     void()
+}
+
+/// `Collection.removeIf`: test each element against the predicate and remove the matches.
+fn collection_remove_if(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let predicate = ref_arg(args, 1);
+    if predicate.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let (test_class, test_method) =
+        vm.resolve_virtual_method(predicate, "test", "(Ljava/lang/Object;)Z")?;
+    let elements = collection_elements(vm, this)?;
+    let mut removed = false;
+    for element in elements {
+        let matched = vm.invoke_method(
+            test_class,
+            test_method,
+            vec![Value::Ref(predicate), Value::Ref(element)],
+        )?;
+        if matched.as_int() != 0 {
+            let (remove_class, remove_method) =
+                vm.resolve_virtual_method(this, "remove", "(Ljava/lang/Object;)Z")?;
+            let result = vm.invoke_method(
+                remove_class,
+                remove_method,
+                vec![Value::Ref(this), Value::Ref(element)],
+            )?;
+            removed |= result.as_int() != 0;
+        }
+    }
+    boolean(removed)
 }
 
 pub(crate) fn array_list_elements(vm: &Vm<'_>, this: ObjectRef) -> Vec<ObjectRef> {

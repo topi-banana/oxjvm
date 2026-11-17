@@ -9,7 +9,7 @@ use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
 use crate::{boolean, class, field, int, method, object, receiver, ref_arg, string_arg, void};
 
-const LOCALE_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
+const LOCALE_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -69,6 +69,16 @@ const LOCALE_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| locale_string_field(vm, receiver(args), "language"),
+    ),
+    method(
+        "getISO3Language",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let language_value = locale_string_field(vm, receiver(args), "language")?;
+            let language = string_arg(vm, language_value)?;
+            object(vm.make_string(iso3_language(&language))?)
+        },
     ),
     method(
         "getCountry",
@@ -406,6 +416,50 @@ fn locale_init(
         vm.set_instance_ref(this, declaring, field, value);
     }
     void()
+}
+
+/// The ISO 639-2 three-letter code for a two-letter language code.
+fn iso3_language(language: &str) -> &'static str {
+    match language {
+        "ja" => "jpn",
+        "en" => "eng",
+        "fr" => "fra",
+        "de" => "deu",
+        "it" => "ita",
+        "es" => "spa",
+        "pt" => "por",
+        "ru" => "rus",
+        "zh" => "zho",
+        "ko" => "kor",
+        "ar" => "ara",
+        "hi" => "hin",
+        "nl" => "nld",
+        "sv" => "swe",
+        "pl" => "pol",
+        "tr" => "tur",
+        "th" => "tha",
+        "vi" => "vie",
+        "id" => "ind",
+        "he" => "heb",
+        "el" => "ell",
+        "cs" => "ces",
+        "da" => "dan",
+        "fi" => "fin",
+        "no" => "nor",
+        "hu" => "hun",
+        "uk" => "ukr",
+        "ro" => "ron",
+        "bg" => "bul",
+        "hr" => "hrv",
+        "sk" => "slk",
+        "sl" => "slv",
+        "ca" => "cat",
+        "iw" => "heb",
+        "in" => "ind",
+        "ji" => "yid",
+        "" => "",
+        _ => "",
+    }
 }
 
 fn locale_string_field(vm: &mut Vm<'_>, this: ObjectRef, name: &str) -> Result<Value, VmError> {
