@@ -584,16 +584,10 @@ fn write_int_field_named(vm: &mut Vm<'_>, this: ObjectRef, name: &str, value: i3
 
 fn read_long_field(vm: &Vm<'_>, this: ObjectRef, name: &str) -> i64 {
     let class = vm.class_of(this);
-    let entry = vm.classes.get(class);
-    let Some(oxjvm_vm::ObjectData::Instance(fields)) = vm.heap.get(this).map(|o| &o.data) else {
-        return 0;
-    };
-    for field in entry.fields.iter() {
-        if field.name == name {
-            return fields
-                .get(field.slot as usize)
-                .map(|value| value.as_long())
-                .unwrap_or(0);
+    if let Some((declaring, field)) = vm.find_field_opt(class, name, "J") {
+        let slot = vm.classes.get(declaring).fields[field as usize].slot as usize;
+        if let Some(oxjvm_vm::ObjectData::Instance(fields)) = vm.heap.get(this).map(|o| &o.data) {
+            return fields.get(slot).map(|value| value.as_long()).unwrap_or(0);
         }
     }
     0
@@ -642,3 +636,225 @@ fn write_ref_field(
         vm.set_instance_ref(this, declaring, field, value);
     }
 }
+
+// -------------------------------------------------------------------------------------------
+// java.util.zip.ZipFile
+// -------------------------------------------------------------------------------------------
+
+/// Allocate a Java `byte[]` holding `bytes`.
+fn zip_byte_array(vm: &mut Vm<'_>, bytes: &[u8]) -> Result<ObjectRef, VmError> {
+    let array = vm.allocate_array_of(ArrayComponent::Byte, bytes.len())?;
+    for (index, byte) in bytes.iter().enumerate() {
+        vm.array_set(
+            array,
+            index as i32,
+            Value::Int(i32::from(*byte as i8)),
+            false,
+        )?;
+    }
+    Ok(array)
+}
+
+/// Build a `ZipEntry` mirroring a platform archive member.
+fn zip_entry_from(
+    vm: &mut Vm<'_>,
+    entry: &oxjvm_platform::zip::ZipEntry,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/zip/ZipEntry")?;
+    let instance = vm.new_instance(class)?;
+    write_string_field(vm, instance, "name", &entry.name);
+    write_long_field(vm, instance, "size", i64::from(entry.uncompressed_size));
+    write_long_field(
+        vm,
+        instance,
+        "compressedSize",
+        i64::from(entry.compressed_size),
+    );
+    write_long_field(vm, instance, "crc", i64::from(entry.crc32));
+    write_int_field_named(vm, instance, "method", i32::from(entry.compression));
+    Ok(instance)
+}
+
+/// Read a zip file from the host filesystem and populate a `ZipFile`'s name/entries/bytes.
+pub(crate) fn zip_file_init(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    path: &str,
+) -> Result<Value, VmError> {
+    let bytes = vm
+        .host
+        .filesystem()
+        .and_then(|fs| fs.read(path))
+        .ok_or_else(|| {
+            vm.throw_new(
+                "java/io/FileNotFoundException",
+                Some(&alloc::format!("{path} (No such file or directory)")),
+            )
+        })?;
+    let archive = oxjvm_platform::zip::ZipArchive::new(&bytes).map_err(|_| {
+        vm.throw_new(
+            "java/util/zip/ZipException",
+            Some("zip file is empty or malformed"),
+        )
+    })?;
+    let mut entries = Vec::with_capacity(archive.entries().len());
+    for entry in archive.entries() {
+        entries.push(zip_entry_from(vm, entry)?);
+    }
+    let list = crate::util::array_list_from(vm, &entries)?;
+    let class = vm.class_of(this);
+    let name = vm.make_string(path)?;
+    let (declaring, field) = vm.find_field(class, "name", "Ljava/lang/String;")?;
+    vm.set_instance_ref(this, declaring, field, name);
+    let (declaring, field) = vm.find_field(class, "entries", "Ljava/util/List;")?;
+    vm.set_instance_ref(this, declaring, field, list);
+    let raw = zip_byte_array(vm, &bytes)?;
+    let (declaring, field) = vm.find_field(class, "bytes", "[B")?;
+    vm.set_instance_ref(this, declaring, field, raw);
+    void()
+}
+
+fn zip_file_entries(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "entries", "Ljava/util/List;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn zip_file_bytes(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Vec<u8>, VmError> {
+    let raw = vm
+        .read_ref_field(this, vm.class_of(this), "bytes", "[B")
+        .unwrap_or(ObjectRef::NULL);
+    crate::lang::array_bytes(vm, raw)
+}
+
+/// The uncompressed bytes of a named member, re-parsed from the stored archive bytes.
+pub(crate) fn zip_file_read(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+) -> Result<Vec<u8>, VmError> {
+    let bytes = zip_file_bytes(vm, this)?;
+    let archive = oxjvm_platform::zip::ZipArchive::new(&bytes)
+        .map_err(|_| vm.throw_new("java/util/zip/ZipException", Some("malformed zip")))?;
+    archive
+        .read(name)
+        .map_err(|_| vm.throw_new("java/util/zip/ZipException", Some("invalid entry")))?
+        .ok_or_else(|| vm.throw_new("java/util/zip/ZipException", Some("no such entry")))
+}
+
+pub(crate) fn zip_file_input_stream(vm: &mut Vm<'_>, data: &[u8]) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/io/ByteArrayInputStream")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, ctor) = vm
+        .find_method(class, "<init>", "([B)V")
+        .ok_or_else(|| VmError::internal("ByteArrayInputStream(byte[]) missing"))?;
+    let array = zip_byte_array(vm, data)?;
+    vm.invoke_method(
+        declaring,
+        ctor,
+        vec![Value::Ref(instance), Value::Ref(array)],
+    )?;
+    object(instance)
+}
+
+const ZIP_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+    method("<init>", "(Ljava/io/File;)V", ACC_PUBLIC, |vm, _, args| {
+        let path = crate::file::file_path(vm, ref_arg(args, 1));
+        zip_file_init(vm, receiver(args), &path)
+    }),
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let path = string_arg(vm, args[1])?;
+            zip_file_init(vm, receiver(args), &path)
+        },
+    ),
+    method("<init>", "(Ljava/io/File;I)V", ACC_PUBLIC, |vm, _, args| {
+        let path = crate::file::file_path(vm, ref_arg(args, 1));
+        zip_file_init(vm, receiver(args), &path)
+    }),
+    method(
+        "<init>",
+        "(Ljava/lang/String;I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let path = string_arg(vm, args[1])?;
+            zip_file_init(vm, receiver(args), &path)
+        },
+    ),
+    method(
+        "getEntry",
+        "(Ljava/lang/String;)Ljava/util/zip/ZipEntry;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let name = vm.string_or_empty(ref_arg(args, 1));
+            let list = zip_file_entries(vm, this);
+            for entry in crate::util::array_list_elements(vm, list) {
+                if read_string_field(vm, entry, "name").as_deref() == Some(name.as_str()) {
+                    return object(entry);
+                }
+            }
+            object(ObjectRef::NULL)
+        },
+    ),
+    method(
+        "getInputStream",
+        "(Ljava/util/zip/ZipEntry;)Ljava/io/InputStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let entry = ref_arg(args, 1);
+            if entry.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let name = read_string_field(vm, entry, "name").unwrap_or_default();
+            let data = zip_file_read(vm, this, &name)?;
+            zip_file_input_stream(vm, &data)
+        },
+    ),
+    method(
+        "entries",
+        "()Ljava/util/Enumeration;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let list = zip_file_entries(vm, this);
+            let elements = crate::util::array_list_elements(vm, list);
+            object(crate::util::new_enumeration(vm, &elements)?)
+        },
+    ),
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        let list = zip_file_entries(vm, receiver(args));
+        int(crate::util::array_list_elements(vm, list).len() as i32)
+    }),
+    method(
+        "getName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(
+                vm.read_ref_field(this, vm.class_of(this), "name", "Ljava/lang/String;")
+                    .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+];
+
+/// `java.util.zip.ZipFile`: a random-access zip archive read from the host filesystem.
+pub(crate) const ZIP_FILE: oxjvm_vm::NativeClass = class(
+    "java/util/zip/ZipFile",
+    Some("java/lang/Object"),
+    &["java/io/Closeable"],
+    ACC_PUBLIC,
+    &[
+        field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("entries", "Ljava/util/List;", ACC_PRIVATE, None),
+        field("bytes", "[B", ACC_PRIVATE, None),
+    ],
+    &ZIP_FILE_METHODS,
+    None,
+);

@@ -867,3 +867,112 @@ pub(crate) const JAR_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
     &JAR_OUTPUT_STREAM_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// java.util.jar.JarFile
+// -------------------------------------------------------------------------------------------
+
+fn jar_file_entries(vm: &Vm<'_>, this: ObjectRef) -> Vec<ObjectRef> {
+    let list = vm
+        .read_ref_field(this, vm.class_of(this), "entries", "Ljava/util/List;")
+        .unwrap_or(ObjectRef::NULL);
+    crate::util::array_list_elements(vm, list)
+}
+
+fn jar_file_entry_name(vm: &Vm<'_>, entry: ObjectRef) -> String {
+    vm.read_string_field(entry, vm.class_of(entry), "name")
+        .unwrap_or_default()
+}
+
+const JAR_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method("<init>", "(Ljava/io/File;)V", ACC_PUBLIC, |vm, _, args| {
+        let path = crate::file::file_path(vm, ref_arg(args, 1));
+        crate::zip::zip_file_init(vm, receiver(args), &path)
+    }),
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let path = string_arg(vm, args[1])?;
+            crate::zip::zip_file_init(vm, receiver(args), &path)
+        },
+    ),
+    method("<init>", "(Ljava/io/File;Z)V", ACC_PUBLIC, |vm, _, args| {
+        let path = crate::file::file_path(vm, ref_arg(args, 1));
+        crate::zip::zip_file_init(vm, receiver(args), &path)
+    }),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Z)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let path = string_arg(vm, args[1])?;
+            crate::zip::zip_file_init(vm, receiver(args), &path)
+        },
+    ),
+    method(
+        "getJarEntry",
+        "(Ljava/lang/String;)Ljava/util/jar/JarEntry;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let name = vm.string_or_empty(ref_arg(args, 1));
+            for entry in jar_file_entries(vm, this) {
+                if jar_file_entry_name(vm, entry) == name {
+                    let class = vm.resolve_class("java/util/jar/JarEntry")?;
+                    let jar_entry = vm.new_instance(class)?;
+                    let (declaring, ctor) = vm
+                        .find_method(class, "<init>", "(Ljava/lang/String;)V")
+                        .ok_or_else(|| VmError::internal("JarEntry(String) missing"))?;
+                    let name_ref = vm.make_string(&name)?;
+                    vm.invoke_method(
+                        declaring,
+                        ctor,
+                        vec![Value::Ref(jar_entry), Value::Ref(name_ref)],
+                    )?;
+                    return object(jar_entry);
+                }
+            }
+            object(ObjectRef::NULL)
+        },
+    ),
+    method(
+        "getManifest",
+        "()Ljava/util/jar/Manifest;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let has_manifest = jar_file_entries(vm, this)
+                .iter()
+                .any(|entry| jar_file_entry_name(vm, *entry) == "META-INF/MANIFEST.MF");
+            if !has_manifest {
+                return object(ObjectRef::NULL);
+            }
+            let data = crate::zip::zip_file_read(vm, this, "META-INF/MANIFEST.MF")?;
+            let input = crate::zip::zip_file_input_stream(vm, &data)?.as_ref();
+            let class = vm.resolve_class("java/util/jar/Manifest")?;
+            let manifest = vm.new_instance(class)?;
+            let (declaring, ctor) = vm
+                .find_method(class, "<init>", "(Ljava/io/InputStream;)V")
+                .ok_or_else(|| VmError::internal("Manifest(InputStream) missing"))?;
+            vm.invoke_method(
+                declaring,
+                ctor,
+                vec![Value::Ref(manifest), Value::Ref(input)],
+            )?;
+            object(manifest)
+        },
+    ),
+];
+
+/// `java.util.jar.JarFile`: a zip archive with jar-specific entry and manifest access.
+pub(crate) const JAR_FILE: oxjvm_vm::NativeClass = class(
+    "java/util/jar/JarFile",
+    Some("java/util/zip/ZipFile"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &JAR_FILE_METHODS,
+    None,
+);
