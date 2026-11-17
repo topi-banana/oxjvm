@@ -143,12 +143,13 @@ pub fn is_non_writable_property(key: &str) -> bool {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 912] = [
+static REGISTRY: [NativeClass; 917] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
     lang::STRING,
     lang::STRING_BUILDER,
+    lang::FORMATTER,
     lang::STRING_BUFFER,
     lang::SYSTEM,
     lang::IO,
@@ -350,6 +351,7 @@ static REGISTRY: [NativeClass; 912] = [
     throwable::UNSUPPORTED_CHARSET_EXCEPTION,
     throwable::ILLEGAL_MONITOR_STATE_EXCEPTION,
     throwable::ILLEGAL_STATE_EXCEPTION,
+    throwable::FORMATTER_CLOSED_EXCEPTION,
     throwable::INDEX_OUT_OF_BOUNDS_EXCEPTION,
     throwable::ARRAY_INDEX_OUT_OF_BOUNDS_EXCEPTION,
     throwable::STRING_INDEX_OUT_OF_BOUNDS_EXCEPTION,
@@ -399,6 +401,8 @@ static REGISTRY: [NativeClass; 912] = [
     io::FILE_NOT_FOUND_EXCEPTION,
     io::UNSUPPORTED_ENCODING_EXCEPTION,
     io::EOF_EXCEPTION,
+    io::OBJECT_STREAM_EXCEPTION,
+    io::INVALID_OBJECT_EXCEPTION,
     io::CLOSEABLE,
     io::FLUSHABLE,
     io::OUTPUT_STREAM,
@@ -798,6 +802,7 @@ static REGISTRY: [NativeClass; 912] = [
     text::STRING_CHARACTER_ITERATOR,
     time::DURATION,
     time::DATE_TIME_FORMATTER,
+    time::FORMAT_STYLE,
     time::ZONED_DATE_TIME,
     time::INSTANT,
     time::LOCAL_DATE,

@@ -1220,6 +1220,11 @@ exception!(
     "java/lang/RuntimeException"
 );
 exception!(
+    FORMATTER_CLOSED_EXCEPTION,
+    "java/util/FormatterClosedException",
+    "java/lang/IllegalStateException"
+);
+exception!(
     INDEX_OUT_OF_BOUNDS_EXCEPTION,
     "java/lang/IndexOutOfBoundsException",
     "java/lang/RuntimeException"

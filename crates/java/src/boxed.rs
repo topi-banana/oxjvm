@@ -2522,7 +2522,7 @@ pub(crate) const FLOAT: oxjvm_vm::NativeClass = class(
     Some(float_clinit),
 );
 
-const DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
+const DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
     method("<init>", "(D)V", ACC_PUBLIC, |vm, _, args| {
         write_value_long(
             vm,
@@ -2655,6 +2655,26 @@ const DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
             let instance = vm.new_instance(class)?;
             write_value_long(vm, instance, crate::double_arg(args, 0).to_bits() as i64);
             object(instance)
+        },
+    ),
+    method(
+        "valueOf",
+        "(Ljava/lang/String;)Ljava/lang/Double;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = string_arg(vm, args[0])?;
+            match format::parse_double(&text) {
+                Some(value) => {
+                    let class = vm.resolve_class("java/lang/Double")?;
+                    let instance = vm.new_instance(class)?;
+                    write_value_long(vm, instance, value.to_bits() as i64);
+                    object(instance)
+                }
+                None => Err(vm.throw_new(
+                    "java/lang/NumberFormatException",
+                    Some(&alloc::format!("For input string: \"{text}\"")),
+                )),
+            }
         },
     ),
     method("isNaN", "(D)Z", ACC_PUBLIC | ACC_STATIC, |_, _, args| {

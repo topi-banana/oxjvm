@@ -119,12 +119,14 @@ impl NumberPattern {
 
     /// Format a number with this pattern.
     fn format(&self, value: f64) -> String {
-        self.format_with(value, Rounding::HalfUp)
+        self.format_with(value, Rounding::HalfUp, false)
             .unwrap_or_else(|| oxjvm_vm::format::double_to_string(value))
     }
 
     /// Format with an explicit rounding mode; `None` when `UNNECESSARY` finds a tie.
-    fn format_with(&self, value: f64, mode: Rounding) -> Option<String> {
+    /// `compat` selects the legacy `jdk.compat.DecimalFormat` behavior, which rounds the
+    /// double's full exact binary expansion instead of its shortest round-trip digits.
+    fn format_with(&self, value: f64, mode: Rounding, compat: bool) -> Option<String> {
         let scaled = if self.percent { value * 100.0 } else { value };
         if scaled.is_nan() {
             return Some(String::from("NaN"));
@@ -160,7 +162,14 @@ impl NumberPattern {
         // at the requested fraction position, deciding ties from the value's exact binary
         // value.  When the rounding position lies beyond the shortest digits (very large or
         // very small magnitudes) no rounding touches them and they are kept as they are.
-        let (integer_text, mut fraction_text) = if magnitude == 0.0 {
+        let (integer_text, mut fraction_text) = if compat && magnitude != 0.0 {
+            let text = exact_double_digits(magnitude);
+            let (integer, fraction) = match text.split_once('.') {
+                Some((integer, fraction)) => (integer, fraction),
+                None => (text.as_str(), ""),
+            };
+            round_decimal_digits(integer, fraction, digits, mode)?
+        } else if magnitude == 0.0 {
             (
                 String::from("0"),
                 alloc::format!("{:0width$}", 0, width = digits),
@@ -814,6 +823,25 @@ fn decimal_exponent(magnitude: f64) -> i32 {
     exponent
 }
 
+/// Fixed-point text with exactly `digits` fraction digits, the way `String.format` and
+/// `java.util.Formatter` write `%f`: the shortest round-trip digits, rounded half-up at
+/// the requested position, with ties decided from the exact binary value.
+pub(crate) fn format_fixed_jdk(value: f64, digits: usize) -> String {
+    if value.is_nan() {
+        return String::from("NaN");
+    }
+    if value.is_infinite() {
+        return String::from(if value > 0.0 { "Infinity" } else { "-Infinity" });
+    }
+    let mut pattern = NumberPattern::parse("0");
+    pattern.grouping = 0;
+    pattern.min_fraction = digits;
+    pattern.max_fraction = digits;
+    pattern
+        .format_with(value, Rounding::HalfUp, false)
+        .unwrap_or_else(|| oxjvm_vm::format::double_to_string(value))
+}
+
 /// The digits of a whole number held as an exact integer.
 fn format_u128(value: u128) -> String {
     alloc::format!("{value}")
@@ -1266,19 +1294,19 @@ fn number_to_text(vm: &mut Vm<'_>, argument: ObjectRef) -> String {
 }
 
 /// Whether a reference is a `java.lang.Double`.
-fn is_double(vm: &mut Vm<'_>, reference: ObjectRef) -> bool {
+pub(crate) fn is_double(vm: &mut Vm<'_>, reference: ObjectRef) -> bool {
     vm.resolve_class_lenient_pub("java/lang/Double")
         .is_some_and(|class| vm.is_instance(reference, class))
 }
 
 /// Whether a reference is a `java.lang.Float`.
-fn is_float(vm: &mut Vm<'_>, reference: ObjectRef) -> bool {
+pub(crate) fn is_float(vm: &mut Vm<'_>, reference: ObjectRef) -> bool {
     vm.resolve_class_lenient_pub("java/lang/Float")
         .is_some_and(|class| vm.is_instance(reference, class))
 }
 
 /// Whether a reference is a `java.lang.Long`.
-fn is_long(vm: &mut Vm<'_>, reference: ObjectRef) -> bool {
+pub(crate) fn is_long(vm: &mut Vm<'_>, reference: ObjectRef) -> bool {
     vm.resolve_class_lenient_pub("java/lang/Long")
         .is_some_and(|class| vm.is_instance(reference, class))
 }
@@ -1941,7 +1969,9 @@ fn number_format_state(vm: &mut Vm<'_>, format: ObjectRef) -> (NumberPattern, Ro
 /// Format a number under a format's settings; `None` when `UNNECESSARY` finds a fraction.
 fn format_number_stateful(vm: &mut Vm<'_>, format: ObjectRef, value: f64) -> Option<String> {
     let (pattern, mode) = number_format_state(vm, format);
-    pattern.format_with(value, mode)
+    let compat = crate::lang::system_property(vm, "jdk.compat.DecimalFormat")
+        .is_some_and(|text| text.eq_ignore_ascii_case("true"));
+    pattern.format_with(value, mode, compat)
 }
 
 /// The text of a number argument, in the form the JDK formats.
@@ -4331,11 +4361,23 @@ fn number_parse_boxed(vm: &mut Vm<'_>, text: &str) -> Result<Value, VmError> {
     }
     let value = parse_number_text(text)
         .ok_or_else(|| vm.throw_new("java/text/ParseException", Some("Unparsable number")))?;
-    if !digits.contains('.') && value >= i64::MIN as f64 && value <= i64::MAX as f64 {
-        crate::boxed::boxed_long(vm, value as i64)
-    } else {
-        crate::boxed::boxed_double(vm, value)
+    // The JDK returns a Long when the parsed value is a whole number that fits in a long,
+    // even when a zero fraction such as ".00" is written; negative zero stays a Double.
+    // The range test uses the exact integer text, since an f64 cannot tell Long.MIN_VALUE-1
+    // from Long.MIN_VALUE.
+    let (integer, fraction) = match digits.split_once('.') {
+        Some((integer, fraction)) => (integer, fraction),
+        None => (digits.as_str(), ""),
+    };
+    if fraction.bytes().all(|byte| byte == b'0') {
+        if let Ok(exact) = integer.parse::<i128>() {
+            let negative_zero = exact == 0 && integer.starts_with('-');
+            if !negative_zero && (i64::MIN as i128..=i64::MAX as i128).contains(&exact) {
+                return crate::boxed::boxed_long(vm, exact as i64);
+            }
+        }
     }
+    crate::boxed::boxed_double(vm, value)
 }
 
 /// The milliseconds a date text holds, read with the patterns the runtime writes.
@@ -5214,7 +5256,7 @@ fn message_format_at(vm: &mut Vm<'_>, format: ObjectRef, index: i32) -> ObjectRe
 }
 
 /// The locale a message uses when none was given.
-fn default_locale(vm: &mut Vm<'_>) -> ObjectRef {
+pub(crate) fn default_locale(vm: &mut Vm<'_>) -> ObjectRef {
     let Some(class) = vm.resolve_class_lenient_pub("java/util/Locale") else {
         return ObjectRef::NULL;
     };

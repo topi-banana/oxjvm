@@ -493,6 +493,130 @@ const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     ),
 ];
 
+// -------------------------------------------------------------------------------------------
+// java.time.format.FormatStyle
+// -------------------------------------------------------------------------------------------
+
+const FORMAT_STYLE_NAMES: [&str; 4] = ["FULL", "LONG", "MEDIUM", "SHORT"];
+
+fn format_style_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/time/format/FormatStyle")?;
+    for (index, name) in FORMAT_STYLE_NAMES.iter().enumerate() {
+        let instance = vm.new_instance(class)?;
+        if let Some((declaring, field)) = vm.find_field_opt(class, "ordinal", "I") {
+            vm.set_instance_int(instance, declaring, field, index as i32);
+        }
+        vm.set_static_value(
+            class,
+            name,
+            "Ljava/time/format/FormatStyle;",
+            Value::Ref(instance),
+        );
+    }
+    Ok(())
+}
+
+const FORMAT_STYLE_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method("ordinal", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_int_field(vm, receiver(args), "ordinal"))
+    }),
+    method("name", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
+        let index = read_int_field(vm, receiver(args), "ordinal").clamp(0, 3) as usize;
+        object(vm.make_string(FORMAT_STYLE_NAMES[index])?)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let index = read_int_field(vm, receiver(args), "ordinal").clamp(0, 3) as usize;
+            object(vm.make_string(FORMAT_STYLE_NAMES[index])?)
+        },
+    ),
+    method(
+        "values",
+        "()[Ljava/time/format/FormatStyle;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/time/format/FormatStyle")?;
+            vm.ensure_initialized(class)?;
+            let array = vm.allocate_object_array(class, FORMAT_STYLE_NAMES.len())?;
+            for (index, name) in FORMAT_STYLE_NAMES.iter().enumerate() {
+                if let Some(value) =
+                    vm.read_static_ref_if_set(class, name, "Ljava/time/format/FormatStyle;")
+                {
+                    vm.array_set_ref(array, index, value)?;
+                }
+            }
+            object(array)
+        },
+    ),
+    method(
+        "valueOf",
+        "(Ljava/lang/String;)Ljava/time/format/FormatStyle;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = vm.string_or_empty(ref_arg(args, 0));
+            let class = vm.resolve_class("java/time/format/FormatStyle")?;
+            vm.ensure_initialized(class)?;
+            for candidate in FORMAT_STYLE_NAMES {
+                if candidate == name {
+                    if let Some(value) = vm.read_static_ref_if_set(
+                        class,
+                        candidate,
+                        "Ljava/time/format/FormatStyle;",
+                    ) {
+                        return object(value);
+                    }
+                }
+            }
+            Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some(&alloc::format!(
+                    "No enum constant java.time.format.FormatStyle.{name}"
+                )),
+            ))
+        },
+    ),
+];
+
+/// `java.time.format.FormatStyle`: the length of a localized date/time format.
+pub(crate) const FORMAT_STYLE: oxjvm_vm::NativeClass = class(
+    "java/time/format/FormatStyle",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("ordinal", "I", ACC_PRIVATE | ACC_FINAL, None),
+        field(
+            "FULL",
+            "Ljava/time/format/FormatStyle;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "LONG",
+            "Ljava/time/format/FormatStyle;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "MEDIUM",
+            "Ljava/time/format/FormatStyle;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "SHORT",
+            "Ljava/time/format/FormatStyle;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+    ],
+    &FORMAT_STYLE_METHODS,
+    Some(format_style_clinit),
+);
+
 fn zoned_date_time_new(vm: &mut Vm<'_>, millis: i64) -> Result<Value, VmError> {
     let class = vm.resolve_class("java/time/ZonedDateTime")?;
     let instance = vm.new_instance(class)?;

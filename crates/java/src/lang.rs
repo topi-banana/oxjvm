@@ -3073,14 +3073,207 @@ pub(crate) fn format_string(
 }
 
 fn format_fixed(value: f64, digits: usize) -> String {
-    if value.is_nan() {
-        return "NaN".into();
+    crate::format::format_fixed_jdk(value, digits)
+}
+
+// -------------------------------------------------------------------------------------------
+// java.util.Formatter
+// -------------------------------------------------------------------------------------------
+
+/// `java.util.Formatter`: printf-style formatting into an appendable.
+pub(crate) const FORMATTER: oxjvm_vm::NativeClass = class(
+    "java/util/Formatter",
+    Some("java/lang/Object"),
+    &["java/io/Closeable", "java/io/Flushable"],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("a", "Ljava/lang/Appendable;", ACC_PRIVATE, None),
+        field("locale", "Ljava/util/Locale;", ACC_PRIVATE, None),
+        field("closed", "Z", ACC_PRIVATE, None),
+    ],
+    &FORMATTER_METHODS,
+    None,
+);
+
+const FORMATTER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        formatter_init(vm, receiver(args), ObjectRef::NULL, ObjectRef::NULL)
+    }),
+    method(
+        "<init>",
+        "(Ljava/util/Locale;)V",
+        ACC_PUBLIC,
+        |vm, _, args| formatter_init(vm, receiver(args), ObjectRef::NULL, ref_arg(args, 1)),
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/Appendable;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let out = ref_arg(args, 1);
+            if out.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            formatter_init(vm, receiver(args), out, ObjectRef::NULL)
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/Appendable;Ljava/util/Locale;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let out = ref_arg(args, 1);
+            if out.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            formatter_init(vm, receiver(args), out, ref_arg(args, 2))
+        },
+    ),
+    method(
+        "format",
+        "(Ljava/lang/String;[Ljava/lang/Object;)Ljava/util/Formatter;",
+        ACC_PUBLIC,
+        |vm, _, args| formatter_format(vm, receiver(args), ref_arg(args, 1), ref_arg(args, 2)),
+    ),
+    method(
+        "format",
+        "(Ljava/util/Locale;Ljava/lang/String;[Ljava/lang/Object;)Ljava/util/Formatter;",
+        ACC_PUBLIC,
+        |vm, _, args| formatter_format(vm, receiver(args), ref_arg(args, 2), ref_arg(args, 3)),
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            formatter_check_open(vm, this)?;
+            let out = formatter_out(vm, this);
+            let (declaring, method) =
+                vm.resolve_virtual_method(out, "toString", "()Ljava/lang/String;")?;
+            let text = vm
+                .invoke_method(declaring, method, vec![Value::Ref(out)])?
+                .as_ref();
+            object(text)
+        },
+    ),
+    method(
+        "locale",
+        "()Ljava/util/Locale;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            formatter_check_open(vm, this)?;
+            let locale = vm
+                .read_ref_field(this, vm.class_of(this), "locale", "Ljava/util/Locale;")
+                .unwrap_or(ObjectRef::NULL);
+            object(locale)
+        },
+    ),
+    method(
+        "out",
+        "()Ljava/lang/Appendable;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            formatter_check_open(vm, this)?;
+            object(formatter_out(vm, this))
+        },
+    ),
+    method("flush", "()V", ACC_PUBLIC, |vm, _, args| {
+        formatter_check_open(vm, receiver(args))?;
+        void()
+    }),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if read_int_field(vm, this, "closed") == 0 {
+            write_int_field(vm, this, "closed", 1);
+        }
+        void()
+    }),
+    method(
+        "ioException",
+        "()Ljava/io/IOException;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+];
+
+/// Set up a formatter's destination and locale, creating a builder when none was given.
+fn formatter_init(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    out: ObjectRef,
+    locale: ObjectRef,
+) -> Result<Value, VmError> {
+    let class = vm.class_of(this);
+    let out = if out.is_null() {
+        let builder = vm.resolve_class("java/lang/StringBuilder")?;
+        let instance = vm.new_instance(builder)?;
+        builder_store(vm, instance, &[], 0)?;
+        instance
+    } else {
+        out
+    };
+    let locale = if locale.is_null() {
+        crate::format::default_locale(vm)
+    } else {
+        locale
+    };
+    let (declaring, field) = vm.find_field(class, "a", "Ljava/lang/Appendable;")?;
+    vm.set_instance_ref(this, declaring, field, out);
+    let (declaring, field) = vm.find_field(class, "locale", "Ljava/util/Locale;")?;
+    vm.set_instance_ref(this, declaring, field, locale);
+    void()
+}
+
+/// The appendable a formatter writes to.
+fn formatter_out(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "a", "Ljava/lang/Appendable;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+/// Throw `FormatterClosedException` when the formatter has been closed.
+fn formatter_check_open(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    if read_int_field(vm, this, "closed") != 0 {
+        return Err(vm.throw_new("java/util/FormatterClosedException", None));
     }
-    if value.is_infinite() {
-        return if value > 0.0 { "Infinity" } else { "-Infinity" }.into();
+    Ok(())
+}
+
+/// Format the arguments and append the text to the formatter's destination.
+fn formatter_format(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    format: ObjectRef,
+    args: ObjectRef,
+) -> Result<Value, VmError> {
+    formatter_check_open(vm, this)?;
+    let format = vm.string_or_empty(format);
+    let mut arguments = Vec::new();
+    if let Some(oxjvm_vm::ObjectData::Array(oxjvm_vm::ArrayData::Reference(elements))) =
+        vm.heap.get(args).map(|object| &object.data)
+    {
+        arguments = elements.clone();
     }
-    let text = alloc::format!("{value:.digits$}");
-    text
+    let text = format_string(vm, &format, &arguments)?;
+    let out = formatter_out(vm, this);
+    if vm.find_field_opt(vm.class_of(out), "count", "I").is_some() {
+        builder_append_text(vm, out, &text)?;
+    } else {
+        let sequence = vm.make_string(&text)?;
+        let (declaring, method) = vm.resolve_virtual_method(
+            out,
+            "append",
+            "(Ljava/lang/CharSequence;)Ljava/lang/Appendable;",
+        )?;
+        vm.invoke_method(
+            declaring,
+            method,
+            vec![Value::Ref(out), Value::Ref(sequence)],
+        )?;
+    }
+    object(this)
 }
 
 fn object_to_long(vm: &mut Vm<'_>, value: ObjectRef) -> i64 {
@@ -3095,16 +3288,20 @@ fn object_to_long(vm: &mut Vm<'_>, value: ObjectRef) -> i64 {
 }
 
 fn object_to_double(vm: &mut Vm<'_>, value: ObjectRef) -> f64 {
-    match vm.heap.get(value).map(|object| &object.data) {
-        Some(oxjvm_vm::ObjectData::Instance(fields)) if !fields.is_empty() => match fields[0] {
-            Value::Int(value) => f64::from(value),
-            Value::Long(value) => value as f64,
-            Value::Float(value) => f64::from(value),
-            Value::Double(value) => value,
-            _ => 0.0,
-        },
-        _ => 0.0,
+    if value.is_null() {
+        return 0.0;
     }
+    // Double and Float boxes store their value as raw bits, not as a numeric cast.
+    if crate::format::is_double(vm, value) {
+        return f64::from_bits(crate::boxed::read_value_long(vm, value) as u64);
+    }
+    if crate::format::is_float(vm, value) {
+        return f32::from_bits(crate::boxed::read_value_int(vm, value) as u32) as f64;
+    }
+    if crate::format::is_long(vm, value) {
+        return crate::boxed::read_value_long(vm, value) as f64;
+    }
+    crate::boxed::read_value_int(vm, value) as f64
 }
 
 fn string_join(

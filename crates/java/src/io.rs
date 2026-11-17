@@ -67,6 +67,16 @@ io_exception!(
     "java/io/IOException"
 );
 io_exception!(EOF_EXCEPTION, "java/io/EOFException", "java/io/IOException");
+io_exception!(
+    OBJECT_STREAM_EXCEPTION,
+    "java/io/ObjectStreamException",
+    "java/io/IOException"
+);
+io_exception!(
+    INVALID_OBJECT_EXCEPTION,
+    "java/io/InvalidObjectException",
+    "java/io/ObjectStreamException"
+);
 
 pub(crate) const CLOSEABLE: oxjvm_vm::NativeClass = class(
     "java/io/Closeable",
