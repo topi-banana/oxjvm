@@ -3909,9 +3909,14 @@ const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
         ACC_PUBLIC,
         builder_index_of,
     ),
-    method("capacity", "()I", ACC_PUBLIC, builder_length),
-    method("ensureCapacity", "(I)V", ACC_PUBLIC, |_, _, _| void()),
-    method("trimToSize", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("capacity", "()I", ACC_PUBLIC, builder_capacity_method),
+    method(
+        "ensureCapacity",
+        "(I)V",
+        ACC_PUBLIC,
+        builder_ensure_capacity,
+    ),
+    method("trimToSize", "()V", ACC_PUBLIC, builder_trim_to_size),
     method(
         "append",
         "([CII)Ljava/lang/StringBuilder;",
@@ -3960,7 +3965,7 @@ const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
     ),
 ];
 
-const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
+const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
     method("<init>", "()V", ACC_PUBLIC, builder_init),
     method("<init>", "(I)V", ACC_PUBLIC, builder_init_capacity),
     method(
@@ -4172,6 +4177,14 @@ const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
         ACC_PUBLIC | ACC_BRIDGE | ACC_SYNTHETIC,
         builder_compare_to,
     ),
+    method("capacity", "()I", ACC_PUBLIC, builder_capacity_method),
+    method(
+        "ensureCapacity",
+        "(I)V",
+        ACC_PUBLIC,
+        builder_ensure_capacity,
+    ),
+    method("trimToSize", "()V", ACC_PUBLIC, builder_trim_to_size),
 ];
 
 fn builder_state(vm: &Vm<'_>, this: ObjectRef) -> (Vec<u16>, usize) {
@@ -4223,9 +4236,22 @@ fn builder_store(
     let (declaring, field) = vm.find_field(class, "value", "[C")?;
     let array_slot = vm.classes.get(declaring).fields[field as usize].slot as usize;
     let need = units.len().max(count);
-    let existing = vm.read_ref_field(this, declaring, "value", "[C");
-    if existing.is_none() || vm.array_length(existing.expect("checked")).unwrap_or(0) < need {
-        let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Char, need.max(16))?;
+    let existing = vm
+        .read_ref_field(this, declaring, "value", "[C")
+        .filter(|array| !array.is_null());
+    let existing_len = match existing {
+        Some(array) => vm.array_length(array)?,
+        None => 0,
+    };
+    if existing.is_none() || existing_len < need {
+        // Grow with the JDK policy (old capacity * 2 + 2), never below the content.
+        let new_cap = if existing.is_none() {
+            need.max(16)
+        } else {
+            let grown = (existing_len as i64) * 2 + 2;
+            need.max(grown.min(i32::MAX as i64) as usize)
+        };
+        let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Char, new_cap)?;
         vm.set_instance_ref(this, declaring, field, array);
     }
     let array = vm
@@ -4253,6 +4279,63 @@ fn write_int_field_named(
     Ok(())
 }
 
+/// The backing array length, i.e. the current capacity (not the content length).
+fn builder_capacity(vm: &mut Vm<'_>, this: ObjectRef) -> Result<i32, VmError> {
+    let class = vm.class_of(this);
+    match vm.read_ref_field(this, class, "value", "[C") {
+        Some(array) if !array.is_null() => vm.array_length(array).map(|len| len as i32),
+        _ => Ok(0),
+    }
+}
+
+fn builder_capacity_method(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    int(builder_capacity(vm, receiver(args))?)
+}
+
+/// Reallocate the backing array to `new_cap`, preserving the content; `count`
+/// is left unchanged (the caller guarantees `count <= new_cap`).
+fn builder_resize(vm: &mut Vm<'_>, this: ObjectRef, new_cap: usize) -> Result<(), VmError> {
+    let (units, count) = builder_state(vm, this);
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, "value", "[C")?;
+    let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Char, new_cap)?;
+    for (index, unit) in units.iter().take(count).enumerate() {
+        vm.array_set(array, index as i32, Value::Int(i32::from(*unit)), false)?;
+    }
+    vm.set_instance_ref(this, declaring, field, array);
+    Ok(())
+}
+
+fn builder_ensure_capacity(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let minimum = int_arg(args, 1);
+    let this = receiver(args);
+    let current = builder_capacity(vm, this)?;
+    if minimum > current {
+        let grown = (current as i64) * 2 + 2;
+        let new_cap = (minimum as i64).max(grown).min(i32::MAX as i64) as usize;
+        builder_resize(vm, this, new_cap)?;
+    }
+    void()
+}
+
+fn builder_trim_to_size(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let (_, count) = builder_state(vm, receiver(args));
+    builder_resize(vm, receiver(args), count)?;
+    void()
+}
+
 fn builder_init(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
@@ -4267,7 +4350,15 @@ fn builder_init_capacity(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    builder_init(vm, _c, args)
+    let capacity = int_arg(args, 1);
+    if capacity < 0 {
+        return Err(vm.throw_new(
+            "java/lang/NegativeArraySizeException",
+            Some(&alloc::format!("{capacity}")),
+        ));
+    }
+    builder_resize(vm, receiver(args), capacity as usize)?;
+    void()
 }
 
 fn builder_init_string(
@@ -4279,6 +4370,7 @@ fn builder_init_string(
         .string_utf16(ref_arg(args, 1))
         .map(<[u16]>::to_vec)
         .unwrap_or_default();
+    builder_resize(vm, receiver(args), text.len() + 16)?;
     builder_store(vm, receiver(args), &text, text.len())?;
     void()
 }
@@ -4293,6 +4385,7 @@ fn builder_init_sequence(
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
     let units = char_sequence_units(vm, reference)?;
+    builder_resize(vm, receiver(args), units.len() + 16)?;
     builder_store(vm, receiver(args), &units, units.len())?;
     void()
 }
@@ -4371,14 +4464,15 @@ pub(crate) fn builder_append_text(
     text: &str,
 ) -> Result<Value, VmError> {
     let (mut units, count) = builder_state(vm, this);
-    if units.len() < count + text.len() {
-        units.resize(count + text.len(), 0);
-    }
     let new_units: Vec<u16> = text.encode_utf16().collect();
+    let needed = count + new_units.len();
+    if units.len() < needed {
+        units.resize(needed, 0);
+    }
     for (index, unit) in new_units.iter().enumerate() {
         units[count + index] = *unit;
     }
-    builder_store(vm, this, &units, count + new_units.len())?;
+    builder_store(vm, this, &units, needed)?;
     object(this)
 }
 
