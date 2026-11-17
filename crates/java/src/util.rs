@@ -14724,3 +14724,203 @@ pub(crate) const CALENDAR_BUILDER: oxjvm_vm::NativeClass = class(
     &CALENDAR_BUILDER_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// StringJoiner
+// -------------------------------------------------------------------------------------------
+
+const STRING_JOINER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method(
+        "<init>",
+        "(Ljava/lang/CharSequence;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let delimiter = ref_arg(args, 1);
+            if delimiter.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let text = vm.string_or_empty(delimiter);
+            string_joiner_init(vm, this, &text, "", "")?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;Ljava/lang/CharSequence;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let delimiter = ref_arg(args, 1);
+            let prefix = ref_arg(args, 2);
+            let suffix = ref_arg(args, 3);
+            if delimiter.is_null() || prefix.is_null() || suffix.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let delimiter_text = vm.string_or_empty(delimiter);
+            let prefix_text = vm.string_or_empty(prefix);
+            let suffix_text = vm.string_or_empty(suffix);
+            string_joiner_init(vm, this, &delimiter_text, &prefix_text, &suffix_text)?;
+            void()
+        },
+    ),
+    method(
+        "add",
+        "(Ljava/lang/CharSequence;)Ljava/util/StringJoiner;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let element = ref_arg(args, 1);
+            let text = if element.is_null() {
+                String::from("null")
+            } else {
+                vm.string_or_empty(element)
+            };
+            let class = vm.class_of(this);
+            let mut content = vm
+                .read_string_field(this, class, "content")
+                .unwrap_or_default();
+            if string_joiner_started(vm, this) {
+                let delimiter = vm
+                    .read_string_field(this, class, "delimiter")
+                    .unwrap_or_default();
+                content.push_str(&delimiter);
+            }
+            content.push_str(&text);
+            vm.set_string_field(this, class, "content", &content)?;
+            string_joiner_mark_started(vm, this);
+            object(this)
+        },
+    ),
+    method(
+        "merge",
+        "(Ljava/util/StringJoiner;)Ljava/util/StringJoiner;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if other.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            if string_joiner_started(vm, other) {
+                let other_content = vm
+                    .read_string_field(other, vm.class_of(other), "content")
+                    .unwrap_or_default();
+                let class = vm.class_of(this);
+                let mut content = vm
+                    .read_string_field(this, class, "content")
+                    .unwrap_or_default();
+                if string_joiner_started(vm, this) {
+                    let delimiter = vm
+                        .read_string_field(this, class, "delimiter")
+                        .unwrap_or_default();
+                    content.push_str(&delimiter);
+                }
+                content.push_str(&other_content);
+                vm.set_string_field(this, class, "content", &content)?;
+                string_joiner_mark_started(vm, this);
+            }
+            object(this)
+        },
+    ),
+    method(
+        "setEmptyValue",
+        "(Ljava/lang/CharSequence;)Ljava/util/StringJoiner;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let empty = ref_arg(args, 1);
+            if empty.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let text = vm.string_or_empty(empty);
+            vm.set_string_field(this, vm.class_of(this), "emptyValue", &text)?;
+            object(this)
+        },
+    ),
+    method("length", "()I", ACC_PUBLIC, |vm, _, args| {
+        let text = string_joiner_text(vm, receiver(args));
+        int(text.encode_utf16().count() as i32)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = string_joiner_text(vm, receiver(args));
+            object(vm.make_string(&text)?)
+        },
+    ),
+];
+
+fn string_joiner_init(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    delimiter: &str,
+    prefix: &str,
+    suffix: &str,
+) -> Result<(), VmError> {
+    let class = vm.class_of(this);
+    vm.set_string_field(this, class, "delimiter", delimiter)?;
+    vm.set_string_field(this, class, "prefix", prefix)?;
+    vm.set_string_field(this, class, "suffix", suffix)?;
+    let mut empty = String::from(prefix);
+    empty.push_str(suffix);
+    vm.set_string_field(this, class, "emptyValue", &empty)?;
+    vm.set_string_field(this, class, "content", "")?;
+    Ok(())
+}
+
+fn string_joiner_started(vm: &Vm<'_>, this: ObjectRef) -> bool {
+    vm.read_instance_int_named(this, vm.class_of(this), "started", "Z")
+        .unwrap_or(0)
+        != 0
+}
+
+fn string_joiner_mark_started(vm: &mut Vm<'_>, this: ObjectRef) {
+    let class = vm.class_of(this);
+    if let Some((declaring, field)) = vm.find_field_opt(class, "started", "Z") {
+        vm.set_instance_int(this, declaring, field, 1);
+    }
+}
+
+/// The rendered joiner: `emptyValue` before any element is added, otherwise
+/// `prefix + content + suffix`.
+fn string_joiner_text(vm: &Vm<'_>, this: ObjectRef) -> String {
+    let class = vm.class_of(this);
+    if !string_joiner_started(vm, this) {
+        return vm
+            .read_string_field(this, class, "emptyValue")
+            .unwrap_or_default();
+    }
+    let mut text = vm
+        .read_string_field(this, class, "prefix")
+        .unwrap_or_default();
+    text.push_str(
+        &vm.read_string_field(this, class, "content")
+            .unwrap_or_default(),
+    );
+    text.push_str(
+        &vm.read_string_field(this, class, "suffix")
+            .unwrap_or_default(),
+    );
+    text
+}
+
+/// `java.util.StringJoiner`: delimiter/prefix/suffix joining of `CharSequence` elements.
+pub(crate) const STRING_JOINER: oxjvm_vm::NativeClass = class(
+    "java/util/StringJoiner",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("delimiter", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("prefix", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("suffix", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("emptyValue", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("content", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("started", "Z", ACC_PRIVATE, None),
+    ],
+    &STRING_JOINER_METHODS,
+    None,
+);

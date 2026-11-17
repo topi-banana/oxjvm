@@ -3,10 +3,17 @@
 //! These are plain objects with a single `value` field; the guest's own concurrency guarantees are
 //! met because the interpreter executes one instruction at a time.
 
+use alloc::string::ToString;
+use alloc::vec;
+
 use oxjvm_classfile::flags::*;
+use oxjvm_vm::{ObjectRef, Value, format};
 
 use crate::boxed::{read_value_int, read_value_long, write_value_int, write_value_long};
-use crate::{boolean, class, field, int, long, method, object, receiver, void};
+use crate::{
+    boolean, class, double, double_arg, field, float, int, long, method, object, receiver, ref_arg,
+    void,
+};
 
 // -------------------------------------------------------------------------------------------
 // AtomicInteger
@@ -157,14 +164,14 @@ const ATOMIC_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         long(i64::from(read_value_int(vm, receiver(args))))
     }),
     method("floatValue", "()F", ACC_PUBLIC, |vm, _, args| {
-        crate::float(read_value_int(vm, receiver(args)) as f32)
+        float(read_value_int(vm, receiver(args)) as f32)
     }),
     method(
         "toString",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let text = oxjvm_vm::format::int_to_string(read_value_int(vm, receiver(args)));
+            let text = format::int_to_string(read_value_int(vm, receiver(args)));
             object(vm.make_string(&text)?)
         },
     ),
@@ -312,14 +319,14 @@ const ATOMIC_LONG_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         long(read_value_long(vm, receiver(args)))
     }),
     method("floatValue", "()F", ACC_PUBLIC, |vm, _, args| {
-        crate::float(read_value_long(vm, receiver(args)) as f32)
+        float(read_value_long(vm, receiver(args)) as f32)
     }),
     method(
         "toString",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let text = oxjvm_vm::format::long_to_string(read_value_long(vm, receiver(args)));
+            let text = format::long_to_string(read_value_long(vm, receiver(args)));
             object(vm.make_string(&text)?)
         },
     ),
@@ -422,16 +429,12 @@ pub(crate) const ATOMIC_BOOLEAN: oxjvm_vm::NativeClass = class(
 // AtomicReference
 // -------------------------------------------------------------------------------------------
 
-fn atomic_reference_value(vm: &oxjvm_vm::Vm<'_>, this: oxjvm_vm::ObjectRef) -> oxjvm_vm::ObjectRef {
+fn atomic_reference_value(vm: &oxjvm_vm::Vm<'_>, this: ObjectRef) -> ObjectRef {
     vm.read_ref_field(this, vm.class_of(this), "value", "Ljava/lang/Object;")
-        .unwrap_or(oxjvm_vm::ObjectRef::NULL)
+        .unwrap_or(ObjectRef::NULL)
 }
 
-fn atomic_reference_set(
-    vm: &mut oxjvm_vm::Vm<'_>,
-    this: oxjvm_vm::ObjectRef,
-    value: oxjvm_vm::ObjectRef,
-) {
+fn atomic_reference_set(vm: &mut oxjvm_vm::Vm<'_>, this: ObjectRef, value: ObjectRef) {
     if let Ok((declaring, field)) = vm.find_field(vm.class_of(this), "value", "Ljava/lang/Object;")
     {
         vm.set_instance_ref(this, declaring, field, value);
@@ -440,7 +443,7 @@ fn atomic_reference_set(
 
 const ATOMIC_REFERENCE_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
-        atomic_reference_set(vm, receiver(args), oxjvm_vm::ObjectRef::NULL);
+        atomic_reference_set(vm, receiver(args), ObjectRef::NULL);
         void()
     }),
     method(
@@ -448,7 +451,7 @@ const ATOMIC_REFERENCE_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         "(Ljava/lang/Object;)V",
         ACC_PUBLIC,
         |vm, _, args| {
-            atomic_reference_set(vm, receiver(args), crate::ref_arg(args, 1));
+            atomic_reference_set(vm, receiver(args), ref_arg(args, 1));
             void()
         },
     ),
@@ -463,7 +466,7 @@ const ATOMIC_REFERENCE_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         "(Ljava/lang/Object;)V",
         ACC_PUBLIC | ACC_FINAL,
         |vm, _, args| {
-            atomic_reference_set(vm, receiver(args), crate::ref_arg(args, 1));
+            atomic_reference_set(vm, receiver(args), ref_arg(args, 1));
             void()
         },
     ),
@@ -474,7 +477,7 @@ const ATOMIC_REFERENCE_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         |vm, _, args| {
             let this = receiver(args);
             let previous = atomic_reference_value(vm, this);
-            atomic_reference_set(vm, this, crate::ref_arg(args, 1));
+            atomic_reference_set(vm, this, ref_arg(args, 1));
             object(previous)
         },
     ),
@@ -484,10 +487,10 @@ const ATOMIC_REFERENCE_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         ACC_PUBLIC | ACC_FINAL,
         |vm, _, args| {
             let this = receiver(args);
-            let expected = crate::ref_arg(args, 1);
+            let expected = ref_arg(args, 1);
             let current = atomic_reference_value(vm, this);
             if current == expected {
-                atomic_reference_set(vm, this, crate::ref_arg(args, 2));
+                atomic_reference_set(vm, this, ref_arg(args, 2));
                 boolean(true)
             } else {
                 boolean(false)
@@ -500,10 +503,10 @@ const ATOMIC_REFERENCE_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         ACC_PUBLIC | ACC_FINAL,
         |vm, _, args| {
             let this = receiver(args);
-            let expected = crate::ref_arg(args, 1);
+            let expected = ref_arg(args, 1);
             let current = atomic_reference_value(vm, this);
             if current == expected {
-                atomic_reference_set(vm, this, crate::ref_arg(args, 2));
+                atomic_reference_set(vm, this, ref_arg(args, 2));
                 boolean(true)
             } else {
                 boolean(false)
@@ -515,7 +518,7 @@ const ATOMIC_REFERENCE_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         "(Ljava/lang/Object;)V",
         ACC_PUBLIC | ACC_FINAL,
         |vm, _, args| {
-            atomic_reference_set(vm, receiver(args), crate::ref_arg(args, 1));
+            atomic_reference_set(vm, receiver(args), ref_arg(args, 1));
             void()
         },
     ),
@@ -527,7 +530,7 @@ const ATOMIC_REFERENCE_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
             let value = atomic_reference_value(vm, receiver(args));
             let text = vm.display_value(
                 &oxjvm_classfile::FieldType::Object("java/lang/Object".into()),
-                oxjvm_vm::Value::Ref(value),
+                Value::Ref(value),
             )?;
             object(vm.make_string(&text)?)
         },
@@ -547,5 +550,361 @@ pub(crate) const ATOMIC_REFERENCE: oxjvm_vm::NativeClass = class(
         None,
     )],
     &ATOMIC_REFERENCE_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// LongAdder / LongAccumulator / DoubleAdder / DoubleAccumulator
+// -------------------------------------------------------------------------------------------
+
+const LONG_ADDER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        write_value_long(vm, receiver(args), 0);
+        void()
+    }),
+    method("add", "(J)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let sum = read_value_long(vm, this).wrapping_add(crate::long_arg(args, 1));
+        write_value_long(vm, this, sum);
+        void()
+    }),
+    method("increment", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let sum = read_value_long(vm, this).wrapping_add(1);
+        write_value_long(vm, this, sum);
+        void()
+    }),
+    method("decrement", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let sum = read_value_long(vm, this).wrapping_sub(1);
+        write_value_long(vm, this, sum);
+        void()
+    }),
+    method("sum", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(read_value_long(vm, receiver(args)))
+    }),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
+        write_value_long(vm, receiver(args), 0);
+        void()
+    }),
+    method("sumThenReset", "()J", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let previous = read_value_long(vm, this);
+        write_value_long(vm, this, 0);
+        long(previous)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = read_value_long(vm, receiver(args)).to_string();
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method("longValue", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(read_value_long(vm, receiver(args)))
+    }),
+    method("intValue", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_value_long(vm, receiver(args)) as i32)
+    }),
+    method("floatValue", "()F", ACC_PUBLIC, |vm, _, args| {
+        float(read_value_long(vm, receiver(args)) as f32)
+    }),
+    method("doubleValue", "()D", ACC_PUBLIC, |vm, _, args| {
+        double(read_value_long(vm, receiver(args)) as f64)
+    }),
+];
+
+/// `LongAdder`: a sum counter modelled as a single `value` field; the interpreter executes
+/// one instruction at a time, so the striped-cell layout is unnecessary.
+pub(crate) const LONG_ADDER: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/atomic/LongAdder",
+    Some("java/lang/Number"),
+    &["java/io/Serializable"],
+    ACC_PUBLIC,
+    &[field("value", "J", ACC_PRIVATE, None)],
+    &LONG_ADDER_METHODS,
+    None,
+);
+
+const LONG_ACCUMULATOR_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+    method(
+        "<init>",
+        "(Ljava/util/function/LongBinaryOperator;J)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let function = ref_arg(args, 1);
+            if function.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let identity = crate::long_arg(args, 2);
+            write_value_long(vm, this, identity);
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "identity", "J")?;
+            vm.set_instance_long(this, declaring, field, identity);
+            let (declaring, field) =
+                vm.find_field(class, "function", "Ljava/util/function/LongBinaryOperator;")?;
+            vm.set_instance_ref(this, declaring, field, function);
+            void()
+        },
+    ),
+    method("accumulate", "(J)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let function = vm
+            .read_ref_field(
+                this,
+                vm.class_of(this),
+                "function",
+                "Ljava/util/function/LongBinaryOperator;",
+            )
+            .unwrap_or(ObjectRef::NULL);
+        let (class, slot) = vm.resolve_virtual_method(function, "applyAsLong", "(JJ)J")?;
+        let result = vm.invoke_method(
+            class,
+            slot,
+            vec![
+                Value::Ref(function),
+                Value::Long(read_value_long(vm, this)),
+                args[1],
+            ],
+        )?;
+        write_value_long(vm, this, result.as_long());
+        void()
+    }),
+    method("get", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(read_value_long(vm, receiver(args)))
+    }),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let identity = vm
+            .read_instance_long_named(this, vm.class_of(this), "identity", "J")
+            .unwrap_or(0);
+        write_value_long(vm, this, identity);
+        void()
+    }),
+    method("getThenReset", "()J", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let previous = read_value_long(vm, this);
+        let identity = vm
+            .read_instance_long_named(this, vm.class_of(this), "identity", "J")
+            .unwrap_or(0);
+        write_value_long(vm, this, identity);
+        long(previous)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = read_value_long(vm, receiver(args)).to_string();
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method("longValue", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(read_value_long(vm, receiver(args)))
+    }),
+    method("intValue", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_value_long(vm, receiver(args)) as i32)
+    }),
+    method("floatValue", "()F", ACC_PUBLIC, |vm, _, args| {
+        float(read_value_long(vm, receiver(args)) as f32)
+    }),
+    method("doubleValue", "()D", ACC_PUBLIC, |vm, _, args| {
+        double(read_value_long(vm, receiver(args)) as f64)
+    }),
+];
+
+/// `LongAccumulator`: a value folded through a guest `LongBinaryOperator`.
+pub(crate) const LONG_ACCUMULATOR: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/atomic/LongAccumulator",
+    Some("java/lang/Number"),
+    &["java/io/Serializable"],
+    ACC_PUBLIC,
+    &[
+        field("value", "J", ACC_PRIVATE, None),
+        field("identity", "J", ACC_PRIVATE, None),
+        field(
+            "function",
+            "Ljava/util/function/LongBinaryOperator;",
+            ACC_PRIVATE,
+            None,
+        ),
+    ],
+    &LONG_ACCUMULATOR_METHODS,
+    None,
+);
+
+const DOUBLE_ADDER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        write_value_long(vm, receiver(args), 0);
+        void()
+    }),
+    method("add", "(D)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let sum = f64::from_bits(read_value_long(vm, this) as u64) + double_arg(args, 1);
+        write_value_long(vm, this, sum.to_bits() as i64);
+        void()
+    }),
+    method("sum", "()D", ACC_PUBLIC, |vm, _, args| {
+        double(f64::from_bits(read_value_long(vm, receiver(args)) as u64))
+    }),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
+        write_value_long(vm, receiver(args), 0);
+        void()
+    }),
+    method("sumThenReset", "()D", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let previous = f64::from_bits(read_value_long(vm, this) as u64);
+        write_value_long(vm, this, 0);
+        double(previous)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = format::double_to_string(f64::from_bits(
+                read_value_long(vm, receiver(args)) as u64,
+            ));
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method("longValue", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(f64::from_bits(read_value_long(vm, receiver(args)) as u64) as i64)
+    }),
+    method("intValue", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(f64::from_bits(read_value_long(vm, receiver(args)) as u64) as i32)
+    }),
+    method("floatValue", "()F", ACC_PUBLIC, |vm, _, args| {
+        float(f64::from_bits(read_value_long(vm, receiver(args)) as u64) as f32)
+    }),
+    method("doubleValue", "()D", ACC_PUBLIC, |vm, _, args| {
+        double(f64::from_bits(read_value_long(vm, receiver(args)) as u64))
+    }),
+];
+
+/// `DoubleAdder`: a floating-point sum counter modelled as a single `value` field.
+pub(crate) const DOUBLE_ADDER: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/atomic/DoubleAdder",
+    Some("java/lang/Number"),
+    &["java/io/Serializable"],
+    ACC_PUBLIC,
+    &[field("value", "D", ACC_PRIVATE, None)],
+    &DOUBLE_ADDER_METHODS,
+    None,
+);
+
+const DOUBLE_ACCUMULATOR_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+    method(
+        "<init>",
+        "(Ljava/util/function/DoubleBinaryOperator;D)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let function = ref_arg(args, 1);
+            if function.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let identity = double_arg(args, 2);
+            write_value_long(vm, this, identity.to_bits() as i64);
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "identity", "D")?;
+            vm.set_instance_long(this, declaring, field, identity.to_bits() as i64);
+            let (declaring, field) = vm.find_field(
+                class,
+                "function",
+                "Ljava/util/function/DoubleBinaryOperator;",
+            )?;
+            vm.set_instance_ref(this, declaring, field, function);
+            void()
+        },
+    ),
+    method("accumulate", "(D)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let function = vm
+            .read_ref_field(
+                this,
+                vm.class_of(this),
+                "function",
+                "Ljava/util/function/DoubleBinaryOperator;",
+            )
+            .unwrap_or(ObjectRef::NULL);
+        let (class, slot) = vm.resolve_virtual_method(function, "applyAsDouble", "(DD)D")?;
+        let result = vm.invoke_method(
+            class,
+            slot,
+            vec![
+                Value::Ref(function),
+                Value::Double(f64::from_bits(read_value_long(vm, this) as u64)),
+                args[1],
+            ],
+        )?;
+        write_value_long(vm, this, result.as_double().to_bits() as i64);
+        void()
+    }),
+    method("get", "()D", ACC_PUBLIC, |vm, _, args| {
+        double(f64::from_bits(read_value_long(vm, receiver(args)) as u64))
+    }),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let identity = vm
+            .read_instance_long_named(this, vm.class_of(this), "identity", "D")
+            .unwrap_or(0);
+        write_value_long(vm, this, identity);
+        void()
+    }),
+    method("getThenReset", "()D", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let previous = f64::from_bits(read_value_long(vm, this) as u64);
+        let identity = vm
+            .read_instance_long_named(this, vm.class_of(this), "identity", "D")
+            .unwrap_or(0);
+        write_value_long(vm, this, identity);
+        double(previous)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = format::double_to_string(f64::from_bits(
+                read_value_long(vm, receiver(args)) as u64,
+            ));
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method("longValue", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(f64::from_bits(read_value_long(vm, receiver(args)) as u64) as i64)
+    }),
+    method("intValue", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(f64::from_bits(read_value_long(vm, receiver(args)) as u64) as i32)
+    }),
+    method("floatValue", "()F", ACC_PUBLIC, |vm, _, args| {
+        float(f64::from_bits(read_value_long(vm, receiver(args)) as u64) as f32)
+    }),
+    method("doubleValue", "()D", ACC_PUBLIC, |vm, _, args| {
+        double(f64::from_bits(read_value_long(vm, receiver(args)) as u64))
+    }),
+];
+
+/// `DoubleAccumulator`: a value folded through a guest `DoubleBinaryOperator`.
+pub(crate) const DOUBLE_ACCUMULATOR: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/atomic/DoubleAccumulator",
+    Some("java/lang/Number"),
+    &["java/io/Serializable"],
+    ACC_PUBLIC,
+    &[
+        field("value", "D", ACC_PRIVATE, None),
+        field("identity", "D", ACC_PRIVATE, None),
+        field(
+            "function",
+            "Ljava/util/function/DoubleBinaryOperator;",
+            ACC_PRIVATE,
+            None,
+        ),
+    ],
+    &DOUBLE_ACCUMULATOR_METHODS,
     None,
 );

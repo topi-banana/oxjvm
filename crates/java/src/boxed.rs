@@ -837,7 +837,7 @@ fn unsigned_radix_string(mut value: u64, radix: i32) -> String {
     digits.iter().rev().collect()
 }
 
-const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
+const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
     method("<init>", "(J)V", ACC_PUBLIC, |vm, _, args| {
         write_value_long(vm, receiver(args), long_arg(args, 1));
         void()
@@ -1048,6 +1048,12 @@ const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
     ),
     method("sum", "(JJ)J", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
         long(long_arg(args, 0).wrapping_add(long_arg(args, 1)))
+    }),
+    method("max", "(JJ)J", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        long(long_arg(args, 0).max(long_arg(args, 1)))
+    }),
+    method("min", "(JJ)J", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        long(long_arg(args, 0).min(long_arg(args, 1)))
     }),
     method(
         "numberOfLeadingZeros",

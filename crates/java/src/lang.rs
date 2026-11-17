@@ -6673,7 +6673,7 @@ fn new_thread_group(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
     Ok(group)
 }
 
-const THREAD_GROUP_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const THREAD_GROUP_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         vm.set_string_field(this, vm.class_of(this), "name", "main")?;
@@ -6740,6 +6740,10 @@ const THREAD_GROUP_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         |_, _, _| int(0),
     ),
     method("list", "()V", ACC_PUBLIC, |_, _, _| void()),
+    // Deprecated for removal since JDK 16: `destroy` is a no-op and `isDestroyed`
+    // always reports false, matching the reference implementation.
+    method("destroy", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("isDestroyed", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
 ];
 
 pub(crate) const THREAD_GROUP: oxjvm_vm::NativeClass = class(
@@ -7075,12 +7079,18 @@ fn thread_local_with_initial(
 // ClassLoader
 // -------------------------------------------------------------------------------------------
 
-const CLASS_LOADER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const CLASS_LOADER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method(
         "getSystemClassLoader",
         "()Ljava/lang/ClassLoader;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _| object(system_class_loader(vm)?),
+    ),
+    method(
+        "getPlatformClassLoader",
+        "()Ljava/lang/ClassLoader;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(platform_class_loader(vm)?),
     ),
     method(
         "getParent",
@@ -7239,6 +7249,12 @@ pub(crate) const CLASS_LOADER: oxjvm_vm::NativeClass = class(
             ACC_PRIVATE | ACC_STATIC,
             None,
         ),
+        field(
+            "platformLoader",
+            "Ljava/lang/ClassLoader;",
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
         field("parent", "Ljava/lang/ClassLoader;", ACC_PRIVATE, None),
     ],
     &CLASS_LOADER_METHODS,
@@ -7257,6 +7273,24 @@ pub(crate) fn system_class_loader(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError>
     vm.set_static_value(
         class,
         "systemLoader",
+        "Ljava/lang/ClassLoader;",
+        Value::Ref(instance),
+    );
+    Ok(instance)
+}
+
+/// The platform class loader singleton (`ClassLoader.getPlatformClassLoader`).
+pub(crate) fn platform_class_loader(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/lang/ClassLoader")?;
+    if let Some(existing) =
+        vm.read_static_ref_if_set(class, "platformLoader", "Ljava/lang/ClassLoader;")
+    {
+        return Ok(existing);
+    }
+    let instance = vm.new_instance(class)?;
+    vm.set_static_value(
+        class,
+        "platformLoader",
         "Ljava/lang/ClassLoader;",
         Value::Ref(instance),
     );

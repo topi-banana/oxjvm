@@ -864,6 +864,11 @@ exception!(
     "java/security/GeneralSecurityException"
 );
 exception!(
+    INVALID_PARAMETER_EXCEPTION,
+    "java/security/InvalidParameterException",
+    "java/lang/IllegalArgumentException"
+);
+exception!(
     SIGNATURE_EXCEPTION,
     "java/security/SignatureException",
     "java/security/GeneralSecurityException"
