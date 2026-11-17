@@ -79,7 +79,7 @@ pub(crate) const NUMBER: oxjvm_vm::NativeClass = class(
 // Integer
 // -------------------------------------------------------------------------------------------
 
-const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 43] = [
+const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
     method("<init>", "(I)V", ACC_PUBLIC, boxed_int_init),
     method("intValue", "()I", ACC_PUBLIC, |vm, _, args| {
         int(read_value_int(vm, receiver(args)))
@@ -167,6 +167,80 @@ const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 43] = [
         "(Ljava/lang/String;I)I",
         ACC_PUBLIC | ACC_STATIC,
         parse_int_radix,
+    ),
+    method(
+        "parseUnsignedInt",
+        "(Ljava/lang/String;)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = parse_string_arg(vm, args[0])?;
+            match format::parse_uint_radix(&text, 10) {
+                Some(value) => int(value as i32),
+                None => Err(vm.throw_new(
+                    "java/lang/NumberFormatException",
+                    Some(&alloc::format!("For input string: \"{text}\"")),
+                )),
+            }
+        },
+    ),
+    method(
+        "parseUnsignedInt",
+        "(Ljava/lang/String;I)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = parse_string_arg(vm, args[0])?;
+            let radix = int_arg(args, 1);
+            match format::parse_uint_radix(&text, radix as u32) {
+                Some(value) => int(value as i32),
+                None => Err(vm.throw_new(
+                    "java/lang/NumberFormatException",
+                    Some(&alloc::format!("For input string: \"{text}\"")),
+                )),
+            }
+        },
+    ),
+    method(
+        "parseUnsignedInt",
+        "(Ljava/lang/CharSequence;III)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = charsequence_text(vm, ref_arg(args, 0))?;
+            let begin = int_arg(args, 1);
+            let end = int_arg(args, 2);
+            let radix = int_arg(args, 3);
+            let sub = charsequence_sub(vm, &text, begin, end)?;
+            match format::parse_uint_radix(&sub, radix as u32) {
+                Some(value) => int(value as i32),
+                None => Err(vm.throw_new(
+                    "java/lang/NumberFormatException",
+                    Some(&alloc::format!("For input string: \"{sub}\"")),
+                )),
+            }
+        },
+    ),
+    method(
+        "toUnsignedLong",
+        "(I)J",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| long(i64::from(int_arg(args, 0) as u32)),
+    ),
+    method(
+        "toUnsignedString",
+        "(I)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = alloc::format!("{}", int_arg(args, 0) as u32);
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "toUnsignedString",
+        "(II)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = unsigned_radix_string(int_arg(args, 0) as u32 as u64, int_arg(args, 1));
+            object(vm.make_string(&text)?)
+        },
     ),
     method(
         "valueOf",
@@ -622,12 +696,45 @@ fn boxed_int_equals(
     boolean(read_value_int(vm, receiver(args)) == read_value_int(vm, other))
 }
 
+/// The text of a `CharSequence` argument via its `toString()`.
+fn charsequence_text(vm: &mut Vm<'_>, reference: ObjectRef) -> Result<String, VmError> {
+    if reference.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let (class, method) =
+        vm.resolve_virtual_method(reference, "toString", "()Ljava/lang/String;")?;
+    let result = vm.invoke_method(class, method, vec![Value::Ref(reference)])?;
+    Ok(vm.string_value(result.as_ref()).unwrap_or_default())
+}
+
+/// The `[begin, end)` subsequence of a `CharSequence` text, validating bounds.
+fn charsequence_sub(vm: &mut Vm<'_>, text: &str, begin: i32, end: i32) -> Result<String, VmError> {
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len() as i32;
+    if begin < 0 || end > len || begin > end {
+        return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+    }
+    Ok(chars[begin as usize..end as usize].iter().collect())
+}
+
+/// The text of a `String` argument for numeric parsing: a null string is a
+/// `NumberFormatException` ("Cannot parse null string"), as the JDK requires.
+fn parse_string_arg(vm: &mut Vm<'_>, value: Value) -> Result<String, VmError> {
+    if value.as_ref().is_null() {
+        return Err(vm.throw_new(
+            "java/lang/NumberFormatException",
+            Some("Cannot parse null string"),
+        ));
+    }
+    string_arg(vm, value)
+}
+
 fn parse_int_10(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let text = string_arg(vm, args[0])?;
+    let text = parse_string_arg(vm, args[0])?;
     match format::parse_int(&text) {
         Some(value) => int(value),
         None => Err(vm.throw_new(
@@ -701,7 +808,7 @@ fn parse_int_radix(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let text = string_arg(vm, args[0])?;
+    let text = parse_string_arg(vm, args[0])?;
     let radix = int_arg(args, 1);
     match format::parse_int_radix(&text, radix as u32) {
         Some(value) => int(value),
@@ -858,7 +965,7 @@ fn unsigned_radix_string(mut value: u64, radix: i32) -> String {
     digits.iter().rev().collect()
 }
 
-const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
+const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
     method("<init>", "(J)V", ACC_PUBLIC, |vm, _, args| {
         write_value_long(vm, receiver(args), long_arg(args, 1));
         void()
@@ -912,10 +1019,85 @@ const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
         },
     ),
     method(
+        "toString",
+        "(JI)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let radix = int_arg(args, 1).clamp(2, 36) as u32;
+            let text = format::long_to_radix_string(long_arg(args, 0), radix);
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
         "parseLong",
         "(Ljava/lang/String;)J",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| long(parse_long_arg(vm, args[0])?),
+    ),
+    method(
+        "parseUnsignedLong",
+        "(Ljava/lang/String;)J",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = parse_string_arg(vm, args[0])?;
+            match format::parse_ulong_radix(&text, 10) {
+                Some(value) => long(value as i64),
+                None => Err(vm.throw_new(
+                    "java/lang/NumberFormatException",
+                    Some(&alloc::format!("For input string: \"{text}\"")),
+                )),
+            }
+        },
+    ),
+    method(
+        "parseUnsignedLong",
+        "(Ljava/lang/String;I)J",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = parse_string_arg(vm, args[0])?;
+            let radix = int_arg(args, 1);
+            match format::parse_ulong_radix(&text, radix as u32) {
+                Some(value) => long(value as i64),
+                None => Err(vm.throw_new(
+                    "java/lang/NumberFormatException",
+                    Some(&alloc::format!("For input string: \"{text}\"")),
+                )),
+            }
+        },
+    ),
+    method(
+        "parseUnsignedLong",
+        "(Ljava/lang/CharSequence;III)J",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = charsequence_text(vm, ref_arg(args, 0))?;
+            let begin = int_arg(args, 1);
+            let end = int_arg(args, 2);
+            let radix = int_arg(args, 3);
+            let sub = charsequence_sub(vm, &text, begin, end)?;
+            match format::parse_ulong_radix(&sub, radix as u32) {
+                Some(value) => long(value as i64),
+                None => Err(vm.throw_new(
+                    "java/lang/NumberFormatException",
+                    Some(&alloc::format!("For input string: \"{sub}\"")),
+                )),
+            }
+        },
+    ),
+    method(
+        "compareUnsigned",
+        "(JJ)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| int((long_arg(args, 0) as u64).cmp(&(long_arg(args, 1) as u64)) as i32),
+    ),
+    method(
+        "toOctalString",
+        "(J)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = format::ulong_to_radix_string(long_arg(args, 0) as u64, 8);
+            object(vm.make_string(&text)?)
+        },
     ),
     method(
         "decode",
@@ -1275,7 +1457,7 @@ pub(crate) const LONG: oxjvm_vm::NativeClass = class(
 // Short / Byte / Boolean / Character / Float / Double / Void
 // -------------------------------------------------------------------------------------------
 
-const SHORT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const SHORT_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method("<init>", "(S)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), int_arg(args, 1));
         void()
@@ -1289,6 +1471,18 @@ const SHORT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method("longValue", "()J", ACC_PUBLIC, |vm, _, args| {
         long(i64::from(read_value_int(vm, receiver(args)) as i16))
     }),
+    method(
+        "toUnsignedLong",
+        "(S)J",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| long(i64::from(int_arg(args, 0) as i16 as u16)),
+    ),
+    method(
+        "toUnsignedInt",
+        "(S)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| int(i32::from(int_arg(args, 0) as i16 as u16)),
+    ),
     method(
         "toString",
         "()Ljava/lang/String;",
@@ -1393,7 +1587,7 @@ pub(crate) const SHORT: oxjvm_vm::NativeClass = class(
     Some(short_clinit),
 );
 
-const BYTE_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const BYTE_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method("<init>", "(B)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), int_arg(args, 1));
         void()
@@ -1404,6 +1598,18 @@ const BYTE_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method("intValue", "()I", ACC_PUBLIC, |vm, _, args| {
         int(read_value_int(vm, receiver(args)) as i8 as i32)
     }),
+    method(
+        "toUnsignedLong",
+        "(B)J",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| long(i64::from(int_arg(args, 0) as i8 as u8)),
+    ),
+    method(
+        "toUnsignedInt",
+        "(B)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| int(i32::from(int_arg(args, 0) as i8 as u8)),
+    ),
     method(
         "toString",
         "()Ljava/lang/String;",

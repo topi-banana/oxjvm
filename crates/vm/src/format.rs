@@ -150,6 +150,45 @@ pub fn parse_long_radix(text: &str, radix: u32) -> Option<i64> {
     Some(value)
 }
 
+/// Parse an unsigned `u64` with a radix, like `Long.parseUnsignedLong(s, radix)`.
+/// A leading `-` is rejected; `+` is allowed; overflow yields `None`.
+#[must_use]
+pub fn parse_ulong_radix(text: &str, radix: u32) -> Option<u64> {
+    if !(2..=36).contains(&radix) {
+        return None;
+    }
+    let bytes = text.as_bytes();
+    let digits = match bytes.first()? {
+        b'-' => return None,
+        b'+' => &bytes[1..],
+        _ => bytes,
+    };
+    if digits.is_empty() {
+        return None;
+    }
+    let mut value: u64 = 0;
+    for &byte in digits {
+        let digit = match byte {
+            b'0'..=b'9' => u32::from(byte - b'0'),
+            b'a'..=b'z' => u32::from(byte - b'a') + 10,
+            b'A'..=b'Z' => u32::from(byte - b'A') + 10,
+            _ => return None,
+        };
+        if digit >= radix {
+            return None;
+        }
+        value = value.checked_mul(u64::from(radix))?;
+        value = value.checked_add(u64::from(digit))?;
+    }
+    Some(value)
+}
+
+/// Parse an unsigned `u32` with a radix, like `Integer.parseUnsignedInt(s, radix)`.
+#[must_use]
+pub fn parse_uint_radix(text: &str, radix: u32) -> Option<u32> {
+    parse_ulong_radix(text, radix)?.try_into().ok()
+}
+
 /// Format an `i64` in an arbitrary radix, like `Long.toBinaryString`/`toHexString`/`toString`.
 #[must_use]
 pub fn long_to_radix_string(mut value: i64, radix: u32) -> String {

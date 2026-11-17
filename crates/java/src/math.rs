@@ -1237,6 +1237,48 @@ fn big_text(vm: &Vm<'_>, this: ObjectRef) -> String {
         .unwrap_or_else(|| String::from("0"))
 }
 
+/// Convert a decimal big-integer string to an arbitrary radix (2..=36), as
+/// `BigInteger.toString(radix)` requires. Uses repeated short division on the
+/// decimal digit vector so values beyond 64 bits (e.g. 2^64) convert correctly.
+fn big_decimal_to_radix(text: &str, radix: u32) -> String {
+    let radix = radix.clamp(2, 36);
+    if radix == 10 {
+        return String::from(text);
+    }
+    let (negative, digits) = match text.as_bytes().first() {
+        Some(b'-') => (true, &text[1..]),
+        Some(b'+') => (false, &text[1..]),
+        _ => (false, text),
+    };
+    let mut number: Vec<u32> = digits
+        .bytes()
+        .filter_map(|b| (b as char).to_digit(10))
+        .collect();
+    if number.is_empty() {
+        return String::from("0");
+    }
+    let mut out = String::new();
+    while !number.is_empty() {
+        let mut carry = 0u32;
+        let mut quotient = Vec::with_capacity(number.len());
+        for &digit in &number {
+            let current = carry * 10 + digit;
+            let q = current / radix;
+            carry = current % radix;
+            if !quotient.is_empty() || q != 0 {
+                quotient.push(q);
+            }
+        }
+        out.push(core::char::from_digit(carry, radix).unwrap_or('?'));
+        number = quotient;
+    }
+    let mut result: String = out.chars().rev().collect();
+    if negative && result != "0" {
+        result.insert(0, '-');
+    }
+    result
+}
+
 /// Create an instance of a big-number class carrying `text`.
 pub(crate) fn create_big_number(
     vm: &mut Vm<'_>,
@@ -1498,6 +1540,36 @@ fn big_number_narrow(text: &str, bits: u32) -> i64 {
     }
 }
 
+/// The low `bits` bits of a decimal big-integer string as a signed narrowing
+/// cast (`BigInteger.intValue`/`longValue`): exact for any magnitude, unlike a
+/// floating-point round trip. Computed with wrapping modular arithmetic.
+fn big_integer_narrow(text: &str, bits: u32) -> i64 {
+    let (negative, digits) = match text.as_bytes().first() {
+        Some(b'-') => (true, &text[1..]),
+        Some(b'+') => (false, &text[1..]),
+        _ => (false, text),
+    };
+    if bits == 32 {
+        let mut acc = 0u32;
+        for byte in digits.bytes() {
+            if let Some(digit) = (byte as char).to_digit(10) {
+                acc = acc.wrapping_mul(10).wrapping_add(digit);
+            }
+        }
+        let signed = if negative { acc.wrapping_neg() } else { acc };
+        i64::from(signed as i32)
+    } else {
+        let mut acc = 0u64;
+        for byte in digits.bytes() {
+            if let Some(digit) = (byte as char).to_digit(10) {
+                acc = acc.wrapping_mul(10).wrapping_add(u64::from(digit));
+            }
+        }
+        let signed = if negative { acc.wrapping_neg() } else { acc };
+        signed as i64
+    }
+}
+
 // -------------------------------------------------------------------------------------------
 // BigInteger
 // -------------------------------------------------------------------------------------------
@@ -1541,7 +1613,7 @@ fn big_integer_binary(
     }
 }
 
-const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
+const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -1558,11 +1630,20 @@ const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
             object(vm.make_string(&text)?)
         },
     ),
+    method(
+        "toString",
+        "(I)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = big_decimal_to_radix(&big_text(vm, receiver(args)), int_arg(args, 1) as u32);
+            object(vm.make_string(&text)?)
+        },
+    ),
     method("intValue", "()I", ACC_PUBLIC, |vm, _, args| {
-        int(big_number_narrow(&big_text(vm, receiver(args)), 32) as i32)
+        int(big_integer_narrow(&big_text(vm, receiver(args)), 32) as i32)
     }),
     method("longValue", "()J", ACC_PUBLIC, |vm, _, args| {
-        long(big_number_narrow(&big_text(vm, receiver(args)), 64))
+        long(big_integer_narrow(&big_text(vm, receiver(args)), 64))
     }),
     method("doubleValue", "()D", ACC_PUBLIC, |vm, _, args| {
         let text = big_text(vm, receiver(args));
@@ -1764,6 +1845,22 @@ const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
                 return Err(vm.throw_new("java/lang/ArithmeticException", Some("/ by zero")));
             }
             create_big_number(vm, "java/math/BigInteger", &(a / b).to_string())
+        },
+    ),
+    method(
+        "remainder",
+        "(Ljava/math/BigInteger;)Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let a = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
+            let b = parse_i128(&big_text(vm, ref_arg(args, 1))).unwrap_or(0);
+            if b == 0 {
+                return Err(vm.throw_new(
+                    "java/lang/ArithmeticException",
+                    Some("BigInteger divide by zero"),
+                ));
+            }
+            create_big_number(vm, "java/math/BigInteger", &(a % b).to_string())
         },
     ),
     method("bitLength", "()I", ACC_PUBLIC, |vm, _, args| {
