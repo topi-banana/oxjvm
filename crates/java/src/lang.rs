@@ -8412,7 +8412,7 @@ pub(crate) const RANDOM_GENERATOR: oxjvm_vm::NativeClass = class(
 // ZoneId (shell)
 // -------------------------------------------------------------------------------------------
 
-const ZONE_ID_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const ZONE_ID_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method(
         "of",
         "(Ljava/lang/String;)Ljava/time/ZoneId;",
@@ -8493,7 +8493,34 @@ const ZONE_ID_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         }
         int(hash)
     }),
+    method(
+        "getRules",
+        "()Ljava/time/zone/ZoneRules;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let total = zone_id_offset_seconds(vm, this);
+            let class = vm.resolve_class("java/time/zone/ZoneRules")?;
+            let instance = vm.new_instance(class)?;
+            if let Some((declaring, field)) = vm.find_field_opt(class, "totalSeconds", "I") {
+                vm.set_instance_int(instance, declaring, field, total);
+            }
+            object(instance)
+        },
+    ),
 ];
+
+/// The fixed offset (in seconds) a `ZoneId` models: a `ZoneOffset`'s own offset, or zero
+/// for UTC/GMT region ids. Region-zone transition data is not modelled.
+fn zone_id_offset_seconds(vm: &Vm<'_>, this: ObjectRef) -> i32 {
+    let class = vm.class_of(this);
+    if let Some((declaring, field)) = vm.find_field_opt(class, "totalSeconds", "I") {
+        if let Some(value) = vm.read_instance_int(this, declaring, field) {
+            return value;
+        }
+    }
+    0
+}
 
 const ZONE_SHORT_IDS: [(&str, &str); 29] = [
     ("ACT", "Australia/Darwin"),
@@ -8635,7 +8662,7 @@ fn zone_offset_alloc(vm: &mut Vm<'_>, total: i32) -> Result<ObjectRef, VmError> 
 
 /// Build a `ZoneOffset` for a total-seconds offset, validating the ±18h range and reusing
 /// the cached instance for whole quarter-hour offsets (the JDK's identity guarantee).
-fn zone_offset_new(vm: &mut Vm<'_>, total: i32) -> Result<ObjectRef, VmError> {
+pub(crate) fn zone_offset_new(vm: &mut Vm<'_>, total: i32) -> Result<ObjectRef, VmError> {
     if !(-64800..=64800).contains(&total) {
         return Err(vm.throw_new(
             "java/time/DateTimeException",

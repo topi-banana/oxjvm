@@ -298,7 +298,7 @@ pub(crate) const DURATION: oxjvm_vm::NativeClass = class(
     Some(duration_clinit),
 );
 
-const INSTANT_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+const INSTANT_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
     method(
         "now",
         "()Ljava/time/Instant;",
@@ -485,6 +485,37 @@ const INSTANT_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
                 _ => return Err(unsupported_field(vm)),
             };
             long(value)
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let epoch_second = read_long_field(vm, this, "epochSecond");
+            let nano = read_int_field(vm, this, "nano");
+            let days = epoch_second.div_euclid(86_400);
+            let second_of_day = epoch_second.rem_euclid(86_400);
+            let (year, month, day) = civil_from_days(days);
+            let hour = second_of_day / 3600;
+            let minute = (second_of_day / 60) % 60;
+            let second = second_of_day % 60;
+            let mut text =
+                alloc::format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}");
+            if nano != 0 {
+                let fraction = if nano % 1_000_000 == 0 {
+                    alloc::format!("{:03}", nano / 1_000_000)
+                } else if nano % 1_000 == 0 {
+                    alloc::format!("{:06}", nano / 1_000)
+                } else {
+                    alloc::format!("{nano:09}")
+                };
+                text.push('.');
+                text.push_str(&fraction);
+            }
+            text.push('Z');
+            object(vm.make_string(&text)?)
         },
     ),
 ];
@@ -1758,7 +1789,7 @@ pub(crate) const LOCAL_TIME: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
+const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
     method(
         "of",
         "(IIIII)Ljava/time/LocalDateTime;",
@@ -2139,7 +2170,32 @@ const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
             )
         },
     ),
+    method(
+        "atZone",
+        "(Ljava/time/ZoneId;)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let zone = ref_arg(args, 1);
+            if zone.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let epoch_day = read_long_field(vm, this, "epochDay");
+            let nano_of_day = read_long_field(vm, this, "nanoOfDay");
+            let local_second = epoch_day * 86_400 + nano_of_day / 1_000_000_000;
+            let offset = zone_offset_seconds(vm, zone);
+            zoned_date_time_new(vm, (local_second - i64::from(offset)) * 1000)
+        },
+    ),
 ];
+
+/// The fixed offset (seconds) of a `ZoneId`/`ZoneOffset` argument (region transitions not modelled).
+fn zone_offset_seconds(vm: &Vm<'_>, zone: ObjectRef) -> i32 {
+    let class = vm.class_of(zone);
+    vm.find_field_opt(class, "totalSeconds", "I")
+        .and_then(|(declaring, field)| vm.read_instance_int(zone, declaring, field))
+        .unwrap_or(0)
+}
 
 pub(crate) const LOCAL_DATE_TIME: oxjvm_vm::NativeClass = class(
     "java/time/LocalDateTime",
@@ -2469,4 +2525,499 @@ pub(crate) const MONTH: oxjvm_vm::NativeClass = class(
     ],
     &MONTH_METHODS,
     Some(month_clinit),
+);
+
+// -------------------------------------------------------------------------------------------
+// java.time.format.ResolverStyle / TextStyle
+// -------------------------------------------------------------------------------------------
+
+const RESOLVER_STYLE_NAMES: [&str; 3] = ["STRICT", "SMART", "LENIENT"];
+
+fn resolver_style_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/time/format/ResolverStyle")?;
+    for (index, name) in RESOLVER_STYLE_NAMES.iter().enumerate() {
+        let instance = vm.new_instance(class)?;
+        if let Some((declaring, field)) = vm.find_field_opt(class, "ordinal", "I") {
+            vm.set_instance_int(instance, declaring, field, index as i32);
+        }
+        vm.set_static_value(
+            class,
+            name,
+            "Ljava/time/format/ResolverStyle;",
+            Value::Ref(instance),
+        );
+    }
+    Ok(())
+}
+
+const RESOLVER_STYLE_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method("ordinal", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_int_field(vm, receiver(args), "ordinal"))
+    }),
+    method("name", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
+        let index = read_int_field(vm, receiver(args), "ordinal").clamp(0, 2) as usize;
+        object(vm.make_string(RESOLVER_STYLE_NAMES[index])?)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let index = read_int_field(vm, receiver(args), "ordinal").clamp(0, 2) as usize;
+            object(vm.make_string(RESOLVER_STYLE_NAMES[index])?)
+        },
+    ),
+    method(
+        "values",
+        "()[Ljava/time/format/ResolverStyle;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/time/format/ResolverStyle")?;
+            vm.ensure_initialized(class)?;
+            let array = vm.allocate_object_array(class, RESOLVER_STYLE_NAMES.len())?;
+            for (index, name) in RESOLVER_STYLE_NAMES.iter().enumerate() {
+                if let Some(value) =
+                    vm.read_static_ref_if_set(class, name, "Ljava/time/format/ResolverStyle;")
+                {
+                    vm.array_set_ref(array, index, value)?;
+                }
+            }
+            object(array)
+        },
+    ),
+    method(
+        "valueOf",
+        "(Ljava/lang/String;)Ljava/time/format/ResolverStyle;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = vm.string_or_empty(ref_arg(args, 0));
+            let class = vm.resolve_class("java/time/format/ResolverStyle")?;
+            vm.ensure_initialized(class)?;
+            for candidate in RESOLVER_STYLE_NAMES {
+                if candidate == name {
+                    if let Some(value) = vm.read_static_ref_if_set(
+                        class,
+                        candidate,
+                        "Ljava/time/format/ResolverStyle;",
+                    ) {
+                        return object(value);
+                    }
+                }
+            }
+            Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some(&alloc::format!(
+                    "No enum constant java.time.format.ResolverStyle.{name}"
+                )),
+            ))
+        },
+    ),
+];
+
+/// `java.time.format.ResolverStyle`: how strictly a formatter resolves parsed fields.
+pub(crate) const RESOLVER_STYLE: oxjvm_vm::NativeClass = class(
+    "java/time/format/ResolverStyle",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL | ACC_ENUM,
+    &[
+        field("ordinal", "I", ACC_PRIVATE | ACC_FINAL, None),
+        field(
+            "STRICT",
+            "Ljava/time/format/ResolverStyle;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "SMART",
+            "Ljava/time/format/ResolverStyle;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "LENIENT",
+            "Ljava/time/format/ResolverStyle;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+    ],
+    &RESOLVER_STYLE_METHODS,
+    Some(resolver_style_clinit),
+);
+
+const TEXT_STYLE_NAMES: [&str; 6] = [
+    "FULL",
+    "FULL_STANDALONE",
+    "SHORT",
+    "SHORT_STANDALONE",
+    "NARROW",
+    "NARROW_STANDALONE",
+];
+
+fn text_style_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/time/format/TextStyle")?;
+    for (index, name) in TEXT_STYLE_NAMES.iter().enumerate() {
+        let instance = vm.new_instance(class)?;
+        if let Some((declaring, field)) = vm.find_field_opt(class, "ordinal", "I") {
+            vm.set_instance_int(instance, declaring, field, index as i32);
+        }
+        vm.set_static_value(
+            class,
+            name,
+            "Ljava/time/format/TextStyle;",
+            Value::Ref(instance),
+        );
+    }
+    Ok(())
+}
+
+fn text_style_constant(vm: &mut Vm<'_>, index: usize) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/time/format/TextStyle")?;
+    vm.ensure_initialized(class)?;
+    object(
+        vm.read_static_ref_if_set(
+            class,
+            TEXT_STYLE_NAMES[index],
+            "Ljava/time/format/TextStyle;",
+        )
+        .unwrap_or(ObjectRef::NULL),
+    )
+}
+
+const TEXT_STYLE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+    method("ordinal", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_int_field(vm, receiver(args), "ordinal"))
+    }),
+    method("name", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
+        let index = read_int_field(vm, receiver(args), "ordinal").clamp(0, 5) as usize;
+        object(vm.make_string(TEXT_STYLE_NAMES[index])?)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let index = read_int_field(vm, receiver(args), "ordinal").clamp(0, 5) as usize;
+            object(vm.make_string(TEXT_STYLE_NAMES[index])?)
+        },
+    ),
+    method("isStandalone", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let index = read_int_field(vm, receiver(args), "ordinal");
+        crate::boolean(index % 2 == 1)
+    }),
+    method(
+        "asStandalone",
+        "()Ljava/time/format/TextStyle;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let index = read_int_field(vm, receiver(args), "ordinal").clamp(0, 5) as usize;
+            text_style_constant(vm, index | 1)
+        },
+    ),
+    method(
+        "asNormal",
+        "()Ljava/time/format/TextStyle;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let index = read_int_field(vm, receiver(args), "ordinal").clamp(0, 5) as usize;
+            text_style_constant(vm, index & !1)
+        },
+    ),
+    method(
+        "values",
+        "()[Ljava/time/format/TextStyle;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/time/format/TextStyle")?;
+            vm.ensure_initialized(class)?;
+            let array = vm.allocate_object_array(class, TEXT_STYLE_NAMES.len())?;
+            for (index, name) in TEXT_STYLE_NAMES.iter().enumerate() {
+                if let Some(value) =
+                    vm.read_static_ref_if_set(class, name, "Ljava/time/format/TextStyle;")
+                {
+                    vm.array_set_ref(array, index, value)?;
+                }
+            }
+            object(array)
+        },
+    ),
+    method(
+        "valueOf",
+        "(Ljava/lang/String;)Ljava/time/format/TextStyle;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = vm.string_or_empty(ref_arg(args, 0));
+            let class = vm.resolve_class("java/time/format/TextStyle")?;
+            vm.ensure_initialized(class)?;
+            for candidate in TEXT_STYLE_NAMES {
+                if candidate == name {
+                    if let Some(value) =
+                        vm.read_static_ref_if_set(class, candidate, "Ljava/time/format/TextStyle;")
+                    {
+                        return object(value);
+                    }
+                }
+            }
+            Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some(&alloc::format!(
+                    "No enum constant java.time.format.TextStyle.{name}"
+                )),
+            ))
+        },
+    ),
+];
+
+/// `java.time.format.TextStyle`: the width of a localized textual field.
+pub(crate) const TEXT_STYLE: oxjvm_vm::NativeClass = class(
+    "java/time/format/TextStyle",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL | ACC_ENUM,
+    &[
+        field("ordinal", "I", ACC_PRIVATE | ACC_FINAL, None),
+        field(
+            "FULL",
+            "Ljava/time/format/TextStyle;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "FULL_STANDALONE",
+            "Ljava/time/format/TextStyle;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "SHORT",
+            "Ljava/time/format/TextStyle;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "SHORT_STANDALONE",
+            "Ljava/time/format/TextStyle;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "NARROW",
+            "Ljava/time/format/TextStyle;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "NARROW_STANDALONE",
+            "Ljava/time/format/TextStyle;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+    ],
+    &TEXT_STYLE_METHODS,
+    Some(text_style_clinit),
+);
+
+// -------------------------------------------------------------------------------------------
+// java.time.zone.ZoneRules (fixed-offset model)
+// -------------------------------------------------------------------------------------------
+
+fn zone_rules_offset(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError> {
+    let total = read_int_field(vm, this, "totalSeconds");
+    object(crate::lang::zone_offset_new(vm, total)?)
+}
+
+const ZONE_RULES_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "getOffset",
+        "(Ljava/time/Instant;)Ljava/time/ZoneOffset;",
+        ACC_PUBLIC,
+        |vm, _, args| zone_rules_offset(vm, receiver(args)),
+    ),
+    method(
+        "getOffset",
+        "(Ljava/time/LocalDateTime;)Ljava/time/ZoneOffset;",
+        ACC_PUBLIC,
+        |vm, _, args| zone_rules_offset(vm, receiver(args)),
+    ),
+    method(
+        "getStandardOffset",
+        "(Ljava/time/Instant;)Ljava/time/ZoneOffset;",
+        ACC_PUBLIC,
+        |vm, _, args| zone_rules_offset(vm, receiver(args)),
+    ),
+    method("isFixedOffset", "()Z", ACC_PUBLIC, |_, _, _| {
+        crate::boolean(true)
+    }),
+];
+
+/// `java.time.zone.ZoneRules`: modelled as a single fixed offset (transition data not modelled).
+pub(crate) const ZONE_RULES: oxjvm_vm::NativeClass = class(
+    "java/time/zone/ZoneRules",
+    Some("java/lang/Object"),
+    &["java/io/Serializable"],
+    ACC_PUBLIC | ACC_FINAL,
+    &[field("totalSeconds", "I", ACC_PRIVATE, None)],
+    &ZONE_RULES_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// java.time.OffsetDateTime
+// -------------------------------------------------------------------------------------------
+
+fn offset_date_time_new(
+    vm: &mut Vm<'_>,
+    epoch_day: i64,
+    nano_of_day: i64,
+    offset: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/time/OffsetDateTime")?;
+    let instance = vm.new_instance(class)?;
+    write_long_field(vm, instance, "epochDay", epoch_day);
+    write_long_field(vm, instance, "nanoOfDay", nano_of_day);
+    let (declaring, field) = vm.find_field(class, "offset", "Ljava/time/ZoneOffset;")?;
+    vm.set_instance_ref(instance, declaring, field, offset);
+    Ok(instance)
+}
+
+fn offset_date_time_offset(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "offset", "Ljava/time/ZoneOffset;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn offset_date_time_epoch_second(vm: &Vm<'_>, this: ObjectRef) -> i64 {
+    let epoch_day = read_long_field(vm, this, "epochDay");
+    let nano_of_day = read_long_field(vm, this, "nanoOfDay");
+    let offset = zone_offset_seconds(vm, offset_date_time_offset(vm, this));
+    epoch_day * 86_400 + nano_of_day / 1_000_000_000 - i64::from(offset)
+}
+
+const OFFSET_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+    method(
+        "of",
+        "(IIIIIIILjava/time/ZoneOffset;)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let year = crate::int_arg(args, 0);
+            let month = crate::int_arg(args, 1);
+            let day = crate::int_arg(args, 2);
+            let hour = crate::int_arg(args, 3);
+            let minute = crate::int_arg(args, 4);
+            let second = crate::int_arg(args, 5);
+            let nano = crate::int_arg(args, 6);
+            let offset = ref_arg(args, 7);
+            let epoch_day = days_from_civil(year, month, day);
+            let nano_of_day = (i64::from(hour) * 3600 + i64::from(minute) * 60 + i64::from(second))
+                * 1_000_000_000
+                + i64::from(nano);
+            object(offset_date_time_new(vm, epoch_day, nano_of_day, offset)?)
+        },
+    ),
+    method(
+        "of",
+        "(Ljava/time/LocalDateTime;Ljava/time/ZoneOffset;)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let date_time = ref_arg(args, 0);
+            object(offset_date_time_new(
+                vm,
+                read_long_field(vm, date_time, "epochDay"),
+                read_long_field(vm, date_time, "nanoOfDay"),
+                ref_arg(args, 1),
+            )?)
+        },
+    ),
+    method("getYear", "()I", ACC_PUBLIC, |vm, _, args| {
+        let (year, _, _) = civil_from_days(read_long_field(vm, receiver(args), "epochDay"));
+        int(year)
+    }),
+    method("getMonthValue", "()I", ACC_PUBLIC, |vm, _, args| {
+        let (_, month, _) = civil_from_days(read_long_field(vm, receiver(args), "epochDay"));
+        int(month)
+    }),
+    method("getDayOfMonth", "()I", ACC_PUBLIC, |vm, _, args| {
+        let (_, _, day) = civil_from_days(read_long_field(vm, receiver(args), "epochDay"));
+        int(day)
+    }),
+    method("getHour", "()I", ACC_PUBLIC, |vm, _, args| {
+        int((read_long_field(vm, receiver(args), "nanoOfDay") / 3_600_000_000_000) as i32)
+    }),
+    method("getMinute", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(((read_long_field(vm, receiver(args), "nanoOfDay") / 60_000_000_000) % 60) as i32)
+    }),
+    method("getSecond", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(((read_long_field(vm, receiver(args), "nanoOfDay") / 1_000_000_000) % 60) as i32)
+    }),
+    method("getNano", "()I", ACC_PUBLIC, |vm, _, args| {
+        int((read_long_field(vm, receiver(args), "nanoOfDay") % 1_000_000_000) as i32)
+    }),
+    method(
+        "getOffset",
+        "()Ljava/time/ZoneOffset;",
+        ACC_PUBLIC,
+        |vm, _, args| object(offset_date_time_offset(vm, receiver(args))),
+    ),
+    method("toEpochSecond", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(offset_date_time_epoch_second(vm, receiver(args)))
+    }),
+    method(
+        "toInstant",
+        "()Ljava/time/Instant;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let nano = (read_long_field(vm, this, "nanoOfDay") % 1_000_000_000) as i32;
+            instant_new(vm, offset_date_time_epoch_second(vm, this), nano)
+        },
+    ),
+    method(
+        "toLocalDateTime",
+        "()Ljava/time/LocalDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(local_date_time_new(
+                vm,
+                read_long_field(vm, this, "epochDay"),
+                read_long_field(vm, this, "nanoOfDay"),
+            )?)
+        },
+    ),
+    method(
+        "toLocalDate",
+        "()Ljava/time/LocalDate;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.resolve_class("java/time/LocalDate")?;
+            let instance = vm.new_instance(class)?;
+            write_long_field(
+                vm,
+                instance,
+                "epochDay",
+                read_long_field(vm, this, "epochDay"),
+            );
+            object(instance)
+        },
+    ),
+];
+
+/// `java.time.OffsetDateTime`: a local date-time plus a fixed zone offset.
+pub(crate) const OFFSET_DATE_TIME: oxjvm_vm::NativeClass = class(
+    "java/time/OffsetDateTime",
+    Some("java/lang/Object"),
+    &[
+        "java/time/temporal/TemporalAccessor",
+        "java/time/temporal/Temporal",
+        "java/lang/Comparable",
+        "java/io/Serializable",
+    ],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("epochDay", "J", ACC_PRIVATE, None),
+        field("nanoOfDay", "J", ACC_PRIVATE, None),
+        field("offset", "Ljava/time/ZoneOffset;", ACC_PRIVATE, None),
+    ],
+    &OFFSET_DATE_TIME_METHODS,
+    None,
 );
