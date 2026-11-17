@@ -3749,7 +3749,7 @@ pub(crate) const CASE_INSENSITIVE_COMPARATOR: oxjvm_vm::NativeClass = class(
 // StringBuilder / StringBuffer
 // -------------------------------------------------------------------------------------------
 
-const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
+const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
     method("<init>", "()V", ACC_PUBLIC, builder_init),
     method("<init>", "(I)V", ACC_PUBLIC, builder_init_capacity),
     method(
@@ -3880,6 +3880,18 @@ const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
         builder_insert_chars_range,
     ),
     method(
+        "repeat",
+        "(II)Ljava/lang/StringBuilder;",
+        ACC_PUBLIC,
+        builder_repeat_codepoint,
+    ),
+    method(
+        "repeat",
+        "(Ljava/lang/CharSequence;I)Ljava/lang/StringBuilder;",
+        ACC_PUBLIC,
+        builder_repeat_sequence,
+    ),
+    method(
         "delete",
         "(II)Ljava/lang/StringBuilder;",
         ACC_PUBLIC,
@@ -3948,7 +3960,7 @@ const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
     ),
 ];
 
-const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
+const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
     method("<init>", "()V", ACC_PUBLIC, builder_init),
     method("<init>", "(I)V", ACC_PUBLIC, builder_init_capacity),
     method(
@@ -4123,6 +4135,18 @@ const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
         "(I[CII)Ljava/lang/StringBuffer;",
         ACC_PUBLIC,
         builder_insert_chars_range,
+    ),
+    method(
+        "repeat",
+        "(II)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_repeat_codepoint,
+    ),
+    method(
+        "repeat",
+        "(Ljava/lang/CharSequence;I)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_repeat_sequence,
     ),
     method(
         "replace",
@@ -4647,6 +4671,114 @@ fn builder_insert_chars_range(
     }
     let slice = units[offset as usize..to as usize].to_vec();
     builder_insert_units(vm, receiver(args), int_arg(args, 1), &slice)
+}
+
+/// Read an arbitrary `CharSequence` through `length()`/`charAt()` (as the JDK
+/// `repeat` does), with a fast path for `String`; a custom `CharSequence` that
+/// does not override `toString` must still yield its characters.
+fn builder_read_sequence(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Vec<u16>, VmError> {
+    if let Some(units) = vm.string_utf16(this) {
+        return Ok(units.to_vec());
+    }
+    let (class, method) = vm.resolve_virtual_method(this, "length", "()I")?;
+    let length = vm
+        .invoke_method(class, method, vec![Value::Ref(this)])?
+        .as_int();
+    let (class, method) = vm.resolve_virtual_method(this, "charAt", "(I)C")?;
+    let mut units = Vec::new();
+    for index in 0..length.max(0) {
+        let unit = vm.invoke_method(class, method, vec![Value::Ref(this), Value::Int(index)])?;
+        units.push(unit.as_int() as u16);
+    }
+    Ok(units)
+}
+
+/// Append `count` copies of `unit`, raising `OutOfMemoryError` when the required
+/// length would exceed the implementation limit (as the JDK does).
+fn builder_repeat_units(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    unit: &[u16],
+    count: i32,
+) -> Result<Value, VmError> {
+    let (current, cur_count) = builder_state(vm, this);
+    let total = (count as i64) * (unit.len() as i64);
+    let available = i32::MAX as i64 - cur_count as i64;
+    if total >= available {
+        return Err(vm.throw_new(
+            "java/lang/OutOfMemoryError",
+            Some("Required length exceeds implementation limit"),
+        ));
+    }
+    let mut out: Vec<u16> = current[..cur_count.min(current.len())].to_vec();
+    for _ in 0..count {
+        out.extend_from_slice(unit);
+    }
+    builder_store(vm, this, &out, out.len())?;
+    object(this)
+}
+
+fn builder_repeat_codepoint(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let code_point = int_arg(args, 1);
+    let count = int_arg(args, 2);
+    if count < 0 {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some(&alloc::format!("count is negative: {count}")),
+        ));
+    }
+    if count == 0 {
+        return object(receiver(args));
+    }
+    if !(0..=0x10FFFF).contains(&code_point) {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some(&alloc::format!(
+                "Not a valid Unicode code point: {code_point}"
+            )),
+        ));
+    }
+    let unit: Vec<u16> = if code_point <= 0xFFFF {
+        vec![code_point as u16]
+    } else {
+        let value = (code_point - 0x10000) as u32;
+        vec![
+            (0xD800 | (value >> 10)) as u16,
+            (0xDC00 | (value & 0x3FF)) as u16,
+        ]
+    };
+    builder_repeat_units(vm, receiver(args), &unit, count)
+}
+
+fn builder_repeat_sequence(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let reference = ref_arg(args, 1);
+    let count = int_arg(args, 2);
+    if count < 0 {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some(&alloc::format!("count is negative: {count}")),
+        ));
+    }
+    if count == 0 {
+        return object(receiver(args));
+    }
+    let units = if reference.is_null() {
+        "null".encode_utf16().collect::<Vec<u16>>()
+    } else {
+        builder_read_sequence(vm, reference)?
+    };
+    if units.is_empty() {
+        return object(receiver(args));
+    }
+    builder_repeat_units(vm, receiver(args), &units, count)
 }
 
 fn builder_delete(
