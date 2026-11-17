@@ -231,7 +231,7 @@ pub(crate) const FILTER_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PRINT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
+const PRINT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
     method(
         "<init>",
         "(Ljava/io/OutputStream;)V",
@@ -267,6 +267,17 @@ const PRINT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
         ACC_PUBLIC,
         print_stream_init_file,
     ),
+    method(
+        "<init>",
+        "(Ljava/io/File;Ljava/nio/charset/Charset;)V",
+        ACC_PUBLIC,
+        print_stream_init_file,
+    ),
+    method("checkError", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method("writeBytes", "([B)V", ACC_PUBLIC, |vm, _, args| {
+        let bytes = print_stream_byte_arg(vm, ref_arg(args, 1))?;
+        print_stream_write(vm, receiver(args), &bytes)
+    }),
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -490,6 +501,19 @@ fn print_stream_write(vm: &mut Vm<'_>, this: ObjectRef, bytes: &[u8]) -> Result<
     let stream = stream_of(vm, this);
     vm.write_host(stream, bytes);
     void()
+}
+
+/// The bytes of a `byte[]` argument, with the JDK's null check.
+fn print_stream_byte_arg(vm: &mut Vm<'_>, array: ObjectRef) -> Result<Vec<u8>, VmError> {
+    if array.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    match vm.heap.get(array).map(|object| &object.data) {
+        Some(oxjvm_vm::ObjectData::Array(oxjvm_vm::ArrayData::Byte(bytes))) => {
+            Ok(bytes.iter().map(|byte| *byte as u8).collect())
+        }
+        _ => Err(vm.throw_new("java/lang/NullPointerException", None)),
+    }
 }
 
 fn write_bytes_array(vm: &mut Vm<'_>, bytes: &[u8]) -> Result<ObjectRef, VmError> {
@@ -1047,7 +1071,7 @@ fn reader_check_range(
     Ok(())
 }
 
-const READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const READER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method(
         "read",
         "()I",
@@ -1084,6 +1108,36 @@ const READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         Err(vm.throw_new("java/io/IOException", Some("mark/reset not supported")))
     }),
     method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "of",
+        "(Ljava/lang/CharSequence;)Ljava/io/Reader;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let sequence = ref_arg(args, 0);
+            if sequence.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let text = if vm.string_utf16(sequence).is_some() {
+                sequence
+            } else {
+                let (class, method) =
+                    vm.resolve_virtual_method(sequence, "toString", "()Ljava/lang/String;")?;
+                vm.invoke_method(class, method, vec![Value::Ref(sequence)])?
+                    .as_ref()
+            };
+            let class = vm.resolve_class("java/io/StringReader")?;
+            let instance = vm.new_instance(class)?;
+            let (declaring, ctor) = vm
+                .find_method(class, "<init>", "(Ljava/lang/String;)V")
+                .ok_or_else(|| VmError::internal("StringReader lacks its constructor"))?;
+            vm.invoke_method(
+                declaring,
+                ctor,
+                vec![Value::Ref(instance), Value::Ref(text)],
+            )?;
+            object(instance)
+        },
+    ),
 ];
 
 pub(crate) const READER: oxjvm_vm::NativeClass = class(
@@ -1687,7 +1741,7 @@ fn file_writer_write_text(vm: &mut Vm<'_>, this: ObjectRef, text: &str) -> Resul
     void()
 }
 
-const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -1732,6 +1786,60 @@ const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         crate::lang::write_int_field(vm, this, "append", i32::from(crate::bool_arg(args, 2)));
         void()
     }),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/nio/charset/Charset;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let path = crate::string_arg(vm, args[1])?;
+            vm.set_string_field(this, vm.class_of(this), "path", &path)?;
+            crate::lang::write_int_field(vm, this, "append", 0);
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/File;Ljava/nio/charset/Charset;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let file = ref_arg(args, 1);
+            let path = vm
+                .read_string_field(file, vm.class_of(file), "path")
+                .unwrap_or_default();
+            vm.set_string_field(this, vm.class_of(this), "path", &path)?;
+            crate::lang::write_int_field(vm, this, "append", 0);
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/nio/charset/Charset;Z)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let path = crate::string_arg(vm, args[1])?;
+            vm.set_string_field(this, vm.class_of(this), "path", &path)?;
+            crate::lang::write_int_field(vm, this, "append", i32::from(crate::bool_arg(args, 3)));
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/File;Ljava/nio/charset/Charset;Z)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let file = ref_arg(args, 1);
+            let path = vm
+                .read_string_field(file, vm.class_of(file), "path")
+                .unwrap_or_default();
+            vm.set_string_field(this, vm.class_of(this), "path", &path)?;
+            crate::lang::write_int_field(vm, this, "append", i32::from(crate::bool_arg(args, 3)));
+            void()
+        },
+    ),
     method("write", "(I)V", ACC_PUBLIC, |vm, _, args| {
         let text =
             char::from_u32(int_arg(args, 1) as u32 & 0xFFFF).map_or(String::new(), String::from);

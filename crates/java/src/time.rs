@@ -9,7 +9,7 @@ use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 use crate::lang::{read_int_field, read_long_field, write_int_field, write_long_field};
 use crate::{class, field, int, long, method, object, receiver, ref_arg};
 
-const DURATION_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
+const DURATION_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
     method(
         "ofNanos",
         "(J)Ljava/time/Duration;",
@@ -65,6 +65,48 @@ const DURATION_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
                 vm,
                 crate::long_arg(args, 0).saturating_mul(86_400_000_000_000),
             )
+        },
+    ),
+    method(
+        "of",
+        "(JLjava/time/temporal/TemporalUnit;)Ljava/time/Duration;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let amount = crate::long_arg(args, 0);
+            let unit = ref_arg(args, 1);
+            if unit.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", Some("unit")));
+            }
+            // DAYS is treated as exactly 24 hours even though its duration is estimated.
+            let chrono = vm.resolve_class("java/time/temporal/ChronoUnit")?;
+            vm.ensure_initialized(chrono)?;
+            let days = vm
+                .read_static_ref_if_set(chrono, "DAYS", "Ljava/time/temporal/ChronoUnit;")
+                .unwrap_or(ObjectRef::NULL);
+            if unit != days {
+                let (class, method) =
+                    vm.resolve_virtual_method(unit, "isDurationEstimated", "()Z")?;
+                let estimated = vm
+                    .invoke_method(class, method, vec![Value::Ref(unit)])?
+                    .as_int()
+                    != 0;
+                if estimated {
+                    return Err(vm.throw_new(
+                        "java/time/temporal/UnsupportedTemporalTypeException",
+                        Some("Unit must not have an estimated duration"),
+                    ));
+                }
+            }
+            if amount == 0 {
+                return duration_new(vm, 0);
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(unit, "getDuration", "()Ljava/time/Duration;")?;
+            let duration = vm
+                .invoke_method(class, method, vec![Value::Ref(unit)])?
+                .as_ref();
+            let nanos_per_unit = read_long_field(vm, duration, "nanos");
+            duration_new(vm, amount.saturating_mul(nanos_per_unit))
         },
     ),
     method("toNanos", "()J", ACC_PUBLIC, |vm, _, args| {
@@ -169,21 +211,58 @@ const DURATION_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
     ),
 ];
 
+/// `Duration.toString`: `PT{h}H{m}M{s}S` with zero parts omitted, matching the
+/// reference implementation (including the negative-second fraction form).
 fn format_duration(nanos: i64) -> alloc::string::String {
-    let seconds = nanos / 1_000_000_000;
-    let fraction = nanos % 1_000_000_000;
-    if fraction == 0 {
-        alloc::format!("PT{}S", oxjvm_vm::format::long_to_string(seconds))
-    } else {
-        let mut text = oxjvm_vm::format::long_to_string(fraction);
-        while text.len() < 9 {
-            text.insert(0, '0');
-        }
-        while text.ends_with('0') {
-            text.pop();
-        }
-        alloc::format!("PT{}.{}S", oxjvm_vm::format::long_to_string(seconds), text)
+    if nanos == 0 {
+        return alloc::string::String::from("PT0S");
     }
+    let mut seconds = nanos / 1_000_000_000;
+    let mut nano = nanos % 1_000_000_000;
+    if nano < 0 {
+        nano += 1_000_000_000;
+        seconds -= 1;
+    }
+    let hours = seconds / 3_600;
+    let minutes = (seconds % 3_600) / 60;
+    let secs = seconds % 60;
+    let mut text = alloc::string::String::from("PT");
+    if hours != 0 {
+        text.push_str(&oxjvm_vm::format::long_to_string(hours));
+        text.push('H');
+    }
+    if minutes != 0 {
+        text.push_str(&oxjvm_vm::format::long_to_string(minutes));
+        text.push('M');
+    }
+    if secs == 0 && nano == 0 && text.len() > 2 {
+        return text;
+    }
+    if secs < 0 && nano > 0 {
+        if secs == -1 {
+            text.push_str("-0.");
+        } else {
+            text.push_str(&oxjvm_vm::format::long_to_string(secs + 1));
+            text.push('.');
+        }
+    } else {
+        text.push_str(&oxjvm_vm::format::long_to_string(secs));
+        if nano > 0 {
+            text.push('.');
+        }
+    }
+    if nano > 0 {
+        let mut fraction = oxjvm_vm::format::long_to_string(nano);
+        while fraction.len() < 9 {
+            fraction.insert(0, '0');
+        }
+        while fraction.ends_with('0') {
+            fraction.pop();
+        }
+        text.push_str(&fraction);
+    }
+    text.push('S');
+    text
 }
 
 fn duration_new(vm: &mut Vm<'_>, nanos: i64) -> Result<Value, VmError> {

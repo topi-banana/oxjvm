@@ -1341,10 +1341,18 @@ pub(crate) const CHRONO_FIELD: oxjvm_vm::NativeClass = class(
 // -------------------------------------------------------------------------------------------
 
 const UNSUPPORTED_TEMPORAL_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
-    method("<init>", "()V", ACC_PUBLIC, |_, _, _| crate::void()),
-    method("<init>", "(Ljava/lang/String;)V", ACC_PUBLIC, |_, _, _| {
-        crate::void()
-    }),
+    method(
+        "<init>",
+        "()V",
+        ACC_PUBLIC,
+        crate::throwable::exception_ctor,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        crate::throwable::exception_ctor,
+    ),
 ];
 
 pub(crate) const UNSUPPORTED_TEMPORAL_TYPE_EXCEPTION: oxjvm_vm::NativeClass = class(

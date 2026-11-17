@@ -183,7 +183,7 @@ fn set_instance_value(
 // Method
 // -------------------------------------------------------------------------------------------
 
-const METHOD_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
+const METHOD_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -481,6 +481,24 @@ const METHOD_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
                 return object(ObjectRef::NULL);
             }
             object(new_annotated_type(vm, class)?)
+        },
+    ),
+    method(
+        "getAnnotatedExceptionTypes",
+        "()[Ljava/lang/reflect/AnnotatedType;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (class, slot) = method_parts(vm, receiver(args));
+            let exceptions = vm.classes.get(class).methods[slot as usize]
+                .exceptions
+                .clone();
+            let annotated_class = vm.resolve_class("java/lang/reflect/AnnotatedType")?;
+            let array = vm.allocate_object_array(annotated_class, exceptions.len())?;
+            for (index, exception) in exceptions.iter().enumerate() {
+                let annotated = new_annotated_type(vm, *exception)?;
+                vm.array_set_ref(array, index, annotated)?;
+            }
+            object(array)
         },
     ),
     method(

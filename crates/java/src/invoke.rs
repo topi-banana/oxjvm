@@ -20,7 +20,7 @@ use crate::{
 // MethodType
 // -------------------------------------------------------------------------------------------
 
-const METHOD_TYPE_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const METHOD_TYPE_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
     method(
         "descriptorString",
         "()Ljava/lang/String;",
@@ -221,6 +221,135 @@ const METHOD_TYPE_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
             object(vm.make_method_type(&result)?)
         },
     ),
+    method(
+        "parameterArray",
+        "()[Ljava/lang/Class;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let descriptor = vm.method_type_of(receiver(args)).unwrap_or_default();
+            let types = descriptor_types(&descriptor);
+            let class_class = vm.resolve_class("java/lang/Class")?;
+            let array = vm.allocate_object_array(class_class, types.len())?;
+            for (index, parameter) in types.iter().enumerate() {
+                let class = class_object_for_descriptor(vm, parameter)?.as_ref();
+                vm.array_set_ref(array, index, class)?;
+            }
+            object(array)
+        },
+    ),
+    method("parameterCount", "()I", ACC_PUBLIC, |vm, _, args| {
+        let descriptor = vm.method_type_of(receiver(args)).unwrap_or_default();
+        int(descriptor_types(&descriptor).len() as i32)
+    }),
+    method(
+        "lastParameterType",
+        "()Ljava/lang/Class;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let descriptor = vm.method_type_of(receiver(args)).unwrap_or_default();
+            let types = descriptor_types(&descriptor);
+            match types.last() {
+                Some(parameter) => class_object_for_descriptor(vm, parameter),
+                None => {
+                    let class = vm.primitive_class(oxjvm_classfile::BaseType::Void)?;
+                    object(vm.class_object(class)?)
+                }
+            }
+        },
+    ),
+    method(
+        "insertParameterTypes",
+        "(ILjava/util/List;)Ljava/lang/invoke/MethodType;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let descriptor = vm.method_type_of(receiver(args)).unwrap_or_default();
+            let mut types = descriptor_types(&descriptor);
+            let position = crate::int_arg(args, 1).clamp(0, types.len() as i32) as usize;
+            let mut inserted = Vec::new();
+            for element in crate::util::collection_elements(vm, ref_arg(args, 2))? {
+                let class = class_argument(vm, element)?;
+                inserted.push(class_field_descriptor(vm, class));
+            }
+            for (offset, parameter) in inserted.into_iter().enumerate() {
+                types.insert(position + offset, parameter);
+            }
+            let result = alloc::format!(
+                "({}){}",
+                types.concat(),
+                descriptor.split_once(')').map_or("V", |(_, r)| r)
+            );
+            object(vm.make_method_type(&result)?)
+        },
+    ),
+    method(
+        "dropParameterTypes",
+        "(II)Ljava/lang/invoke/MethodType;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let descriptor = vm.method_type_of(receiver(args)).unwrap_or_default();
+            let mut types = descriptor_types(&descriptor);
+            let start = crate::int_arg(args, 1);
+            let end = crate::int_arg(args, 2);
+            if start < 0 || end > types.len() as i32 || start > end {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            types.drain(start as usize..end as usize);
+            let result = alloc::format!(
+                "({}){}",
+                types.concat(),
+                descriptor.split_once(')').map_or("V", |(_, r)| r)
+            );
+            object(vm.make_method_type(&result)?)
+        },
+    ),
+    method(
+        "changeParameterType",
+        "(ILjava/lang/Class;)Ljava/lang/invoke/MethodType;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let descriptor = vm.method_type_of(receiver(args)).unwrap_or_default();
+            let mut types = descriptor_types(&descriptor);
+            let position = crate::int_arg(args, 1);
+            if position < 0 || position >= types.len() as i32 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            let class = class_argument(vm, ref_arg(args, 2))?;
+            types[position as usize] = class_field_descriptor(vm, class);
+            let result = alloc::format!(
+                "({}){}",
+                types.concat(),
+                descriptor.split_once(')').map_or("V", |(_, r)| r)
+            );
+            object(vm.make_method_type(&result)?)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = ref_arg(args, 1);
+            if other.is_null() {
+                return boolean(false);
+            }
+            let class = vm.resolve_class("java/lang/invoke/MethodType")?;
+            if !vm.is_instance(other, class) {
+                return boolean(false);
+            }
+            boolean(
+                vm.method_type_of(receiver(args)).unwrap_or_default()
+                    == vm.method_type_of(other).unwrap_or_default(),
+            )
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let descriptor = vm.method_type_of(receiver(args)).unwrap_or_default();
+        let mut hash = 0i32;
+        for unit in descriptor.encode_utf16() {
+            hash = hash.wrapping_mul(31).wrapping_add(i32::from(unit));
+        }
+        int(hash)
+    }),
     method(
         "describeConstable",
         "()Ljava/util/Optional;",

@@ -869,6 +869,88 @@ exception!(
     "java/lang/IllegalArgumentException"
 );
 exception!(
+    WRONG_METHOD_TYPE_EXCEPTION,
+    "java/lang/invoke/WrongMethodTypeException",
+    "java/lang/RuntimeException"
+);
+
+const UNCHECKED_IO_EXCEPTION_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method(
+        "<init>",
+        "(Ljava/io/IOException;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let cause = ref_arg(args, 1);
+            if cause.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(cause, "toString", "()Ljava/lang/String;")?;
+            let message = vm.invoke_method(class, method, vec![Value::Ref(cause)])?;
+            unchecked_io_init(vm, this, message.as_ref(), cause)
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/io/IOException;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let cause = ref_arg(args, 2);
+            if cause.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            unchecked_io_init(vm, this, ref_arg(args, 1), cause)
+        },
+    ),
+    method(
+        "getCause",
+        "()Ljava/io/IOException;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(
+                vm.read_ref_field(this, vm.class_of(this), "cause", "Ljava/lang/Throwable;")
+                    .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+];
+
+fn unchecked_io_init(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    message: ObjectRef,
+    cause: ObjectRef,
+) -> Result<Value, VmError> {
+    let throwable = vm.resolve_class("java/lang/Throwable")?;
+    let (declaring, ctor) = vm
+        .find_method(
+            throwable,
+            "<init>",
+            "(Ljava/lang/String;Ljava/lang/Throwable;)V",
+        )
+        .ok_or_else(|| VmError::internal("Throwable(String,Throwable) missing"))?;
+    vm.invoke_method(
+        declaring,
+        ctor,
+        vec![Value::Ref(this), Value::Ref(message), Value::Ref(cause)],
+    )?;
+    void()
+}
+
+/// `java.io.UncheckedIOException`: an `IOException` wrapped as a runtime exception.
+pub(crate) const UNCHECKED_IO_EXCEPTION: oxjvm_vm::NativeClass = class(
+    "java/io/UncheckedIOException",
+    Some("java/lang/RuntimeException"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &UNCHECKED_IO_EXCEPTION_METHODS,
+    None,
+);
+exception!(
     SIGNATURE_EXCEPTION,
     "java/security/SignatureException",
     "java/security/GeneralSecurityException"

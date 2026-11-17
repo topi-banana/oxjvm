@@ -2651,11 +2651,27 @@ fn string_get_chars(
     let end = int_arg(args, 2);
     let destination = ref_arg(args, 3);
     let offset = int_arg(args, 4);
-    if begin < 0 || end > units.len() as i32 || begin > end {
-        return Err(vm.throw_new("java/lang/StringIndexOutOfBoundsException", None));
+    let length = units.len() as i32;
+    if begin < 0 || end > length || begin > end {
+        return Err(vm.throw_new(
+            "java/lang/StringIndexOutOfBoundsException",
+            Some(&alloc::format!(
+                "Range [{begin}, {end}) out of bounds for length {length}"
+            )),
+        ));
     }
     if destination.is_null() {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let dst_length = vm.array_length(destination)? as i32;
+    let count = end - begin;
+    if offset < 0 || offset > dst_length - count {
+        return Err(vm.throw_new(
+            "java/lang/StringIndexOutOfBoundsException",
+            Some(&alloc::format!(
+                "Range [{offset}, {offset} + {count}) out of bounds for length {dst_length}"
+            )),
+        ));
     }
     for (index, unit) in units[begin as usize..end as usize].iter().enumerate() {
         vm.array_set(
@@ -7645,7 +7661,7 @@ pub(crate) fn read_input_byte(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Option
     Ok(Some(byte & 0xFF))
 }
 
-const CHAR_SEQUENCE_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+const CHAR_SEQUENCE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method("length", "()I", ACC_PUBLIC | ACC_ABSTRACT, abstract_method),
     method("charAt", "(I)C", ACC_PUBLIC | ACC_ABSTRACT, abstract_method),
     method(
@@ -7673,6 +7689,7 @@ const CHAR_SEQUENCE_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         ACC_PUBLIC,
         char_sequence_code_points,
     ),
+    method("getChars", "(II[CI)V", ACC_PUBLIC, char_sequence_get_chars),
 ];
 
 fn char_sequence_is_empty(
@@ -7716,6 +7733,48 @@ fn char_sequence_code_points(
     let text = String::from_utf16_lossy(&units);
     let values: Vec<i32> = text.chars().map(|ch| ch as i32).collect();
     crate::intstream::int_stream_of(vm, values)
+}
+
+/// `CharSequence.getChars`: copy `[srcBegin, srcEnd)` into `dst` at `dstBegin`, with the
+/// same range checks and messages as `String.getChars`.
+fn char_sequence_get_chars(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let src_begin = int_arg(args, 1);
+    let src_end = int_arg(args, 2);
+    let dst = ref_arg(args, 3);
+    let dst_begin = int_arg(args, 4);
+    let (class, method) = vm.resolve_virtual_method(this, "length", "()I")?;
+    let length = vm
+        .invoke_method(class, method, vec![Value::Ref(this)])?
+        .as_int();
+    if src_begin < 0 || src_end > length || src_begin > src_end {
+        return Err(vm.throw_new(
+            "java/lang/StringIndexOutOfBoundsException",
+            Some(&alloc::format!(
+                "Range [{src_begin}, {src_end}) out of bounds for length {length}"
+            )),
+        ));
+    }
+    let dst_length = vm.array_length(dst)? as i32;
+    let count = src_end - src_begin;
+    if dst_begin < 0 || dst_begin > dst_length - count {
+        return Err(vm.throw_new(
+            "java/lang/StringIndexOutOfBoundsException",
+            Some(&alloc::format!(
+                "Range [{dst_begin}, {dst_begin} + {count}) out of bounds for length {dst_length}"
+            )),
+        ));
+    }
+    let (class, method) = vm.resolve_virtual_method(this, "charAt", "(I)C")?;
+    for index in src_begin..src_end {
+        let unit = vm.invoke_method(class, method, vec![Value::Ref(this), Value::Int(index)])?;
+        vm.array_set(dst, dst_begin + index - src_begin, unit, true)?;
+    }
+    void()
 }
 
 pub(crate) const CHAR_SEQUENCE: oxjvm_vm::NativeClass = class(
