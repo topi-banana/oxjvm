@@ -1154,7 +1154,7 @@ const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _| {
             let millis = vm.host_time_millis();
-            zoned_date_time_new(vm, millis)
+            zoned_date_time_new(vm, millis, (millis.rem_euclid(1000) * 1_000_000) as i32)
         },
     ),
     method(
@@ -1171,7 +1171,12 @@ const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
             let nano_of_day = read_long_field(vm, local, "nanoOfDay");
             let local_second = epoch_day * 86_400 + nano_of_day / 1_000_000_000;
             let offset = zone_offset_seconds(vm, zone);
-            zoned_date_time_new(vm, (local_second - i64::from(offset)) * 1000)
+            let nano = (nano_of_day % 1_000_000_000) as i32;
+            zoned_date_time_new(
+                vm,
+                (local_second - i64::from(offset)) * 1000 + i64::from(nano) / 1_000_000,
+                nano,
+            )
         },
     ),
     method(
@@ -1193,11 +1198,12 @@ const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         "()Ljava/time/Instant;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let millis = read_long_field(vm, receiver(args), "millis");
+            let this = receiver(args);
+            let millis = read_long_field(vm, this, "millis");
             instant_new(
                 vm,
                 millis.div_euclid(1000),
-                (millis.rem_euclid(1000) * 1_000_000) as i32,
+                read_int_field(vm, this, "nano"),
             )
         },
     ),
@@ -1205,7 +1211,7 @@ const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         long(read_long_field(vm, receiver(args), "millis").div_euclid(1000))
     }),
     method("getNano", "()I", ACC_PUBLIC, |vm, _, args| {
-        int((read_long_field(vm, receiver(args), "millis").rem_euclid(1000) * 1_000_000) as i32)
+        int(read_int_field(vm, receiver(args), "nano"))
     }),
     method(
         "toString",
@@ -1364,20 +1370,25 @@ pub(crate) const FORMAT_STYLE: oxjvm_vm::NativeClass = class(
     Some(format_style_clinit),
 );
 
-fn zoned_date_time_new(vm: &mut Vm<'_>, millis: i64) -> Result<Value, VmError> {
+fn zoned_date_time_new(vm: &mut Vm<'_>, millis: i64, nano: i32) -> Result<Value, VmError> {
     let class = vm.resolve_class("java/time/ZonedDateTime")?;
     let instance = vm.new_instance(class)?;
     write_long_field(vm, instance, "millis", millis);
+    write_int_field(vm, instance, "nano", nano);
     object(instance)
 }
 
-/// `java.time.ZonedDateTime`, stored as an epoch-millisecond count.
+/// `java.time.ZonedDateTime`, stored as an epoch-millisecond count plus the
+/// full nano-of-second so sub-millisecond precision survives `toInstant()`.
 pub(crate) const ZONED_DATE_TIME: oxjvm_vm::NativeClass = class(
     "java/time/ZonedDateTime",
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_FINAL,
-    &[field("millis", "J", ACC_PRIVATE, None)],
+    &[
+        field("millis", "J", ACC_PRIVATE, None),
+        field("nano", "I", ACC_PRIVATE, None),
+    ],
     &ZONED_DATE_TIME_METHODS,
     None,
 );
@@ -3773,7 +3784,12 @@ const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
             let nano_of_day = read_long_field(vm, this, "nanoOfDay");
             let local_second = epoch_day * 86_400 + nano_of_day / 1_000_000_000;
             let offset = zone_offset_seconds(vm, zone);
-            zoned_date_time_new(vm, (local_second - i64::from(offset)) * 1000)
+            let nano = (nano_of_day % 1_000_000_000) as i32;
+            zoned_date_time_new(
+                vm,
+                (local_second - i64::from(offset)) * 1000 + i64::from(nano) / 1_000_000,
+                nano,
+            )
         },
     ),
 ];
@@ -4906,10 +4922,25 @@ fn clock_new(
         vm.set_instance_ref(instance, declaring, field, zone);
     }
     write_int_field(vm, instance, "fixed", i32::from(fixed));
+    write_int_field(vm, instance, "kind", i32::from(fixed));
     write_long_field(vm, instance, "epochSecond", epoch_second);
     write_int_field(vm, instance, "nano", nano);
     write_long_field(vm, instance, "offsetNanos", offset_nanos);
     Ok(instance)
+}
+
+/// Render any object's `toString()` as a Rust string (for `Clock.toString`).
+fn clock_obj_string(vm: &mut Vm<'_>, obj: ObjectRef) -> Result<alloc::string::String, VmError> {
+    let (class, method) = vm.resolve_virtual_method(obj, "toString", "()Ljava/lang/String;")?;
+    let result = vm.invoke_method(class, method, vec![Value::Ref(obj)])?;
+    Ok(vm.string_value(result.as_ref()).unwrap_or_default())
+}
+
+/// The id of a clock's zone (e.g. `Z` or `Europe/Paris`).
+fn clock_zone_id(vm: &mut Vm<'_>, zone: ObjectRef) -> Result<alloc::string::String, VmError> {
+    let (class, method) = vm.resolve_virtual_method(zone, "getId", "()Ljava/lang/String;")?;
+    let result = vm.invoke_method(class, method, vec![Value::Ref(zone)])?;
+    Ok(vm.string_value(result.as_ref()).unwrap_or_default())
 }
 
 /// The zone of a clock argument, falling back to UTC when null.
@@ -4937,7 +4968,7 @@ fn clock_local_parts(vm: &mut Vm<'_>, clock: ObjectRef) -> Result<(i64, i64), Vm
     Ok((epoch_day, nano_of_day))
 }
 
-const CLOCK_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const CLOCK_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method(
         "systemUTC",
         "()Ljava/time/Clock;",
@@ -4996,14 +5027,26 @@ const CLOCK_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
             let duration = ref_arg(args, 1);
             let added = read_long_field(vm, duration, "nanos");
             let zone = clock_zone(vm, base)?;
-            object(clock_new(
+            let instance = clock_new(
                 vm,
                 zone,
                 read_int_field(vm, base, "fixed") != 0,
                 read_long_field(vm, base, "epochSecond"),
                 read_int_field(vm, base, "nano"),
                 read_long_field(vm, base, "offsetNanos").saturating_add(added),
-            )?)
+            )?;
+            write_int_field(vm, instance, "kind", 2);
+            let class = vm.class_of(instance);
+            if let Some((declaring, field)) = vm.find_field_opt(class, "base", "Ljava/time/Clock;")
+            {
+                vm.set_instance_ref(instance, declaring, field, base);
+            }
+            if let Some((declaring, field)) =
+                vm.find_field_opt(class, "offset", "Ljava/time/Duration;")
+            {
+                vm.set_instance_ref(instance, declaring, field, duration);
+            }
+            object(instance)
         },
     ),
     method(
@@ -5031,14 +5074,88 @@ const CLOCK_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
+            let new_zone = ref_arg(args, 1);
+            let current_zone = clock_zone(vm, this)?;
+            let (class, method) =
+                vm.resolve_virtual_method(current_zone, "equals", "(Ljava/lang/Object;)Z")?;
+            let same = vm.invoke_method(
+                class,
+                method,
+                vec![Value::Ref(current_zone), Value::Ref(new_zone)],
+            )?;
+            if matches!(same, Value::Int(1)) {
+                return object(this);
+            }
+            let kind = read_int_field(vm, this, "kind");
+            if kind == 2 {
+                let base = vm
+                    .read_ref_field(this, vm.class_of(this), "base", "Ljava/time/Clock;")
+                    .unwrap_or(ObjectRef::NULL);
+                let offset = vm
+                    .read_ref_field(this, vm.class_of(this), "offset", "Ljava/time/Duration;")
+                    .unwrap_or(ObjectRef::NULL);
+                let (bc, bm) = vm.resolve_virtual_method(
+                    base,
+                    "withZone",
+                    "(Ljava/time/ZoneId;)Ljava/time/Clock;",
+                )?;
+                let new_base = vm
+                    .invoke_method(bc, bm, vec![Value::Ref(base), Value::Ref(new_zone)])?
+                    .as_ref();
+                let clock_class = vm.resolve_class("java/time/Clock")?;
+                let (oc, om) = vm
+                    .find_method(
+                        clock_class,
+                        "offset",
+                        "(Ljava/time/Clock;Ljava/time/Duration;)Ljava/time/Clock;",
+                    )
+                    .ok_or_else(|| VmError::internal("Clock.offset"))?;
+                return vm.invoke_method(oc, om, vec![Value::Ref(new_base), Value::Ref(offset)]);
+            }
             object(clock_new(
                 vm,
-                ref_arg(args, 1),
-                read_int_field(vm, this, "fixed") != 0,
+                new_zone,
+                kind == 1,
                 read_long_field(vm, this, "epochSecond"),
                 read_int_field(vm, this, "nano"),
                 read_long_field(vm, this, "offsetNanos"),
             )?)
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let kind = read_int_field(vm, this, "kind");
+            let zone = clock_zone(vm, this)?;
+            let zone_id = clock_zone_id(vm, zone)?;
+            let text = match kind {
+                1 => {
+                    let instant = instant_new(
+                        vm,
+                        read_long_field(vm, this, "epochSecond"),
+                        read_int_field(vm, this, "nano"),
+                    )?;
+                    let ins = clock_obj_string(vm, instant.as_ref())?;
+                    alloc::format!("FixedClock[{ins},{zone_id}]")
+                }
+                2 => {
+                    let class = vm.class_of(this);
+                    let base = vm
+                        .read_ref_field(this, class, "base", "Ljava/time/Clock;")
+                        .unwrap_or(ObjectRef::NULL);
+                    let offset = vm
+                        .read_ref_field(this, class, "offset", "Ljava/time/Duration;")
+                        .unwrap_or(ObjectRef::NULL);
+                    let base_str = clock_obj_string(vm, base)?;
+                    let off_str = clock_obj_string(vm, offset)?;
+                    alloc::format!("OffsetClock[{base_str},{off_str}]")
+                }
+                _ => alloc::format!("SystemClock[{zone_id}]"),
+            };
+            object(vm.make_string(&text)?)
         },
     ),
     method(
@@ -5076,9 +5193,12 @@ pub(crate) const CLOCK: oxjvm_vm::NativeClass = class(
     &[
         field("zone", "Ljava/time/ZoneId;", ACC_PRIVATE, None),
         field("fixed", "I", ACC_PRIVATE, None),
+        field("kind", "I", ACC_PRIVATE, None),
         field("epochSecond", "J", ACC_PRIVATE, None),
         field("nano", "I", ACC_PRIVATE, None),
         field("offsetNanos", "J", ACC_PRIVATE, None),
+        field("base", "Ljava/time/Clock;", ACC_PRIVATE, None),
+        field("offset", "Ljava/time/Duration;", ACC_PRIVATE, None),
     ],
     &CLOCK_METHODS,
     None,
