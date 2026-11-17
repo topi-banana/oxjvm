@@ -3749,7 +3749,7 @@ pub(crate) const CASE_INSENSITIVE_COMPARATOR: oxjvm_vm::NativeClass = class(
 // StringBuilder / StringBuffer
 // -------------------------------------------------------------------------------------------
 
-const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
+const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 43] = [
     method("<init>", "()V", ACC_PUBLIC, builder_init),
     method("<init>", "(I)V", ACC_PUBLIC, builder_init_capacity),
     method(
@@ -3863,6 +3863,12 @@ const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
     ),
     method(
         "insert",
+        "(ILjava/lang/CharSequence;)Ljava/lang/StringBuilder;",
+        ACC_PUBLIC,
+        builder_insert_sequence,
+    ),
+    method(
+        "insert",
         "(IZ)Ljava/lang/StringBuilder;",
         ACC_PUBLIC,
         builder_insert_bool,
@@ -3965,7 +3971,7 @@ const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
     ),
 ];
 
-const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
+const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 45] = [
     method("<init>", "()V", ACC_PUBLIC, builder_init),
     method("<init>", "(I)V", ACC_PUBLIC, builder_init_capacity),
     method(
@@ -4122,6 +4128,12 @@ const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
         "(ILjava/lang/String;)Ljava/lang/StringBuffer;",
         ACC_PUBLIC,
         builder_insert_string,
+    ),
+    method(
+        "insert",
+        "(ILjava/lang/CharSequence;)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_insert_sequence,
     ),
     method(
         "insert",
@@ -4414,18 +4426,45 @@ fn builder_append_string(
     builder_append_text(vm, receiver(args), &text)
 }
 
+/// Append raw UTF-16 units to the content, growing the backing array as needed.
+fn builder_append_units(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    appended: &[u16],
+) -> Result<Value, VmError> {
+    let (mut current, count) = builder_state(vm, this);
+    current.truncate(count);
+    current.extend_from_slice(appended);
+    builder_store(vm, this, &current, count + appended.len())?;
+    object(this)
+}
+
 fn builder_append_sequence(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
     let reference = ref_arg(args, 1);
-    let text = if reference.is_null() {
-        "null".into()
+    let units = if reference.is_null() {
+        "null".encode_utf16().collect::<Vec<u16>>()
     } else {
-        vm.string_or_empty(reference)
+        builder_read_sequence(vm, reference)?
     };
-    builder_append_text(vm, receiver(args), &text)
+    builder_append_units(vm, receiver(args), &units)
+}
+
+fn builder_insert_sequence(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let reference = ref_arg(args, 2);
+    let units = if reference.is_null() {
+        "null".encode_utf16().collect::<Vec<u16>>()
+    } else {
+        builder_read_sequence(vm, reference)?
+    };
+    builder_insert_units(vm, receiver(args), int_arg(args, 1), &units)
 }
 
 fn builder_append_sequence_range(
@@ -4672,7 +4711,10 @@ fn builder_insert_string(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let offset = int_arg(args, 1);
-    let text = vm.string_or_empty(ref_arg(args, 2));
+    let text = match vm.string_value(ref_arg(args, 2)) {
+        Some(text) => text,
+        None => "null".into(),
+    };
     let (units, count) = builder_state(vm, receiver(args));
     let offset = offset.max(0) as usize;
     if offset > count {
