@@ -9,7 +9,7 @@ use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
 use crate::{boolean, class, field, int, method, object, receiver, ref_arg, string_arg, void};
 
-const LOCALE_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
+const LOCALE_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -77,7 +77,52 @@ const LOCALE_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
         |vm, _, args| {
             let language_value = locale_string_field(vm, receiver(args), "language")?;
             let language = string_arg(vm, language_value)?;
-            object(vm.make_string(iso3_language(&language))?)
+            let iso3 = iso3_language(&language);
+            if iso3.is_empty() {
+                return Err(vm.throw_new("java/util/MissingResourceException", None));
+            }
+            object(vm.make_string(iso3)?)
+        },
+    ),
+    method(
+        "getISO3Country",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| crate::locale_iso::locale_get_iso3_country(vm, args),
+    ),
+    method(
+        "getISOCountries",
+        "()[Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| crate::locale_iso::locale_get_iso_countries(vm),
+    ),
+    method(
+        "getISOCountries",
+        "(Ljava/util/Locale$IsoCountryCode;)Ljava/util/Set;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| crate::locale_iso::locale_get_iso_countries_typed(vm, args),
+    ),
+    method(
+        "clone",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.resolve_class("java/util/Locale")?;
+            let copy = vm.new_instance(class)?;
+            for (name, descriptor) in [
+                ("language", "Ljava/lang/String;"),
+                ("country", "Ljava/lang/String;"),
+                ("variant", "Ljava/lang/String;"),
+                ("languageTag", "Ljava/lang/String;"),
+            ] {
+                if let Some(value) = vm.read_ref_field(this, vm.class_of(this), name, descriptor) {
+                    if let Some((declaring, field)) = vm.find_field_opt(class, name, descriptor) {
+                        vm.set_instance_ref(copy, declaring, field, value);
+                    }
+                }
+            }
+            object(copy)
         },
     ),
     method(
@@ -194,12 +239,16 @@ const LOCALE_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
         "(Ljava/util/Locale;)V",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
+            let locale = ref_arg(args, 0);
+            if locale.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let class = vm.resolve_class("java/util/Locale")?;
             vm.set_static_value(
                 class,
                 "defaultLocale",
                 "Ljava/util/Locale;",
-                Value::Ref(ref_arg(args, 0)),
+                Value::Ref(locale),
             );
             void()
         },
@@ -437,6 +486,7 @@ fn locale_init(
     for (offset, (name, descriptor)) in [
         ("language", "Ljava/lang/String;"),
         ("country", "Ljava/lang/String;"),
+        ("variant", "Ljava/lang/String;"),
     ]
     .iter()
     .enumerate()
@@ -450,9 +500,28 @@ fn locale_init(
         } else {
             ObjectRef::NULL
         };
-        vm.set_instance_ref(this, declaring, field, value);
+        // Normalize case and convert deprecated ISO 639 codes the way the JDK
+        // constructor does (java.locale.useOldISOCodes defaults to false).
+        let text = vm.string_value(value).unwrap_or_default();
+        let normalized = match offset {
+            0 => convert_old_language(&text.to_lowercase()),
+            1 => text.to_uppercase(),
+            _ => text,
+        };
+        let normalized_ref = vm.make_string(&normalized)?;
+        vm.set_instance_ref(this, declaring, field, normalized_ref);
     }
     void()
+}
+
+/// Map the deprecated ISO 639-1 codes to their modern replacements.
+fn convert_old_language(language: &str) -> String {
+    match language {
+        "iw" => String::from("he"),
+        "ji" => String::from("yi"),
+        "in" => String::from("id"),
+        other => other.to_string(),
+    }
 }
 
 /// The ISO 639-2 three-letter code for a two-letter language code.
@@ -871,7 +940,14 @@ fn locale_for_language_tag(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let tag = string_arg(vm, args[0])?;
-    let (canonical, language, country, variant) = parse_language_tag(&tag);
+    let (mut canonical, language, country, variant) = parse_language_tag(&tag);
+    let language = convert_old_language(&language);
+    // Reflect the converted language in the canonical tag's primary subtag.
+    if let Some(rest) = canonical.split_once('-') {
+        canonical = alloc::format!("{language}-{}", rest.1);
+    } else if !canonical.is_empty() {
+        canonical = language.clone();
+    }
     let class = vm.resolve_class("java/util/Locale")?;
     let instance = vm.new_instance(class)?;
     let (declaring, ctor) = vm

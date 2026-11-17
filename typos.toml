@@ -3,7 +3,7 @@
 [files]
 # Auto-generated IANA Language Subtag Registry equivalent maps: the keys/values are
 # standard language/region subtags, not English words.
-extend-exclude = ["crates/java/src/locale_match.rs"]
+extend-exclude = ["crates/java/src/locale_match.rs", "crates/java/src/locale_iso.rs"]
 
 [default.extend-words]
 # `ifle` is the JVM bytecode opcode "if less than or equal" (JVMS §6): it appears in the opcode
