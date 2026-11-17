@@ -532,7 +532,7 @@ fn reflect_invoke(
             vm,
             value.as_ref(),
             &field_type_descriptor(parameter),
-        ));
+        )?);
     }
     let result = match vm.invoke_method(class, slot, call_args) {
         Ok(value) => value,
@@ -838,7 +838,7 @@ fn reflect_field_set(
     let (_, descriptor, flags) = field_entry(vm, class, index);
     check_field_writable(vm, this, flags)?;
     let value = if primitive_descriptor(&descriptor) {
-        crate::boxed::unbox_value(vm, ref_arg(args, 2), &descriptor)
+        crate::boxed::unbox_call_argument(vm, ref_arg(args, 2), &descriptor)?
     } else {
         Value::Ref(ref_arg(args, 2))
     };
@@ -2992,7 +2992,7 @@ fn constructor_new_instance(
             vm,
             value.as_ref(),
             &field_type_descriptor(parameter),
-        ));
+        )?);
     }
     let instance = vm.new_instance(class)?;
     vm.protect(instance);
@@ -3921,7 +3921,7 @@ const ARRAY_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
             let value = if descriptor == "Ljava/lang/Object;" {
                 Value::Ref(ref_arg(args, 2))
             } else {
-                crate::boxed::unbox_value(vm, ref_arg(args, 2), descriptor)
+                crate::boxed::unbox_call_argument(vm, ref_arg(args, 2), descriptor)?
             };
             vm.array_set(array, index, value, true)?;
             void()

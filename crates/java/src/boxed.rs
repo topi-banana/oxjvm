@@ -420,15 +420,76 @@ pub(crate) fn unbox_value(vm: &Vm<'_>, reference: ObjectRef, descriptor: &str) -
     }
 }
 
-/// Like [`unbox_value`], but in operand-stack form for a method call: a `double` or `float`
-/// argument must arrive as `Value::Double`/`Value::Float`, not as its raw bit pattern in a
-/// `Long`/`Int` (which is how fields store them).
-pub(crate) fn unbox_call_argument(vm: &Vm<'_>, reference: ObjectRef, descriptor: &str) -> Value {
-    match descriptor {
-        "D" => Value::Double(f64::from_bits(read_value_long(vm, reference) as u64)),
-        "F" => Value::Float(f32::from_bits(read_value_int(vm, reference) as u32)),
-        _ => unbox_value(vm, reference, descriptor),
+/// Unbox a boxed primitive for a reflective call (`Method.invoke`, `Constructor.newInstance`,
+/// `Field.set`, `Array.set`), applying JLS 5.1.2 widening primitive conversion.
+///
+/// A boxed value may be widened to a larger primitive type (e.g. `Integer` -> `long`), but
+/// never narrowed. Reference parameters pass through unchanged (including `null`). A `null`
+/// or non-box argument for a primitive parameter, or a type mismatch, throws
+/// `IllegalArgumentException`, matching the reference implementation.
+pub(crate) fn unbox_call_argument(
+    vm: &mut Vm<'_>,
+    reference: ObjectRef,
+    descriptor: &str,
+) -> Result<Value, VmError> {
+    if !matches!(descriptor, "Z" | "B" | "C" | "S" | "I" | "J" | "F" | "D") {
+        return Ok(Value::Ref(reference));
     }
+    if reference.is_null() {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("argument type mismatch"),
+        ));
+    }
+    let name = vm.class_name(vm.class_of(reference));
+    let (source, int_bits, long_bits) = match name {
+        "java/lang/Boolean" => ('Z', read_value_int(vm, reference), 0i64),
+        "java/lang/Byte" => ('B', read_value_int(vm, reference), 0),
+        "java/lang/Character" => ('C', read_value_int(vm, reference), 0),
+        "java/lang/Short" => ('S', read_value_int(vm, reference), 0),
+        "java/lang/Integer" => ('I', read_value_int(vm, reference), 0),
+        "java/lang/Long" => ('J', 0, read_value_long(vm, reference)),
+        "java/lang/Float" => ('F', read_value_int(vm, reference), 0),
+        "java/lang/Double" => ('D', 0, read_value_long(vm, reference)),
+        _ => {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("argument type mismatch"),
+            ));
+        }
+    };
+    let widened = match descriptor {
+        "Z" => (source == 'Z').then_some(Value::Int(int_bits)),
+        "B" => (source == 'B').then_some(Value::Int(int_bits)),
+        "C" => (source == 'C').then_some(Value::Int(int_bits)),
+        "S" => matches!(source, 'B' | 'S').then_some(Value::Int(int_bits)),
+        "I" => matches!(source, 'B' | 'C' | 'S' | 'I').then_some(Value::Int(int_bits)),
+        "J" => match source {
+            'B' | 'C' | 'S' | 'I' => Some(Value::Long(i64::from(int_bits))),
+            'J' => Some(Value::Long(long_bits)),
+            _ => None,
+        },
+        "F" => match source {
+            'B' | 'C' | 'S' | 'I' => Some(Value::Float(int_bits as f32)),
+            'J' => Some(Value::Float(long_bits as f32)),
+            'F' => Some(Value::Float(f32::from_bits(int_bits as u32))),
+            _ => None,
+        },
+        "D" => match source {
+            'B' | 'C' | 'S' | 'I' => Some(Value::Double(f64::from(int_bits))),
+            'J' => Some(Value::Double(long_bits as f64)),
+            'F' => Some(Value::Double(f64::from(f32::from_bits(int_bits as u32)))),
+            'D' => Some(Value::Double(f64::from_bits(long_bits as u64))),
+            _ => None,
+        },
+        _ => None,
+    };
+    widened.ok_or_else(|| {
+        vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("argument type mismatch"),
+        )
+    })
 }
 
 pub(crate) fn boxed_int(vm: &mut Vm<'_>, value: i32) -> Result<Value, VmError> {
