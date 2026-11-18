@@ -1455,7 +1455,7 @@ pub(crate) const CLASS: oxjvm_vm::NativeClass = class(
 // String
 // -------------------------------------------------------------------------------------------
 
-const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 63] = [
+const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 65] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "<init>",
@@ -1523,6 +1523,18 @@ const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 63] = [
     method("charAt", "()C", ACC_PUBLIC, string_char_at),
     method("charAt", "(I)C", ACC_PUBLIC, string_char_at_index),
     method("codePointAt", "(I)I", ACC_PUBLIC, string_code_point_at),
+    method(
+        "codePointBefore",
+        "(I)I",
+        ACC_PUBLIC,
+        string_code_point_before,
+    ),
+    method(
+        "offsetByCodePoints",
+        "(II)I",
+        ACC_PUBLIC,
+        string_offset_by_code_points,
+    ),
     method("hashCode", "()I", ACC_PUBLIC, string_hash_code),
     method("equals", "(Ljava/lang/Object;)Z", ACC_PUBLIC, string_equals),
     method(
@@ -2263,6 +2275,80 @@ fn string_code_point_at(
         }
     }
     int(first as i32)
+}
+
+fn string_code_point_before(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let units = vm
+        .string_utf16(receiver(args))
+        .map(<[u16]>::to_vec)
+        .unwrap_or_default();
+    let index = int_arg(args, 1);
+    let i = index - 1;
+    if i < 0 || i as usize >= units.len() {
+        return Err(vm.throw_new(
+            "java/lang/StringIndexOutOfBoundsException",
+            Some(&alloc::format!("String index out of range: {i}")),
+        ));
+    }
+    let second = u32::from(units[i as usize]);
+    if (0xDC00..0xE000).contains(&second) && i >= 1 {
+        let first = u32::from(units[(i - 1) as usize]);
+        if (0xD800..0xDC00).contains(&first) {
+            return int((0x10000 + ((first - 0xD800) << 10) + (second - 0xDC00)) as i32);
+        }
+    }
+    int(second as i32)
+}
+
+fn string_offset_by_code_points(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let units = vm
+        .string_utf16(receiver(args))
+        .map(<[u16]>::to_vec)
+        .unwrap_or_default();
+    let index = int_arg(args, 1);
+    let offset = int_arg(args, 2);
+    let length = units.len() as i32;
+    if index < 0 || index > length {
+        return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+    }
+    let is_high = |u: u16| (0xD800..0xDC00).contains(&u32::from(u));
+    let is_low = |u: u16| (0xDC00..0xE000).contains(&u32::from(u));
+    let mut x = index;
+    if offset >= 0 {
+        let mut i = 0;
+        while x < length && i < offset {
+            if is_high(units[x as usize]) && x + 1 < length && is_low(units[(x + 1) as usize]) {
+                x += 2;
+            } else {
+                x += 1;
+            }
+            i += 1;
+        }
+        if i < offset {
+            return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+        }
+    } else {
+        let mut i = offset;
+        while x > 0 && i < 0 {
+            x -= 1;
+            if is_low(units[x as usize]) && x >= 1 && is_high(units[(x - 1) as usize]) {
+                x -= 1;
+            }
+            i += 1;
+        }
+        if i < 0 {
+            return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+        }
+    }
+    int(x)
 }
 
 /// Java's `String.hashCode`.

@@ -231,7 +231,7 @@ pub(crate) const FILTER_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PRINT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
+const PRINT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
     method(
         "<init>",
         "(Ljava/io/OutputStream;)V",
@@ -252,6 +252,18 @@ const PRINT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
     method(
         "<init>",
         "(Ljava/io/OutputStream;ZLjava/lang/String;)V",
+        ACC_PUBLIC,
+        print_stream_init,
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;ZLjava/nio/charset/Charset;)V",
+        ACC_PUBLIC,
+        print_stream_init,
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;Ljava/nio/charset/Charset;)V",
         ACC_PUBLIC,
         print_stream_init,
     ),
@@ -281,6 +293,18 @@ const PRINT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        print_stream_init_string,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        print_stream_init_string,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/nio/charset/Charset;)V",
         ACC_PUBLIC,
         print_stream_init_string,
     ),
