@@ -3749,7 +3749,7 @@ pub(crate) const CASE_INSENSITIVE_COMPARATOR: oxjvm_vm::NativeClass = class(
 // StringBuilder / StringBuffer
 // -------------------------------------------------------------------------------------------
 
-const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
+const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 61] = [
     method("<init>", "()V", ACC_PUBLIC, builder_init),
     method("<init>", "(I)V", ACC_PUBLIC, builder_init_capacity),
     method(
@@ -3837,6 +3837,12 @@ const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
         builder_append_double,
     ),
     method(
+        "appendCodePoint",
+        "(I)Ljava/lang/StringBuilder;",
+        ACC_PUBLIC,
+        builder_append_code_point,
+    ),
+    method(
         "toString",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
@@ -3872,6 +3878,12 @@ const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
         "(IC)Ljava/lang/StringBuilder;",
         ACC_PUBLIC,
         builder_insert_char,
+    ),
+    method(
+        "insert",
+        "(I[C)Ljava/lang/StringBuilder;",
+        ACC_PUBLIC,
+        builder_insert_chars,
     ),
     method(
         "insert",
@@ -3976,6 +3988,31 @@ const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
         builder_substring_from,
     ),
     method("getChars", "(II[CI)V", ACC_PUBLIC, builder_get_chars),
+    method("codePointAt", "(I)I", ACC_PUBLIC, builder_code_point_at),
+    method(
+        "codePointBefore",
+        "(I)I",
+        ACC_PUBLIC,
+        builder_code_point_before,
+    ),
+    method(
+        "codePointCount",
+        "(II)I",
+        ACC_PUBLIC,
+        builder_code_point_count,
+    ),
+    method(
+        "offsetByCodePoints",
+        "(II)I",
+        ACC_PUBLIC,
+        builder_offset_by_code_points,
+    ),
+    method(
+        "subSequence",
+        "(II)Ljava/lang/CharSequence;",
+        ACC_PUBLIC,
+        builder_substring,
+    ),
     method("capacity", "()I", ACC_PUBLIC, builder_capacity_method),
     method(
         "ensureCapacity",
@@ -4032,7 +4069,7 @@ const BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
     ),
 ];
 
-const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 51] = [
+const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 58] = [
     method("<init>", "()V", ACC_PUBLIC, builder_init),
     method("<init>", "(I)V", ACC_PUBLIC, builder_init_capacity),
     method(
@@ -4130,6 +4167,12 @@ const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 51] = [
         builder_append_double,
     ),
     method(
+        "appendCodePoint",
+        "(I)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_append_code_point,
+    ),
+    method(
         "append",
         "(Ljava/lang/StringBuffer;)Ljava/lang/StringBuffer;",
         ACC_PUBLIC,
@@ -4172,6 +4215,31 @@ const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 51] = [
         builder_substring,
     ),
     method("getChars", "(II[CI)V", ACC_PUBLIC, builder_get_chars),
+    method("codePointAt", "(I)I", ACC_PUBLIC, builder_code_point_at),
+    method(
+        "codePointBefore",
+        "(I)I",
+        ACC_PUBLIC,
+        builder_code_point_before,
+    ),
+    method(
+        "codePointCount",
+        "(II)I",
+        ACC_PUBLIC,
+        builder_code_point_count,
+    ),
+    method(
+        "offsetByCodePoints",
+        "(II)I",
+        ACC_PUBLIC,
+        builder_offset_by_code_points,
+    ),
+    method(
+        "subSequence",
+        "(II)Ljava/lang/CharSequence;",
+        ACC_PUBLIC,
+        builder_substring,
+    ),
     method(
         "delete",
         "(II)Ljava/lang/StringBuffer;",
@@ -4201,6 +4269,12 @@ const BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 51] = [
         "(IC)Ljava/lang/StringBuffer;",
         ACC_PUBLIC,
         builder_insert_char,
+    ),
+    method(
+        "insert",
+        "(I[C)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        builder_insert_chars,
     ),
     method(
         "insert",
@@ -4478,7 +4552,7 @@ fn builder_init_string(
     let text = vm
         .string_utf16(ref_arg(args, 1))
         .map(<[u16]>::to_vec)
-        .unwrap_or_default();
+        .ok_or_else(|| vm.throw_new("java/lang/NullPointerException", None))?;
     builder_resize(vm, receiver(args), text.len() + 16)?;
     builder_store(vm, receiver(args), &text, text.len())?;
     void()
@@ -4536,6 +4610,32 @@ fn builder_append_units(
     object(this)
 }
 
+fn builder_append_code_point(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let code_point = int_arg(args, 1);
+    if !(0..=0x10FFFF).contains(&code_point) {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some(&alloc::format!(
+                "Not a valid Unicode code point: {code_point}"
+            )),
+        ));
+    }
+    let units: Vec<u16> = if code_point <= 0xFFFF {
+        vec![code_point as u16]
+    } else {
+        let value = (code_point - 0x10000) as u32;
+        vec![
+            (0xD800 | (value >> 10)) as u16,
+            (0xDC00 | (value & 0x3FF)) as u16,
+        ]
+    };
+    builder_append_units(vm, receiver(args), &units)
+}
+
 fn builder_append_sequence(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
@@ -4573,6 +4673,15 @@ fn builder_insert_text(
 ) -> Result<Value, VmError> {
     let inserted: Vec<u16> = text.encode_utf16().collect();
     builder_insert_units(vm, this, offset, &inserted)
+}
+
+fn builder_insert_chars(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let units = char_array(vm, ref_arg(args, 2))?;
+    builder_insert_units(vm, receiver(args), int_arg(args, 1), &units)
 }
 
 fn builder_insert_char(
@@ -5249,17 +5358,159 @@ fn builder_get_chars(
     void()
 }
 
+fn builder_code_point_at(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let (units, count) = builder_state(vm, receiver(args));
+    let content = &units[..count.min(units.len())];
+    let index = int_arg(args, 1);
+    if index < 0 || index as usize >= content.len() {
+        return Err(vm.throw_new(
+            "java/lang/StringIndexOutOfBoundsException",
+            Some(&alloc::format!("String index out of range: {index}")),
+        ));
+    }
+    let first = u32::from(content[index as usize]);
+    if (0xD800..0xDC00).contains(&first) && (index as usize + 1) < content.len() {
+        let second = u32::from(content[index as usize + 1]);
+        if (0xDC00..0xE000).contains(&second) {
+            return int((0x10000 + ((first - 0xD800) << 10) + (second - 0xDC00)) as i32);
+        }
+    }
+    int(first as i32)
+}
+
+fn builder_code_point_before(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let (units, count) = builder_state(vm, receiver(args));
+    let content = &units[..count.min(units.len())];
+    let index = int_arg(args, 1);
+    let i = index - 1;
+    if i < 0 || i as usize >= content.len() {
+        return Err(vm.throw_new(
+            "java/lang/StringIndexOutOfBoundsException",
+            Some(&alloc::format!("String index out of range: {i}")),
+        ));
+    }
+    let second = u32::from(content[i as usize]);
+    if (0xDC00..0xE000).contains(&second) && i >= 1 {
+        let first = u32::from(content[(i - 1) as usize]);
+        if (0xD800..0xDC00).contains(&first) {
+            return int((0x10000 + ((first - 0xD800) << 10) + (second - 0xDC00)) as i32);
+        }
+    }
+    int(second as i32)
+}
+
+fn builder_code_point_count(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let (units, count) = builder_state(vm, receiver(args));
+    let content = &units[..count.min(units.len())];
+    let begin = int_arg(args, 1);
+    let end = int_arg(args, 2);
+    let length = content.len() as i32;
+    if begin < 0 || end > length || begin > end {
+        return Err(vm.throw_new(
+            "java/lang/IndexOutOfBoundsException",
+            Some(&alloc::format!(
+                "Range [{begin}, {end}) out of bounds for length {length}"
+            )),
+        ));
+    }
+    let mut total = 0;
+    let mut index = begin as usize;
+    while index < end as usize {
+        let first = u32::from(content[index]);
+        if (0xD800..0xDC00).contains(&first)
+            && index + 1 < end as usize
+            && (0xDC00..0xE000).contains(&u32::from(content[index + 1]))
+        {
+            index += 2;
+        } else {
+            index += 1;
+        }
+        total += 1;
+    }
+    int(total)
+}
+
+fn builder_offset_by_code_points(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let (units, count) = builder_state(vm, receiver(args));
+    let content = &units[..count.min(units.len())];
+    let index = int_arg(args, 1);
+    let offset = int_arg(args, 2);
+    let length = content.len() as i32;
+    if index < 0 || index > length {
+        return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+    }
+    let is_high = |u: u16| (0xD800..0xDC00).contains(&u32::from(u));
+    let is_low = |u: u16| (0xDC00..0xE000).contains(&u32::from(u));
+    let mut x = index;
+    if offset >= 0 {
+        let mut i = 0;
+        while x < length && i < offset {
+            if is_high(content[x as usize]) && x + 1 < length && is_low(content[(x + 1) as usize]) {
+                x += 2;
+            } else {
+                x += 1;
+            }
+            i += 1;
+        }
+        if i < offset {
+            return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+        }
+    } else {
+        let mut i = offset;
+        while x > 0 && i < 0 {
+            x -= 1;
+            if is_low(content[x as usize]) && x >= 1 && is_high(content[(x - 1) as usize]) {
+                x -= 1;
+            }
+            i += 1;
+        }
+        if i < 0 {
+            return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+        }
+    }
+    int(x)
+}
+
 fn builder_replace(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
     let (units, count) = builder_state(vm, receiver(args));
-    let start = int_arg(args, 1).max(0) as usize;
-    let end = int_arg(args, 2).max(0).min(count as i32) as usize;
-    let text = vm.string_or_empty(ref_arg(args, 3));
+    let start = int_arg(args, 1);
+    let mut end = int_arg(args, 2);
+    if end > count as i32 {
+        end = count as i32;
+    }
+    if start < 0 || start > end {
+        return Err(vm.throw_new(
+            "java/lang/StringIndexOutOfBoundsException",
+            Some(&alloc::format!(
+                "Range [{start}, {end}) out of bounds for length {count}"
+            )),
+        ));
+    }
+    let text = vm
+        .string_value(ref_arg(args, 3))
+        .ok_or_else(|| vm.throw_new("java/lang/NullPointerException", None))?;
     let mut out: Vec<u16> = units[..count].to_vec();
-    out.splice(start..end.max(start).min(out.len()), text.encode_utf16());
+    out.splice(start as usize..end as usize, text.encode_utf16());
     builder_store(vm, receiver(args), &out, out.len())?;
     object(receiver(args))
 }
