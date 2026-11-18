@@ -1188,7 +1188,17 @@ fn url_decode(vm: &mut Vm<'_>, text: &str) -> Result<Option<String>, VmError> {
     }
 }
 
-const URL_ENCODER_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+const URL_ENCODER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method(
+        "encode",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = string_arg(vm, args[0])
+                .map_err(|_| vm.throw_new("java/lang/NullPointerException", None))?;
+            object(vm.make_string(&url_encode(&text))?)
+        },
+    ),
     method(
         "encode",
         "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
@@ -1225,7 +1235,23 @@ pub(crate) const URL_ENCODER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const URL_DECODER_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+const URL_DECODER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method(
+        "decode",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = string_arg(vm, args[0])
+                .map_err(|_| vm.throw_new("java/lang/NullPointerException", None))?;
+            match url_decode(vm, &text)? {
+                Some(decoded) => object(vm.make_string(&decoded)?),
+                None => Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("URLDecoder: Illegal hex characters in escape (%) pattern"),
+                )),
+            }
+        },
+    ),
     method(
         "decode",
         "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
@@ -2144,7 +2170,7 @@ fn datagram_packet_set_data(
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
     let total = vm.array_length(buf)? as i32;
-    if offset < 0 || length < 0 || offset + length > total {
+    if offset < 0 || length < 0 || i64::from(offset) + i64::from(length) > i64::from(total) {
         return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
     }
     let class = vm.class_of(this);
@@ -2161,6 +2187,7 @@ fn datagram_packet_set_endpoint(
     address: ObjectRef,
     port: i32,
 ) -> Result<(), VmError> {
+    validate_port(vm, port)?;
     let class = vm.class_of(this);
     let (declaring, field) = vm.find_field(class, "address", "Ljava/net/InetAddress;")?;
     vm.set_instance_ref(this, declaring, field, address);
@@ -2168,7 +2195,7 @@ fn datagram_packet_set_endpoint(
     Ok(())
 }
 
-const DATAGRAM_PACKET_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+const DATAGRAM_PACKET_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method("<init>", "([BI)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         datagram_packet_set_data(vm, this, ref_arg(args, 1), 0, int_arg(args, 2))?;
@@ -2277,7 +2304,7 @@ const DATAGRAM_PACKET_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
                 .unwrap_or(ObjectRef::NULL),
         )? as i32;
         let offset = crate::lang::read_int_field(vm, this, "offset");
-        if length < 0 || offset + length > total {
+        if length < 0 || i64::from(offset) + i64::from(length) > i64::from(total) {
             return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
         }
         crate::lang::write_int_field(vm, this, "length", length);
@@ -2294,6 +2321,16 @@ const DATAGRAM_PACKET_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
         )?;
         void()
     }),
+    method("setData", "([B)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let buf = ref_arg(args, 1);
+        if buf.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", Some("null packet buffer")));
+        }
+        let length = vm.array_length(buf)? as i32;
+        datagram_packet_set_data(vm, this, buf, 0, length)?;
+        void()
+    }),
     method(
         "setAddress",
         "(Ljava/net/InetAddress;)V",
@@ -2307,7 +2344,9 @@ const DATAGRAM_PACKET_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
         },
     ),
     method("setPort", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        crate::lang::write_int_field(vm, receiver(args), "port", int_arg(args, 1));
+        let port = int_arg(args, 1);
+        validate_port(vm, port)?;
+        crate::lang::write_int_field(vm, receiver(args), "port", port);
         void()
     }),
     method(
@@ -2319,9 +2358,13 @@ const DATAGRAM_PACKET_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
             let address = vm
                 .read_ref_field(this, vm.class_of(this), "address", "Ljava/net/InetAddress;")
                 .unwrap_or(ObjectRef::NULL);
-            if address.is_null() {
-                return object(ObjectRef::NULL);
-            }
+            // The JDK always builds `new InetSocketAddress(getAddress(), getPort())`;
+            // a null address becomes the wildcard address there.
+            let address = if address.is_null() {
+                wildcard_address(vm)?
+            } else {
+                address
+            };
             let port = crate::lang::read_int_field(vm, this, "port");
             let class = vm.resolve_class("java/net/InetSocketAddress")?;
             let instance = vm.new_instance(class)?;
@@ -2336,11 +2379,11 @@ fn datagram_packet_set_socket_address(
     this: ObjectRef,
     address: ObjectRef,
 ) -> Result<(), VmError> {
-    if address.is_null() {
-        return datagram_packet_set_endpoint(vm, this, ObjectRef::NULL, 0);
-    }
-    if vm.class_name(vm.class_of(address)) != "java/net/InetSocketAddress" {
-        return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+    if address.is_null() || vm.class_name(vm.class_of(address)) != "java/net/InetSocketAddress" {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("unsupported address type"),
+        ));
     }
     let inet = vm
         .read_ref_field(
@@ -2350,6 +2393,12 @@ fn datagram_packet_set_socket_address(
             "Ljava/net/InetAddress;",
         )
         .unwrap_or(ObjectRef::NULL);
+    if inet.is_null() {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("unresolved address"),
+        ));
+    }
     let port = crate::lang::read_int_field(vm, address, "port");
     datagram_packet_set_endpoint(vm, this, inet, port)
 }

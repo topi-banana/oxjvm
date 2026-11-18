@@ -167,7 +167,7 @@ fn stream_get(vm: &mut Vm<'_>, this: ObjectRef) -> Vec<ObjectRef> {
     stream_elements(vm, this)
 }
 
-const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
+const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
     method(
         "of",
         "([Ljava/lang/Object;)Ljava/util/stream/Stream;",
@@ -444,7 +444,129 @@ const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
         ACC_PUBLIC | ACC_ABSTRACT,
         abstract_method_pub,
     ),
+    method(
+        "builder",
+        "()Ljava/util/stream/Stream$Builder;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/util/stream/OxjvmStreamBuilder")?;
+            let instance = vm.new_instance(class)?;
+            stream_builder_init(vm, instance)?;
+            object(instance)
+        },
+    ),
 ];
+
+fn stream_builder_init(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    let list_class = vm.resolve_class("java/util/ArrayList")?;
+    let list = vm.new_instance(list_class)?;
+    let (class, method) = vm.resolve_virtual_method(list, "<init>", "()V")?;
+    vm.invoke_method(class, method, vec![Value::Ref(list)])?;
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, "list", "Ljava/util/ArrayList;")?;
+    vm.set_instance_ref(this, declaring, field, list);
+    Ok(())
+}
+
+const STREAM_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "accept",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "build",
+        "()Ljava/util/stream/Stream;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+];
+
+/// `java.util.stream.Stream.Builder`: the builder interface.
+pub(crate) const STREAM_BUILDER: oxjvm_vm::NativeClass = class(
+    "java/util/stream/Stream$Builder",
+    Some("java/lang/Object"),
+    &["java/util/function/Consumer"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &STREAM_BUILDER_METHODS,
+    None,
+);
+
+const OJVM_STREAM_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        stream_builder_init(vm, receiver(args))?;
+        void()
+    }),
+    method(
+        "accept",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            if vm
+                .read_instance_int_named(this, class, "built", "Z")
+                .unwrap_or(0)
+                != 0
+            {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalStateException",
+                    Some("build() has already been called"),
+                ));
+            }
+            let list = vm
+                .read_ref_field(this, class, "list", "Ljava/util/ArrayList;")
+                .unwrap_or(ObjectRef::NULL);
+            let (list_class, method) =
+                vm.resolve_virtual_method(list, "add", "(Ljava/lang/Object;)Z")?;
+            vm.invoke_method(
+                list_class,
+                method,
+                vec![Value::Ref(list), Value::Ref(ref_arg(args, 1))],
+            )?;
+            void()
+        },
+    ),
+    method(
+        "build",
+        "()Ljava/util/stream/Stream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            if let Some((declaring, field)) = vm.find_field_opt(class, "built", "Z") {
+                vm.set_instance_int(this, declaring, field, 1);
+            }
+            let list = vm
+                .read_ref_field(this, class, "list", "Ljava/util/ArrayList;")
+                .unwrap_or(ObjectRef::NULL);
+            let (list_class, method) =
+                vm.resolve_virtual_method(list, "toArray", "()[Ljava/lang/Object;")?;
+            let array = vm.invoke_method(list_class, method, vec![Value::Ref(list)])?;
+            stream_of_array(vm, array.as_ref())
+        },
+    ),
+];
+
+/// Concrete `Stream.Builder`: accumulates elements into an `ArrayList` and
+/// snapshots them into a stream on `build()`.
+pub(crate) const OJVM_STREAM_BUILDER: oxjvm_vm::NativeClass = class(
+    "java/util/stream/OxjvmStreamBuilder",
+    Some("java/lang/Object"),
+    &[
+        "java/util/stream/Stream$Builder",
+        "java/util/function/Consumer",
+    ],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[
+        field("list", "Ljava/util/ArrayList;", ACC_PRIVATE, None),
+        field("built", "Z", ACC_PRIVATE, None),
+    ],
+    &OJVM_STREAM_BUILDER_METHODS,
+    None,
+);
 
 const BASE_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     method(
