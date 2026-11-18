@@ -28,6 +28,11 @@ Writeable = "Writeable"
 # `Pn` is the ISO 8601 duration designator that starts an XSD `duration` literal (`PnYnMnDTnHnMnS`);
 # not a misspelling of "on".
 Pn = "Pn"
+# ISO 4217 currency codes in the `java.util.Currency` table; not misspellings of
+# "job"/"sure"/"type".
+JOD = "JOD"
+SUR = "SUR"
+TPE = "TPE"
 # `ECT` and `IST` are the tz database "short IDs" (`java.util.TimeZone`), mapped by the JDK to
 # `Europe/Paris` and `Asia/Kolkata`; not misspellings of "etc"/"is".
 ECT = "ECT"
