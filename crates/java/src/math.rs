@@ -776,6 +776,126 @@ macro_rules! math_methods {
             method("abs", "(D)D", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
                 double(double_arg(args, 0).abs())
             }),
+            method(
+                "absExact",
+                "(I)I",
+                ACC_PUBLIC | ACC_STATIC,
+                |vm, _, args| {
+                    let value = int_arg(args, 0);
+                    if value == i32::MIN {
+                        return Err(
+                            vm.throw_new("java/lang/ArithmeticException", Some("integer overflow"))
+                        );
+                    }
+                    int(value.wrapping_abs())
+                },
+            ),
+            method(
+                "absExact",
+                "(J)J",
+                ACC_PUBLIC | ACC_STATIC,
+                |vm, _, args| {
+                    let value = long_arg(args, 0);
+                    if value == i64::MIN {
+                        return Err(
+                            vm.throw_new("java/lang/ArithmeticException", Some("integer overflow"))
+                        );
+                    }
+                    long(value.wrapping_abs())
+                },
+            ),
+            method(
+                "multiplyHigh",
+                "(JJ)J",
+                ACC_PUBLIC | ACC_STATIC,
+                |_, _, args| {
+                    let x = long_arg(args, 0) as i128;
+                    let y = long_arg(args, 1) as i128;
+                    long(((x * y) >> 64) as i64)
+                },
+            ),
+            method(
+                "unsignedMultiplyHigh",
+                "(JJ)J",
+                ACC_PUBLIC | ACC_STATIC,
+                |_, _, args| {
+                    let x = long_arg(args, 0) as u64 as u128;
+                    let y = long_arg(args, 1) as u64 as u128;
+                    long(((x * y) >> 64) as i64)
+                },
+            ),
+            method("clamp", "(JII)I", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+                let value = long_arg(args, 0);
+                let min = int_arg(args, 1);
+                let max = int_arg(args, 2);
+                if min > max {
+                    return Err(vm.throw_new(
+                        "java/lang/IllegalArgumentException",
+                        Some(&alloc::format!("{min} > {max}")),
+                    ));
+                }
+                int(value.max(i64::from(min)).min(i64::from(max)) as i32)
+            }),
+            method("clamp", "(JJJ)J", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+                let value = long_arg(args, 0);
+                let min = long_arg(args, 1);
+                let max = long_arg(args, 2);
+                if min > max {
+                    return Err(vm.throw_new(
+                        "java/lang/IllegalArgumentException",
+                        Some(&alloc::format!("{min} > {max}")),
+                    ));
+                }
+                long(value.max(min).min(max))
+            }),
+            method("clamp", "(DDD)D", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+                let value = double_arg(args, 0);
+                let min = double_arg(args, 1);
+                let max = double_arg(args, 2);
+                if !matches!(min.partial_cmp(&max), Some(Ordering::Less)) {
+                    if min.is_nan() {
+                        return Err(
+                            vm.throw_new("java/lang/IllegalArgumentException", Some("min is NaN"))
+                        );
+                    }
+                    if max.is_nan() {
+                        return Err(
+                            vm.throw_new("java/lang/IllegalArgumentException", Some("max is NaN"))
+                        );
+                    }
+                    if min.total_cmp(&max) == core::cmp::Ordering::Greater {
+                        return Err(vm.throw_new(
+                            "java/lang/IllegalArgumentException",
+                            Some(&alloc::format!("{min} > {max}")),
+                        ));
+                    }
+                }
+                double(fmin64(max, fmax64(value, min)))
+            }),
+            method("clamp", "(FFF)F", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+                let value = float_arg(args, 0);
+                let min = float_arg(args, 1);
+                let max = float_arg(args, 2);
+                if !matches!(min.partial_cmp(&max), Some(Ordering::Less)) {
+                    if min.is_nan() {
+                        return Err(
+                            vm.throw_new("java/lang/IllegalArgumentException", Some("min is NaN"))
+                        );
+                    }
+                    if max.is_nan() {
+                        return Err(
+                            vm.throw_new("java/lang/IllegalArgumentException", Some("max is NaN"))
+                        );
+                    }
+                    if min.total_cmp(&max) == core::cmp::Ordering::Greater {
+                        return Err(vm.throw_new(
+                            "java/lang/IllegalArgumentException",
+                            Some(&alloc::format!("{min} > {max}")),
+                        ));
+                    }
+                }
+                float(fmin(max, fmax(value, min)))
+            }),
             method("min", "(II)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
                 int(int_arg(args, 0).min(int_arg(args, 1)))
             }),
@@ -1272,8 +1392,8 @@ macro_rules! math_methods {
     }};
 }
 
-const MATH_METHODS: [oxjvm_vm::NativeMethodDef; 76] = math_methods!();
-const STRICT_MATH_METHODS: [oxjvm_vm::NativeMethodDef; 76] = math_methods!();
+const MATH_METHODS: [oxjvm_vm::NativeMethodDef; 84] = math_methods!();
+const STRICT_MATH_METHODS: [oxjvm_vm::NativeMethodDef; 84] = math_methods!();
 
 pub(crate) const MATH: oxjvm_vm::NativeClass = class(
     "java/lang/Math",
