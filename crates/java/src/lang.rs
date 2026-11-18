@@ -1455,7 +1455,7 @@ pub(crate) const CLASS: oxjvm_vm::NativeClass = class(
 // String
 // -------------------------------------------------------------------------------------------
 
-const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 65] = [
+const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 68] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "<init>",
@@ -1689,6 +1689,19 @@ const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 65] = [
     ),
     method("isBlank", "()Z", ACC_PUBLIC, string_is_blank),
     method("repeat", "(I)Ljava/lang/String;", ACC_PUBLIC, string_repeat),
+    method("indent", "(I)Ljava/lang/String;", ACC_PUBLIC, string_indent),
+    method(
+        "stripIndent",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        string_strip_indent,
+    ),
+    method(
+        "translateEscapes",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        string_translate_escapes,
+    ),
     method(
         "replace",
         "(CC)Ljava/lang/String;",
@@ -2981,6 +2994,225 @@ fn string_repeat(
         out.push_str(&text);
     }
     object(vm.make_string(&out)?)
+}
+
+/// `Character.isWhitespace(int)`: Unicode space/line/paragraph separators and the
+/// ASCII control whitespace, but *not* the non-breaking spaces (U+00A0/U+2007/U+202F).
+fn java_is_whitespace(unit: u16) -> bool {
+    matches!(unit,
+        0x0009..=0x000D
+        | 0x001C..=0x001F
+        | 0x0020
+        | 0x1680
+        | 0x2000..=0x2006
+        | 0x2008..=0x200A
+        | 0x2028
+        | 0x2029
+        | 0x205F
+        | 0x3000)
+}
+
+/// Split UTF-16 units into line ranges on `\n`, `\r`, or `\r\n`, dropping a trailing
+/// empty line after a final terminator (matching `String.lines()`).
+fn string_line_ranges(units: &[u16]) -> Vec<(usize, usize)> {
+    let mut lines = Vec::new();
+    let mut start = 0usize;
+    let mut i = 0usize;
+    while i < units.len() {
+        if units[i] == u16::from(b'\n') {
+            lines.push((start, i));
+            i += 1;
+            start = i;
+        } else if units[i] == u16::from(b'\r') {
+            lines.push((start, i));
+            i += 1;
+            if i < units.len() && units[i] == u16::from(b'\n') {
+                i += 1;
+            }
+            start = i;
+        } else {
+            i += 1;
+        }
+    }
+    if start < units.len() {
+        lines.push((start, units.len()));
+    }
+    lines
+}
+
+/// Index of the first non-whitespace unit (or `len` when all whitespace).
+fn first_non_whitespace(units: &[u16]) -> usize {
+    let mut left = 0usize;
+    while left < units.len() && java_is_whitespace(units[left]) {
+        left += 1;
+    }
+    left
+}
+
+/// Exclusive end index of the last non-whitespace unit (or `0` when all whitespace).
+fn last_non_whitespace(units: &[u16]) -> usize {
+    let mut right = units.len();
+    while right > 0 && java_is_whitespace(units[right - 1]) {
+        right -= 1;
+    }
+    right
+}
+
+fn string_indent(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let units = vm
+        .string_utf16(receiver(args))
+        .map(<[u16]>::to_vec)
+        .unwrap_or_default();
+    if units.is_empty() {
+        return object(vm.make_string("")?);
+    }
+    let n = int_arg(args, 1);
+    let mut out: Vec<u16> = Vec::new();
+    for (index, (start, end)) in string_line_ranges(&units).into_iter().enumerate() {
+        if index > 0 {
+            out.push(u16::from(b'\n'));
+        }
+        let line = &units[start..end];
+        if n > 0 {
+            for _ in 0..n {
+                out.push(u16::from(b' '));
+            }
+            out.extend_from_slice(line);
+        } else if n == i32::MIN {
+            out.extend_from_slice(&line[first_non_whitespace(line)..]);
+        } else if n < 0 {
+            let remove = (-(n as i64) as usize).min(first_non_whitespace(line));
+            out.extend_from_slice(&line[remove..]);
+        } else {
+            out.extend_from_slice(line);
+        }
+    }
+    out.push(u16::from(b'\n'));
+    object(vm.make_string_utf16(out)?)
+}
+
+fn string_strip_indent(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let units = vm
+        .string_utf16(receiver(args))
+        .map(<[u16]>::to_vec)
+        .unwrap_or_default();
+    if units.is_empty() {
+        return object(vm.make_string("")?);
+    }
+    let last = units[units.len() - 1];
+    let opt_out = last == u16::from(b'\n') || last == u16::from(b'\r');
+    let ranges = string_line_ranges(&units);
+    let mut outdent = usize::MAX;
+    if !opt_out {
+        for &(start, end) in &ranges {
+            let line = &units[start..end];
+            let leading = first_non_whitespace(line);
+            if leading != line.len() {
+                outdent = outdent.min(leading);
+            }
+        }
+        if outdent == usize::MAX {
+            outdent = 0;
+        }
+    } else {
+        outdent = 0;
+    }
+    let mut out: Vec<u16> = Vec::new();
+    for (index, (start, end)) in ranges.into_iter().enumerate() {
+        if index > 0 {
+            out.push(u16::from(b'\n'));
+        }
+        let line = &units[start..end];
+        let first = first_non_whitespace(line);
+        let last_non_ws = last_non_whitespace(line);
+        if first > last_non_ws {
+            continue;
+        }
+        let incidental = outdent.min(first);
+        out.extend_from_slice(&line[incidental..last_non_ws]);
+    }
+    if opt_out {
+        out.push(u16::from(b'\n'));
+    }
+    object(vm.make_string_utf16(out)?)
+}
+
+fn string_translate_escapes(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let units = vm
+        .string_utf16(receiver(args))
+        .map(<[u16]>::to_vec)
+        .unwrap_or_default();
+    if units.is_empty() {
+        return object(vm.make_string("")?);
+    }
+    let length = units.len();
+    let mut out: Vec<u16> = Vec::new();
+    let mut from = 0usize;
+    while from < length {
+        let mut ch = units[from];
+        from += 1;
+        if ch == u16::from(b'\\') {
+            ch = if from < length {
+                let next = units[from];
+                from += 1;
+                next
+            } else {
+                0
+            };
+            match ch {
+                0x62 => ch = 0x08,       // \b
+                0x66 => ch = 0x0C,       // \f
+                0x6E => ch = 0x0A,       // \n
+                0x72 => ch = 0x0D,       // \r
+                0x73 => ch = 0x20,       // \s
+                0x74 => ch = 0x09,       // \t
+                0x27 | 0x22 | 0x5C => {} // \' \" \\
+                0x30..=0x37 => {
+                    let extra = if ch <= 0x33 { 2 } else { 1 };
+                    let limit = (from + extra).min(length);
+                    let mut code = u32::from(ch - 0x30);
+                    while from < limit {
+                        let next = units[from];
+                        if !(0x30..=0x37).contains(&next) {
+                            break;
+                        }
+                        from += 1;
+                        code = (code << 3) | u32::from(next - 0x30);
+                    }
+                    ch = code as u16;
+                }
+                0x0A => continue, // line continuation
+                0x0D => {
+                    if from < length && units[from] == 0x0A {
+                        from += 1;
+                    }
+                    continue;
+                }
+                _ => {
+                    let message = alloc::format!(
+                        "Invalid escape sequence: \\{} \\\\u{:04X}",
+                        char::from_u32(u32::from(ch)).unwrap_or('\u{FFFD}'),
+                        ch
+                    );
+                    return Err(vm.throw_new("java/lang/IllegalArgumentException", Some(&message)));
+                }
+            }
+        }
+        out.push(ch);
+    }
+    object(vm.make_string_utf16(out)?)
 }
 
 fn string_replace_char(

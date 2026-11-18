@@ -12803,12 +12803,31 @@ pub(crate) const CONCURRENT_NAVIGABLE_MAP: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const CONCURRENT_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
+const CONCURRENT_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let map = new_concurrent_map(vm)?;
         concurrent_init(vm, args, map)
     }),
     method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let map = new_concurrent_map(vm)?;
+        concurrent_init(vm, args, map)
+    }),
+    method("<init>", "(IF)V", ACC_PUBLIC, |vm, _, args| {
+        let capacity = int_arg(args, 1);
+        let load_factor = crate::float_arg(args, 2);
+        if capacity < 0 || load_factor.is_nan() || load_factor <= 0.0 {
+            return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+        }
+        let map = new_concurrent_map(vm)?;
+        concurrent_init(vm, args, map)
+    }),
+    method("<init>", "(IFI)V", ACC_PUBLIC, |vm, _, args| {
+        let capacity = int_arg(args, 1);
+        let load_factor = crate::float_arg(args, 2);
+        let concurrency_level = int_arg(args, 3);
+        if capacity < 0 || load_factor.is_nan() || load_factor <= 0.0 || concurrency_level <= 0 {
+            return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+        }
         let map = new_concurrent_map(vm)?;
         concurrent_init(vm, args, map)
     }),
