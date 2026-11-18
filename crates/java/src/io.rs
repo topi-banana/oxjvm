@@ -1894,7 +1894,7 @@ pub(crate) const NULL_WRITER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PRINT_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
+const PRINT_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
     method(
         "<init>",
         "(Ljava/io/Writer;)V",
@@ -2026,6 +2026,11 @@ const PRINT_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
     method("println", "(I)V", ACC_PUBLIC, |vm, _, args| {
         let text = alloc::format!("{}\n", format::int_to_string(int_arg(args, 1)));
         print_writer_text(vm, receiver(args), &text)
+    }),
+    method("println", "(C)V", ACC_PUBLIC, |vm, _, args| {
+        let unit = int_arg(args, 1) as u32 & 0xFFFF;
+        let text = char::from_u32(unit).map_or_else(String::new, |ch| ch.to_string());
+        print_writer_text(vm, receiver(args), &alloc::format!("{text}\n"))
     }),
     method(
         "println",

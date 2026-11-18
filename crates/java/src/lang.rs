@@ -6482,7 +6482,7 @@ fn runtime_version(vm: &mut Vm<'_>) -> Result<Value, VmError> {
     object(instance)
 }
 
-const RUNTIME_VERSION_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+const RUNTIME_VERSION_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
     method("feature", "()I", ACC_PUBLIC, |vm, _, args| {
         int(read_int_field(vm, receiver(args), "feature"))
     }),
@@ -6492,7 +6492,13 @@ const RUNTIME_VERSION_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method("interim", "()I", ACC_PUBLIC, |vm, _, args| {
         int(read_int_field(vm, receiver(args), "interim"))
     }),
+    method("minor", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_int_field(vm, receiver(args), "interim"))
+    }),
     method("update", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_int_field(vm, receiver(args), "update"))
+    }),
+    method("security", "()I", ACC_PUBLIC, |vm, _, args| {
         int(read_int_field(vm, receiver(args), "update"))
     }),
     method("patch", "()I", ACC_PUBLIC, |vm, _, args| {
@@ -9085,7 +9091,7 @@ pub(crate) fn read_input_byte(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Option
     Ok(Some(byte & 0xFF))
 }
 
-const CHAR_SEQUENCE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const CHAR_SEQUENCE_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method("length", "()I", ACC_PUBLIC | ACC_ABSTRACT, abstract_method),
     method("charAt", "(I)C", ACC_PUBLIC | ACC_ABSTRACT, abstract_method),
     method(
@@ -9114,6 +9120,21 @@ const CHAR_SEQUENCE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         char_sequence_code_points,
     ),
     method("getChars", "(II[CI)V", ACC_PUBLIC, char_sequence_get_chars),
+    method(
+        "compare",
+        "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let first = char_sequence_units(vm, ref_arg(args, 0))?;
+            let second = char_sequence_units(vm, ref_arg(args, 1))?;
+            for (a, b) in first.iter().zip(second.iter()) {
+                if a != b {
+                    return int(i32::from(*a) - i32::from(*b));
+                }
+            }
+            int(first.len() as i32 - second.len() as i32)
+        },
+    ),
 ];
 
 fn char_sequence_is_empty(
