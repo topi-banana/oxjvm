@@ -20,7 +20,7 @@ use crate::{
 // MethodType
 // -------------------------------------------------------------------------------------------
 
-const METHOD_TYPE_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
+const METHOD_TYPE_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
     method(
         "descriptorString",
         "()Ljava/lang/String;",
@@ -192,6 +192,24 @@ const METHOD_TYPE_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
         },
     ),
     method(
+        "genericMethodType",
+        "(IZ)Ljava/lang/invoke/MethodType;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let count = crate::int_arg(args, 0).max(0) as usize;
+            let final_array = crate::bool_arg(args, 1);
+            let mut descriptor = String::from("(");
+            for _ in 0..count {
+                descriptor.push_str("Ljava/lang/Object;");
+            }
+            if final_array {
+                descriptor.push_str("[Ljava/lang/Object;");
+            }
+            descriptor.push_str(")Ljava/lang/Object;");
+            object(vm.make_method_type(&descriptor)?)
+        },
+    ),
+    method(
         "changeReturnType",
         "(Ljava/lang/Class;)Ljava/lang/invoke/MethodType;",
         ACC_PUBLIC,
@@ -209,13 +227,39 @@ const METHOD_TYPE_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let descriptor = vm.method_type_of(receiver(args)).unwrap_or_default();
-            let mut params = descriptor_params(&descriptor);
+            let mut types = descriptor_types(&descriptor);
             for element in crate::util::collection_elements(vm, ref_arg(args, 1))? {
                 let class = class_argument(vm, element)?;
-                params.push_str(&class_field_descriptor(vm, class));
+                types.push(class_field_descriptor(vm, class));
             }
             let result = alloc::format!(
-                "{params}{}",
+                "({}){}",
+                types.concat(),
+                descriptor.split_once(')').map_or("V", |(_, r)| r)
+            );
+            object(vm.make_method_type(&result)?)
+        },
+    ),
+    method(
+        "appendParameterTypes",
+        "([Ljava/lang/Class;)Ljava/lang/invoke/MethodType;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let descriptor = vm.method_type_of(receiver(args)).unwrap_or_default();
+            let mut types = descriptor_types(&descriptor);
+            let array = ref_arg(args, 1);
+            if array.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let length = vm.array_length(array)?;
+            for index in 0..length {
+                let element = vm.array_get(array, index as i32)?.as_ref();
+                let class = class_argument(vm, element)?;
+                types.push(class_field_descriptor(vm, class));
+            }
+            let result = alloc::format!(
+                "({}){}",
+                types.concat(),
                 descriptor.split_once(')').map_or("V", |(_, r)| r)
             );
             object(vm.make_method_type(&result)?)

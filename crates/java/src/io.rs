@@ -763,8 +763,28 @@ pub(crate) const INPUT_STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const BYTE_ARRAY_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+const BYTE_ARRAY_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method("<init>", "([B)V", ACC_PUBLIC, byte_array_input_init),
+    method("<init>", "([BII)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let buf = ref_arg(args, 1);
+        let offset = int_arg(args, 2);
+        let length = int_arg(args, 3);
+        let total = if buf.is_null() {
+            0
+        } else {
+            vm.array_length(buf)? as i32
+        };
+        let count = (offset + length).min(total);
+        let (declaring, field) = vm.find_field(class, "buf", "[B")?;
+        vm.set_instance_ref(this, declaring, field, buf);
+        let (declaring, field) = vm.find_field(class, "pos", "I")?;
+        vm.set_instance_int(this, declaring, field, offset);
+        let (declaring, field) = vm.find_field(class, "count", "I")?;
+        vm.set_instance_int(this, declaring, field, count);
+        void()
+    }),
     method(
         "read",
         "()I",
@@ -786,7 +806,9 @@ const BYTE_ARRAY_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         if buf.is_null() {
             return int(-1);
         }
-        let length = vm.array_length(buf)? as i32;
+        let length = vm
+            .read_instance_int_named(this, class, "count", "I")
+            .unwrap_or(vm.array_length(buf)? as i32);
         if pos >= length {
             return int(-1);
         }
@@ -818,12 +840,58 @@ const BYTE_ARRAY_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         if buf.is_null() {
             return int(0);
         }
-        let length = vm.array_length(buf)? as i32;
+        let length = vm
+            .read_instance_int_named(this, class, "count", "I")
+            .unwrap_or(vm.array_length(buf)? as i32);
         int((length - pos).max(0))
     }),
     method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
     method("mark", "(I)V", ACC_PUBLIC, |_, _, _| void()),
     method("reset", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "transferTo",
+        "(Ljava/io/OutputStream;)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let out = ref_arg(args, 1);
+            if out.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let class = vm.class_of(this);
+            let buf = vm
+                .read_ref_field(this, class, "buf", "[B")
+                .unwrap_or(ObjectRef::NULL);
+            let pos = vm
+                .read_instance_int_named(this, class, "pos", "I")
+                .unwrap_or(0);
+            let count = vm
+                .read_instance_int_named(this, class, "count", "I")
+                .unwrap_or(if buf.is_null() {
+                    0
+                } else {
+                    vm.array_length(buf)? as i32
+                });
+            let len = count - pos;
+            if buf.is_null() || len <= 0 {
+                return long(0);
+            }
+            let (write_class, write_method) = vm.resolve_virtual_method(out, "write", "([BII)V")?;
+            vm.invoke_method(
+                write_class,
+                write_method,
+                vec![
+                    Value::Ref(out),
+                    Value::Ref(buf),
+                    Value::Int(pos),
+                    Value::Int(len),
+                ],
+            )?;
+            let (declaring, field) = vm.find_field(class, "pos", "I")?;
+            vm.set_instance_int(this, declaring, field, count);
+            long(i64::from(len))
+        },
+    ),
 ];
 
 fn byte_array_input_init(
@@ -833,10 +901,18 @@ fn byte_array_input_init(
 ) -> Result<Value, VmError> {
     let this = receiver(args);
     let class = vm.class_of(this);
+    let buf = ref_arg(args, 1);
     let (declaring, field) = vm.find_field(class, "buf", "[B")?;
-    vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+    vm.set_instance_ref(this, declaring, field, buf);
     let (declaring, field) = vm.find_field(class, "pos", "I")?;
     vm.set_instance_int(this, declaring, field, 0);
+    let total = if buf.is_null() {
+        0
+    } else {
+        vm.array_length(buf)? as i32
+    };
+    let (declaring, field) = vm.find_field(class, "count", "I")?;
+    vm.set_instance_int(this, declaring, field, total);
     void()
 }
 
@@ -848,6 +924,7 @@ pub(crate) const BYTE_ARRAY_INPUT_STREAM: oxjvm_vm::NativeClass = class(
     &[
         field("buf", "[B", ACC_PROTECTED, None),
         field("pos", "I", ACC_PROTECTED, None),
+        field("count", "I", ACC_PROTECTED, None),
     ],
     &BYTE_ARRAY_INPUT_METHODS,
     None,

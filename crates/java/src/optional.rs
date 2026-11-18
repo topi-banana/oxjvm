@@ -7,7 +7,7 @@ use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
 use crate::{boolean, class, field, method, object, receiver, ref_arg, void};
 
-const OPTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+const OPTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method(
         "<init>",
         "(Ljava/lang/Object;)V",
@@ -129,6 +129,28 @@ const OPTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
             let (class, method) =
                 vm.resolve_virtual_method(consumer, "accept", "(Ljava/lang/Object;)V")?;
             vm.invoke_method(class, method, vec![Value::Ref(consumer), Value::Ref(value)])?;
+            void()
+        },
+    ),
+    method(
+        "ifPresentOrElse",
+        "(Ljava/util/function/Consumer;Ljava/lang/Runnable;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let value = optional_value(vm, receiver(args));
+            let consumer = ref_arg(args, 1);
+            let empty_action = ref_arg(args, 2);
+            if consumer.is_null() || empty_action.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            if value.is_null() {
+                let (class, method) = vm.resolve_virtual_method(empty_action, "run", "()V")?;
+                vm.invoke_method(class, method, vec![Value::Ref(empty_action)])?;
+            } else {
+                let (class, method) =
+                    vm.resolve_virtual_method(consumer, "accept", "(Ljava/lang/Object;)V")?;
+                vm.invoke_method(class, method, vec![Value::Ref(consumer), Value::Ref(value)])?;
+            }
             void()
         },
     ),

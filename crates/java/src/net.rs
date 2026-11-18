@@ -1188,17 +1188,32 @@ fn url_decode(vm: &mut Vm<'_>, text: &str) -> Result<Option<String>, VmError> {
     }
 }
 
-const URL_ENCODER_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
-    "encode",
-    "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
-    ACC_PUBLIC | ACC_STATIC,
-    |vm, _, args| {
-        let text = string_arg(vm, args[0])
-            .map_err(|_| vm.throw_new("java/lang/NullPointerException", Some("charsetName")))?;
-        let text = if text.is_empty() { String::new() } else { text };
-        object(vm.make_string(&url_encode(&text))?)
-    },
-)];
+const URL_ENCODER_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "encode",
+        "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = string_arg(vm, args[0])
+                .map_err(|_| vm.throw_new("java/lang/NullPointerException", Some("charsetName")))?;
+            let text = if text.is_empty() { String::new() } else { text };
+            object(vm.make_string(&url_encode(&text))?)
+        },
+    ),
+    method(
+        "encode",
+        "(Ljava/lang/String;Ljava/nio/charset/Charset;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = string_arg(vm, args[0])
+                .map_err(|_| vm.throw_new("java/lang/NullPointerException", None))?;
+            if args[1].as_ref().is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", Some("charset")));
+            }
+            object(vm.make_string(&url_encode(&text))?)
+        },
+    ),
+];
 
 pub(crate) const URL_ENCODER: oxjvm_vm::NativeClass = class(
     "java/net/URLEncoder",

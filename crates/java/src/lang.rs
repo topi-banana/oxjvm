@@ -8836,8 +8836,10 @@ pub(crate) fn read_input_byte(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Option
         return Ok(None);
     }
     let position = read_int_field(vm, this, "pos");
-    let length = vm.array_length(buffer).unwrap_or(0);
-    if position < 0 || position as usize >= length {
+    let length = vm
+        .read_instance_int_named(this, class, "count", "I")
+        .unwrap_or(vm.array_length(buffer).unwrap_or(0) as i32);
+    if position < 0 || position >= length {
         return Ok(None);
     }
     let byte = vm.array_get(buffer, position)?.as_int();
