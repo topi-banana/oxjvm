@@ -640,6 +640,72 @@ fn floor_mod(x: i64, y: i64) -> i64 {
     }
 }
 
+/// Divide `x` by `y`, throwing `/ by zero` for a zero divisor and `overflow_msg`
+/// when the quotient overflows (the `MIN / -1` case).
+fn exact_quotient(vm: &mut Vm<'_>, x: i64, y: i64, overflow_msg: &str) -> Result<i64, VmError> {
+    if y == 0 {
+        return Err(vm.throw_new("java/lang/ArithmeticException", Some("/ by zero")));
+    }
+    x.checked_div(y)
+        .ok_or_else(|| vm.throw_new("java/lang/ArithmeticException", Some(overflow_msg)))
+}
+
+fn math_floor_div_exact(
+    vm: &mut Vm<'_>,
+    x: i64,
+    y: i64,
+    overflow_msg: &str,
+) -> Result<i64, VmError> {
+    let q = exact_quotient(vm, x, y, overflow_msg)?;
+    if (x ^ y) < 0 && q.wrapping_mul(y) != x {
+        Ok(q.wrapping_sub(1))
+    } else {
+        Ok(q)
+    }
+}
+
+fn math_ceil_div_exact(
+    vm: &mut Vm<'_>,
+    x: i64,
+    y: i64,
+    overflow_msg: &str,
+) -> Result<i64, VmError> {
+    let q = exact_quotient(vm, x, y, overflow_msg)?;
+    if (x ^ y) >= 0 && q.wrapping_mul(y) != x {
+        Ok(q.wrapping_add(1))
+    } else {
+        Ok(q)
+    }
+}
+
+/// Non-exact ceiling division: only a zero divisor throws; `MIN / -1` wraps.
+fn math_ceil_div(vm: &mut Vm<'_>, x: i64, y: i64) -> Result<i64, VmError> {
+    if y == 0 {
+        return Err(vm.throw_new("java/lang/ArithmeticException", Some("/ by zero")));
+    }
+    let q = x.wrapping_div(y);
+    if (x ^ y) >= 0 && q.wrapping_mul(y) != x {
+        Ok(q.wrapping_add(1))
+    } else {
+        Ok(q)
+    }
+}
+
+/// Non-exact floor division: only a zero divisor throws; `MIN / -1` wraps.
+fn math_floor_div(vm: &mut Vm<'_>, x: i64, y: i64) -> Result<i64, VmError> {
+    if y == 0 {
+        return Err(vm.throw_new("java/lang/ArithmeticException", Some("/ by zero")));
+    }
+    Ok(floor_div(x, y))
+}
+
+fn math_floor_mod(vm: &mut Vm<'_>, x: i64, y: i64) -> Result<i64, VmError> {
+    if y == 0 {
+        return Err(vm.throw_new("java/lang/ArithmeticException", Some("/ by zero")));
+    }
+    Ok(floor_mod(x, y))
+}
+
 fn math_add_exact_int(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
@@ -843,29 +909,35 @@ macro_rules! math_methods {
                 "floorDiv",
                 "(II)I",
                 ACC_PUBLIC | ACC_STATIC,
-                |_, _, args| {
-                    int(floor_div(i64::from(int_arg(args, 0)), i64::from(int_arg(args, 1))) as i32)
+                |vm, _, args| {
+                    math_floor_div(vm, i64::from(int_arg(args, 0)), i64::from(int_arg(args, 1)))
+                        .map(|v| Value::Int(v as i32))
                 },
             ),
             method(
                 "floorDiv",
                 "(JJ)J",
                 ACC_PUBLIC | ACC_STATIC,
-                |_, _, args| long(floor_div(long_arg(args, 0), long_arg(args, 1))),
+                |vm, _, args| {
+                    math_floor_div(vm, long_arg(args, 0), long_arg(args, 1)).map(Value::Long)
+                },
             ),
             method(
                 "floorMod",
                 "(II)I",
                 ACC_PUBLIC | ACC_STATIC,
-                |_, _, args| {
-                    int(floor_mod(i64::from(int_arg(args, 0)), i64::from(int_arg(args, 1))) as i32)
+                |vm, _, args| {
+                    math_floor_mod(vm, i64::from(int_arg(args, 0)), i64::from(int_arg(args, 1)))
+                        .map(|v| Value::Int(v as i32))
                 },
             ),
             method(
                 "floorMod",
                 "(JJ)J",
                 ACC_PUBLIC | ACC_STATIC,
-                |_, _, args| long(floor_mod(long_arg(args, 0), long_arg(args, 1))),
+                |vm, _, args| {
+                    math_floor_mod(vm, long_arg(args, 0), long_arg(args, 1)).map(Value::Long)
+                },
             ),
             method(
                 "addExact",
@@ -886,6 +958,19 @@ macro_rules! math_methods {
                 math_sub_exact_int,
             ),
             method(
+                "subtractExact",
+                "(JJ)J",
+                ACC_PUBLIC | ACC_STATIC,
+                |vm, _, args| {
+                    long_arg(args, 0)
+                        .checked_sub(long_arg(args, 1))
+                        .ok_or_else(|| {
+                            vm.throw_new("java/lang/ArithmeticException", Some("long overflow"))
+                        })
+                        .map(Value::Long)
+                },
+            ),
+            method(
                 "multiplyExact",
                 "(II)I",
                 ACC_PUBLIC | ACC_STATIC,
@@ -898,6 +983,184 @@ macro_rules! math_methods {
                 math_mul_exact_long,
             ),
             method(
+                "multiplyExact",
+                "(JI)J",
+                ACC_PUBLIC | ACC_STATIC,
+                |vm, _, args| {
+                    long_arg(args, 0)
+                        .checked_mul(i64::from(int_arg(args, 1)))
+                        .ok_or_else(|| {
+                            vm.throw_new("java/lang/ArithmeticException", Some("long overflow"))
+                        })
+                        .map(Value::Long)
+                },
+            ),
+            method(
+                "divideExact",
+                "(II)I",
+                ACC_PUBLIC | ACC_STATIC,
+                |vm, _, args| {
+                    let x = int_arg(args, 0);
+                    let y = int_arg(args, 1);
+                    if y == 0 {
+                        return Err(
+                            vm.throw_new("java/lang/ArithmeticException", Some("/ by zero"))
+                        );
+                    }
+                    x.checked_div(y).map(Value::Int).ok_or_else(|| {
+                        vm.throw_new("java/lang/ArithmeticException", Some("integer overflow"))
+                    })
+                },
+            ),
+            method(
+                "divideExact",
+                "(JJ)J",
+                ACC_PUBLIC | ACC_STATIC,
+                |vm, _, args| {
+                    let x = long_arg(args, 0);
+                    let y = long_arg(args, 1);
+                    if y == 0 {
+                        return Err(
+                            vm.throw_new("java/lang/ArithmeticException", Some("/ by zero"))
+                        );
+                    }
+                    x.checked_div(y).map(Value::Long).ok_or_else(|| {
+                        vm.throw_new("java/lang/ArithmeticException", Some("long overflow"))
+                    })
+                },
+            ),
+            method(
+                "floorDivExact",
+                "(II)I",
+                ACC_PUBLIC | ACC_STATIC,
+                |vm, _, args| {
+                    let x = int_arg(args, 0);
+                    let y = int_arg(args, 1);
+                    if y == 0 {
+                        return Err(
+                            vm.throw_new("java/lang/ArithmeticException", Some("/ by zero"))
+                        );
+                    }
+                    let q = x.checked_div(y).ok_or_else(|| {
+                        vm.throw_new("java/lang/ArithmeticException", Some("integer overflow"))
+                    })?;
+                    if (x ^ y) < 0 && q.wrapping_mul(y) != x {
+                        int(q.wrapping_sub(1))
+                    } else {
+                        int(q)
+                    }
+                },
+            ),
+            method(
+                "floorDivExact",
+                "(JJ)J",
+                ACC_PUBLIC | ACC_STATIC,
+                |vm, _, args| {
+                    math_floor_div_exact(vm, long_arg(args, 0), long_arg(args, 1), "long overflow")
+                        .map(Value::Long)
+                },
+            ),
+            method(
+                "ceilDiv",
+                "(II)I",
+                ACC_PUBLIC | ACC_STATIC,
+                |vm, _, args| {
+                    math_ceil_div(vm, i64::from(int_arg(args, 0)), i64::from(int_arg(args, 1)))
+                        .map(|v| Value::Int(v as i32))
+                },
+            ),
+            method(
+                "ceilDiv",
+                "(JJ)J",
+                ACC_PUBLIC | ACC_STATIC,
+                |vm, _, args| {
+                    math_ceil_div(vm, long_arg(args, 0), long_arg(args, 1)).map(Value::Long)
+                },
+            ),
+            method(
+                "ceilDivExact",
+                "(II)I",
+                ACC_PUBLIC | ACC_STATIC,
+                |vm, _, args| {
+                    let x = int_arg(args, 0);
+                    let y = int_arg(args, 1);
+                    if y == 0 {
+                        return Err(
+                            vm.throw_new("java/lang/ArithmeticException", Some("/ by zero"))
+                        );
+                    }
+                    let q = x.checked_div(y).ok_or_else(|| {
+                        vm.throw_new("java/lang/ArithmeticException", Some("integer overflow"))
+                    })?;
+                    if (x ^ y) >= 0 && q.wrapping_mul(y) != x {
+                        int(q.wrapping_add(1))
+                    } else {
+                        int(q)
+                    }
+                },
+            ),
+            method(
+                "ceilDivExact",
+                "(JJ)J",
+                ACC_PUBLIC | ACC_STATIC,
+                |vm, _, args| {
+                    math_ceil_div_exact(vm, long_arg(args, 0), long_arg(args, 1), "long overflow")
+                        .map(Value::Long)
+                },
+            ),
+            method(
+                "incrementExact",
+                "(I)I",
+                ACC_PUBLIC | ACC_STATIC,
+                |vm, _, args| {
+                    int_arg(args, 0)
+                        .checked_add(1)
+                        .map(Value::Int)
+                        .ok_or_else(|| {
+                            vm.throw_new("java/lang/ArithmeticException", Some("integer overflow"))
+                        })
+                },
+            ),
+            method(
+                "incrementExact",
+                "(J)J",
+                ACC_PUBLIC | ACC_STATIC,
+                |vm, _, args| {
+                    long_arg(args, 0)
+                        .checked_add(1)
+                        .map(Value::Long)
+                        .ok_or_else(|| {
+                            vm.throw_new("java/lang/ArithmeticException", Some("long overflow"))
+                        })
+                },
+            ),
+            method(
+                "decrementExact",
+                "(I)I",
+                ACC_PUBLIC | ACC_STATIC,
+                |vm, _, args| {
+                    int_arg(args, 0)
+                        .checked_sub(1)
+                        .map(Value::Int)
+                        .ok_or_else(|| {
+                            vm.throw_new("java/lang/ArithmeticException", Some("integer overflow"))
+                        })
+                },
+            ),
+            method(
+                "decrementExact",
+                "(J)J",
+                ACC_PUBLIC | ACC_STATIC,
+                |vm, _, args| {
+                    long_arg(args, 0)
+                        .checked_sub(1)
+                        .map(Value::Long)
+                        .ok_or_else(|| {
+                            vm.throw_new("java/lang/ArithmeticException", Some("long overflow"))
+                        })
+                },
+            ),
+            method(
                 "negateExact",
                 "(I)I",
                 ACC_PUBLIC | ACC_STATIC,
@@ -908,6 +1171,19 @@ macro_rules! math_methods {
                             vm.throw_new("java/lang/ArithmeticException", Some("integer overflow"))
                         })
                         .map(Value::Int)
+                },
+            ),
+            method(
+                "negateExact",
+                "(J)J",
+                ACC_PUBLIC | ACC_STATIC,
+                |vm, _, args| {
+                    long_arg(args, 0)
+                        .checked_neg()
+                        .ok_or_else(|| {
+                            vm.throw_new("java/lang/ArithmeticException", Some("long overflow"))
+                        })
+                        .map(Value::Long)
                 },
             ),
             method(
@@ -996,8 +1272,8 @@ macro_rules! math_methods {
     }};
 }
 
-const MATH_METHODS: [oxjvm_vm::NativeMethodDef; 61] = math_methods!();
-const STRICT_MATH_METHODS: [oxjvm_vm::NativeMethodDef; 61] = math_methods!();
+const MATH_METHODS: [oxjvm_vm::NativeMethodDef; 76] = math_methods!();
+const STRICT_MATH_METHODS: [oxjvm_vm::NativeMethodDef; 76] = math_methods!();
 
 pub(crate) const MATH: oxjvm_vm::NativeClass = class(
     "java/lang/Math",
@@ -1613,7 +1889,7 @@ fn big_integer_binary(
     }
 }
 
-const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
+const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -1644,6 +1920,30 @@ const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
     }),
     method("longValue", "()J", ACC_PUBLIC, |vm, _, args| {
         long(big_integer_narrow(&big_text(vm, receiver(args)), 64))
+    }),
+    method("intValueExact", "()I", ACC_PUBLIC, |vm, _, args| {
+        let text = big_text(vm, receiver(args));
+        match text.parse::<i128>() {
+            Ok(value) if value >= i128::from(i32::MIN) && value <= i128::from(i32::MAX) => {
+                int(value as i32)
+            }
+            _ => Err(vm.throw_new(
+                "java/lang/ArithmeticException",
+                Some("BigInteger out of int range"),
+            )),
+        }
+    }),
+    method("longValueExact", "()J", ACC_PUBLIC, |vm, _, args| {
+        let text = big_text(vm, receiver(args));
+        match text.parse::<i128>() {
+            Ok(value) if value >= i128::from(i64::MIN) && value <= i128::from(i64::MAX) => {
+                long(value as i64)
+            }
+            _ => Err(vm.throw_new(
+                "java/lang/ArithmeticException",
+                Some("BigInteger out of long range"),
+            )),
+        }
     }),
     method("doubleValue", "()D", ACC_PUBLIC, |vm, _, args| {
         let text = big_text(vm, receiver(args));

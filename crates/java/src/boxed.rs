@@ -1932,7 +1932,7 @@ fn boolean_get_boolean(
     ))
 }
 
-const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 51] = [
+const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 52] = [
     method("<init>", "(C)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), int_arg(args, 1));
         void()
@@ -2432,6 +2432,30 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 51] = [
                 vm.array_set(array, index as i32, Value::Int(i32::from(*unit)), false)?;
             }
             object(array)
+        },
+    ),
+    method(
+        "toString",
+        "(I)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let code_point = int_arg(args, 0) as u32;
+            if code_point > 0x10FFFF {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("Not a valid Unicode code point"),
+                ));
+            }
+            let units: Vec<u16> = if code_point <= 0xFFFF {
+                vec![code_point as u16]
+            } else {
+                let value = code_point - 0x10000;
+                vec![
+                    0xD800 | ((value >> 10) as u16),
+                    0xDC00 | ((value & 0x3FF) as u16),
+                ]
+            };
+            object(vm.make_string_utf16(units)?)
         },
     ),
 ];
