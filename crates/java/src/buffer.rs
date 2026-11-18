@@ -526,7 +526,68 @@ fn byte_buffer_put_short(vm: &mut Vm<'_>, this: ObjectRef, value: i16) -> Result
     Ok(())
 }
 
-const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 50] = [
+/// Absolute multi-byte get: read `size` bytes at `index` honoring the byte order,
+/// returning them packed into the low bits of a `u64` (little-endian unit order).
+fn byte_buffer_get_at(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    index: i32,
+    size: usize,
+) -> Result<u64, VmError> {
+    if index < 0 || index as usize + size > buffer_limit(vm, this) as usize {
+        return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+    }
+    let bytes = byte_buffer_bytes(vm, this);
+    let little = byte_order_little(vm, byte_buffer_order(vm, this));
+    let mut value = 0u64;
+    for offset in 0..size {
+        let byte = u64::from(byte_at(
+            vm,
+            bytes,
+            byte_buffer_absolute(vm, this, index + offset as i32),
+        )?);
+        value |= if little {
+            byte << (8 * offset)
+        } else {
+            byte << (8 * (size - 1 - offset))
+        };
+    }
+    Ok(value)
+}
+
+/// Absolute multi-byte put: write the low `size` bytes of `value` at `index`.
+fn byte_buffer_put_at(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    index: i32,
+    value: u64,
+    size: usize,
+) -> Result<(), VmError> {
+    if byte_buffer_read_only(vm, this) {
+        return Err(vm.throw_new("java/nio/ReadOnlyBufferException", None));
+    }
+    if index < 0 || index as usize + size > buffer_limit(vm, this) as usize {
+        return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+    }
+    let bytes = byte_buffer_bytes(vm, this);
+    let little = byte_order_little(vm, byte_buffer_order(vm, this));
+    for offset in 0..size {
+        let byte = if little {
+            (value >> (8 * offset)) as u8
+        } else {
+            (value >> (8 * (size - 1 - offset))) as u8
+        };
+        put_byte_at(
+            vm,
+            bytes,
+            byte_buffer_absolute(vm, this, index + offset as i32),
+            byte,
+        )?;
+    }
+    Ok(())
+}
+
+const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 60] = [
     method(
         "allocate",
         "(I)Ljava/nio/ByteBuffer;",
@@ -888,6 +949,90 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 50] = [
             object(this)
         },
     ),
+    method("getChar", "(I)C", ACC_PUBLIC, |vm, _, args| {
+        let value = byte_buffer_get_at(vm, receiver(args), crate::int_arg(args, 1), 2)?;
+        int(value as u16 as i32)
+    }),
+    method("getShort", "(I)S", ACC_PUBLIC, |vm, _, args| {
+        let value = byte_buffer_get_at(vm, receiver(args), crate::int_arg(args, 1), 2)?;
+        int(value as i16 as i32)
+    }),
+    method("getLong", "(I)J", ACC_PUBLIC, |vm, _, args| {
+        let value = byte_buffer_get_at(vm, receiver(args), crate::int_arg(args, 1), 8)?;
+        long(value as i64)
+    }),
+    method("getFloat", "(I)F", ACC_PUBLIC, |vm, _, args| {
+        let value = byte_buffer_get_at(vm, receiver(args), crate::int_arg(args, 1), 4)?;
+        Ok(Value::Float(f32::from_bits(value as u32)))
+    }),
+    method("getDouble", "(I)D", ACC_PUBLIC, |vm, _, args| {
+        let value = byte_buffer_get_at(vm, receiver(args), crate::int_arg(args, 1), 8)?;
+        Ok(Value::Double(f64::from_bits(value)))
+    }),
+    method(
+        "putChar",
+        "(IC)Ljava/nio/ByteBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            byte_buffer_put_at(
+                vm,
+                this,
+                crate::int_arg(args, 1),
+                crate::int_arg(args, 2) as u16 as u64,
+                2,
+            )?;
+            object(this)
+        },
+    ),
+    method(
+        "putLong",
+        "(IJ)Ljava/nio/ByteBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            byte_buffer_put_at(
+                vm,
+                this,
+                crate::int_arg(args, 1),
+                crate::long_arg(args, 2) as u64,
+                8,
+            )?;
+            object(this)
+        },
+    ),
+    method(
+        "putFloat",
+        "(IF)Ljava/nio/ByteBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            byte_buffer_put_at(
+                vm,
+                this,
+                crate::int_arg(args, 1),
+                crate::float_arg(args, 2).to_bits() as u64,
+                4,
+            )?;
+            object(this)
+        },
+    ),
+    method(
+        "putDouble",
+        "(ID)Ljava/nio/ByteBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            byte_buffer_put_at(
+                vm,
+                this,
+                crate::int_arg(args, 1),
+                crate::double_arg(args, 2).to_bits(),
+                8,
+            )?;
+            object(this)
+        },
+    ),
     method(
         "order",
         "()Ljava/nio/ByteOrder;",
@@ -941,6 +1086,30 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 50] = [
                 remaining,
                 0,
                 remaining,
+                byte_buffer_order(vm, this),
+                byte_buffer_read_only(vm, this),
+            )?)
+        },
+    ),
+    method(
+        "slice",
+        "(II)Ljava/nio/ByteBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let index = crate::int_arg(args, 1);
+            let length = crate::int_arg(args, 2);
+            if index < 0 || length < 0 || index + length > buffer_limit(vm, this) {
+                return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+            }
+            let offset = byte_buffer_offset(vm, this) + index;
+            object(new_byte_buffer(
+                vm,
+                byte_buffer_bytes(vm, this),
+                offset,
+                length,
+                0,
+                length,
                 byte_buffer_order(vm, this),
                 byte_buffer_read_only(vm, this),
             )?)

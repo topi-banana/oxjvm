@@ -1210,22 +1210,43 @@ pub(crate) const URL_ENCODER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const URL_DECODER_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
-    "decode",
-    "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
-    ACC_PUBLIC | ACC_STATIC,
-    |vm, _, args| {
-        let text = string_arg(vm, args[0])
-            .map_err(|_| vm.throw_new("java/lang/NullPointerException", None))?;
-        match url_decode(vm, &text)? {
-            Some(decoded) => object(vm.make_string(&decoded)?),
-            None => Err(vm.throw_new(
-                "java/lang/IllegalArgumentException",
-                Some("URLDecoder: Illegal hex characters in escape (%) pattern"),
-            )),
-        }
-    },
-)];
+const URL_DECODER_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "decode",
+        "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = string_arg(vm, args[0])
+                .map_err(|_| vm.throw_new("java/lang/NullPointerException", None))?;
+            match url_decode(vm, &text)? {
+                Some(decoded) => object(vm.make_string(&decoded)?),
+                None => Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("URLDecoder: Illegal hex characters in escape (%) pattern"),
+                )),
+            }
+        },
+    ),
+    method(
+        "decode",
+        "(Ljava/lang/String;Ljava/nio/charset/Charset;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = string_arg(vm, args[0])
+                .map_err(|_| vm.throw_new("java/lang/NullPointerException", None))?;
+            if args[1].as_ref().is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", Some("Charset")));
+            }
+            match url_decode(vm, &text)? {
+                Some(decoded) => object(vm.make_string(&decoded)?),
+                None => Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("URLDecoder: Illegal hex characters in escape (%) pattern"),
+                )),
+            }
+        },
+    ),
+];
 
 pub(crate) const URL_DECODER: oxjvm_vm::NativeClass = class(
     "java/net/URLDecoder",
