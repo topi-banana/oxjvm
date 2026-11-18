@@ -1407,7 +1407,7 @@ macro_rules! map_of {
     };
 }
 
-const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
+const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
     method(
         "entry",
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map$Entry;",
@@ -1486,6 +1486,52 @@ const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
         "(Ljava/lang/Object;)Ljava/lang/Object;",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
+    ),
+    method(
+        "replace",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = receiver(args);
+            let key = ref_arg(args, 1);
+            let old_value = ref_arg(args, 2);
+            let new_value = ref_arg(args, 3);
+            let (get_class, get_method) =
+                vm.resolve_virtual_method(map, "get", "(Ljava/lang/Object;)Ljava/lang/Object;")?;
+            let current = vm
+                .invoke_method(
+                    get_class,
+                    get_method,
+                    vec![Value::Ref(map), Value::Ref(key)],
+                )?
+                .as_ref();
+            if !objects_equals(vm, current, old_value)? {
+                return boolean(false);
+            }
+            if current.is_null() {
+                let (contains_class, contains_method) =
+                    vm.resolve_virtual_method(map, "containsKey", "(Ljava/lang/Object;)Z")?;
+                let present = vm.invoke_method(
+                    contains_class,
+                    contains_method,
+                    vec![Value::Ref(map), Value::Ref(key)],
+                )?;
+                if present.as_int() == 0 {
+                    return boolean(false);
+                }
+            }
+            let (put_class, put_method) = vm.resolve_virtual_method(
+                map,
+                "put",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+            )?;
+            vm.invoke_method(
+                put_class,
+                put_method,
+                vec![Value::Ref(map), Value::Ref(key), Value::Ref(new_value)],
+            )?;
+            boolean(true)
+        },
     ),
     method(
         "containsKey",

@@ -1071,7 +1071,15 @@ fn reader_check_range(
     Ok(())
 }
 
-const READER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const READER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        if let Some((declaring, field)) = vm.find_field_opt(class, "lock", "Ljava/lang/Object;") {
+            vm.set_instance_ref(this, declaring, field, this);
+        }
+        void()
+    }),
     method(
         "read",
         "()I",
@@ -1084,6 +1092,116 @@ const READER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method("read", "([CII)I", ACC_PUBLIC, |vm, _, args| {
         reader_read_chars(vm, args, int_arg(args, 2), Some(int_arg(args, 3)))
     }),
+    method(
+        "read",
+        "(Ljava/nio/CharBuffer;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let target = ref_arg(args, 1);
+            if target.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let (read_only_class, read_only_method) =
+                vm.resolve_virtual_method(target, "isReadOnly", "()Z")?;
+            if vm
+                .invoke_method(read_only_class, read_only_method, vec![Value::Ref(target)])?
+                .as_int()
+                != 0
+            {
+                return Err(vm.throw_new("java/nio/ReadOnlyBufferException", None));
+            }
+            let (has_array_class, has_array_method) =
+                vm.resolve_virtual_method(target, "hasArray", "()Z")?;
+            let has_array = vm
+                .invoke_method(has_array_class, has_array_method, vec![Value::Ref(target)])?
+                .as_int()
+                != 0;
+            if has_array {
+                let (array_class, array_method) =
+                    vm.resolve_virtual_method(target, "array", "()[C")?;
+                let cbuf = vm
+                    .invoke_method(array_class, array_method, vec![Value::Ref(target)])?
+                    .as_ref();
+                let (position_class, position_method) =
+                    vm.resolve_virtual_method(target, "position", "()I")?;
+                let pos = vm
+                    .invoke_method(position_class, position_method, vec![Value::Ref(target)])?
+                    .as_int();
+                let (limit_class, limit_method) =
+                    vm.resolve_virtual_method(target, "limit", "()I")?;
+                let limit = vm
+                    .invoke_method(limit_class, limit_method, vec![Value::Ref(target)])?
+                    .as_int();
+                let rem = (limit - pos).max(0);
+                let (offset_class, offset_method) =
+                    vm.resolve_virtual_method(target, "arrayOffset", "()I")?;
+                let array_offset = vm
+                    .invoke_method(offset_class, offset_method, vec![Value::Ref(target)])?
+                    .as_int();
+                let (read_class, read_method) =
+                    vm.resolve_virtual_method(this, "read", "([CII)I")?;
+                let nread = vm
+                    .invoke_method(
+                        read_class,
+                        read_method,
+                        vec![
+                            Value::Ref(this),
+                            Value::Ref(cbuf),
+                            Value::Int(array_offset + pos),
+                            Value::Int(rem),
+                        ],
+                    )?
+                    .as_int();
+                if nread > 0 {
+                    let (set_position_class, set_position_method) =
+                        vm.resolve_virtual_method(target, "position", "(I)Ljava/nio/CharBuffer;")?;
+                    vm.invoke_method(
+                        set_position_class,
+                        set_position_method,
+                        vec![Value::Ref(target), Value::Int(pos + nread)],
+                    )?;
+                }
+                int(nread)
+            } else {
+                let (remaining_class, remaining_method) =
+                    vm.resolve_virtual_method(target, "remaining", "()I")?;
+                let len = vm
+                    .invoke_method(remaining_class, remaining_method, vec![Value::Ref(target)])?
+                    .as_int();
+                let cbuf = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Char, len as usize)?;
+                let (read_class, read_method) =
+                    vm.resolve_virtual_method(this, "read", "([CII)I")?;
+                let nread = vm
+                    .invoke_method(
+                        read_class,
+                        read_method,
+                        vec![
+                            Value::Ref(this),
+                            Value::Ref(cbuf),
+                            Value::Int(0),
+                            Value::Int(len),
+                        ],
+                    )?
+                    .as_int();
+                if nread > 0 {
+                    let (put_class, put_method) =
+                        vm.resolve_virtual_method(target, "put", "([CII)Ljava/nio/CharBuffer;")?;
+                    vm.invoke_method(
+                        put_class,
+                        put_method,
+                        vec![
+                            Value::Ref(target),
+                            Value::Ref(cbuf),
+                            Value::Int(0),
+                            Value::Int(nread),
+                        ],
+                    )?;
+                }
+                int(nread)
+            }
+        },
+    ),
     method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let remaining = crate::long_arg(args, 1);
@@ -1145,7 +1263,7 @@ pub(crate) const READER: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &["java/io/Closeable"],
     ACC_PUBLIC | ACC_ABSTRACT,
-    &[],
+    &[field("lock", "Ljava/lang/Object;", ACC_PROTECTED, None)],
     &READER_METHODS,
     None,
 );
@@ -2293,6 +2411,9 @@ const BUFFERED_READER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         let offset = int_arg(args, 2);
         let length = int_arg(args, 3);
         reader_check_range(vm, array, offset, length)?;
+        if length == 0 {
+            return int(0);
+        }
         let mut count = 0;
         while count < length {
             let value = buffered_reader_read_char(vm, this)?;

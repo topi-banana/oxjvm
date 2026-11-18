@@ -1289,6 +1289,35 @@ fn char_buffer_get(vm: &mut Vm<'_>, this: ObjectRef) -> Result<u16, VmError> {
     Ok(value)
 }
 
+/// `CharBuffer.get(char[], int, int)`: bulk relative get with the JDK bounds checks.
+fn char_buffer_get_chars(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    dst: ObjectRef,
+    offset: i32,
+    length: i32,
+) -> Result<(), VmError> {
+    if dst.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let total = vm.array_length(dst)? as i32;
+    if offset < 0 || length < 0 || offset + length > total {
+        return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+    }
+    let pos = buffer_position(vm, this);
+    if length > buffer_limit(vm, this) - pos {
+        return Err(vm.throw_new("java/nio/BufferUnderflowException", None));
+    }
+    let chars = char_buffer_chars(vm, this);
+    let base = char_buffer_offset(vm, this) as usize + pos as usize;
+    for index in 0..length {
+        let value = char_at(vm, chars, base + index as usize)?;
+        vm.array_set(dst, offset + index, Value::Int(i32::from(value)), true)?;
+    }
+    set_position(vm, this, pos + length);
+    Ok(())
+}
+
 fn char_buffer_put(vm: &mut Vm<'_>, this: ObjectRef, value: u16) -> Result<(), VmError> {
     if char_buffer_read_only(vm, this) {
         return Err(vm.throw_new("java/nio/ReadOnlyBufferException", None));
@@ -1436,7 +1465,7 @@ pub(crate) fn char_buffer_from_text(vm: &mut Vm<'_>, text: &str) -> Result<Objec
     )
 }
 
-const CHAR_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
+const CHAR_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
     method(
         "allocate",
         "(I)Ljava/nio/CharBuffer;",
@@ -1475,13 +1504,49 @@ const CHAR_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
         "(Ljava/lang/CharSequence;)Ljava/nio/CharBuffer;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            let text = vm.string_or_empty(ref_arg(args, 0));
+            let sequence = ref_arg(args, 0);
+            if sequence.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let text_ref = char_sequence_text(vm, sequence)?;
+            let text = vm.string_or_empty(text_ref);
             object(char_buffer_from_text(vm, &text)?)
         },
     ),
     method("get", "()C", ACC_PUBLIC, |vm, _, args| {
         int(i32::from(char_buffer_get(vm, receiver(args))?))
     }),
+    method(
+        "get",
+        "([C)Ljava/nio/CharBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let dst = ref_arg(args, 1);
+            if dst.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let length = vm.array_length(dst)? as i32;
+            char_buffer_get_chars(vm, this, dst, 0, length)?;
+            object(this)
+        },
+    ),
+    method(
+        "get",
+        "([CII)Ljava/nio/CharBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            char_buffer_get_chars(
+                vm,
+                this,
+                ref_arg(args, 1),
+                crate::int_arg(args, 2),
+                crate::int_arg(args, 3),
+            )?;
+            object(this)
+        },
+    ),
     method(
         "put",
         "(C)Ljava/nio/CharBuffer;",
@@ -1725,6 +1790,28 @@ const CHAR_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
             object(this)
         },
     ),
+    method(
+        "duplicate",
+        "()Ljava/nio/CharBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let duplicate = new_char_buffer(
+                vm,
+                char_buffer_chars(vm, this),
+                char_buffer_offset(vm, this),
+                buffer_capacity(vm, this),
+                buffer_position(vm, this),
+                buffer_limit(vm, this),
+                char_buffer_read_only(vm, this),
+            )?;
+            set_mark(vm, duplicate, buffer_mark(vm, this));
+            object(duplicate)
+        },
+    ),
+    method("arrayOffset", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(char_buffer_offset(vm, receiver(args)))
+    }),
     method(
         "slice",
         "()Ljava/nio/CharBuffer;",
