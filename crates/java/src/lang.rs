@@ -239,7 +239,7 @@ pub(crate) const OBJECT: oxjvm_vm::NativeClass = class(
 // Class
 // -------------------------------------------------------------------------------------------
 
-const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 64] = [
+const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 65] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -414,6 +414,21 @@ const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 64] = [
         "(Ljava/lang/Object;)Ljava/lang/Object;",
         ACC_PUBLIC,
         class_cast,
+    ),
+    method(
+        "asSubclass",
+        "(Ljava/lang/Class;)Ljava/lang/Class;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = class_argument(vm, receiver(args))?;
+            let clazz = class_argument(vm, ref_arg(args, 1))?;
+            if vm.class_is_subtype(this, clazz) {
+                object(receiver(args))
+            } else {
+                let name = crate::binary_name(vm, this);
+                Err(vm.throw_new("java/lang/ClassCastException", Some(&name)))
+            }
+        },
     ),
     method("getModifiers", "()I", ACC_PUBLIC, |vm, _, args| {
         let class = class_argument(vm, receiver(args))?;
@@ -1455,7 +1470,7 @@ pub(crate) const CLASS: oxjvm_vm::NativeClass = class(
 // String
 // -------------------------------------------------------------------------------------------
 
-const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 68] = [
+const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 71] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "<init>",
@@ -1670,6 +1685,57 @@ const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 68] = [
         "(Ljava/lang/CharSequence;)Z",
         ACC_PUBLIC,
         string_contains,
+    ),
+    method(
+        "regionMatches",
+        "(ILjava/lang/String;II)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            string_region_matches(
+                vm,
+                receiver(args),
+                ref_arg(args, 2),
+                int_arg(args, 1),
+                int_arg(args, 3),
+                int_arg(args, 4),
+                false,
+            )
+        },
+    ),
+    method(
+        "regionMatches",
+        "(ZILjava/lang/String;II)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            string_region_matches(
+                vm,
+                receiver(args),
+                ref_arg(args, 3),
+                int_arg(args, 2),
+                int_arg(args, 4),
+                int_arg(args, 5),
+                int_arg(args, 1) != 0,
+            )
+        },
+    ),
+    method(
+        "transform",
+        "(Ljava/util/function/Function;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let function = ref_arg(args, 1);
+            let (declaring, method) = vm.resolve_virtual_method(
+                function,
+                "apply",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+            )?;
+            vm.invoke_method(
+                declaring,
+                method,
+                vec![Value::Ref(function), Value::Ref(this)],
+            )
+        },
     ),
     method("toCharArray", "()[C", ACC_PUBLIC, string_to_char_array),
     method("getChars", "(II[CI)V", ACC_PUBLIC, string_get_chars),
@@ -2806,6 +2872,65 @@ fn string_starts_with(
     args: &[Value],
 ) -> Result<Value, VmError> {
     string_starts_with_at(vm, args, int_arg(args, 2))
+}
+
+/// `String.regionMatches`: compare a region of two strings, with the JDK's
+/// overflow-safe bounds checks (`len <= 0` matches) and optional case folding.
+fn string_region_matches(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    other: ObjectRef,
+    toffset: i32,
+    ooffset: i32,
+    len: i32,
+    ignore_case: bool,
+) -> Result<Value, VmError> {
+    let units = vm
+        .string_utf16(this)
+        .map(<[u16]>::to_vec)
+        .unwrap_or_default();
+    let other_units = vm
+        .string_utf16(other)
+        .map(<[u16]>::to_vec)
+        .ok_or_else(|| vm.throw_new("java/lang/NullPointerException", None))?;
+    if ooffset < 0
+        || toffset < 0
+        || i64::from(toffset) > units.len() as i64 - i64::from(len)
+        || i64::from(ooffset) > other_units.len() as i64 - i64::from(len)
+    {
+        return boolean(false);
+    }
+    if len <= 0 {
+        return boolean(true);
+    }
+    let toffset = toffset as usize;
+    let ooffset = ooffset as usize;
+    let len = len as usize;
+    for index in 0..len {
+        let a = units[toffset + index];
+        let b = other_units[ooffset + index];
+        if a == b {
+            continue;
+        }
+        if !ignore_case {
+            return boolean(false);
+        }
+        let au = char::from_u32(u32::from(a))
+            .map_or(a, |ch| ch.to_uppercase().next().map_or(a, |c| c as u16));
+        let bu = char::from_u32(u32::from(b))
+            .map_or(b, |ch| ch.to_uppercase().next().map_or(b, |c| c as u16));
+        if au == bu {
+            continue;
+        }
+        let al = char::from_u32(u32::from(au))
+            .map_or(au, |ch| ch.to_lowercase().next().map_or(au, |c| c as u16));
+        let bl = char::from_u32(u32::from(bu))
+            .map_or(bu, |ch| ch.to_lowercase().next().map_or(bu, |c| c as u16));
+        if al != bl {
+            return boolean(false);
+        }
+    }
+    boolean(true)
 }
 
 fn string_starts_with_at(vm: &mut Vm<'_>, args: &[Value], offset: i32) -> Result<Value, VmError> {

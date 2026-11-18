@@ -1685,7 +1685,7 @@ macro_rules! functional_interface {
 // Each interface carries the same shape; the dispatcher selects by descriptor, so a shared array
 // with one abstract method of each common descriptor is sufficient and lets a single class serve
 // every functional interface users link against.
-const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
+const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
     method(
         "apply",
         "(Ljava/lang/Object;)Ljava/lang/Object;",
@@ -1978,6 +1978,26 @@ const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
             predicate_combine(vm, 2, target, ObjectRef::NULL)
         },
     ),
+    method(
+        "andThen",
+        "(Ljava/util/function/Function;)Ljava/util/function/BiFunction;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let after = ref_arg(args, 1);
+            if after.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let class = vm.resolve_class("java/util/function/OxjvmBiFunction")?;
+            let instance = vm.new_instance(class)?;
+            let (declaring, field) =
+                vm.find_field(class, "first", "Ljava/util/function/BiFunction;")?;
+            vm.set_instance_ref(instance, declaring, field, receiver(args));
+            let (declaring, field) =
+                vm.find_field(class, "second", "Ljava/util/function/Function;")?;
+            vm.set_instance_ref(instance, declaring, field, after);
+            object(instance)
+        },
+    ),
 ];
 
 fn predicate_combine(
@@ -2145,6 +2165,62 @@ pub(crate) const OJVM_FUNCTION: oxjvm_vm::NativeClass = class(
         field("second", "Ljava/util/function/Function;", ACC_PRIVATE, None),
     ],
     &OJVM_FUNCTION_METHODS,
+    None,
+);
+
+const OJVM_BI_FUNCTION_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "apply",
+    "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+    ACC_PUBLIC,
+    |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let first = vm
+            .read_ref_field(this, class, "first", "Ljava/util/function/BiFunction;")
+            .unwrap_or(ObjectRef::NULL);
+        let second = vm
+            .read_ref_field(this, class, "second", "Ljava/util/function/Function;")
+            .unwrap_or(ObjectRef::NULL);
+        let (first_class, first_method) = vm.resolve_virtual_method(
+            first,
+            "apply",
+            "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        )?;
+        let intermediate = vm.invoke_method(
+            first_class,
+            first_method,
+            alloc::vec![
+                Value::Ref(first),
+                Value::Ref(ref_arg(args, 1)),
+                Value::Ref(ref_arg(args, 2))
+            ],
+        )?;
+        let (second_class, second_method) =
+            vm.resolve_virtual_method(second, "apply", "(Ljava/lang/Object;)Ljava/lang/Object;")?;
+        vm.invoke_method(
+            second_class,
+            second_method,
+            alloc::vec![Value::Ref(second), intermediate],
+        )
+    },
+)];
+
+/// A composed `BiFunction` returned by `BiFunction.andThen`.
+pub(crate) const OJVM_BI_FUNCTION: oxjvm_vm::NativeClass = class(
+    "java/util/function/OxjvmBiFunction",
+    Some("java/lang/Object"),
+    &["java/util/function/BiFunction"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[
+        field(
+            "first",
+            "Ljava/util/function/BiFunction;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field("second", "Ljava/util/function/Function;", ACC_PRIVATE, None),
+    ],
+    &OJVM_BI_FUNCTION_METHODS,
     None,
 );
 
