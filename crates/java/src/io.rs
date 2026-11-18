@@ -112,7 +112,7 @@ pub(crate) const FLUSHABLE: oxjvm_vm::NativeClass = class(
 // OutputStream / PrintStream
 // -------------------------------------------------------------------------------------------
 
-const OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+const OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     method(
         "write",
         "(I)V",
@@ -152,6 +152,15 @@ const OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     }),
     method("flush", "()V", ACC_PUBLIC, |_, _, _| void()),
     method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "nullOutputStream",
+        "()Ljava/io/OutputStream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/io/OutputStream$NullOutputStream")?;
+            object(vm.new_instance(class)?)
+        },
+    ),
 ];
 
 pub(crate) const OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
@@ -641,7 +650,7 @@ pub(crate) const PRINT_STREAM: oxjvm_vm::NativeClass = class(
 // InputStream / ByteArray streams
 // -------------------------------------------------------------------------------------------
 
-const INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method(
         "read",
         "()I",
@@ -751,6 +760,90 @@ const INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         }
         int(read)
     }),
+    method(
+        "nullInputStream",
+        "()Ljava/io/InputStream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/io/InputStream$NullInputStream")?;
+            object(vm.new_instance(class)?)
+        },
+    ),
+    method("skipNBytes", "(J)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let mut remaining = crate::long_arg(args, 1);
+        while remaining > 0 {
+            let (skip_class, skip_method) = vm.resolve_virtual_method(this, "skip", "(J)J")?;
+            let skipped = vm
+                .invoke_method(
+                    skip_class,
+                    skip_method,
+                    vec![Value::Ref(this), Value::Long(remaining)],
+                )?
+                .as_long();
+            if skipped > 0 {
+                remaining -= skipped;
+                continue;
+            }
+            let (read_class, read_method) = vm.resolve_virtual_method(this, "read", "()I")?;
+            if vm
+                .invoke_method(read_class, read_method, vec![Value::Ref(this)])?
+                .as_int()
+                < 0
+            {
+                return Err(vm.throw_new("java/io/EOFException", None));
+            }
+            remaining -= 1;
+        }
+        void()
+    }),
+    method(
+        "transferTo",
+        "(Ljava/io/OutputStream;)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let out = ref_arg(args, 1);
+            if out.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let buffer = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, 8192)?;
+            let mut total = 0i64;
+            loop {
+                let (read_class, read_method) =
+                    vm.resolve_virtual_method(this, "read", "([BII)I")?;
+                let count = vm
+                    .invoke_method(
+                        read_class,
+                        read_method,
+                        vec![
+                            Value::Ref(this),
+                            Value::Ref(buffer),
+                            Value::Int(0),
+                            Value::Int(8192),
+                        ],
+                    )?
+                    .as_int();
+                if count < 0 {
+                    break;
+                }
+                let (write_class, write_method) =
+                    vm.resolve_virtual_method(out, "write", "([BII)V")?;
+                vm.invoke_method(
+                    write_class,
+                    write_method,
+                    vec![
+                        Value::Ref(out),
+                        Value::Ref(buffer),
+                        Value::Int(0),
+                        Value::Int(count),
+                    ],
+                )?;
+                total += i64::from(count);
+            }
+            long(total)
+        },
+    ),
 ];
 
 pub(crate) const INPUT_STREAM: oxjvm_vm::NativeClass = class(
@@ -1172,7 +1265,7 @@ fn reader_check_range(
     Ok(())
 }
 
-const READER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const READER_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let class = vm.class_of(this);
@@ -1357,6 +1450,62 @@ const READER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
             object(instance)
         },
     ),
+    method(
+        "nullReader",
+        "()Ljava/io/Reader;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/io/Reader$NullReader")?;
+            object(vm.new_instance(class)?)
+        },
+    ),
+    method(
+        "transferTo",
+        "(Ljava/io/Writer;)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let out = ref_arg(args, 1);
+            if out.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let buffer = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Char, 8192)?;
+            let mut total = 0i64;
+            loop {
+                let (read_class, read_method) =
+                    vm.resolve_virtual_method(this, "read", "([CII)I")?;
+                let count = vm
+                    .invoke_method(
+                        read_class,
+                        read_method,
+                        vec![
+                            Value::Ref(this),
+                            Value::Ref(buffer),
+                            Value::Int(0),
+                            Value::Int(8192),
+                        ],
+                    )?
+                    .as_int();
+                if count < 0 {
+                    break;
+                }
+                let (write_class, write_method) =
+                    vm.resolve_virtual_method(out, "write", "([CII)V")?;
+                vm.invoke_method(
+                    write_class,
+                    write_method,
+                    vec![
+                        Value::Ref(out),
+                        Value::Ref(buffer),
+                        Value::Int(0),
+                        Value::Int(count),
+                    ],
+                )?;
+                total += i64::from(count);
+            }
+            long(total)
+        },
+    ),
 ];
 
 pub(crate) const READER: oxjvm_vm::NativeClass = class(
@@ -1369,7 +1518,7 @@ pub(crate) const READER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method(
         "write",
         "(I)V",
@@ -1428,6 +1577,45 @@ const WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
+    method(
+        "nullWriter",
+        "()Ljava/io/Writer;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/io/Writer$NullWriter")?;
+            object(vm.new_instance(class)?)
+        },
+    ),
+    method("write", "([C)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let array = ref_arg(args, 1);
+        let length = vm.array_length(array)? as i32;
+        let (declaring, method) = vm.resolve_virtual_method(this, "write", "([CII)V")?;
+        vm.invoke_method(
+            declaring,
+            method,
+            vec![
+                Value::Ref(this),
+                Value::Ref(array),
+                Value::Int(0),
+                Value::Int(length),
+            ],
+        )?;
+        void()
+    }),
+    method("write", "([CII)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let array = ref_arg(args, 1);
+        let offset = int_arg(args, 2);
+        let length = int_arg(args, 3);
+        reader_check_range(vm, array, offset, length)?;
+        for index in offset..offset + length {
+            let unit = vm.array_get(array, index)?.as_int();
+            let (declaring, method) = vm.resolve_virtual_method(this, "write", "(I)V")?;
+            vm.invoke_method(declaring, method, vec![Value::Ref(this), Value::Int(unit)])?;
+        }
+        void()
+    }),
 ];
 
 /// `Writer.write(String)`: the units of the string through the abstract `write(int)`.
@@ -1464,6 +1652,245 @@ pub(crate) const WRITER: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC | ACC_ABSTRACT,
     &[],
     &WRITER_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// Null streams: InputStream.nullInputStream / OutputStream.nullOutputStream /
+// Reader.nullReader / Writer.nullWriter. Each discards or supplies nothing and
+// throws IOException once closed.
+// -------------------------------------------------------------------------------------------
+
+fn null_stream_ensure_open(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    if crate::lang::read_int_field(vm, this, "closed") != 0 {
+        return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+    }
+    Ok(())
+}
+
+fn null_stream_close(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError> {
+    crate::lang::write_int_field(vm, this, "closed", 1);
+    void()
+}
+
+const NULL_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+    method("read", "()I", ACC_PUBLIC, |vm, _, args| {
+        null_stream_ensure_open(vm, receiver(args))?;
+        int(-1)
+    }),
+    method("read", "([BII)I", ACC_PUBLIC, |vm, _, args| {
+        null_stream_ensure_open(vm, receiver(args))?;
+        reader_check_range(vm, ref_arg(args, 1), int_arg(args, 2), int_arg(args, 3))?;
+        if int_arg(args, 3) == 0 {
+            return int(0);
+        }
+        int(-1)
+    }),
+    method("available", "()I", ACC_PUBLIC, |vm, _, args| {
+        null_stream_ensure_open(vm, receiver(args))?;
+        int(0)
+    }),
+    method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
+        null_stream_ensure_open(vm, receiver(args))?;
+        long(0)
+    }),
+    method("skipNBytes", "(J)V", ACC_PUBLIC, |vm, _, args| {
+        null_stream_ensure_open(vm, receiver(args))?;
+        if crate::long_arg(args, 1) > 0 {
+            return Err(vm.throw_new("java/io/EOFException", None));
+        }
+        void()
+    }),
+    method("readNBytes", "(I)[B", ACC_PUBLIC, |vm, _, args| {
+        null_stream_ensure_open(vm, receiver(args))?;
+        if int_arg(args, 1) < 0 {
+            return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+        }
+        object(write_bytes_array(vm, &[])?)
+    }),
+    method(
+        "transferTo",
+        "(Ljava/io/OutputStream;)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            null_stream_ensure_open(vm, receiver(args))?;
+            long(0)
+        },
+    ),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        null_stream_close(vm, receiver(args))
+    }),
+];
+
+pub(crate) const NULL_INPUT_STREAM: oxjvm_vm::NativeClass = class(
+    "java/io/InputStream$NullInputStream",
+    Some("java/io/InputStream"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[field("closed", "I", ACC_PRIVATE, None)],
+    &NULL_INPUT_STREAM_METHODS,
+    None,
+);
+
+const NULL_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method("write", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        null_stream_ensure_open(vm, receiver(args))?;
+        void()
+    }),
+    method("write", "([BII)V", ACC_PUBLIC, |vm, _, args| {
+        null_stream_ensure_open(vm, receiver(args))?;
+        reader_check_range(vm, ref_arg(args, 1), int_arg(args, 2), int_arg(args, 3))?;
+        void()
+    }),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        null_stream_close(vm, receiver(args))
+    }),
+];
+
+pub(crate) const NULL_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
+    "java/io/OutputStream$NullOutputStream",
+    Some("java/io/OutputStream"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[field("closed", "I", ACC_PRIVATE, None)],
+    &NULL_OUTPUT_STREAM_METHODS,
+    None,
+);
+
+const NULL_READER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method("read", "()I", ACC_PUBLIC, |vm, _, args| {
+        null_stream_ensure_open(vm, receiver(args))?;
+        int(-1)
+    }),
+    method("read", "([CII)I", ACC_PUBLIC, |vm, _, args| {
+        null_stream_ensure_open(vm, receiver(args))?;
+        reader_check_range(vm, ref_arg(args, 1), int_arg(args, 2), int_arg(args, 3))?;
+        if int_arg(args, 3) == 0 {
+            return int(0);
+        }
+        int(-1)
+    }),
+    method(
+        "read",
+        "(Ljava/nio/CharBuffer;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            null_stream_ensure_open(vm, this)?;
+            let target = ref_arg(args, 1);
+            let (class, method) = vm.resolve_virtual_method(target, "remaining", "()I")?;
+            let remaining = vm
+                .invoke_method(class, method, vec![Value::Ref(target)])?
+                .as_int();
+            int(if remaining <= 0 { 0 } else { -1 })
+        },
+    ),
+    method("ready", "()Z", ACC_PUBLIC, |vm, _, args| {
+        null_stream_ensure_open(vm, receiver(args))?;
+        boolean(false)
+    }),
+    method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
+        null_stream_ensure_open(vm, receiver(args))?;
+        long(0)
+    }),
+    method(
+        "transferTo",
+        "(Ljava/io/Writer;)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            null_stream_ensure_open(vm, receiver(args))?;
+            long(0)
+        },
+    ),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        null_stream_close(vm, receiver(args))
+    }),
+];
+
+pub(crate) const NULL_READER: oxjvm_vm::NativeClass = class(
+    "java/io/Reader$NullReader",
+    Some("java/io/Reader"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[field("closed", "I", ACC_PRIVATE, None)],
+    &NULL_READER_METHODS,
+    None,
+);
+
+const NULL_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+    method("write", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        null_stream_ensure_open(vm, receiver(args))?;
+        void()
+    }),
+    method(
+        "write",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            null_stream_ensure_open(vm, receiver(args))?;
+            void()
+        },
+    ),
+    method(
+        "write",
+        "(Ljava/lang/String;II)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            null_stream_ensure_open(vm, receiver(args))?;
+            void()
+        },
+    ),
+    method("write", "([CII)V", ACC_PUBLIC, |vm, _, args| {
+        null_stream_ensure_open(vm, receiver(args))?;
+        reader_check_range(vm, ref_arg(args, 1), int_arg(args, 2), int_arg(args, 3))?;
+        void()
+    }),
+    method(
+        "append",
+        "(C)Ljava/io/Writer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            null_stream_ensure_open(vm, this)?;
+            object(this)
+        },
+    ),
+    method(
+        "append",
+        "(Ljava/lang/CharSequence;)Ljava/io/Writer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            null_stream_ensure_open(vm, this)?;
+            object(this)
+        },
+    ),
+    method(
+        "append",
+        "(Ljava/lang/CharSequence;II)Ljava/io/Writer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            null_stream_ensure_open(vm, this)?;
+            object(this)
+        },
+    ),
+    method("flush", "()V", ACC_PUBLIC, |vm, _, args| {
+        null_stream_ensure_open(vm, receiver(args))?;
+        void()
+    }),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        null_stream_close(vm, receiver(args))
+    }),
+];
+
+pub(crate) const NULL_WRITER: oxjvm_vm::NativeClass = class(
+    "java/io/Writer$NullWriter",
+    Some("java/io/Writer"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[field("closed", "I", ACC_PRIVATE, None)],
+    &NULL_WRITER_METHODS,
     None,
 );
 
