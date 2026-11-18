@@ -1325,7 +1325,7 @@ fn level_named(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
         .ok_or_else(|| VmError::internal("Level constant missing"))
 }
 
-const LOGGER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
+const LOGGER_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
     method(
         "getLogger",
         "(Ljava/lang/String;)Ljava/util/logging/Logger;",
@@ -1343,6 +1343,12 @@ const LOGGER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
             let name = crate::string_arg(vm, args[0])?;
             object(logger_from_registry(vm, &name)?)
         },
+    ),
+    method(
+        "getGlobal",
+        "()Ljava/util/logging/Logger;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(logger_from_registry(vm, "global")?),
     ),
     method(
         "getAnonymousLogger",

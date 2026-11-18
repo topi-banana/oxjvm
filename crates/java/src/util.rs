@@ -7774,7 +7774,7 @@ pub(crate) const ARRAY_LIST_LIST_ITERATOR: oxjvm_vm::NativeClass = class(
 // HashMap (linear-probing arrays)
 // -------------------------------------------------------------------------------------------
 
-const HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
+const HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
     method("<init>", "()V", ACC_PUBLIC, hash_map_init),
     method("<init>", "(I)V", ACC_PUBLIC, hash_map_init),
     method("<init>", "(IF)V", ACC_PUBLIC, hash_map_init),
@@ -7913,6 +7913,26 @@ const HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
             pairs[index as usize].1 = ref_arg(args, 2);
             hash_map_store(vm, receiver(args), &pairs)?;
             Ok(previous)
+        },
+    ),
+    method(
+        "replace",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let index = hash_map_index_of(vm, this, ref_arg(args, 1))?;
+            if index < 0 {
+                return boolean(false);
+            }
+            let current = hash_map_value_at(vm, this, index as usize)?;
+            if !values_equal(vm, current.as_ref(), ref_arg(args, 2))? {
+                return boolean(false);
+            }
+            let mut pairs = hash_map_pairs(vm, this);
+            pairs[index as usize].1 = ref_arg(args, 3);
+            hash_map_store(vm, this, &pairs)?;
+            boolean(true)
         },
     ),
 ];
