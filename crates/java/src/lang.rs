@@ -9321,7 +9321,7 @@ fn comparator_natural(vm: &mut Vm<'_>) -> Result<Value, VmError> {
     object(instance)
 }
 
-const COMPARATOR_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
+const COMPARATOR_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method(
         "compare",
         "(Ljava/lang/Object;Ljava/lang/Object;)I",
@@ -9349,14 +9349,38 @@ const COMPARATOR_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     method(
         "thenComparing",
         "(Ljava/util/Comparator;)Ljava/util/Comparator;",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        abstract_method,
+        ACC_PUBLIC,
+        |vm, _, args| crate::util::comparator_then_comparing(vm, args),
     ),
     method(
         "thenComparing",
         "(Ljava/util/function/Function;)Ljava/util/Comparator;",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        abstract_method,
+        ACC_PUBLIC,
+        |vm, _, args| crate::util::comparator_then_comparing_function(vm, args),
+    ),
+    method(
+        "thenComparing",
+        "(Ljava/util/function/Function;Ljava/util/Comparator;)Ljava/util/Comparator;",
+        ACC_PUBLIC,
+        |vm, _, args| crate::util::comparator_then_comparing_function_cmp(vm, args),
+    ),
+    method(
+        "thenComparingInt",
+        "(Ljava/util/function/ToIntFunction;)Ljava/util/Comparator;",
+        ACC_PUBLIC,
+        |vm, _, args| crate::util::comparator_then_comparing_primitive(vm, args, 0),
+    ),
+    method(
+        "thenComparingLong",
+        "(Ljava/util/function/ToLongFunction;)Ljava/util/Comparator;",
+        ACC_PUBLIC,
+        |vm, _, args| crate::util::comparator_then_comparing_primitive(vm, args, 1),
+    ),
+    method(
+        "thenComparingDouble",
+        "(Ljava/util/function/ToDoubleFunction;)Ljava/util/Comparator;",
+        ACC_PUBLIC,
+        |vm, _, args| crate::util::comparator_then_comparing_primitive(vm, args, 2),
     ),
     method(
         "comparing",

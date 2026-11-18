@@ -10403,6 +10403,69 @@ pub(crate) fn comparator_default_max(vm: &mut Vm<'_>, args: &[Value]) -> Result<
     object(if ordering >= 0 { a } else { b })
 }
 
+/// Build a `Comparator$ChainedComparator`: order by `first`, then `second` on ties.
+fn comparator_chained(
+    vm: &mut Vm<'_>,
+    first: ObjectRef,
+    second: ObjectRef,
+) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/util/Comparator$ChainedComparator")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "first", "Ljava/util/Comparator;")?;
+    vm.set_instance_ref(instance, declaring, field, first);
+    let (declaring, field) = vm.find_field(class, "second", "Ljava/util/Comparator;")?;
+    vm.set_instance_ref(instance, declaring, field, second);
+    object(instance)
+}
+
+/// Build a `Comparator$FunctionComparator` extracting keys with `function`.
+fn comparator_function(
+    vm: &mut Vm<'_>,
+    function: ObjectRef,
+    comparator: ObjectRef,
+) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/util/Comparator$FunctionComparator")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "function", "Ljava/util/function/Function;")?;
+    vm.set_instance_ref(instance, declaring, field, function);
+    let (declaring, field) = vm.find_field(class, "comparator", "Ljava/util/Comparator;")?;
+    vm.set_instance_ref(instance, declaring, field, comparator);
+    object(instance)
+}
+
+/// `Comparator.thenComparing(Comparator)` default method.
+pub(crate) fn comparator_then_comparing(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    comparator_chained(vm, receiver(args), ref_arg(args, 1))
+}
+
+/// `Comparator.thenComparing(Function)` default method.
+pub(crate) fn comparator_then_comparing_function(
+    vm: &mut Vm<'_>,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let second = comparator_function(vm, ref_arg(args, 1), ObjectRef::NULL)?;
+    comparator_chained(vm, receiver(args), second.as_ref())
+}
+
+/// `Comparator.thenComparing(Function, Comparator)` default method.
+pub(crate) fn comparator_then_comparing_function_cmp(
+    vm: &mut Vm<'_>,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let second = comparator_function(vm, ref_arg(args, 1), ref_arg(args, 2))?;
+    comparator_chained(vm, receiver(args), second.as_ref())
+}
+
+/// `Comparator.thenComparingInt/Long/Double` default method; `kind` is 0=int, 1=long, 2=double.
+pub(crate) fn comparator_then_comparing_primitive(
+    vm: &mut Vm<'_>,
+    args: &[Value],
+    kind: i32,
+) -> Result<Value, VmError> {
+    let second = comparator_from_primitive(vm, ref_arg(args, 1), kind)?;
+    comparator_chained(vm, receiver(args), second.as_ref())
+}
+
 /// `Comparator.thenComparing`: the first comparator's ordering, then the second's on ties.
 pub(crate) const CHAINED_COMPARATOR: oxjvm_vm::NativeClass = class(
     "java/util/Comparator$ChainedComparator",
@@ -12498,7 +12561,7 @@ pub(crate) const STACK: oxjvm_vm::NativeClass = class(
 // concurrent views need no real locking.
 // -------------------------------------------------------------------------------------------
 
-const MAP_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+const MAP_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     method(
         "getKey",
         "()Ljava/lang/Object;",
@@ -12517,6 +12580,42 @@ const MAP_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
+    method(
+        "comparingByKey",
+        "()Ljava/util/Comparator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| new_entry_comparator(vm, false, ObjectRef::NULL),
+    ),
+    method(
+        "comparingByValue",
+        "()Ljava/util/Comparator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| new_entry_comparator(vm, true, ObjectRef::NULL),
+    ),
+    method(
+        "comparingByKey",
+        "(Ljava/util/Comparator;)Ljava/util/Comparator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let comparator = ref_arg(args, 0);
+            if comparator.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            new_entry_comparator(vm, false, comparator)
+        },
+    ),
+    method(
+        "comparingByValue",
+        "(Ljava/util/Comparator;)Ljava/util/Comparator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let comparator = ref_arg(args, 0);
+            if comparator.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            new_entry_comparator(vm, true, comparator)
+        },
+    ),
 ];
 
 pub(crate) const MAP_ENTRY: oxjvm_vm::NativeClass = class(
@@ -12526,6 +12625,103 @@ pub(crate) const MAP_ENTRY: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
     &[],
     &MAP_ENTRY_METHODS,
+    None,
+);
+
+const ENTRY_COMPARATOR_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "compare",
+    "(Ljava/lang/Object;Ljava/lang/Object;)I",
+    ACC_PUBLIC,
+    |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let by_value = crate::lang::read_int_field(vm, this, "byValue") != 0;
+        let delegate = vm
+            .read_ref_field(this, class, "comparator", "Ljava/util/Comparator;")
+            .unwrap_or(ObjectRef::NULL);
+        let name = if by_value { "getValue" } else { "getKey" };
+        let mut keys = Vec::with_capacity(2);
+        for entry in [ref_arg(args, 1), ref_arg(args, 2)] {
+            let (kc, km) = vm.resolve_virtual_method(entry, name, "()Ljava/lang/Object;")?;
+            keys.push(vm.invoke_method(kc, km, vec![Value::Ref(entry)])?.as_ref());
+        }
+        int(comparator_compare_with(vm, delegate, keys[0], keys[1])?)
+    },
+)];
+
+/// `Map.Entry.comparingByKey/comparingByValue`: compares entries by the extracted key or value.
+pub(crate) const ENTRY_COMPARATOR: oxjvm_vm::NativeClass = class(
+    "java/util/Map$EntryComparator",
+    Some("java/lang/Object"),
+    &["java/util/Comparator"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[
+        field("byValue", "I", ACC_PRIVATE, None),
+        field("comparator", "Ljava/util/Comparator;", ACC_PRIVATE, None),
+    ],
+    &ENTRY_COMPARATOR_METHODS,
+    None,
+);
+
+fn new_entry_comparator(
+    vm: &mut Vm<'_>,
+    by_value: bool,
+    comparator: ObjectRef,
+) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/util/Map$EntryComparator")?;
+    let instance = vm.new_instance(class)?;
+    crate::lang::write_int_field(vm, instance, "byValue", i32::from(by_value));
+    let (declaring, field) = vm.find_field(class, "comparator", "Ljava/util/Comparator;")?;
+    vm.set_instance_ref(instance, declaring, field, comparator);
+    object(instance)
+}
+
+const SIMPLE_IMMUTABLE_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "<init>",
+        "(Ljava/lang/Object;Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "key", "Ljava/lang/Object;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            let (declaring, field) = vm.find_field(class, "value", "Ljava/lang/Object;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 2));
+            void()
+        },
+    ),
+    method(
+        "getKey",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| object(entry_field(vm, receiver(args), "key")),
+    ),
+    method(
+        "getValue",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| object(entry_field(vm, receiver(args), "value")),
+    ),
+    method(
+        "setValue",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+];
+
+/// `AbstractMap.SimpleImmutableEntry`: an immutable key/value pair implementing `Map.Entry`.
+pub(crate) const SIMPLE_IMMUTABLE_ENTRY: oxjvm_vm::NativeClass = class(
+    "java/util/AbstractMap$SimpleImmutableEntry",
+    Some("java/lang/Object"),
+    &["java/util/Map$Entry"],
+    ACC_PUBLIC,
+    &[
+        field("key", "Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("value", "Ljava/lang/Object;", ACC_PRIVATE, None),
+    ],
+    &SIMPLE_IMMUTABLE_ENTRY_METHODS,
     None,
 );
 
