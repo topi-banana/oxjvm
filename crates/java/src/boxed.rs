@@ -132,8 +132,16 @@ const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 50] = [
         "(Ljava/lang/Object;)I",
         ACC_PUBLIC | ACC_BRIDGE | ACC_SYNTHETIC,
         |vm, _, args| {
-            let a = read_value_int(vm, receiver(args));
-            let b = read_value_int(vm, ref_arg(args, 1));
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if other.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            if vm.class_of(this) != vm.class_of(other) {
+                return Err(vm.throw_new("java/lang/ClassCastException", None));
+            }
+            let a = read_value_int(vm, this);
+            let b = read_value_int(vm, other);
             int(compare_ints(a, b))
         },
     ),

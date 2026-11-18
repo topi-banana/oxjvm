@@ -10145,10 +10145,11 @@ fn new_reverse_comparator(vm: &mut Vm<'_>, delegate: ObjectRef) -> Result<Value,
     object(instance)
 }
 
-/// The natural ordering of two objects: nulls first, then strings, then `Comparable.compareTo`.
+/// The natural ordering of two objects: strings lexicographically, otherwise `Comparable.compareTo`.
+/// A null argument throws `NullPointerException`, matching the JDK comparators.
 fn natural_compare(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<i32, VmError> {
     if a.is_null() || b.is_null() {
-        return Ok(i32::from(a.is_null() && !b.is_null()));
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
     if vm.string_utf16(a).is_some() && vm.string_utf16(b).is_some() {
         let an = vm.string_or_empty(a);
@@ -10198,6 +10199,28 @@ const REVERSE_COMPARATOR_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
         int(-ordering)
     },
 )];
+
+const NATURAL_ORDER_COMPARATOR_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "compare",
+    "(Ljava/lang/Object;Ljava/lang/Object;)I",
+    ACC_PUBLIC,
+    |vm, _, args| {
+        let a = ref_arg(args, 1);
+        let b = ref_arg(args, 2);
+        int(natural_compare(vm, a, b)?)
+    },
+)];
+
+/// `Comparator.naturalOrder()`: compares `Comparable` arguments in their natural order.
+pub(crate) const NATURAL_ORDER_COMPARATOR: oxjvm_vm::NativeClass = class(
+    "java/util/Comparators$NaturalOrderComparator",
+    Some("java/lang/Object"),
+    &["java/util/Comparator"],
+    ACC_PUBLIC,
+    &[],
+    &NATURAL_ORDER_COMPARATOR_METHODS,
+    None,
+);
 
 /// `Collections$ReverseComparator`: negates the delegate's ordering.
 pub(crate) const REVERSE_COMPARATOR: oxjvm_vm::NativeClass = class(
@@ -10352,6 +10375,32 @@ fn comparator_compare_with(
             vec![Value::Ref(comparator), Value::Ref(a), Value::Ref(b)],
         )?
         .as_int())
+}
+
+/// `Comparator.reversed()` default method: a comparator that imposes the reverse ordering.
+pub(crate) fn comparator_default_reversed(
+    vm: &mut Vm<'_>,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    new_reverse_comparator(vm, receiver(args))
+}
+
+/// `Comparator.min(a, b)` default method: the lesser argument per `compare` (first on ties).
+pub(crate) fn comparator_default_min(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let a = ref_arg(args, 1);
+    let b = ref_arg(args, 2);
+    let ordering = comparator_compare_with(vm, this, a, b)?;
+    object(if ordering <= 0 { a } else { b })
+}
+
+/// `Comparator.max(a, b)` default method: the greater argument per `compare` (first on ties).
+pub(crate) fn comparator_default_max(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let a = ref_arg(args, 1);
+    let b = ref_arg(args, 2);
+    let ordering = comparator_compare_with(vm, this, a, b)?;
+    object(if ordering >= 0 { a } else { b })
 }
 
 /// `Comparator.thenComparing`: the first comparator's ordering, then the second's on ties.

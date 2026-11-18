@@ -2444,10 +2444,14 @@ fn string_compare_to(
         .string_utf16(receiver(args))
         .map(<[u16]>::to_vec)
         .unwrap_or_default();
+    let other_ref = ref_arg(args, 1);
+    if other_ref.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
     let other = vm
-        .string_utf16(ref_arg(args, 1))
+        .string_utf16(other_ref)
         .map(<[u16]>::to_vec)
-        .ok_or_else(|| vm.throw_new("java/lang/NullPointerException", None))?;
+        .ok_or_else(|| vm.throw_new("java/lang/ClassCastException", None))?;
     int(compare_units(&this, &other))
 }
 
@@ -9312,14 +9316,12 @@ fn comparator_from_function(
 }
 
 fn comparator_natural(vm: &mut Vm<'_>) -> Result<Value, VmError> {
-    let class = vm.resolve_class("java/util/Collections$ReverseComparator")?;
+    let class = vm.resolve_class("java/util/Comparators$NaturalOrderComparator")?;
     let instance = vm.new_instance(class)?;
-    let (declaring, field) = vm.find_field(class, "comparator", "Ljava/util/Comparator;")?;
-    vm.set_instance_ref(instance, declaring, field, ObjectRef::NULL);
     object(instance)
 }
 
-const COMPARATOR_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const COMPARATOR_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     method(
         "compare",
         "(Ljava/lang/Object;Ljava/lang/Object;)I",
@@ -9329,8 +9331,20 @@ const COMPARATOR_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method(
         "reversed",
         "()Ljava/util/Comparator;",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        abstract_method,
+        ACC_PUBLIC,
+        |vm, _, args| crate::util::comparator_default_reversed(vm, args),
+    ),
+    method(
+        "min",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| crate::util::comparator_default_min(vm, args),
+    ),
+    method(
+        "max",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| crate::util::comparator_default_max(vm, args),
     ),
     method(
         "thenComparing",
