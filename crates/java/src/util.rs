@@ -11714,7 +11714,7 @@ fn bit_set_range(
     if from >= to {
         return Ok(());
     }
-    words.resize(to.div_ceil(64), 0);
+    words.resize(words.len().max(to.div_ceil(64)), 0);
     for bit in from..to {
         let word = bit / 64;
         let mask = 1u64 << (bit % 64);
@@ -11727,7 +11727,41 @@ fn bit_set_range(
     bitset_store(vm, this, &words, 0)
 }
 
-const BITSET_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
+/// JDK `BitSet` single-index validation: a negative index throws `IndexOutOfBoundsException`.
+fn bitset_check_index(vm: &mut Vm<'_>, bit: i32) -> Result<usize, VmError> {
+    if bit < 0 {
+        return Err(vm.throw_new(
+            "java/lang/IndexOutOfBoundsException",
+            Some(&alloc::format!("bitIndex < 0: {bit}")),
+        ));
+    }
+    Ok(bit as usize)
+}
+
+/// JDK `BitSet.checkRange`: validates a `[from, to)` bit range.
+fn bitset_check_range(vm: &mut Vm<'_>, from: i32, to: i32) -> Result<(usize, usize), VmError> {
+    if from < 0 {
+        return Err(vm.throw_new(
+            "java/lang/IndexOutOfBoundsException",
+            Some(&alloc::format!("fromIndex < 0: {from}")),
+        ));
+    }
+    if to < 0 {
+        return Err(vm.throw_new(
+            "java/lang/IndexOutOfBoundsException",
+            Some(&alloc::format!("toIndex < 0: {to}")),
+        ));
+    }
+    if from > to {
+        return Err(vm.throw_new(
+            "java/lang/IndexOutOfBoundsException",
+            Some(&alloc::format!("fromIndex: {from} > toIndex: {to}")),
+        ));
+    }
+    Ok((from as usize, to as usize))
+}
+
+const BITSET_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         bitset_store(vm, receiver(args), &[], 0)?;
         void()
@@ -11749,33 +11783,71 @@ const BITSET_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         let bit = bit as usize;
         boolean((words.get(bit / 64).copied().unwrap_or(0) >> (bit % 64)) & 1 == 1)
     }),
+    method(
+        "get",
+        "(II)Ljava/util/BitSet;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (from, to) = bitset_check_range(vm, int_arg(args, 1), int_arg(args, 2))?;
+            let words = bitset_words(vm, receiver(args));
+            let class = vm.resolve_class("java/util/BitSet")?;
+            let instance = vm.new_instance(class)?;
+            let limit = words.len() * 64;
+            if from == to || from >= limit {
+                bitset_store(vm, instance, &[], 0)?;
+                return object(instance);
+            }
+            let to = to.min(limit);
+            let count = to - from;
+            let shift = from % 64;
+            let first = from / 64;
+            let mut out = alloc::vec![0u64; count.div_ceil(64)];
+            for (index, word) in out.iter_mut().enumerate() {
+                let source = first + index;
+                let low = words.get(source).copied().unwrap_or(0) >> shift;
+                let high = if shift != 0 {
+                    words.get(source + 1).copied().unwrap_or(0) << (64 - shift)
+                } else {
+                    0
+                };
+                *word = low | high;
+            }
+            let remainder = count % 64;
+            if remainder != 0 {
+                let last = out.len() - 1;
+                out[last] &= (1u64 << remainder) - 1;
+            }
+            bitset_store(vm, instance, &out, 0)?;
+            object(instance)
+        },
+    ),
     method("set", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        let bit = int_arg(args, 1).max(0) as usize;
+        let bit = bitset_check_index(vm, int_arg(args, 1))?;
         bit_set_range(vm, receiver(args), bit, bit + 1, true)?;
         void()
     }),
     method("set", "(IZ)V", ACC_PUBLIC, |vm, _, args| {
-        if int_arg(args, 1) < 0 {
-            return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", Some("bit index < 0")));
-        }
-        let bit = int_arg(args, 1) as usize;
+        let bit = bitset_check_index(vm, int_arg(args, 1))?;
         bit_set_range(vm, receiver(args), bit, bit + 1, int_arg(args, 2) != 0)?;
         void()
     }),
     method("set", "(II)V", ACC_PUBLIC, |vm, _, args| {
-        let from = int_arg(args, 1).max(0) as usize;
-        let to = int_arg(args, 2).max(0) as usize;
+        let (from, to) = bitset_check_range(vm, int_arg(args, 1), int_arg(args, 2))?;
         bit_set_range(vm, receiver(args), from, to, true)?;
         void()
     }),
+    method("set", "(IIZ)V", ACC_PUBLIC, |vm, _, args| {
+        let (from, to) = bitset_check_range(vm, int_arg(args, 1), int_arg(args, 2))?;
+        bit_set_range(vm, receiver(args), from, to, int_arg(args, 3) != 0)?;
+        void()
+    }),
     method("clear", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        let bit = int_arg(args, 1).max(0) as usize;
+        let bit = bitset_check_index(vm, int_arg(args, 1))?;
         bit_set_range(vm, receiver(args), bit, bit + 1, false)?;
         void()
     }),
     method("clear", "(II)V", ACC_PUBLIC, |vm, _, args| {
-        let from = int_arg(args, 1).max(0) as usize;
-        let to = int_arg(args, 2).max(0) as usize;
+        let (from, to) = bitset_check_range(vm, int_arg(args, 1), int_arg(args, 2))?;
         bit_set_range(vm, receiver(args), from, to, false)?;
         void()
     }),
@@ -11784,7 +11856,7 @@ const BITSET_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         void()
     }),
     method("flip", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        let bit = int_arg(args, 1).max(0) as usize;
+        let bit = bitset_check_index(vm, int_arg(args, 1))?;
         let words = bitset_words(vm, receiver(args));
         let value = (words.get(bit / 64).copied().unwrap_or(0) >> (bit % 64)) & 1 == 0;
         bit_set_range(vm, receiver(args), bit, bit + 1, value)?;
@@ -11816,8 +11888,15 @@ const BITSET_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
             .sum())
     }),
     method("nextSetBit", "(I)I", ACC_PUBLIC, |vm, _, args| {
+        let from = int_arg(args, 1);
+        if from < 0 {
+            return Err(vm.throw_new(
+                "java/lang/IndexOutOfBoundsException",
+                Some(&alloc::format!("fromIndex < 0: {from}")),
+            ));
+        }
         let words = bitset_words(vm, receiver(args));
-        let from = int_arg(args, 1).max(0) as usize;
+        let from = from as usize;
         for bit in from..words.len() * 64 {
             if (words[bit / 64] >> (bit % 64)) & 1 == 1 {
                 return int(bit as i32);
@@ -11825,6 +11904,120 @@ const BITSET_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         }
         int(-1)
     }),
+    method("nextClearBit", "(I)I", ACC_PUBLIC, |vm, _, args| {
+        let from = int_arg(args, 1);
+        if from < 0 {
+            return Err(vm.throw_new(
+                "java/lang/IndexOutOfBoundsException",
+                Some(&alloc::format!("fromIndex < 0: {from}")),
+            ));
+        }
+        let words = bitset_words(vm, receiver(args));
+        let from = from as usize;
+        let limit = words.len() * 64;
+        let mut bit = from;
+        while bit < limit {
+            if (words[bit / 64] >> (bit % 64)) & 1 == 0 {
+                return int(bit as i32);
+            }
+            bit += 1;
+        }
+        int(bit as i32)
+    }),
+    method("previousSetBit", "(I)I", ACC_PUBLIC, |vm, _, args| {
+        let from = int_arg(args, 1);
+        if from == -1 {
+            return int(-1);
+        }
+        if from < -1 {
+            return Err(vm.throw_new(
+                "java/lang/IndexOutOfBoundsException",
+                Some(&alloc::format!("fromIndex < -1: {from}")),
+            ));
+        }
+        let words = bitset_words(vm, receiver(args));
+        if words.is_empty() {
+            return int(-1);
+        }
+        let mut bit = (from as usize).min(words.len() * 64 - 1);
+        loop {
+            if (words[bit / 64] >> (bit % 64)) & 1 == 1 {
+                return int(bit as i32);
+            }
+            if bit == 0 {
+                break;
+            }
+            bit -= 1;
+        }
+        int(-1)
+    }),
+    method("previousClearBit", "(I)I", ACC_PUBLIC, |vm, _, args| {
+        let from = int_arg(args, 1);
+        if from == -1 {
+            return int(-1);
+        }
+        if from < -1 {
+            return Err(vm.throw_new(
+                "java/lang/IndexOutOfBoundsException",
+                Some(&alloc::format!("fromIndex < -1: {from}")),
+            ));
+        }
+        let words = bitset_words(vm, receiver(args));
+        let from = from as usize;
+        let limit = words.len() * 64;
+        if from >= limit {
+            return int(from as i32);
+        }
+        let mut bit = from;
+        loop {
+            if (words[bit / 64] >> (bit % 64)) & 1 == 0 {
+                return int(bit as i32);
+            }
+            if bit == 0 {
+                break;
+            }
+            bit -= 1;
+        }
+        int(-1)
+    }),
+    method("flip", "(II)V", ACC_PUBLIC, |vm, _, args| {
+        let (from, to) = bitset_check_range(vm, int_arg(args, 1), int_arg(args, 2))?;
+        if from == to {
+            return void();
+        }
+        let mut words = bitset_words(vm, receiver(args));
+        words.resize(words.len().max(to.div_ceil(64)), 0);
+        let first_word = from / 64;
+        let last_word = (to - 1) / 64;
+        let start_mask = u64::MAX << (from % 64);
+        let end_mask = u64::MAX >> (63 - ((to - 1) % 64));
+        if first_word == last_word {
+            words[first_word] ^= start_mask & end_mask;
+        } else {
+            words[first_word] ^= start_mask;
+            for word in words.iter_mut().take(last_word).skip(first_word + 1) {
+                *word ^= u64::MAX;
+            }
+            words[last_word] ^= end_mask;
+        }
+        bitset_store(vm, receiver(args), &words, 0)?;
+        void()
+    }),
+    method(
+        "intersects",
+        "(Ljava/util/BitSet;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = bitset_words(vm, ref_arg(args, 1));
+            let words = bitset_words(vm, receiver(args));
+            for (index, word) in words.iter().enumerate() {
+                if word & other.get(index).copied().unwrap_or(0) != 0 {
+                    return boolean(true);
+                }
+            }
+            boolean(false)
+        },
+    ),
     method("and", "(Ljava/util/BitSet;)V", ACC_PUBLIC, |vm, _, args| {
         let other = bitset_words(vm, ref_arg(args, 1));
         let mut words = bitset_words(vm, receiver(args));
@@ -11898,7 +12091,19 @@ const BITSET_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
             if other.is_null() {
                 return boolean(false);
             }
-            boolean(bitset_words(vm, receiver(args)) == bitset_words(vm, other))
+            let class = vm.resolve_class("java/util/BitSet")?;
+            if !vm.is_instance(other, class) {
+                return boolean(false);
+            }
+            let mut a = bitset_words(vm, receiver(args));
+            let mut b = bitset_words(vm, other);
+            while a.last() == Some(&0) {
+                a.pop();
+            }
+            while b.last() == Some(&0) {
+                b.pop();
+            }
+            boolean(a == b)
         },
     ),
     method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
@@ -11907,8 +12112,47 @@ const BITSET_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         for (index, word) in words.iter().enumerate() {
             hash ^= (*word as i64).wrapping_mul((index as i64) + 1);
         }
-        int(hash as i32)
+        int(((hash >> 32) ^ hash) as i32)
     }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let words = bitset_words(vm, receiver(args));
+            let mut text = String::from("{");
+            let mut first = true;
+            for (index, word) in words.iter().enumerate() {
+                let mut bits = *word;
+                while bits != 0 {
+                    let bit = index * 64 + bits.trailing_zeros() as usize;
+                    if !first {
+                        text.push_str(", ");
+                    }
+                    first = false;
+                    text.push_str(&bit.to_string());
+                    bits &= bits - 1;
+                }
+            }
+            text.push('}');
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "clone",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let words = bitset_words(vm, this);
+            let clone = vm.clone_object(this)?;
+            let array = words_from_u64(vm, &words)?;
+            let class = vm.class_of(clone);
+            let (declaring, field) = vm.find_field(class, "words", "[J")?;
+            vm.set_instance_ref(clone, declaring, field, array);
+            object(clone)
+        },
+    ),
 ];
 
 fn words_from_u64(vm: &mut Vm<'_>, words: &[u64]) -> Result<ObjectRef, VmError> {
