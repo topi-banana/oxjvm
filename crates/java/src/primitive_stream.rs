@@ -1530,7 +1530,7 @@ pub(crate) const OPTIONAL_LONG: oxjvm_vm::NativeClass = class(
     None,
 );
 
-fn optional_int(vm: &mut Vm<'_>, value: Option<i32>) -> Result<Value, VmError> {
+pub(crate) fn optional_int(vm: &mut Vm<'_>, value: Option<i32>) -> Result<Value, VmError> {
     let class = vm.resolve_class("java/util/OptionalInt")?;
     let instance = vm.new_instance(class)?;
     match value {

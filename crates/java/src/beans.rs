@@ -1241,7 +1241,7 @@ pub(crate) const VETOABLE_CHANGE_LISTENER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PROPERTY_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const PROPERTY_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method(
         "<init>",
         "(Ljava/lang/Object;)V",
@@ -1256,6 +1256,9 @@ const PROPERTY_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
             let list = crate::util::array_list_from(vm, &[])?;
             let (declaring, field) = vm.find_field(class, "listeners", "Ljava/util/ArrayList;")?;
             vm.set_instance_ref(receiver(args), declaring, field, list);
+            let map = crate::util::new_hash_map(vm)?;
+            let (declaring, field) = vm.find_field(class, "named", "Ljava/util/HashMap;")?;
+            vm.set_instance_ref(receiver(args), declaring, field, map);
             void()
         },
     ),
@@ -1269,7 +1272,7 @@ const PROPERTY_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         "addPropertyChangeListener",
         "(Ljava/lang/String;Ljava/beans/PropertyChangeListener;)V",
         ACC_PUBLIC,
-        |vm, _, args| change_add(vm, receiver(args), ref_arg(args, 2), "listeners"),
+        |vm, _, args| change_add_named(vm, receiver(args), ref_arg(args, 1), ref_arg(args, 2)),
     ),
     method(
         "removePropertyChangeListener",
@@ -1355,7 +1358,117 @@ const PROPERTY_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
             change_fire(vm, receiver(args), event, "listeners", "propertyChange")
         },
     ),
+    method("hasListeners", "()Z", ACC_PUBLIC, |vm, _, args| {
+        change_has_listeners(vm, receiver(args), None)
+    }),
+    method(
+        "hasListeners",
+        "(Ljava/lang/String;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| change_has_listeners(vm, receiver(args), Some(ref_arg(args, 1))),
+    ),
+    method(
+        "removePropertyChangeListener",
+        "(Ljava/lang/String;Ljava/beans/PropertyChangeListener;)V",
+        ACC_PUBLIC,
+        |vm, _, args| change_remove_named(vm, receiver(args), ref_arg(args, 1), ref_arg(args, 2)),
+    ),
 ];
+
+/// The per-property listener list, created on demand when `create` is set.
+fn change_named_list(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: ObjectRef,
+    create: bool,
+) -> Result<ObjectRef, VmError> {
+    let map = vm
+        .read_ref_field(this, vm.class_of(this), "named", "Ljava/util/HashMap;")
+        .unwrap_or(ObjectRef::NULL);
+    if map.is_null() {
+        return Ok(ObjectRef::NULL);
+    }
+    let (class, method) =
+        vm.resolve_virtual_method(map, "get", "(Ljava/lang/Object;)Ljava/lang/Object;")?;
+    let list = vm
+        .invoke_method(class, method, vec![Value::Ref(map), Value::Ref(name)])?
+        .as_ref();
+    if !list.is_null() || !create {
+        return Ok(list);
+    }
+    let list = crate::util::array_list_from(vm, &[])?;
+    let (class, method) = vm.resolve_virtual_method(
+        map,
+        "put",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+    )?;
+    vm.invoke_method(
+        class,
+        method,
+        vec![Value::Ref(map), Value::Ref(name), Value::Ref(list)],
+    )?;
+    Ok(list)
+}
+
+/// Register a listener both globally and under its property name.
+fn change_add_named(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: ObjectRef,
+    listener: ObjectRef,
+) -> Result<Value, VmError> {
+    change_add(vm, this, listener, "listeners")?;
+    let list = change_named_list(vm, this, name, true)?;
+    if !list.is_null() {
+        let (class, method) = vm.resolve_virtual_method(list, "add", "(Ljava/lang/Object;)Z")?;
+        vm.invoke_method(class, method, vec![Value::Ref(list), Value::Ref(listener)])?;
+    }
+    void()
+}
+
+/// Remove a listener both globally and under its property name.
+fn change_remove_named(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: ObjectRef,
+    listener: ObjectRef,
+) -> Result<Value, VmError> {
+    change_remove(vm, this, listener, "listeners")?;
+    let list = change_named_list(vm, this, name, false)?;
+    if !list.is_null() {
+        let (class, method) = vm.resolve_virtual_method(list, "remove", "(Ljava/lang/Object;)Z")?;
+        vm.invoke_method(class, method, vec![Value::Ref(list), Value::Ref(listener)])?;
+    }
+    void()
+}
+
+/// `hasListeners()` / `hasListeners(String)`.
+fn change_has_listeners(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: Option<ObjectRef>,
+) -> Result<Value, VmError> {
+    let list = match name {
+        None => vm
+            .read_ref_field(
+                this,
+                vm.class_of(this),
+                "listeners",
+                "Ljava/util/ArrayList;",
+            )
+            .unwrap_or(ObjectRef::NULL),
+        Some(name) => change_named_list(vm, this, name, false)?,
+    };
+    if list.is_null() {
+        return boolean(false);
+    }
+    let (class, method) = vm.resolve_virtual_method(list, "isEmpty", "()Z")?;
+    let empty = vm
+        .invoke_method(class, method, vec![Value::Ref(list)])?
+        .as_int()
+        != 0;
+    boolean(!empty)
+}
 
 fn change_add(
     vm: &mut Vm<'_>,
@@ -1472,12 +1585,13 @@ pub(crate) const PROPERTY_CHANGE_SUPPORT: oxjvm_vm::NativeClass = class(
     &[
         field("source", "Ljava/lang/Object;", ACC_PRIVATE, None),
         field("listeners", "Ljava/util/ArrayList;", ACC_PRIVATE, None),
+        field("named", "Ljava/util/HashMap;", ACC_PRIVATE, None),
     ],
     &PROPERTY_CHANGE_SUPPORT_METHODS,
     None,
 );
 
-const VETOABLE_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+const VETOABLE_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method(
         "<init>",
         "(Ljava/lang/Object;)V",
@@ -1492,6 +1606,9 @@ const VETOABLE_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
             let list = crate::util::array_list_from(vm, &[])?;
             let (declaring, field) = vm.find_field(class, "listeners", "Ljava/util/ArrayList;")?;
             vm.set_instance_ref(receiver(args), declaring, field, list);
+            let map = crate::util::new_hash_map(vm)?;
+            let (declaring, field) = vm.find_field(class, "named", "Ljava/util/HashMap;")?;
+            vm.set_instance_ref(receiver(args), declaring, field, map);
             void()
         },
     ),
@@ -1505,7 +1622,7 @@ const VETOABLE_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         "addVetoableChangeListener",
         "(Ljava/lang/String;Ljava/beans/VetoableChangeListener;)V",
         ACC_PUBLIC,
-        |vm, _, args| change_add(vm, receiver(args), ref_arg(args, 2), "listeners"),
+        |vm, _, args| change_add_named(vm, receiver(args), ref_arg(args, 1), ref_arg(args, 2)),
     ),
     method(
         "removeVetoableChangeListener",
@@ -1555,6 +1672,21 @@ const VETOABLE_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
             )
         },
     ),
+    method("hasListeners", "()Z", ACC_PUBLIC, |vm, _, args| {
+        change_has_listeners(vm, receiver(args), None)
+    }),
+    method(
+        "hasListeners",
+        "(Ljava/lang/String;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| change_has_listeners(vm, receiver(args), Some(ref_arg(args, 1))),
+    ),
+    method(
+        "removeVetoableChangeListener",
+        "(Ljava/lang/String;Ljava/beans/VetoableChangeListener;)V",
+        ACC_PUBLIC,
+        |vm, _, args| change_remove_named(vm, receiver(args), ref_arg(args, 1), ref_arg(args, 2)),
+    ),
 ];
 
 pub(crate) const VETOABLE_CHANGE_SUPPORT: oxjvm_vm::NativeClass = class(
@@ -1565,6 +1697,7 @@ pub(crate) const VETOABLE_CHANGE_SUPPORT: oxjvm_vm::NativeClass = class(
     &[
         field("source", "Ljava/lang/Object;", ACC_PRIVATE, None),
         field("listeners", "Ljava/util/ArrayList;", ACC_PRIVATE, None),
+        field("named", "Ljava/util/HashMap;", ACC_PRIVATE, None),
     ],
     &VETOABLE_CHANGE_SUPPORT_METHODS,
     None,

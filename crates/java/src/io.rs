@@ -240,7 +240,7 @@ pub(crate) const FILTER_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PRINT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
+const PRINT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
     method(
         "<init>",
         "(Ljava/io/OutputStream;)V",
@@ -436,6 +436,30 @@ const PRINT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
         ACC_PUBLIC,
         print_formatted,
     ),
+    method(
+        "charset",
+        "()Ljava/nio/charset/Charset;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let charset = vm
+                .read_ref_field(this, class, "charset", "Ljava/nio/charset/Charset;")
+                .unwrap_or(ObjectRef::NULL);
+            if !charset.is_null() {
+                return object(charset);
+            }
+            let charset_class = vm.resolve_class("java/nio/charset/Charset")?;
+            let (declaring, method) = vm
+                .find_method(
+                    charset_class,
+                    "defaultCharset",
+                    "()Ljava/nio/charset/Charset;",
+                )
+                .ok_or_else(|| VmError::internal("Charset.defaultCharset"))?;
+            vm.invoke_method(declaring, method, vec![])
+        },
+    ),
 ];
 
 fn print_stream_init(
@@ -443,7 +467,42 @@ fn print_stream_init(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    print_stream_out(vm, receiver(args), ref_arg(args, 1))
+    let this = receiver(args);
+    print_stream_out(vm, this, ref_arg(args, 1))?;
+    let charset_class = vm.resolve_class("java/nio/charset/Charset")?;
+    let mut charset = ObjectRef::NULL;
+    for arg in args.iter().skip(2) {
+        let Value::Ref(reference) = arg else { continue };
+        if reference.is_null() {
+            continue;
+        }
+        if vm.is_instance(*reference, charset_class) {
+            charset = *reference;
+            break;
+        }
+        if vm.string_value(*reference).is_some() {
+            let (declaring, method) = vm
+                .find_method(
+                    charset_class,
+                    "forName",
+                    "(Ljava/lang/String;)Ljava/nio/charset/Charset;",
+                )
+                .ok_or_else(|| VmError::internal("Charset.forName"))?;
+            charset = vm
+                .invoke_method(declaring, method, vec![Value::Ref(*reference)])?
+                .as_ref();
+            break;
+        }
+    }
+    if !charset.is_null() {
+        let class = vm.class_of(this);
+        if let Some((declaring, field)) =
+            vm.find_field_opt(class, "charset", "Ljava/nio/charset/Charset;")
+        {
+            vm.set_instance_ref(this, declaring, field, charset);
+        }
+    }
+    void()
 }
 
 /// Point a print stream at an `OutputStream`; the kind stays 0 so writes reach `out`.
@@ -641,8 +700,32 @@ pub(crate) const PRINT_STREAM: oxjvm_vm::NativeClass = class(
     &[
         field("out", "Ljava/io/OutputStream;", ACC_PROTECTED, None),
         field("kind", "I", ACC_PRIVATE | ACC_SYNTHETIC, None),
+        field("charset", "Ljava/nio/charset/Charset;", ACC_PRIVATE, None),
     ],
     &PRINT_STREAM_METHODS,
+    None,
+);
+
+const FILE_DESCRIPTOR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("valid", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| object(vm.make_string("java.io.FileDescriptor")?),
+    ),
+];
+
+/// `java.io.FileDescriptor`: the VM models file streams as in-memory buffers,
+/// so the descriptor is always valid while the stream is open.
+pub(crate) const FILE_DESCRIPTOR: oxjvm_vm::NativeClass = class(
+    "java/io/FileDescriptor",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[],
+    &FILE_DESCRIPTOR_METHODS,
     None,
 );
 

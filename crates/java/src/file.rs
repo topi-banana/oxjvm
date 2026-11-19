@@ -32,7 +32,7 @@ pub(crate) const FILE_FILTER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 45] = [
+const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -484,9 +484,16 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 45] = [
         let _ = file_path(vm, receiver(args));
         void()
     }),
-    method("setReadOnly", "()Z", ACC_PUBLIC, |_, _, _| {
-        // The VM has no host primitive for chmod; treat as success.
-        boolean(true)
+    method("setReadOnly", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let path = file_path(vm, this);
+        let Some(fs) = vm.host.filesystem() else {
+            return boolean(false);
+        };
+        let Some(meta) = fs.metadata(&path) else {
+            return boolean(false);
+        };
+        boolean(fs.set_mode(&path, meta.mode & !0o222))
     }),
     method("toURL", "()Ljava/net/URL;", ACC_PUBLIC, |vm, _, args| {
         let path = file_path(vm, receiver(args));
@@ -522,6 +529,51 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 45] = [
             crate::nio::new_path(vm, &path)
         },
     ),
+    method("setReadable", "(Z)Z", ACC_PUBLIC, |vm, _, args| {
+        file_set_access(vm, receiver(args), 0o400, crate::bool_arg(args, 1), true)
+    }),
+    method("setReadable", "(ZZ)Z", ACC_PUBLIC, |vm, _, args| {
+        file_set_access(
+            vm,
+            receiver(args),
+            0o400,
+            crate::bool_arg(args, 1),
+            crate::bool_arg(args, 2),
+        )
+    }),
+    method("setWritable", "(Z)Z", ACC_PUBLIC, |vm, _, args| {
+        file_set_access(vm, receiver(args), 0o200, crate::bool_arg(args, 1), true)
+    }),
+    method("setWritable", "(ZZ)Z", ACC_PUBLIC, |vm, _, args| {
+        file_set_access(
+            vm,
+            receiver(args),
+            0o200,
+            crate::bool_arg(args, 1),
+            crate::bool_arg(args, 2),
+        )
+    }),
+    method("setExecutable", "(Z)Z", ACC_PUBLIC, |vm, _, args| {
+        file_set_access(vm, receiver(args), 0o100, crate::bool_arg(args, 1), true)
+    }),
+    method("setExecutable", "(ZZ)Z", ACC_PUBLIC, |vm, _, args| {
+        file_set_access(
+            vm,
+            receiver(args),
+            0o100,
+            crate::bool_arg(args, 1),
+            crate::bool_arg(args, 2),
+        )
+    }),
+    method("getTotalSpace", "()J", ACC_PUBLIC, |vm, _, args| {
+        file_space(vm, receiver(args), 0)
+    }),
+    method("getFreeSpace", "()J", ACC_PUBLIC, |vm, _, args| {
+        file_space(vm, receiver(args), 1)
+    }),
+    method("getUsableSpace", "()J", ACC_PUBLIC, |vm, _, args| {
+        file_space(vm, receiver(args), 2)
+    }),
 ];
 
 pub(crate) const FILE: oxjvm_vm::NativeClass = class(
@@ -589,6 +641,50 @@ pub(crate) fn file_path(vm: &Vm<'_>, this: ObjectRef) -> String {
     let class = vm.class_of(this);
     vm.read_string_field(this, class, "path")
         .unwrap_or_default()
+}
+
+/// Adjust one permission bit group (`0o400` read, `0o200` write, `0o100` exec).
+fn file_set_access(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    bit: u32,
+    enabled: bool,
+    owner_only: bool,
+) -> Result<Value, VmError> {
+    let path = file_path(vm, this);
+    let Some(fs) = vm.host.filesystem() else {
+        return boolean(false);
+    };
+    let Some(meta) = fs.metadata(&path) else {
+        return boolean(false);
+    };
+    let mask = if owner_only {
+        bit
+    } else {
+        bit | (bit >> 3) | (bit >> 6)
+    };
+    let mode = if enabled {
+        meta.mode | mask
+    } else {
+        meta.mode & !mask
+    };
+    boolean(fs.set_mode(&path, mode))
+}
+
+/// One of `(total, free, usable)` bytes for the filesystem holding the file.
+fn file_space(vm: &mut Vm<'_>, this: ObjectRef, index: usize) -> Result<Value, VmError> {
+    let path = file_path(vm, this);
+    let value = vm
+        .host
+        .filesystem()
+        .and_then(|fs| fs.disk_space(&path))
+        .map(|space| match index {
+            0 => space.0,
+            1 => space.1,
+            _ => space.2,
+        })
+        .unwrap_or(0);
+    long(value as i64)
 }
 
 fn file_init_path(vm: &mut Vm<'_>, this: ObjectRef, path: String) -> Result<Value, VmError> {
@@ -754,7 +850,7 @@ fn fs_set_modified(vm: &mut Vm<'_>, path: &str, millis: i64) -> bool {
 // java.io.FileInputStream
 // -------------------------------------------------------------------------------------------
 
-const FILE_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const FILE_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -845,6 +941,15 @@ const FILE_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
                 position as i64,
                 false,
             )?)
+        },
+    ),
+    method(
+        "getFD",
+        "()Ljava/io/FileDescriptor;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/io/FileDescriptor")?;
+            object(vm.new_instance(class)?)
         },
     ),
 ];
@@ -990,7 +1095,7 @@ fn file_input_read_into(
 // java.io.FileOutputStream
 // -------------------------------------------------------------------------------------------
 
-const FILE_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const FILE_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -1050,6 +1155,15 @@ const FILE_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
                 .unwrap_or_default();
             let position = fs_metadata(vm, &path).map_or(0, |metadata| metadata.len as i64);
             object(crate::nio::new_file_channel(vm, &path, position, true)?)
+        },
+    ),
+    method(
+        "getFD",
+        "()Ljava/io/FileDescriptor;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/io/FileDescriptor")?;
+            object(vm.new_instance(class)?)
         },
     ),
 ];

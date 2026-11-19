@@ -199,6 +199,24 @@ impl oxjvm_platform::FileSystem for PassthroughFileSystem {
             false
         }
     }
+
+    fn disk_space(&mut self, path: &str) -> Option<(u64, u64, u64)> {
+        #[cfg(unix)]
+        {
+            let stat = rustix::fs::statvfs(Self::path(path)).ok()?;
+            let block = stat.f_frsize;
+            Some((
+                stat.f_blocks * block,
+                stat.f_bfree * block,
+                stat.f_bavail * block,
+            ))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+            None
+        }
+    }
 }
 
 struct StdHost {

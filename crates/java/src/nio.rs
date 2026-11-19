@@ -962,7 +962,7 @@ pub(crate) const POSIX_FILE_PERMISSIONS: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 60] = [
+const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 61] = [
     method(
         "getPosixFilePermissions",
         "(Ljava/nio/file/Path;[Ljava/nio/file/LinkOption;)Ljava/util/Set;",
@@ -1865,6 +1865,16 @@ const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 60] = [
             object(ref_arg(args, 0))
         },
     ),
+    method(
+        "isHidden",
+        "(Ljava/nio/file/Path;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            let name = path.rsplit('/').next().unwrap_or("");
+            boolean(name.starts_with('.'))
+        },
+    ),
 ];
 
 fn read_text_file(vm: &mut Vm<'_>, path: &str) -> Result<String, VmError> {
@@ -2430,7 +2440,7 @@ pub(crate) const FILE_ATTRIBUTE: oxjvm_vm::NativeClass = class(
 // FileTime / BasicFileAttributes / FileVisitOption
 // -------------------------------------------------------------------------------------------
 
-const FILE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const FILE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     method("<init>", "(J)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         if let Some((declaring, field)) = vm.find_field_opt(vm.class_of(this), "millis", "J") {
@@ -2458,6 +2468,23 @@ const FILE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
                 .unwrap_or(0),
         )
     }),
+    method(
+        "toInstant",
+        "()Ljava/time/Instant;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let millis = vm
+                .read_instance_long_named(this, class, "millis", "J")
+                .unwrap_or(0);
+            let instant = vm.resolve_class("java/time/Instant")?;
+            let (declaring, method) = vm
+                .find_method(instant, "ofEpochMilli", "(J)Ljava/time/Instant;")
+                .ok_or_else(|| VmError::internal("Instant.ofEpochMilli"))?;
+            vm.invoke_method(declaring, method, vec![Value::Long(millis)])
+        },
+    ),
     method(
         "toString",
         "()Ljava/lang/String;",

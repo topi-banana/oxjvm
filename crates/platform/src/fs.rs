@@ -110,6 +110,11 @@ pub trait FileSystem {
     fn set_mode(&mut self, _path: &str, _mode: u32) -> bool {
         false
     }
+
+    /// `(total, free, usable)` bytes for the filesystem holding `path`.
+    fn disk_space(&mut self, _path: &str) -> Option<(u64, u64, u64)> {
+        None
+    }
 }
 
 /// A [`FileSystem`] with every operation denied.

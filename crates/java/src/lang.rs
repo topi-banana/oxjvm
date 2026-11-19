@@ -239,7 +239,7 @@ pub(crate) const OBJECT: oxjvm_vm::NativeClass = class(
 // Class
 // -------------------------------------------------------------------------------------------
 
-const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 67] = [
+const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 69] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -682,6 +682,18 @@ const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 67] = [
                 None => object(ObjectRef::NULL),
             }
         },
+    ),
+    method(
+        "getEnclosingMethod",
+        "()Ljava/lang/reflect/Method;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "getEnclosingConstructor",
+        "()Ljava/lang/reflect/Constructor;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
     ),
     method(
         "getDeclaringClass",

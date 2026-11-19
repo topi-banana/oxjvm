@@ -67,7 +67,7 @@ fn call_int_consumer(vm: &mut Vm<'_>, consumer: ObjectRef, value: i32) -> Result
     Ok(())
 }
 
-const INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
+const INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
     method(
         "of",
         "(I)Ljava/util/stream/IntStream;",
@@ -250,6 +250,59 @@ const INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         "()Ljava/util/PrimitiveIterator$OfInt;",
         ACC_PUBLIC | ACC_ABSTRACT,
         abstract_method_pub,
+    ),
+    method(
+        "reduce",
+        "(ILjava/util/function/IntBinaryOperator;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let mut accumulator = crate::int_arg(args, 1);
+            let operator = ref_arg(args, 2);
+            for value in int_elements(vm, receiver(args)) {
+                let (class, method) = vm.resolve_virtual_method(operator, "applyAsInt", "(II)I")?;
+                accumulator = vm
+                    .invoke_method(
+                        class,
+                        method,
+                        vec![
+                            Value::Ref(operator),
+                            Value::Int(accumulator),
+                            Value::Int(value),
+                        ],
+                    )?
+                    .as_int();
+            }
+            int(accumulator)
+        },
+    ),
+    method(
+        "reduce",
+        "(Ljava/util/function/IntBinaryOperator;)Ljava/util/OptionalInt;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let operator = ref_arg(args, 1);
+            let mut result: Option<i32> = None;
+            for value in int_elements(vm, receiver(args)) {
+                result = Some(match result {
+                    None => value,
+                    Some(accumulator) => {
+                        let (class, method) =
+                            vm.resolve_virtual_method(operator, "applyAsInt", "(II)I")?;
+                        vm.invoke_method(
+                            class,
+                            method,
+                            vec![
+                                Value::Ref(operator),
+                                Value::Int(accumulator),
+                                Value::Int(value),
+                            ],
+                        )?
+                        .as_int()
+                    }
+                });
+            }
+            crate::primitive_stream::optional_int(vm, result)
+        },
     ),
 ];
 

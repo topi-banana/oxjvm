@@ -12,6 +12,9 @@ oxjvm-platform = { path = "../platform", features = ["threads"] }
 oxjvm-vm = { path = "../vm", features = ["std"] }
 oxjvm-java = { path = "../java", features = ["std"] }
 
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "0.38", features = ["fs"] }
+
 [lints]
 workspace = true
 

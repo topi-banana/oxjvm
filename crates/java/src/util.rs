@@ -10855,18 +10855,32 @@ fn properties_get_property(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let value = properties_map_call(
-        vm,
-        receiver(args),
-        "get",
-        "(Ljava/lang/Object;)Ljava/lang/Object;",
-        vec![Value::Ref(ref_arg(args, 1))],
-    )?;
-    let reference = value.as_ref();
-    if !reference.is_null() && vm.string_value(reference).is_some() {
-        object(reference)
-    } else {
-        object(ObjectRef::NULL)
+    let key = ref_arg(args, 1);
+    let mut current = receiver(args);
+    loop {
+        let value = properties_map_call(
+            vm,
+            current,
+            "get",
+            "(Ljava/lang/Object;)Ljava/lang/Object;",
+            vec![Value::Ref(key)],
+        )?;
+        let reference = value.as_ref();
+        if !reference.is_null() && vm.string_value(reference).is_some() {
+            return object(reference);
+        }
+        let defaults = vm
+            .read_ref_field(
+                current,
+                vm.class_of(current),
+                "defaults",
+                "Ljava/util/Properties;",
+            )
+            .unwrap_or(ObjectRef::NULL);
+        if defaults.is_null() {
+            return object(ObjectRef::NULL);
+        }
+        current = defaults;
     }
 }
 
@@ -10875,18 +10889,32 @@ fn properties_get_property_or_default(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let value = properties_map_call(
-        vm,
-        receiver(args),
-        "get",
-        "(Ljava/lang/Object;)Ljava/lang/Object;",
-        vec![Value::Ref(ref_arg(args, 1))],
-    )?;
-    let reference = value.as_ref();
-    if !reference.is_null() && vm.string_value(reference).is_some() {
-        object(reference)
-    } else {
-        object(ref_arg(args, 2))
+    let key = ref_arg(args, 1);
+    let mut current = receiver(args);
+    loop {
+        let value = properties_map_call(
+            vm,
+            current,
+            "get",
+            "(Ljava/lang/Object;)Ljava/lang/Object;",
+            vec![Value::Ref(key)],
+        )?;
+        let reference = value.as_ref();
+        if !reference.is_null() && vm.string_value(reference).is_some() {
+            return object(reference);
+        }
+        let defaults = vm
+            .read_ref_field(
+                current,
+                vm.class_of(current),
+                "defaults",
+                "Ljava/util/Properties;",
+            )
+            .unwrap_or(ObjectRef::NULL);
+        if defaults.is_null() {
+            return object(ref_arg(args, 2));
+        }
+        current = defaults;
     }
 }
 
@@ -13136,7 +13164,7 @@ fn hash_set_map(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
         .unwrap_or(ObjectRef::NULL)
 }
 
-fn new_hash_map(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+pub(crate) fn new_hash_map(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class("java/util/HashMap")?;
     let instance = vm.new_instance(class)?;
     let (declaring, ctor) = vm

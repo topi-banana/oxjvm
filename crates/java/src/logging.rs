@@ -286,7 +286,8 @@ const LOG_RECORD_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
                 ref_arg(args, 1),
             );
             record_set_ref(vm, this, "message", "Ljava/lang/String;", ref_arg(args, 2));
-            crate::lang::write_long_field(vm, this, "millis", 0);
+            let millis = vm.host_time_millis();
+            crate::lang::write_long_field(vm, this, "millis", millis);
             void()
         },
     ),
