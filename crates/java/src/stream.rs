@@ -2175,10 +2175,97 @@ pub(crate) const SPLITERATOR: oxjvm_vm::NativeClass = class(
     None,
 );
 
+const SPLITERATOR_OF_PRIMITIVE_METHODS: [oxjvm_vm::NativeMethodDef; 0] = [];
+
+pub(crate) const SPLITERATOR_OF_PRIMITIVE: oxjvm_vm::NativeClass = class(
+    "java/util/Spliterator$OfPrimitive",
+    Some("java/lang/Object"),
+    &["java/util/Spliterator"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &SPLITERATOR_OF_PRIMITIVE_METHODS,
+    None,
+);
+
+const SPLITERATOR_OF_INT_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "tryAdvance",
+        "(Ljava/util/function/IntConsumer;)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "forEachRemaining",
+        "(Ljava/util/function/IntConsumer;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+];
+
+pub(crate) const SPLITERATOR_OF_INT: oxjvm_vm::NativeClass = class(
+    "java/util/Spliterator$OfInt",
+    Some("java/lang/Object"),
+    &["java/util/Spliterator$OfPrimitive"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &SPLITERATOR_OF_INT_METHODS,
+    None,
+);
+
+const SPLITERATOR_OF_LONG_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "tryAdvance",
+        "(Ljava/util/function/LongConsumer;)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "forEachRemaining",
+        "(Ljava/util/function/LongConsumer;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+];
+
+pub(crate) const SPLITERATOR_OF_LONG: oxjvm_vm::NativeClass = class(
+    "java/util/Spliterator$OfLong",
+    Some("java/lang/Object"),
+    &["java/util/Spliterator$OfPrimitive"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &SPLITERATOR_OF_LONG_METHODS,
+    None,
+);
+
+const SPLITERATOR_OF_DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "tryAdvance",
+        "(Ljava/util/function/DoubleConsumer;)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "forEachRemaining",
+        "(Ljava/util/function/DoubleConsumer;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+];
+
+pub(crate) const SPLITERATOR_OF_DOUBLE: oxjvm_vm::NativeClass = class(
+    "java/util/Spliterator$OfDouble",
+    Some("java/lang/Object"),
+    &["java/util/Spliterator$OfPrimitive"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &SPLITERATOR_OF_DOUBLE_METHODS,
+    None,
+);
+
 /// `ORDERED`.
 const SPLITERATOR_ORDERED: i32 = 0x10;
 
-const OJVM_SPLITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const OJVM_SPLITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method(
         "tryAdvance",
         "(Ljava/util/function/Consumer;)Z",
@@ -2235,12 +2322,188 @@ const OJVM_SPLITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         let cursor = crate::lang::read_int_field(vm, this, "cursor").max(0) as usize;
         long((elements.len() - cursor.min(elements.len())) as i64)
     }),
+    method(
+        "tryAdvance",
+        "(Ljava/util/function/IntConsumer;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let elements = stream_elements(vm, this);
+            let cursor = crate::lang::read_int_field(vm, this, "cursor");
+            if cursor < 0 || cursor as usize >= elements.len() {
+                return boolean(false);
+            }
+            let element = elements[cursor as usize];
+            let (value_class, value_method) =
+                vm.resolve_virtual_method(element, "intValue", "()I")?;
+            let value = vm
+                .invoke_method(value_class, value_method, vec![Value::Ref(element)])?
+                .as_int();
+            let consumer = ref_arg(args, 1);
+            let (accept_class, accept) = vm.resolve_virtual_method(consumer, "accept", "(I)V")?;
+            vm.invoke_method(
+                accept_class,
+                accept,
+                vec![Value::Ref(consumer), Value::Int(value)],
+            )?;
+            crate::lang::write_int_field(vm, this, "cursor", cursor + 1);
+            boolean(true)
+        },
+    ),
+    method(
+        "forEachRemaining",
+        "(Ljava/util/function/IntConsumer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let consumer = ref_arg(args, 1);
+            let (accept_class, accept) = vm.resolve_virtual_method(consumer, "accept", "(I)V")?;
+            loop {
+                let elements = stream_elements(vm, this);
+                let cursor = crate::lang::read_int_field(vm, this, "cursor");
+                if cursor < 0 || cursor as usize >= elements.len() {
+                    return void();
+                }
+                let element = elements[cursor as usize];
+                let (value_class, value_method) =
+                    vm.resolve_virtual_method(element, "intValue", "()I")?;
+                let value = vm
+                    .invoke_method(value_class, value_method, vec![Value::Ref(element)])?
+                    .as_int();
+                vm.invoke_method(
+                    accept_class,
+                    accept,
+                    vec![Value::Ref(consumer), Value::Int(value)],
+                )?;
+                crate::lang::write_int_field(vm, this, "cursor", cursor + 1);
+            }
+        },
+    ),
+    method(
+        "tryAdvance",
+        "(Ljava/util/function/LongConsumer;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let elements = stream_elements(vm, this);
+            let cursor = crate::lang::read_int_field(vm, this, "cursor");
+            if cursor < 0 || cursor as usize >= elements.len() {
+                return boolean(false);
+            }
+            let element = elements[cursor as usize];
+            let (value_class, value_method) =
+                vm.resolve_virtual_method(element, "longValue", "()J")?;
+            let value = vm
+                .invoke_method(value_class, value_method, vec![Value::Ref(element)])?
+                .as_long();
+            let consumer = ref_arg(args, 1);
+            let (accept_class, accept) = vm.resolve_virtual_method(consumer, "accept", "(J)V")?;
+            vm.invoke_method(
+                accept_class,
+                accept,
+                vec![Value::Ref(consumer), Value::Long(value)],
+            )?;
+            crate::lang::write_int_field(vm, this, "cursor", cursor + 1);
+            boolean(true)
+        },
+    ),
+    method(
+        "forEachRemaining",
+        "(Ljava/util/function/LongConsumer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let consumer = ref_arg(args, 1);
+            let (accept_class, accept) = vm.resolve_virtual_method(consumer, "accept", "(J)V")?;
+            loop {
+                let elements = stream_elements(vm, this);
+                let cursor = crate::lang::read_int_field(vm, this, "cursor");
+                if cursor < 0 || cursor as usize >= elements.len() {
+                    return void();
+                }
+                let element = elements[cursor as usize];
+                let (value_class, value_method) =
+                    vm.resolve_virtual_method(element, "longValue", "()J")?;
+                let value = vm
+                    .invoke_method(value_class, value_method, vec![Value::Ref(element)])?
+                    .as_long();
+                vm.invoke_method(
+                    accept_class,
+                    accept,
+                    vec![Value::Ref(consumer), Value::Long(value)],
+                )?;
+                crate::lang::write_int_field(vm, this, "cursor", cursor + 1);
+            }
+        },
+    ),
+    method(
+        "tryAdvance",
+        "(Ljava/util/function/DoubleConsumer;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let elements = stream_elements(vm, this);
+            let cursor = crate::lang::read_int_field(vm, this, "cursor");
+            if cursor < 0 || cursor as usize >= elements.len() {
+                return boolean(false);
+            }
+            let element = elements[cursor as usize];
+            let (value_class, value_method) =
+                vm.resolve_virtual_method(element, "doubleValue", "()D")?;
+            let value = vm
+                .invoke_method(value_class, value_method, vec![Value::Ref(element)])?
+                .as_double();
+            let consumer = ref_arg(args, 1);
+            let (accept_class, accept) = vm.resolve_virtual_method(consumer, "accept", "(D)V")?;
+            vm.invoke_method(
+                accept_class,
+                accept,
+                vec![Value::Ref(consumer), Value::Double(value)],
+            )?;
+            crate::lang::write_int_field(vm, this, "cursor", cursor + 1);
+            boolean(true)
+        },
+    ),
+    method(
+        "forEachRemaining",
+        "(Ljava/util/function/DoubleConsumer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let consumer = ref_arg(args, 1);
+            let (accept_class, accept) = vm.resolve_virtual_method(consumer, "accept", "(D)V")?;
+            loop {
+                let elements = stream_elements(vm, this);
+                let cursor = crate::lang::read_int_field(vm, this, "cursor");
+                if cursor < 0 || cursor as usize >= elements.len() {
+                    return void();
+                }
+                let element = elements[cursor as usize];
+                let (value_class, value_method) =
+                    vm.resolve_virtual_method(element, "doubleValue", "()D")?;
+                let value = vm
+                    .invoke_method(value_class, value_method, vec![Value::Ref(element)])?
+                    .as_double();
+                vm.invoke_method(
+                    accept_class,
+                    accept,
+                    vec![Value::Ref(consumer), Value::Double(value)],
+                )?;
+                crate::lang::write_int_field(vm, this, "cursor", cursor + 1);
+            }
+        },
+    ),
 ];
 
 pub(crate) const OJVM_SPLITERATOR: oxjvm_vm::NativeClass = class(
     "java/util/OjvmSpliterator",
     Some("java/lang/Object"),
-    &["java/util/Spliterator"],
+    &[
+        "java/util/Spliterator",
+        "java/util/Spliterator$OfInt",
+        "java/util/Spliterator$OfLong",
+        "java/util/Spliterator$OfDouble",
+    ],
     ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
     &[
         field("elements", "[Ljava/lang/Object;", ACC_PRIVATE, None),
@@ -2294,5 +2557,301 @@ pub(crate) const STREAM_SUPPORT: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC | ACC_FINAL,
     &[],
     &STREAM_SUPPORT_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// java.util.Spliterators: static factories backed by OjvmSpliterator.
+// -------------------------------------------------------------------------------------------
+
+fn drain_iterator(vm: &mut Vm<'_>, iterator: ObjectRef) -> Result<Vec<ObjectRef>, VmError> {
+    let (has_class, has_next) = vm.resolve_virtual_method(iterator, "hasNext", "()Z")?;
+    let (next_class, next) = vm.resolve_virtual_method(iterator, "next", "()Ljava/lang/Object;")?;
+    let mut elements = Vec::new();
+    loop {
+        let more = vm.invoke_method(has_class, has_next, vec![Value::Ref(iterator)])?;
+        if more.as_int() == 0 {
+            break;
+        }
+        let element = vm.invoke_method(next_class, next, vec![Value::Ref(iterator)])?;
+        elements.push(element.as_ref());
+    }
+    Ok(elements)
+}
+
+fn ref_array_elements(vm: &Vm<'_>, array: ObjectRef) -> Vec<ObjectRef> {
+    match vm.heap.get(array).map(|object| &object.data) {
+        Some(oxjvm_vm::ObjectData::Array(oxjvm_vm::ArrayData::Reference(elements))) => {
+            elements.clone()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn spliterator_array_range(
+    vm: &mut Vm<'_>,
+    array: ObjectRef,
+    from: i32,
+    to: i32,
+) -> Result<Value, VmError> {
+    if array.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let elements = ref_array_elements(vm, array);
+    let len = elements.len() as i32;
+    if from < 0 || from > len || to < from || to > len {
+        return Err(vm.throw_new("java/lang/ArrayIndexOutOfBoundsException", None));
+    }
+    object(spliterator_from(vm, &elements[from as usize..to as usize])?)
+}
+
+const SPLITERATORS_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+    method(
+        "spliteratorUnknownSize",
+        "(Ljava/util/Iterator;I)Ljava/util/Spliterator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let iterator = ref_arg(args, 0);
+            if iterator.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let elements = drain_iterator(vm, iterator)?;
+            object(spliterator_from(vm, &elements)?)
+        },
+    ),
+    method(
+        "spliterator",
+        "([Ljava/lang/Object;I)Ljava/util/Spliterator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            let len = vm.array_length(array)? as i32;
+            spliterator_array_range(vm, array, 0, len)
+        },
+    ),
+    method(
+        "spliterator",
+        "([Ljava/lang/Object;III)Ljava/util/Spliterator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            spliterator_array_range(
+                vm,
+                ref_arg(args, 0),
+                crate::int_arg(args, 1),
+                crate::int_arg(args, 2),
+            )
+        },
+    ),
+    method(
+        "spliterator",
+        "([II)Ljava/util/Spliterator$OfInt;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            let len = vm.array_length(array)? as i32;
+            spliterator_int_range(vm, array, 0, len)
+        },
+    ),
+    method(
+        "spliterator",
+        "([IIII)Ljava/util/Spliterator$OfInt;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            spliterator_int_range(
+                vm,
+                ref_arg(args, 0),
+                crate::int_arg(args, 1),
+                crate::int_arg(args, 2),
+            )
+        },
+    ),
+    method(
+        "spliterator",
+        "([JI)Ljava/util/Spliterator$OfLong;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            let len = vm.array_length(array)? as i32;
+            spliterator_long_range(vm, array, 0, len)
+        },
+    ),
+    method(
+        "spliterator",
+        "([JII)Ljava/util/Spliterator$OfLong;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            spliterator_long_range(
+                vm,
+                ref_arg(args, 0),
+                crate::int_arg(args, 1),
+                crate::int_arg(args, 2),
+            )
+        },
+    ),
+    method(
+        "spliterator",
+        "([DI)Ljava/util/Spliterator$OfDouble;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            let len = vm.array_length(array)? as i32;
+            spliterator_double_range(vm, array, 0, len)
+        },
+    ),
+    method(
+        "spliterator",
+        "([DII)Ljava/util/Spliterator$OfDouble;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            spliterator_double_range(
+                vm,
+                ref_arg(args, 0),
+                crate::int_arg(args, 1),
+                crate::int_arg(args, 2),
+            )
+        },
+    ),
+    method(
+        "emptySpliterator",
+        "()Ljava/util/Spliterator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(spliterator_from(vm, &[])?),
+    ),
+    method(
+        "iterator",
+        "(Ljava/util/Spliterator;)Ljava/util/Iterator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let spliterator = ref_arg(args, 0);
+            if spliterator.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let list = crate::util::new_array_list(vm)?;
+            let collector_class = vm.resolve_class("java/util/OjvmSpliteratorCollector")?;
+            let collector = vm.new_instance(collector_class)?;
+            let (declaring, field) =
+                vm.find_field(collector_class, "list", "Ljava/util/ArrayList;")?;
+            vm.set_instance_ref(collector, declaring, field, list);
+            let (class, method) = vm.resolve_virtual_method(
+                spliterator,
+                "forEachRemaining",
+                "(Ljava/util/function/Consumer;)V",
+            )?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![Value::Ref(spliterator), Value::Ref(collector)],
+            )?;
+            let (iter_class, iter_method) =
+                vm.resolve_virtual_method(list, "iterator", "()Ljava/util/Iterator;")?;
+            object(
+                vm.invoke_method(iter_class, iter_method, vec![Value::Ref(list)])?
+                    .as_ref(),
+            )
+        },
+    ),
+];
+
+fn spliterator_int_range(
+    vm: &mut Vm<'_>,
+    array: ObjectRef,
+    from: i32,
+    to: i32,
+) -> Result<Value, VmError> {
+    if array.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let len = vm.array_length(array)? as i32;
+    if from < 0 || from > len || to < from || to > len {
+        return Err(vm.throw_new("java/lang/ArrayIndexOutOfBoundsException", None));
+    }
+    let mut elements = Vec::new();
+    for i in from..to {
+        let value = vm.array_get(array, i)?.as_int();
+        elements.push(crate::boxed::boxed_int(vm, value)?.as_ref());
+    }
+    object(spliterator_from(vm, &elements)?)
+}
+
+fn spliterator_long_range(
+    vm: &mut Vm<'_>,
+    array: ObjectRef,
+    from: i32,
+    to: i32,
+) -> Result<Value, VmError> {
+    if array.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let len = vm.array_length(array)? as i32;
+    if from < 0 || from > len || to < from || to > len {
+        return Err(vm.throw_new("java/lang/ArrayIndexOutOfBoundsException", None));
+    }
+    let mut elements = Vec::new();
+    for i in from..to {
+        let value = vm.array_get(array, i)?.as_long();
+        elements.push(crate::boxed::boxed_long(vm, value)?.as_ref());
+    }
+    object(spliterator_from(vm, &elements)?)
+}
+
+fn spliterator_double_range(
+    vm: &mut Vm<'_>,
+    array: ObjectRef,
+    from: i32,
+    to: i32,
+) -> Result<Value, VmError> {
+    if array.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let len = vm.array_length(array)? as i32;
+    if from < 0 || from > len || to < from || to > len {
+        return Err(vm.throw_new("java/lang/ArrayIndexOutOfBoundsException", None));
+    }
+    let mut elements = Vec::new();
+    for i in from..to {
+        let value = vm.array_get(array, i)?.as_double();
+        elements.push(crate::boxed::boxed_double(vm, value)?.as_ref());
+    }
+    object(spliterator_from(vm, &elements)?)
+}
+
+pub(crate) const SPLITERATORS: oxjvm_vm::NativeClass = class(
+    "java/util/Spliterators",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &SPLITERATORS_METHODS,
+    None,
+);
+
+/// Synthetic Consumer that appends each element to a held ArrayList; used to
+/// snapshot a Spliterator into an Iterator.
+const SPLITERATOR_COLLECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "accept",
+    "(Ljava/lang/Object;)V",
+    ACC_PUBLIC,
+    |vm, _, args| {
+        let this = receiver(args);
+        let list = vm
+            .read_ref_field(this, vm.class_of(this), "list", "Ljava/util/ArrayList;")
+            .unwrap_or(ObjectRef::NULL);
+        let (class, method) = vm.resolve_virtual_method(list, "add", "(Ljava/lang/Object;)Z")?;
+        vm.invoke_method(
+            class,
+            method,
+            vec![Value::Ref(list), Value::Ref(ref_arg(args, 1))],
+        )?;
+        void()
+    },
+)];
+
+pub(crate) const SPLITERATOR_COLLECTOR: oxjvm_vm::NativeClass = class(
+    "java/util/OjvmSpliteratorCollector",
+    Some("java/lang/Object"),
+    &["java/util/function/Consumer"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[field("list", "Ljava/util/ArrayList;", ACC_PRIVATE, None)],
+    &SPLITERATOR_COLLECTOR_METHODS,
     None,
 );
