@@ -20,7 +20,7 @@ use crate::{
 // MethodType
 // -------------------------------------------------------------------------------------------
 
-const METHOD_TYPE_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
+const METHOD_TYPE_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
     method(
         "descriptorString",
         "()Ljava/lang/String;",
@@ -326,6 +326,29 @@ const METHOD_TYPE_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         },
     ),
     method(
+        "insertParameterTypes",
+        "(I[Ljava/lang/Class;)Ljava/lang/invoke/MethodType;",
+        ACC_PUBLIC | ACC_VARARGS,
+        |vm, _, args| {
+            let descriptor = vm.method_type_of(receiver(args)).unwrap_or_default();
+            let mut types = descriptor_types(&descriptor);
+            let position = crate::int_arg(args, 1).clamp(0, types.len() as i32) as usize;
+            let array = ref_arg(args, 2);
+            let length = vm.array_length(array)?;
+            for index in 0..length {
+                let value = vm.array_get(array, index as i32)?;
+                let class = class_argument(vm, value.as_ref())?;
+                types.insert(position + index, class_field_descriptor(vm, class));
+            }
+            let result = alloc::format!(
+                "({}){}",
+                types.concat(),
+                descriptor.split_once(')').map_or("V", |(_, r)| r)
+            );
+            object(vm.make_method_type(&result)?)
+        },
+    ),
+    method(
         "dropParameterTypes",
         "(II)Ljava/lang/invoke/MethodType;",
         ACC_PUBLIC,
@@ -508,6 +531,7 @@ const METHOD_HANDLE_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
                 Some(MethodHandleValue::Setter { .. })
                 | Some(MethodHandleValue::StaticSetter { .. }) => "MethodHandle(setter)",
                 Some(MethodHandleValue::Bound { .. }) => "MethodHandle(bound)",
+                Some(MethodHandleValue::Inserted { .. }) => "MethodHandle(inserted)",
                 Some(MethodHandleValue::Identity { .. }) => "MethodHandle(identity)",
                 None => "MethodHandle",
             };
@@ -574,7 +598,7 @@ pub(crate) const METHOD_HANDLE: oxjvm_vm::NativeClass = class(
 // MethodHandles + Lookup
 // -------------------------------------------------------------------------------------------
 
-const METHOD_HANDLES_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+const METHOD_HANDLES_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
     method(
         "lookup",
         "()Ljava/lang/invoke/MethodHandles$Lookup;",
@@ -686,6 +710,29 @@ const METHOD_HANDLES_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
         "(Ljava/lang/invoke/MethodHandle;I[Ljava/lang/Class;)Ljava/lang/invoke/MethodHandle;",
         ACC_PUBLIC | ACC_STATIC,
         |_, _, args| object(ref_arg(args, 0)),
+    ),
+    method(
+        "insertArguments",
+        "(Ljava/lang/invoke/MethodHandle;I[Ljava/lang/Object;)Ljava/lang/invoke/MethodHandle;",
+        ACC_PUBLIC | ACC_STATIC | ACC_VARARGS,
+        |vm, _, args| {
+            let target = vm
+                .method_handle_of(ref_arg(args, 0))
+                .ok_or_else(|| VmError::internal("not a handle"))?;
+            let position = crate::int_arg(args, 1).max(0) as usize;
+            let array = ref_arg(args, 2);
+            let length = vm.array_length(array)?;
+            let mut leading = Vec::new();
+            for index in 0..length {
+                leading.push(vm.array_get(array, index as i32)?);
+            }
+            let handle = MethodHandleValue::Inserted {
+                position,
+                leading,
+                target: alloc::boxed::Box::new(target),
+            };
+            object(vm.make_method_handle(handle)?)
+        },
     ),
 ];
 

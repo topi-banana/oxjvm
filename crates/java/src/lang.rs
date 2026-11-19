@@ -239,7 +239,7 @@ pub(crate) const OBJECT: oxjvm_vm::NativeClass = class(
 // Class
 // -------------------------------------------------------------------------------------------
 
-const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 65] = [
+const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 67] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -708,6 +708,13 @@ const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 65] = [
             let class_object = vm.class_object(class)?;
             crate::optional::optional_new(vm, class_object)
         },
+    ),
+    method("isSealed", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method(
+        "getPermittedSubclasses",
+        "()[Ljava/lang/Class;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
     ),
     method(
         "getTypeParameters",

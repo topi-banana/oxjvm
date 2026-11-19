@@ -22,7 +22,7 @@ fn crc32(bytes: &[u8]) -> u32 {
     !crc
 }
 
-const ZIP_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
+const ZIP_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -82,6 +82,46 @@ const ZIP_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
     method("getTime", "()J", ACC_PUBLIC, |vm, _, args| {
         long(read_long_field(vm, receiver(args), "time"))
     }),
+    method(
+        "setTimeLocal",
+        "(Ljava/time/LocalDateTime;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let time = ref_arg(args, 1);
+            if time.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let zone = crate::time::system_default_zone(vm)?;
+            let offset = i64::from(crate::time::zone_offset_seconds(vm, zone));
+            let epoch_day = read_long_field(vm, time, "epochDay");
+            let nano_of_day = read_long_field(vm, time, "nanoOfDay");
+            let epoch_second = epoch_day * 86_400 + nano_of_day / 1_000_000_000 - offset;
+            let millis = epoch_second * 1000 + nano_of_day % 1_000_000_000 / 1_000_000;
+            write_long_field(vm, this, "time", millis);
+            void()
+        },
+    ),
+    method(
+        "getTimeLocal",
+        "()Ljava/time/LocalDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let time = read_long_field(vm, this, "time");
+            if time == -1 {
+                // The JDK decodes the unset DOS time (-1) and fails on month 15.
+                return Err(vm.throw_new(
+                    "java/time/DateTimeException",
+                    Some("Invalid value for MonthOfYear (valid values 1 - 12): 15"),
+                ));
+            }
+            let zone = crate::time::system_default_zone(vm)?;
+            object(crate::time::local_date_time_of_epoch_millis(
+                vm, time, zone,
+            )?)
+        },
+    ),
     method("setTime", "(J)V", ACC_PUBLIC, |vm, _, args| {
         write_long_field(vm, receiver(args), "time", crate::long_arg(args, 1));
         void()

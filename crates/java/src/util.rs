@@ -10185,6 +10185,24 @@ pub(crate) const NAVIGABLE_MAP: oxjvm_vm::NativeClass = class(
             ACC_PUBLIC | ACC_ABSTRACT,
             crate::lang::abstract_method_pub,
         ),
+        method(
+            "headMap",
+            "(Ljava/lang/Object;Z)Ljava/util/NavigableMap;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+        method(
+            "tailMap",
+            "(Ljava/lang/Object;Z)Ljava/util/NavigableMap;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
+        method(
+            "subMap",
+            "(Ljava/lang/Object;ZLjava/lang/Object;Z)Ljava/util/NavigableMap;",
+            ACC_PUBLIC | ACC_ABSTRACT,
+            crate::lang::abstract_method_pub,
+        ),
     ],
     None,
 );
@@ -14171,7 +14189,7 @@ fn hashtable_map(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
     hash_set_map(vm, this)
 }
 
-const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
+const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let map = new_hash_map(vm)?;
         let this = receiver(args);
@@ -14365,6 +14383,36 @@ const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
         |vm, _, args| {
             let map = hashtable_map(vm, receiver(args));
             hash_map_call(vm, map, "toString", "()Ljava/lang/String;", &[])
+        },
+    ),
+    method(
+        "containsValue",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = hashtable_map(vm, receiver(args));
+            hash_map_call(
+                vm,
+                map,
+                "containsValue",
+                "(Ljava/lang/Object;)Z",
+                &[args[1]],
+            )
+        },
+    ),
+    method(
+        "contains",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = hashtable_map(vm, receiver(args));
+            hash_map_call(
+                vm,
+                map,
+                "containsValue",
+                "(Ljava/lang/Object;)Z",
+                &[args[1]],
+            )
         },
     ),
 ];

@@ -2176,6 +2176,37 @@ impl<'a> Vm<'a> {
                 call_args.extend_from_slice(args);
                 self.invoke_handle(target, &call_args)
             }
+            MethodHandleValue::Inserted {
+                position,
+                leading,
+                target,
+            } => {
+                let pos = (*position).min(args.len());
+                let mut call_args = Vec::with_capacity(args.len() + leading.len());
+                call_args.extend_from_slice(&args[..pos]);
+                call_args.extend_from_slice(leading);
+                call_args.extend_from_slice(&args[pos..]);
+                // Inserted values arrive boxed (they come from an `Object[]`);
+                // adapt them to the target's primitive parameter types.
+                if matches!(
+                    **target,
+                    MethodHandleValue::Static { .. }
+                        | MethodHandleValue::Virtual { .. }
+                        | MethodHandleValue::Special { .. }
+                        | MethodHandleValue::New { .. }
+                ) {
+                    if let Some((params, _)) = handle_method_type(self, target) {
+                        for (index, param) in params.iter().enumerate() {
+                            if let FieldType::Base(base) = param {
+                                if let Some(value) = call_args.get_mut(index) {
+                                    *value = coerce_handle_arg(self, *base, *value)?;
+                                }
+                            }
+                        }
+                    }
+                }
+                self.invoke_handle(target, &call_args)
+            }
             MethodHandleValue::Identity { class } => {
                 let value = args.first().copied().unwrap_or(Value::Ref(ObjectRef::NULL));
                 if value.is_null_ref() || self.is_instance(value.as_ref(), *class) {
@@ -2330,6 +2361,27 @@ fn box_primitive(vm: &mut Vm<'_>, base: BaseType, value: Value) -> Result<Value,
         .find_method(class, "valueOf", descriptor)
         .ok_or_else(|| VmError::internal("boxing valueOf missing"))?;
     vm.invoke_method(declaring, method, vec![value])
+}
+
+/// Adapt an inserted handle argument to a primitive parameter: unbox a
+/// wrapper reference, then widen the primitive representation if needed.
+fn coerce_handle_arg(vm: &mut Vm<'_>, base: BaseType, value: Value) -> Result<Value, VmError> {
+    let mut value = value;
+    if let Value::Ref(object) = value {
+        if object.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        value = unbox_primitive(vm, base, value)?;
+    }
+    Ok(match (base, value) {
+        (BaseType::Long, Value::Int(v)) => Value::Long(i64::from(v)),
+        (BaseType::Float, Value::Int(v)) => Value::Float(v as f32),
+        (BaseType::Float, Value::Long(v)) => Value::Float(v as f32),
+        (BaseType::Double, Value::Int(v)) => Value::Double(f64::from(v)),
+        (BaseType::Double, Value::Long(v)) => Value::Double(v as f64),
+        (BaseType::Double, Value::Float(v)) => Value::Double(f64::from(v)),
+        (_, v) => v,
+    })
 }
 
 /// `value.xxxValue()` for the SAM's reference-to-primitive adaptation.

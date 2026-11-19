@@ -1154,7 +1154,7 @@ const COMPLETABLE_FUTURE_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
             if first.is_null() {
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
-            object(completable_result(vm, first))
+            completable_completed(vm, completable_result(vm, first))
         },
     ),
     method(

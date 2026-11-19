@@ -1244,6 +1244,7 @@ pub(crate) const MEMBER: oxjvm_vm::NativeClass = class(
             ACC_PUBLIC | ACC_ABSTRACT,
             crate::lang::abstract_method_pub,
         ),
+        method("isSynthetic", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
     ],
     None,
 );
@@ -3472,7 +3473,7 @@ fn parameter_annotations_by_type(
     crate::annotation::typed_annotation_array(vm, requested, &found)
 }
 
-const PARAMETER_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+const PARAMETER_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -3484,6 +3485,12 @@ const PARAMETER_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         },
     ),
     method("getModifiers", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method(
+        "accessFlags",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC,
+        |vm, _, _| object(crate::util::hash_set_from(vm, &[])?),
+    ),
     method(
         "getDeclaringExecutable",
         "()Ljava/lang/reflect/Executable;",

@@ -433,7 +433,7 @@ impl ArrayData {
 }
 
 /// The value of a `java.lang.invoke.MethodHandle`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MethodHandleValue {
     /// A direct static method handle.
     Static {
@@ -500,6 +500,15 @@ pub enum MethodHandleValue {
         /// The underlying target.
         target: alloc::boxed::Box<MethodHandleValue>,
     },
+    /// A handle with arguments inserted at a fixed position (`insertArguments`).
+    Inserted {
+        /// The argument position the values are inserted at.
+        position: usize,
+        /// The captured values.
+        leading: Vec<Value>,
+        /// The underlying target.
+        target: alloc::boxed::Box<MethodHandleValue>,
+    },
     /// An identity cast handle.
     Identity {
         /// The class the value is cast to.
@@ -523,6 +532,13 @@ impl MethodHandleValue {
             | Self::Identity { .. } => 0,
             Self::Bound { target, .. } => {
                 size_of::<MethodHandleValue>() as u64 + target.payload_bytes()
+            }
+            Self::Inserted {
+                leading, target, ..
+            } => {
+                (leading.len() * size_of::<Value>()) as u64
+                    + size_of::<MethodHandleValue>() as u64
+                    + target.payload_bytes()
             }
         }
     }

@@ -3998,7 +3998,7 @@ const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
 ];
 
 /// The fixed offset (seconds) of a `ZoneId`/`ZoneOffset` argument (region transitions not modelled).
-fn zone_offset_seconds(vm: &Vm<'_>, zone: ObjectRef) -> i32 {
+pub(crate) fn zone_offset_seconds(vm: &Vm<'_>, zone: ObjectRef) -> i32 {
     let class = vm.class_of(zone);
     vm.find_field_opt(class, "totalSeconds", "I")
         .and_then(|(declaring, field)| vm.read_instance_int(zone, declaring, field))
@@ -4950,7 +4950,31 @@ fn zone_rules_offset(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError>
     object(crate::lang::zone_offset_new(vm, total)?)
 }
 
-const ZONE_RULES_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+/// The system default zone (`ZoneId.systemDefault()`).
+pub(crate) fn system_default_zone(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/time/ZoneId")?;
+    let (declaring, method) = vm
+        .find_method(class, "systemDefault", "()Ljava/time/ZoneId;")
+        .ok_or_else(|| VmError::internal("ZoneId.systemDefault"))?;
+    Ok(vm.invoke_method(declaring, method, vec![])?.as_ref())
+}
+
+/// `LocalDateTime.ofInstant(Instant.ofEpochMilli(millis), zone)` for callers outside this module.
+pub(crate) fn local_date_time_of_epoch_millis(
+    vm: &mut Vm<'_>,
+    millis: i64,
+    zone: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    let offset = i64::from(zone_offset_seconds(vm, zone));
+    let epoch_second = millis.div_euclid(1000);
+    let nano = millis.rem_euclid(1000) * 1_000_000;
+    let local_second = epoch_second.saturating_add(offset);
+    let epoch_day = local_second.div_euclid(86_400);
+    let nano_of_day = local_second.rem_euclid(86_400) * 1_000_000_000 + nano;
+    local_date_time_new(vm, epoch_day, nano_of_day)
+}
+
+const ZONE_RULES_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     method(
         "getOffset",
         "(Ljava/time/Instant;)Ljava/time/ZoneOffset;",
@@ -4972,6 +4996,16 @@ const ZONE_RULES_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
     method("isFixedOffset", "()Z", ACC_PUBLIC, |_, _, _| {
         crate::boolean(true)
     }),
+    method(
+        "getValidOffsets",
+        "(Ljava/time/LocalDateTime;)Ljava/util/List;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let total = read_int_field(vm, receiver(args), "totalSeconds");
+            let offset = crate::lang::zone_offset_new(vm, total)?;
+            object(crate::util::array_list_from(vm, &[offset])?)
+        },
+    ),
 ];
 
 /// `java.time.zone.ZoneRules`: modelled as a single fixed offset (transition data not modelled).

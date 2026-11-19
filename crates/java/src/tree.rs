@@ -1032,16 +1032,30 @@ fn tree_map_range(
     from: Option<ObjectRef>,
     to: Option<ObjectRef>,
 ) -> Result<ObjectRef, VmError> {
+    tree_map_range_incl(vm, this, from, true, to, false)
+}
+
+/// Like [`tree_map_range`], with explicit bound inclusivity.
+fn tree_map_range_incl(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    from: Option<ObjectRef>,
+    from_inclusive: bool,
+    to: Option<ObjectRef>,
+    to_inclusive: bool,
+) -> Result<ObjectRef, VmError> {
     let ordering = ordering_of(vm, this);
     let range = new_sorted_map(vm, "java/util/TreeMap", ordering)?;
     for (key, value) in entries(vm, this) {
         if let Some(from) = from {
-            if compare_keys(vm, ordering, key, from)? < 0 {
+            let cmp = compare_keys(vm, ordering, key, from)?;
+            if cmp < 0 || (cmp == 0 && !from_inclusive) {
                 continue;
             }
         }
         if let Some(to) = to {
-            if compare_keys(vm, ordering, key, to)? >= 0 {
+            let cmp = compare_keys(vm, ordering, key, to)?;
+            if cmp > 0 || (cmp == 0 && !to_inclusive) {
                 continue;
             }
         }
@@ -1131,7 +1145,7 @@ fn tree_map_descending_key_set(
     object(set)
 }
 
-const TREE_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 63] = [
+const TREE_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 66] = [
     method("<init>", "()V", ACC_PUBLIC, tree_map_init),
     method(
         "<init>",
@@ -1343,6 +1357,54 @@ const TREE_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 63] = [
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/NavigableMap;",
         ACC_PUBLIC,
         tree_map_sub_map,
+    ),
+    method(
+        "headMap",
+        "(Ljava/lang/Object;Z)Ljava/util/NavigableMap;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let range = tree_map_range_incl(
+                vm,
+                receiver(args),
+                None,
+                true,
+                Some(ref_arg(args, 1)),
+                args[2].as_int() != 0,
+            )?;
+            object(range)
+        },
+    ),
+    method(
+        "tailMap",
+        "(Ljava/lang/Object;Z)Ljava/util/NavigableMap;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let range = tree_map_range_incl(
+                vm,
+                receiver(args),
+                Some(ref_arg(args, 1)),
+                args[2].as_int() != 0,
+                None,
+                false,
+            )?;
+            object(range)
+        },
+    ),
+    method(
+        "subMap",
+        "(Ljava/lang/Object;ZLjava/lang/Object;Z)Ljava/util/NavigableMap;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let range = tree_map_range_incl(
+                vm,
+                receiver(args),
+                Some(ref_arg(args, 1)),
+                args[2].as_int() != 0,
+                Some(ref_arg(args, 3)),
+                args[4].as_int() != 0,
+            )?;
+            object(range)
+        },
     ),
     method(
         "firstEntry",

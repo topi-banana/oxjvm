@@ -905,6 +905,11 @@ fn write_file_position(vm: &mut Vm<'_>, this: ObjectRef, position: usize) {
 
 fn file_create_temp_file(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
     let prefix = string_arg(vm, args[0])?;
+    if prefix.chars().count() < 3 {
+        let message =
+            alloc::format!("Prefix string \"{prefix}\" too short: length must be at least 3");
+        return Err(vm.throw_new("java/lang/IllegalArgumentException", Some(&message)));
+    }
     let suffix = match args.get(1).copied() {
         Some(Value::Ref(reference)) if !reference.is_null() => vm.string_or_empty(reference),
         _ => String::new(),
