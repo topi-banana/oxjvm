@@ -1859,7 +1859,7 @@ const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 71] = [
 
 // The remaining `String.valueOf` overloads and `format` are declared in a second array so the
 // first stays readable; both are concatenated below.
-const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 22] = [
+const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 23] = [
     method(
         "valueOf",
         "(Z)Ljava/lang/String;",
@@ -1978,6 +1978,12 @@ const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 22] = [
         "([BIILjava/nio/charset/Charset;)V",
         ACC_PUBLIC,
         string_init_bytes_range_charset_object,
+    ),
+    method(
+        "<init>",
+        "([BIILjava/lang/String;)V",
+        ACC_PUBLIC,
+        string_init_bytes_range_charset,
     ),
     method(
         "getBytes",
@@ -2274,6 +2280,26 @@ fn string_init_bytes_range_charset_object(
     string_range_check(vm, offset, count, bytes.len())?;
     let slice = &bytes[offset as usize..(offset + count) as usize];
     let name = crate::charset::name_of(vm, ref_arg(args, 4));
+    let units = match crate::charset::canonical_name(&name) {
+        Some(canonical) => crate::charset::decode(slice, canonical),
+        None => String::from_utf8_lossy(slice).encode_utf16().collect(),
+    };
+    write_string_payload(vm, receiver(args), units)?;
+    void()
+}
+
+/// `String(byte[], int, int, String)` — decode a byte range with a charset name.
+fn string_init_bytes_range_charset(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let bytes = byte_array(vm, ref_arg(args, 1))?;
+    let offset = int_arg(args, 2);
+    let count = int_arg(args, 3);
+    string_range_check(vm, offset, count, bytes.len())?;
+    let slice = &bytes[offset as usize..(offset + count) as usize];
+    let name = string_arg(vm, args[4])?;
     let units = match crate::charset::canonical_name(&name) {
         Some(canonical) => crate::charset::decode(slice, canonical),
         None => String::from_utf8_lossy(slice).encode_utf16().collect(),
