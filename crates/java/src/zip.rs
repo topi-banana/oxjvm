@@ -22,7 +22,7 @@ fn crc32(bytes: &[u8]) -> u32 {
     !crc
 }
 
-const ZIP_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
+const ZIP_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -31,6 +31,7 @@ const ZIP_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
             let name = string_arg(vm, args[1])?;
             let this = receiver(args);
             write_string_field(vm, this, "name", &name);
+            write_long_field(vm, this, "time", -1);
             void()
         },
     ),
@@ -85,6 +86,40 @@ const ZIP_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
         write_long_field(vm, receiver(args), "time", crate::long_arg(args, 1));
         void()
     }),
+    method(
+        "getLastModifiedTime",
+        "()Ljava/nio/file/attribute/FileTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let time = read_long_field(vm, receiver(args), "time");
+            if time == -1 {
+                return object(ObjectRef::NULL);
+            }
+            let class = vm.resolve_class("java/nio/file/attribute/FileTime")?;
+            let (declaring, method) = vm
+                .find_method(class, "fromMillis", "(J)Ljava/nio/file/attribute/FileTime;")
+                .ok_or_else(|| VmError::internal("FileTime.fromMillis missing"))?;
+            vm.invoke_method(declaring, method, vec![Value::Long(time)])
+        },
+    ),
+    method(
+        "setLastModifiedTime",
+        "(Ljava/nio/file/attribute/FileTime;)Ljava/util/zip/ZipEntry;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let file_time = ref_arg(args, 1);
+            if file_time.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let (class, method) = vm.resolve_virtual_method(file_time, "toMillis", "()J")?;
+            let millis = vm
+                .invoke_method(class, method, vec![Value::Ref(file_time)])?
+                .as_long();
+            write_long_field(vm, this, "time", millis);
+            object(this)
+        },
+    ),
     method("getSize", "()J", ACC_PUBLIC, |vm, _, args| {
         long(read_long_field(vm, receiver(args), "size"))
     }),
@@ -230,7 +265,7 @@ pub(crate) const ZIP_ENTRY: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const ZIP_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const ZIP_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method(
         "<init>",
         "(Ljava/io/OutputStream;)V",
@@ -254,6 +289,26 @@ const ZIP_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
             write_ref_field(vm, this, "entries", "Ljava/util/ArrayList;", entries);
             write_long_field(vm, this, "offset", 0);
             write_long_field(vm, this, "entryOffset", 0);
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;Ljava/nio/charset/Charset;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let target = ref_arg(args, 1);
+            let charset = ref_arg(args, 2);
+            if target.is_null() || charset.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let class = vm.class_of(this);
+            let (declaring, ctor) = vm
+                .find_method(class, "<init>", "(Ljava/io/OutputStream;)V")
+                .ok_or_else(|| VmError::internal("ZipOutputStream.<init> missing"))?;
+            vm.invoke_method(declaring, ctor, vec![Value::Ref(this), Value::Ref(target)])?;
+            write_ref_field(vm, this, "charset", "Ljava/nio/charset/Charset;", charset);
             void()
         },
     ),
@@ -345,6 +400,7 @@ pub(crate) const ZIP_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
         field("entries", "Ljava/util/ArrayList;", ACC_PRIVATE, None),
         field("offset", "J", ACC_PRIVATE, None),
         field("entryOffset", "J", ACC_PRIVATE, None),
+        field("charset", "Ljava/nio/charset/Charset;", ACC_PRIVATE, None),
     ],
     &ZIP_OUTPUT_STREAM_METHODS,
     None,

@@ -2783,7 +2783,7 @@ fn new_file_system_provider(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
     vm.new_instance(class)
 }
 
-const FILE_SYSTEM_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const FILE_SYSTEM_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method(
         "getPath",
         "(Ljava/lang/String;[Ljava/lang/String;)Ljava/nio/file/Path;",
@@ -2830,6 +2830,18 @@ const FILE_SYSTEM_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         |vm, _, _| {
             let class = vm.resolve_class("java/nio/file/OjvmWatchService")?;
             object(vm.new_instance(class)?)
+        },
+    ),
+    method(
+        "supportedFileAttributeViews",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let mut names = Vec::new();
+            for view in ["basic", "dos", "owner", "posix", "unix", "user"] {
+                names.push(vm.make_string(view)?);
+            }
+            object(crate::util::hash_set_from(vm, &names)?)
         },
     ),
 ];

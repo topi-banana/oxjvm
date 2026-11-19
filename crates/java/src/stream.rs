@@ -167,7 +167,7 @@ fn stream_get(vm: &mut Vm<'_>, this: ObjectRef) -> Vec<ObjectRef> {
     stream_elements(vm, this)
 }
 
-const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
+const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
     method(
         "of",
         "([Ljava/lang/Object;)Ljava/util/stream/Stream;",
@@ -455,6 +455,12 @@ const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
             object(instance)
         },
     ),
+    method(
+        "spliterator",
+        "()Ljava/util/Spliterator;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
 ];
 
 fn stream_builder_init(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
@@ -633,7 +639,7 @@ pub(crate) const STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const OXJVM_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
+const OXJVM_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
     method(
         "filter",
         "(Ljava/util/function/Predicate;)Ljava/util/stream/Stream;",
@@ -893,6 +899,23 @@ const OXJVM_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
             let (declaring, field) = vm.find_field(class, "elements", "[Ljava/lang/Object;")?;
             vm.set_instance_ref(iterator, declaring, field, array);
             object(iterator)
+        },
+    ),
+    method(
+        "spliterator",
+        "()Ljava/util/Spliterator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = stream_get(vm, receiver(args));
+            let spliterator = spliterator_from(vm, &elements)?;
+            // ORDERED | SIZED | SUBSIZED | NONNULL
+            crate::lang::write_int_field(
+                vm,
+                spliterator,
+                "chars",
+                SPLITERATOR_ORDERED | 0x0040 | 0x4000 | 0x0100,
+            );
+            object(spliterator)
         },
     ),
     method("isParallel", "()Z", ACC_PUBLIC, |vm, _, args| {
@@ -2132,7 +2155,7 @@ pub(crate) const STREAM_ITERATOR: oxjvm_vm::NativeClass = class(
 // Spliterator + StreamSupport
 // -------------------------------------------------------------------------------------------
 
-const SPLITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+const SPLITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     method(
         "tryAdvance",
         "(Ljava/util/function/Consumer;)Z",
@@ -2160,6 +2183,12 @@ const SPLITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     method(
         "characteristics",
         "()I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "hasCharacteristics",
+        "(I)Z",
         ACC_PUBLIC | ACC_ABSTRACT,
         abstract_method_pub,
     ),
@@ -2265,7 +2294,7 @@ pub(crate) const SPLITERATOR_OF_DOUBLE: oxjvm_vm::NativeClass = class(
 /// `ORDERED`.
 const SPLITERATOR_ORDERED: i32 = 0x10;
 
-const OJVM_SPLITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const OJVM_SPLITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     method(
         "tryAdvance",
         "(Ljava/util/function/Consumer;)Z",
@@ -2313,8 +2342,24 @@ const OJVM_SPLITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         let cursor = crate::lang::read_int_field(vm, this, "cursor").max(0) as usize;
         long((elements.len() - cursor.min(elements.len())) as i64)
     }),
-    method("characteristics", "()I", ACC_PUBLIC, |_, _, _| {
-        int(SPLITERATOR_ORDERED)
+    method("characteristics", "()I", ACC_PUBLIC, |vm, _, args| {
+        let chars = crate::lang::read_int_field(vm, receiver(args), "chars");
+        int(if chars == 0 {
+            SPLITERATOR_ORDERED
+        } else {
+            chars
+        })
+    }),
+    method("hasCharacteristics", "(I)Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let requested = crate::int_arg(args, 1);
+        let chars = crate::lang::read_int_field(vm, this, "chars");
+        let chars = if chars == 0 {
+            SPLITERATOR_ORDERED
+        } else {
+            chars
+        };
+        boolean((chars & requested) == requested)
     }),
     method("getExactSizeIfKnown", "()J", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
@@ -2508,6 +2553,7 @@ pub(crate) const OJVM_SPLITERATOR: oxjvm_vm::NativeClass = class(
     &[
         field("elements", "[Ljava/lang/Object;", ACC_PRIVATE, None),
         field("cursor", "I", ACC_PRIVATE, None),
+        field("chars", "I", ACC_PRIVATE, None),
     ],
     &OJVM_SPLITERATOR_METHODS,
     None,
@@ -2527,6 +2573,7 @@ pub(crate) fn spliterator_from(
     }
     let (declaring, field) = vm.find_field(class, "elements", "[Ljava/lang/Object;")?;
     vm.set_instance_ref(instance, declaring, field, array);
+    crate::lang::write_int_field(vm, instance, "chars", SPLITERATOR_ORDERED);
     Ok(instance)
 }
 
