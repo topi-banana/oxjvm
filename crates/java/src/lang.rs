@@ -1859,7 +1859,7 @@ const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 71] = [
 
 // The remaining `String.valueOf` overloads and `format` are declared in a second array so the
 // first stays readable; both are concatenated below.
-const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 23] = [
+const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 24] = [
     method(
         "valueOf",
         "(Z)Ljava/lang/String;",
@@ -1996,6 +1996,20 @@ const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 23] = [
         "(Ljava/nio/charset/Charset;)[B",
         ACC_PUBLIC,
         string_get_bytes_charset_object,
+    ),
+    method(
+        "encodedLength",
+        "(Ljava/nio/charset/Charset;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = crate::charset::name_of(vm, ref_arg(args, 1));
+            let text = vm.string_or_empty(receiver(args));
+            let len = match crate::charset::canonical_name(&name) {
+                Some(canonical) => crate::charset::encode(&text, canonical).len(),
+                None => text.len(),
+            };
+            int(len as i32)
+        },
     ),
     method(
         "formatted",

@@ -1586,20 +1586,60 @@ const WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method(
         "append",
         "(Ljava/lang/CharSequence;)Ljava/io/Writer;",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        crate::lang::abstract_method_pub,
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let csq = ref_arg(args, 1);
+            if csq.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let (tc, tm) = vm.resolve_virtual_method(csq, "toString", "()Ljava/lang/String;")?;
+            let text = vm.invoke_method(tc, tm, vec![Value::Ref(csq)])?.as_ref();
+            let (wc, wm) = vm.resolve_virtual_method(this, "write", "(Ljava/lang/String;)V")?;
+            vm.invoke_method(wc, wm, vec![Value::Ref(this), Value::Ref(text)])?;
+            object(this)
+        },
     ),
     method(
         "append",
         "(Ljava/lang/CharSequence;II)Ljava/io/Writer;",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        crate::lang::abstract_method_pub,
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let csq = ref_arg(args, 1);
+            if csq.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let (sc, sm) =
+                vm.resolve_virtual_method(csq, "subSequence", "(II)Ljava/lang/CharSequence;")?;
+            let sub = vm
+                .invoke_method(
+                    sc,
+                    sm,
+                    vec![
+                        Value::Ref(csq),
+                        Value::Int(int_arg(args, 2)),
+                        Value::Int(int_arg(args, 3)),
+                    ],
+                )?
+                .as_ref();
+            let (tc, tm) = vm.resolve_virtual_method(sub, "toString", "()Ljava/lang/String;")?;
+            let text = vm.invoke_method(tc, tm, vec![Value::Ref(sub)])?.as_ref();
+            let (wc, wm) = vm.resolve_virtual_method(this, "write", "(Ljava/lang/String;)V")?;
+            vm.invoke_method(wc, wm, vec![Value::Ref(this), Value::Ref(text)])?;
+            object(this)
+        },
     ),
     method(
         "append",
         "(C)Ljava/io/Writer;",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        crate::lang::abstract_method_pub,
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (wc, wm) = vm.resolve_virtual_method(this, "write", "(I)V")?;
+            vm.invoke_method(wc, wm, vec![Value::Ref(this), Value::Int(int_arg(args, 1))])?;
+            object(this)
+        },
     ),
     method(
         "nullWriter",
@@ -2667,35 +2707,55 @@ fn output_stream_writer_write_text(
     if out.is_null() {
         return void();
     }
-    let array = io_bytes_array(vm, text.as_bytes())?;
+    let canonical = vm
+        .read_string_field(this, vm.class_of(this), "charset")
+        .unwrap_or_default();
+    let bytes = if canonical.is_empty() {
+        text.as_bytes().to_vec()
+    } else {
+        crate::charset::encode(text, &canonical)
+    };
+    let array = io_bytes_array(vm, &bytes)?;
     let (class, method) = vm.resolve_virtual_method(out, "write", "([B)V")?;
     vm.invoke_method(class, method, vec![Value::Ref(out), Value::Ref(array)])?;
     void()
 }
 
-const OUTPUT_STREAM_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+fn output_stream_writer_init(
+    vm: &mut Vm<'_>,
+    args: &[Value],
+    canonical: &str,
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, "out", "Ljava/io/OutputStream;")?;
+    vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+    let charset = vm.make_string(canonical)?;
+    let (declaring, field) = vm.find_field(class, "charset", "Ljava/lang/String;")?;
+    vm.set_instance_ref(this, declaring, field, charset);
+    let encoding = vm.make_string(historical_encoding(canonical))?;
+    let (declaring, field) = vm.find_field(class, "encoding", "Ljava/lang/String;")?;
+    vm.set_instance_ref(this, declaring, field, encoding);
+    void()
+}
+
+const OUTPUT_STREAM_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method(
         "<init>",
         "(Ljava/io/OutputStream;)V",
         ACC_PUBLIC,
-        |vm, _, args| {
-            let this = receiver(args);
-            let (declaring, field) =
-                vm.find_field(vm.class_of(this), "out", "Ljava/io/OutputStream;")?;
-            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
-            void()
-        },
+        |vm, _, args| output_stream_writer_init(vm, args, "UTF-8"),
     ),
     method(
         "<init>",
         "(Ljava/io/OutputStream;Ljava/lang/String;)V",
         ACC_PUBLIC,
         |vm, _, args| {
-            let this = receiver(args);
-            let (declaring, field) =
-                vm.find_field(vm.class_of(this), "out", "Ljava/io/OutputStream;")?;
-            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
-            void()
+            let name = crate::string_arg(vm, args[2])?;
+            match crate::charset::canonical_name(&name) {
+                Some(canonical) => output_stream_writer_init(vm, args, canonical),
+                None => Err(vm.throw_new("java/io/UnsupportedEncodingException", Some(&name))),
+            }
         },
     ),
     method(
@@ -2703,11 +2763,38 @@ const OUTPUT_STREAM_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         "(Ljava/io/OutputStream;Ljava/nio/charset/Charset;)V",
         ACC_PUBLIC,
         |vm, _, args| {
+            let canonical = input_stream_reader_charset(vm, ref_arg(args, 2))?;
+            output_stream_writer_init(vm, args, canonical)
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;Ljava/nio/charset/CharsetEncoder;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let encoder = ref_arg(args, 2);
+            if encoder.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(encoder, "charset", "()Ljava/nio/charset/Charset;")?;
+            let charset = vm
+                .invoke_method(class, method, vec![Value::Ref(encoder)])?
+                .as_ref();
+            let canonical = input_stream_reader_charset(vm, charset)?;
+            output_stream_writer_init(vm, args, canonical)
+        },
+    ),
+    method(
+        "getEncoding",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
             let this = receiver(args);
-            let (declaring, field) =
-                vm.find_field(vm.class_of(this), "out", "Ljava/io/OutputStream;")?;
-            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
-            void()
+            let encoding = vm
+                .read_ref_field(this, vm.class_of(this), "encoding", "Ljava/lang/String;")
+                .unwrap_or(ObjectRef::NULL);
+            object(encoding)
         },
     ),
     method("write", "(I)V", ACC_PUBLIC, |vm, _, args| {
@@ -2760,7 +2847,11 @@ pub(crate) const OUTPUT_STREAM_WRITER: oxjvm_vm::NativeClass = class(
     Some("java/io/Writer"),
     &[],
     ACC_PUBLIC,
-    &[field("out", "Ljava/io/OutputStream;", ACC_PRIVATE, None)],
+    &[
+        field("out", "Ljava/io/OutputStream;", ACC_PRIVATE, None),
+        field("charset", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("encoding", "Ljava/lang/String;", ACC_PRIVATE, None),
+    ],
     &OUTPUT_STREAM_WRITER_METHODS,
     None,
 );
@@ -3396,7 +3487,23 @@ fn input_stream_reader_content(vm: &Vm<'_>, this: ObjectRef) -> String {
         .unwrap_or_default()
 }
 
-fn input_stream_reader_init(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+/// Historical encoding names reported by `InputStreamReader.getEncoding`.
+fn historical_encoding(canonical: &str) -> &'static str {
+    match canonical {
+        "US-ASCII" => "ASCII",
+        "ISO-8859-1" => "ISO8859_1",
+        "UTF-16BE" => "UnicodeBigUnmarked",
+        "UTF-16LE" => "UnicodeLittleUnmarked",
+        "UTF-16" => "UTF-16",
+        _ => "UTF8",
+    }
+}
+
+fn input_stream_reader_init(
+    vm: &mut Vm<'_>,
+    args: &[Value],
+    canonical: &str,
+) -> Result<Value, VmError> {
     let this = receiver(args);
     let stream = ref_arg(args, 1);
     let mut bytes: Vec<u8> = Vec::new();
@@ -3411,31 +3518,88 @@ fn input_stream_reader_init(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, Vm
             bytes.push(value as u8);
         }
     }
-    let content = String::from_utf8_lossy(&bytes).into_owned();
+    let content = String::from_utf16_lossy(&crate::charset::decode(&bytes, canonical));
     let class = vm.class_of(this);
     let (declaring, field) = vm.find_field(class, "content", "Ljava/lang/String;")?;
     let value = vm.make_string(&content)?;
     vm.set_instance_ref(this, declaring, field, value);
+    let encoding = vm.make_string(historical_encoding(canonical))?;
+    let (declaring, field) = vm.find_field(class, "encoding", "Ljava/lang/String;")?;
+    vm.set_instance_ref(this, declaring, field, encoding);
     crate::lang::write_int_field(vm, this, "pos", 0);
     void()
 }
 
-const INPUT_STREAM_READER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+/// Resolve the charset argument of an `InputStreamReader` constructor to a canonical name.
+fn input_stream_reader_charset(
+    vm: &mut Vm<'_>,
+    charset: ObjectRef,
+) -> Result<&'static str, VmError> {
+    if charset.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let name = crate::charset::name_of(vm, charset);
+    crate::charset::canonical_name(&name)
+        .ok_or_else(|| vm.throw_new("java/io/UnsupportedEncodingException", Some(&name)))
+}
+
+const INPUT_STREAM_READER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method(
         "<init>",
         "(Ljava/io/InputStream;)V",
         ACC_PUBLIC,
-        |vm, _, args| {
-            let this = receiver(args);
-            let _ = this;
-            input_stream_reader_init(vm, args)
-        },
+        |vm, _, args| input_stream_reader_init(vm, args, "UTF-8"),
     ),
     method(
         "<init>",
         "(Ljava/io/InputStream;Ljava/lang/String;)V",
         ACC_PUBLIC,
-        |vm, _, args| input_stream_reader_init(vm, args),
+        |vm, _, args| {
+            let name = crate::string_arg(vm, args[2])?;
+            match crate::charset::canonical_name(&name) {
+                Some(canonical) => input_stream_reader_init(vm, args, canonical),
+                None => Err(vm.throw_new("java/io/UnsupportedEncodingException", Some(&name))),
+            }
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/InputStream;Ljava/nio/charset/Charset;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let canonical = input_stream_reader_charset(vm, ref_arg(args, 2))?;
+            input_stream_reader_init(vm, args, canonical)
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/InputStream;Ljava/nio/charset/CharsetDecoder;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let decoder = ref_arg(args, 2);
+            if decoder.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(decoder, "charset", "()Ljava/nio/charset/Charset;")?;
+            let charset = vm
+                .invoke_method(class, method, vec![Value::Ref(decoder)])?
+                .as_ref();
+            let canonical = input_stream_reader_charset(vm, charset)?;
+            input_stream_reader_init(vm, args, canonical)
+        },
+    ),
+    method(
+        "getEncoding",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let encoding = vm
+                .read_ref_field(this, vm.class_of(this), "encoding", "Ljava/lang/String;")
+                .unwrap_or(ObjectRef::NULL);
+            object(encoding)
+        },
     ),
     method("read", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
@@ -3482,6 +3646,7 @@ pub(crate) const INPUT_STREAM_READER: oxjvm_vm::NativeClass = class(
     &[
         field("content", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("pos", "I", ACC_PRIVATE, None),
+        field("encoding", "Ljava/lang/String;", ACC_PRIVATE, None),
     ],
     &INPUT_STREAM_READER_METHODS,
     None,

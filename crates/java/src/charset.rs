@@ -29,7 +29,7 @@ const CHARSETS: &[(&str, &[&str])] = &[
         "ISO-8859-1",
         &["iso88591", "latin1", "l1", "819", "cp819", "isoir100"],
     ),
-    ("UTF-16", &["utf16", "unicode"]),
+    ("UTF-16", &["utf16", "unicode", "unicodebig"]),
     ("UTF-16BE", &["utf16be", "unicodebigunmarked", "xutf16be"]),
     (
         "UTF-16LE",

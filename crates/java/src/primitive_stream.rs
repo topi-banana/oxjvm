@@ -1040,7 +1040,7 @@ pub(crate) const OJVM_LONG_STREAM: oxjvm_vm::NativeClass = class(
 // OptionalDouble / OptionalLong
 // -------------------------------------------------------------------------------------------
 
-const OPTIONAL_DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const OPTIONAL_DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method(
         "empty",
         "()Ljava/util/OptionalDouble;",
@@ -1062,7 +1062,7 @@ const OPTIONAL_DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method("getAsDouble", "()D", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         if crate::lang::read_int_field(vm, this, "present") == 0 {
-            return Err(vm.throw_new("java/util/NoSuchElementException", None));
+            return Err(vm.throw_new("java/util/NoSuchElementException", Some("No value present")));
         }
         let value = vm.read_instance_long_named(this, vm.class_of(this), "value", "D");
         Ok(Value::Double(f64::from_bits(value.unwrap_or(0) as u64)))
@@ -1109,6 +1109,165 @@ const OPTIONAL_DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
             object(new_double_stream(vm, values)?)
         },
     ),
+    method(
+        "orElseGet",
+        "(Ljava/util/function/DoubleSupplier;)D",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if crate::lang::read_int_field(vm, this, "present") != 0 {
+                let value = vm.read_instance_long_named(this, vm.class_of(this), "value", "D");
+                return Ok(Value::Double(f64::from_bits(value.unwrap_or(0) as u64)));
+            }
+            let supplier = ref_arg(args, 1);
+            if supplier.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let (class, method) = vm.resolve_virtual_method(supplier, "getAsDouble", "()D")?;
+            vm.invoke_method(class, method, vec![Value::Ref(supplier)])
+        },
+    ),
+    method("orElseThrow", "()D", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if crate::lang::read_int_field(vm, this, "present") == 0 {
+            return Err(vm.throw_new("java/util/NoSuchElementException", Some("No value present")));
+        }
+        let value = vm.read_instance_long_named(this, vm.class_of(this), "value", "D");
+        Ok(Value::Double(f64::from_bits(value.unwrap_or(0) as u64)))
+    }),
+    method(
+        "orElseThrow",
+        "(Ljava/util/function/Supplier;)D",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if crate::lang::read_int_field(vm, this, "present") != 0 {
+                let value = vm.read_instance_long_named(this, vm.class_of(this), "value", "D");
+                return Ok(Value::Double(f64::from_bits(value.unwrap_or(0) as u64)));
+            }
+            let supplier = ref_arg(args, 1);
+            if supplier.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(supplier, "get", "()Ljava/lang/Object;")?;
+            let thrown = vm
+                .invoke_method(class, method, vec![Value::Ref(supplier)])?
+                .as_ref();
+            Err(VmError::Thrown(thrown))
+        },
+    ),
+    method(
+        "ifPresent",
+        "(Ljava/util/function/DoubleConsumer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if crate::lang::read_int_field(vm, this, "present") == 0 {
+                return void();
+            }
+            let consumer = ref_arg(args, 1);
+            if consumer.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let value = vm
+                .read_instance_long_named(this, vm.class_of(this), "value", "D")
+                .unwrap_or(0);
+            let (class, method) = vm.resolve_virtual_method(consumer, "accept", "(D)V")?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![
+                    Value::Ref(consumer),
+                    Value::Double(f64::from_bits(value as u64)),
+                ],
+            )?;
+            void()
+        },
+    ),
+    method(
+        "ifPresentOrElse",
+        "(Ljava/util/function/DoubleConsumer;Ljava/lang/Runnable;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let consumer = ref_arg(args, 1);
+            let empty_action = ref_arg(args, 2);
+            if consumer.is_null() || empty_action.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            if crate::lang::read_int_field(vm, this, "present") == 0 {
+                let (class, method) = vm.resolve_virtual_method(empty_action, "run", "()V")?;
+                vm.invoke_method(class, method, vec![Value::Ref(empty_action)])?;
+            } else {
+                let value = vm
+                    .read_instance_long_named(this, vm.class_of(this), "value", "D")
+                    .unwrap_or(0);
+                let (class, method) = vm.resolve_virtual_method(consumer, "accept", "(D)V")?;
+                vm.invoke_method(
+                    class,
+                    method,
+                    vec![
+                        Value::Ref(consumer),
+                        Value::Double(f64::from_bits(value as u64)),
+                    ],
+                )?;
+            }
+            void()
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if this == other {
+                return boolean(true);
+            }
+            let class = vm.resolve_class("java/util/OptionalDouble")?;
+            if other.is_null() || !vm.is_instance(other, class) {
+                return boolean(false);
+            }
+            let present = crate::lang::read_int_field(vm, this, "present");
+            if present != crate::lang::read_int_field(vm, other, "present") {
+                return boolean(false);
+            }
+            if present == 0 {
+                return boolean(true);
+            }
+            let a = vm
+                .read_instance_long_named(this, vm.class_of(this), "value", "D")
+                .unwrap_or(0) as u64;
+            let b = vm
+                .read_instance_long_named(other, vm.class_of(other), "value", "D")
+                .unwrap_or(0) as u64;
+            let canon = |bits: u64| {
+                if f64::from_bits(bits).is_nan() {
+                    0x7FF8_0000_0000_0000u64
+                } else {
+                    bits
+                }
+            };
+            boolean(canon(a) == canon(b))
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if crate::lang::read_int_field(vm, this, "present") == 0 {
+            return crate::int(0);
+        }
+        let bits = vm
+            .read_instance_long_named(this, vm.class_of(this), "value", "D")
+            .unwrap_or(0) as u64;
+        let bits = if f64::from_bits(bits).is_nan() {
+            0x7FF8_0000_0000_0000u64
+        } else {
+            bits
+        };
+        crate::int((bits ^ (bits >> 32)) as i32)
+    }),
 ];
 
 pub(crate) const OPTIONAL_DOUBLE: oxjvm_vm::NativeClass = class(
@@ -1124,7 +1283,7 @@ pub(crate) const OPTIONAL_DOUBLE: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const OPTIONAL_LONG_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const OPTIONAL_LONG_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method(
         "empty",
         "()Ljava/util/OptionalLong;",
@@ -1146,7 +1305,7 @@ const OPTIONAL_LONG_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     method("getAsLong", "()J", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         if crate::lang::read_int_field(vm, this, "present") == 0 {
-            return Err(vm.throw_new("java/util/NoSuchElementException", None));
+            return Err(vm.throw_new("java/util/NoSuchElementException", Some("No value present")));
         }
         long(
             vm.read_instance_long_named(this, vm.class_of(this), "value", "J")
@@ -1170,6 +1329,180 @@ const OPTIONAL_LONG_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
             object(vm.make_string(&text)?)
         },
     ),
+    method("orElse", "(J)J", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if crate::lang::read_int_field(vm, this, "present") == 0 {
+            return long(crate::long_arg(args, 1));
+        }
+        long(
+            vm.read_instance_long_named(this, vm.class_of(this), "value", "J")
+                .unwrap_or(0),
+        )
+    }),
+    method(
+        "orElseGet",
+        "(Ljava/util/function/LongSupplier;)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if crate::lang::read_int_field(vm, this, "present") != 0 {
+                return long(
+                    vm.read_instance_long_named(this, vm.class_of(this), "value", "J")
+                        .unwrap_or(0),
+                );
+            }
+            let supplier = ref_arg(args, 1);
+            if supplier.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let (class, method) = vm.resolve_virtual_method(supplier, "getAsLong", "()J")?;
+            vm.invoke_method(class, method, vec![Value::Ref(supplier)])
+        },
+    ),
+    method("orElseThrow", "()J", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if crate::lang::read_int_field(vm, this, "present") == 0 {
+            return Err(vm.throw_new("java/util/NoSuchElementException", Some("No value present")));
+        }
+        long(
+            vm.read_instance_long_named(this, vm.class_of(this), "value", "J")
+                .unwrap_or(0),
+        )
+    }),
+    method(
+        "orElseThrow",
+        "(Ljava/util/function/Supplier;)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if crate::lang::read_int_field(vm, this, "present") != 0 {
+                return long(
+                    vm.read_instance_long_named(this, vm.class_of(this), "value", "J")
+                        .unwrap_or(0),
+                );
+            }
+            let supplier = ref_arg(args, 1);
+            if supplier.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(supplier, "get", "()Ljava/lang/Object;")?;
+            let thrown = vm
+                .invoke_method(class, method, vec![Value::Ref(supplier)])?
+                .as_ref();
+            Err(VmError::Thrown(thrown))
+        },
+    ),
+    method(
+        "ifPresent",
+        "(Ljava/util/function/LongConsumer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if crate::lang::read_int_field(vm, this, "present") == 0 {
+                return void();
+            }
+            let consumer = ref_arg(args, 1);
+            if consumer.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let value = vm
+                .read_instance_long_named(this, vm.class_of(this), "value", "J")
+                .unwrap_or(0);
+            let (class, method) = vm.resolve_virtual_method(consumer, "accept", "(J)V")?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![Value::Ref(consumer), Value::Long(value)],
+            )?;
+            void()
+        },
+    ),
+    method(
+        "ifPresentOrElse",
+        "(Ljava/util/function/LongConsumer;Ljava/lang/Runnable;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let consumer = ref_arg(args, 1);
+            let empty_action = ref_arg(args, 2);
+            if consumer.is_null() || empty_action.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            if crate::lang::read_int_field(vm, this, "present") == 0 {
+                let (class, method) = vm.resolve_virtual_method(empty_action, "run", "()V")?;
+                vm.invoke_method(class, method, vec![Value::Ref(empty_action)])?;
+            } else {
+                let value = vm
+                    .read_instance_long_named(this, vm.class_of(this), "value", "J")
+                    .unwrap_or(0);
+                let (class, method) = vm.resolve_virtual_method(consumer, "accept", "(J)V")?;
+                vm.invoke_method(
+                    class,
+                    method,
+                    vec![Value::Ref(consumer), Value::Long(value)],
+                )?;
+            }
+            void()
+        },
+    ),
+    method(
+        "stream",
+        "()Ljava/util/stream/LongStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let values = if crate::lang::read_int_field(vm, this, "present") == 0 {
+                Vec::new()
+            } else {
+                vec![
+                    vm.read_instance_long_named(this, vm.class_of(this), "value", "J")
+                        .unwrap_or(0),
+                ]
+            };
+            object(new_long_stream(vm, values)?)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if this == other {
+                return boolean(true);
+            }
+            let class = vm.resolve_class("java/util/OptionalLong")?;
+            if other.is_null() || !vm.is_instance(other, class) {
+                return boolean(false);
+            }
+            let present = crate::lang::read_int_field(vm, this, "present");
+            if present != crate::lang::read_int_field(vm, other, "present") {
+                return boolean(false);
+            }
+            if present == 0 {
+                return boolean(true);
+            }
+            let a = vm
+                .read_instance_long_named(this, vm.class_of(this), "value", "J")
+                .unwrap_or(0);
+            let b = vm
+                .read_instance_long_named(other, vm.class_of(other), "value", "J")
+                .unwrap_or(0);
+            boolean(a == b)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if crate::lang::read_int_field(vm, this, "present") == 0 {
+            return crate::int(0);
+        }
+        let value = vm
+            .read_instance_long_named(this, vm.class_of(this), "value", "J")
+            .unwrap_or(0);
+        crate::int((value ^ (value >> 32)) as i32)
+    }),
 ];
 
 pub(crate) const OPTIONAL_LONG: oxjvm_vm::NativeClass = class(
@@ -1182,5 +1515,217 @@ pub(crate) const OPTIONAL_LONG: oxjvm_vm::NativeClass = class(
         field("value", "J", ACC_PRIVATE, None),
     ],
     &OPTIONAL_LONG_METHODS,
+    None,
+);
+
+fn optional_int(vm: &mut Vm<'_>, value: Option<i32>) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/util/OptionalInt")?;
+    let instance = vm.new_instance(class)?;
+    match value {
+        Some(value) => {
+            crate::lang::write_int_field(vm, instance, "present", 1);
+            crate::lang::write_int_field(vm, instance, "value", value);
+        }
+        None => crate::lang::write_int_field(vm, instance, "present", 0),
+    }
+    object(instance)
+}
+
+const OPTIONAL_INT_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+    method(
+        "empty",
+        "()Ljava/util/OptionalInt;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| optional_int(vm, None),
+    ),
+    method(
+        "of",
+        "(I)Ljava/util/OptionalInt;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| optional_int(vm, Some(crate::int_arg(args, 0))),
+    ),
+    method("isPresent", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "present") != 0)
+    }),
+    method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "present") == 0)
+    }),
+    method("getAsInt", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if crate::lang::read_int_field(vm, this, "present") == 0 {
+            return Err(vm.throw_new("java/util/NoSuchElementException", Some("No value present")));
+        }
+        crate::int(crate::lang::read_int_field(vm, this, "value"))
+    }),
+    method("orElse", "(I)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if crate::lang::read_int_field(vm, this, "present") == 0 {
+            return crate::int(crate::int_arg(args, 1));
+        }
+        crate::int(crate::lang::read_int_field(vm, this, "value"))
+    }),
+    method(
+        "orElseGet",
+        "(Ljava/util/function/IntSupplier;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if crate::lang::read_int_field(vm, this, "present") != 0 {
+                return crate::int(crate::lang::read_int_field(vm, this, "value"));
+            }
+            let supplier = ref_arg(args, 1);
+            if supplier.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let (class, method) = vm.resolve_virtual_method(supplier, "getAsInt", "()I")?;
+            vm.invoke_method(class, method, vec![Value::Ref(supplier)])
+        },
+    ),
+    method("orElseThrow", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if crate::lang::read_int_field(vm, this, "present") == 0 {
+            return Err(vm.throw_new("java/util/NoSuchElementException", Some("No value present")));
+        }
+        crate::int(crate::lang::read_int_field(vm, this, "value"))
+    }),
+    method(
+        "orElseThrow",
+        "(Ljava/util/function/Supplier;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if crate::lang::read_int_field(vm, this, "present") != 0 {
+                return crate::int(crate::lang::read_int_field(vm, this, "value"));
+            }
+            let supplier = ref_arg(args, 1);
+            if supplier.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(supplier, "get", "()Ljava/lang/Object;")?;
+            let thrown = vm
+                .invoke_method(class, method, vec![Value::Ref(supplier)])?
+                .as_ref();
+            Err(VmError::Thrown(thrown))
+        },
+    ),
+    method(
+        "ifPresent",
+        "(Ljava/util/function/IntConsumer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if crate::lang::read_int_field(vm, this, "present") == 0 {
+                return void();
+            }
+            let consumer = ref_arg(args, 1);
+            if consumer.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let value = crate::lang::read_int_field(vm, this, "value");
+            let (class, method) = vm.resolve_virtual_method(consumer, "accept", "(I)V")?;
+            vm.invoke_method(class, method, vec![Value::Ref(consumer), Value::Int(value)])?;
+            void()
+        },
+    ),
+    method(
+        "ifPresentOrElse",
+        "(Ljava/util/function/IntConsumer;Ljava/lang/Runnable;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let consumer = ref_arg(args, 1);
+            let empty_action = ref_arg(args, 2);
+            if consumer.is_null() || empty_action.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            if crate::lang::read_int_field(vm, this, "present") == 0 {
+                let (class, method) = vm.resolve_virtual_method(empty_action, "run", "()V")?;
+                vm.invoke_method(class, method, vec![Value::Ref(empty_action)])?;
+            } else {
+                let value = crate::lang::read_int_field(vm, this, "value");
+                let (class, method) = vm.resolve_virtual_method(consumer, "accept", "(I)V")?;
+                vm.invoke_method(class, method, vec![Value::Ref(consumer), Value::Int(value)])?;
+            }
+            void()
+        },
+    ),
+    method(
+        "stream",
+        "()Ljava/util/stream/IntStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let values = if crate::lang::read_int_field(vm, this, "present") == 0 {
+                Vec::new()
+            } else {
+                vec![crate::lang::read_int_field(vm, this, "value")]
+            };
+            object(crate::intstream::int_stream_from(vm, values)?)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if this == other {
+                return boolean(true);
+            }
+            let class = vm.resolve_class("java/util/OptionalInt")?;
+            if other.is_null() || !vm.is_instance(other, class) {
+                return boolean(false);
+            }
+            let present = crate::lang::read_int_field(vm, this, "present");
+            if present != crate::lang::read_int_field(vm, other, "present") {
+                return boolean(false);
+            }
+            if present == 0 {
+                return boolean(true);
+            }
+            boolean(
+                crate::lang::read_int_field(vm, this, "value")
+                    == crate::lang::read_int_field(vm, other, "value"),
+            )
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if crate::lang::read_int_field(vm, this, "present") == 0 {
+            return crate::int(0);
+        }
+        crate::int(crate::lang::read_int_field(vm, this, "value"))
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = if crate::lang::read_int_field(vm, this, "present") == 0 {
+                alloc::string::String::from("OptionalInt.empty")
+            } else {
+                alloc::format!(
+                    "OptionalInt[{}]",
+                    crate::lang::read_int_field(vm, this, "value")
+                )
+            };
+            object(vm.make_string(&text)?)
+        },
+    ),
+];
+
+pub(crate) const OPTIONAL_INT: oxjvm_vm::NativeClass = class(
+    "java/util/OptionalInt",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("present", "I", ACC_PRIVATE, None),
+        field("value", "I", ACC_PRIVATE, None),
+    ],
+    &OPTIONAL_INT_METHODS,
     None,
 );

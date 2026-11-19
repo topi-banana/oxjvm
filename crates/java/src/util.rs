@@ -2357,7 +2357,91 @@ macro_rules! array_hash_code {
     };
 }
 
-const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 161] = [
+/// Shared implementation of `Arrays.setAll`/`parallelSetAll`: `kind` selects the generator
+/// signature (0 = IntUnaryOperator, 1 = IntToLongFunction, 2 = IntToDoubleFunction,
+/// 3 = IntFunction).
+fn arrays_set_all(
+    vm: &mut Vm<'_>,
+    array: ObjectRef,
+    generator: ObjectRef,
+    kind: u8,
+) -> Result<Value, VmError> {
+    if array.is_null() || generator.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let len = vm.array_length(array)?;
+    let (class, method) = match kind {
+        0 => vm.resolve_virtual_method(generator, "applyAsInt", "(I)I")?,
+        1 => vm.resolve_virtual_method(generator, "applyAsLong", "(I)J")?,
+        2 => vm.resolve_virtual_method(generator, "applyAsDouble", "(I)D")?,
+        _ => vm.resolve_virtual_method(generator, "apply", "(I)Ljava/lang/Object;")?,
+    };
+    for index in 0..len {
+        let result = vm.invoke_method(
+            class,
+            method,
+            vec![Value::Ref(generator), Value::Int(index as i32)],
+        )?;
+        let value = match kind {
+            0 => Value::Int(result.as_int()),
+            1 => Value::Long(result.as_long()),
+            2 => Value::Double(result.as_double()),
+            _ => Value::Ref(result.as_ref()),
+        };
+        vm.array_set(array, index as i32, value, kind == 3)?;
+    }
+    void()
+}
+
+const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 169] = [
+    method(
+        "setAll",
+        "([ILjava/util/function/IntUnaryOperator;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_set_all(vm, ref_arg(args, 0), ref_arg(args, 1), 0),
+    ),
+    method(
+        "setAll",
+        "([JLjava/util/function/IntToLongFunction;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_set_all(vm, ref_arg(args, 0), ref_arg(args, 1), 1),
+    ),
+    method(
+        "setAll",
+        "([DLjava/util/function/IntToDoubleFunction;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_set_all(vm, ref_arg(args, 0), ref_arg(args, 1), 2),
+    ),
+    method(
+        "setAll",
+        "([Ljava/lang/Object;Ljava/util/function/IntFunction;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_set_all(vm, ref_arg(args, 0), ref_arg(args, 1), 3),
+    ),
+    method(
+        "parallelSetAll",
+        "([ILjava/util/function/IntUnaryOperator;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_set_all(vm, ref_arg(args, 0), ref_arg(args, 1), 0),
+    ),
+    method(
+        "parallelSetAll",
+        "([JLjava/util/function/IntToLongFunction;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_set_all(vm, ref_arg(args, 0), ref_arg(args, 1), 1),
+    ),
+    method(
+        "parallelSetAll",
+        "([DLjava/util/function/IntToDoubleFunction;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_set_all(vm, ref_arg(args, 0), ref_arg(args, 1), 2),
+    ),
+    method(
+        "parallelSetAll",
+        "([Ljava/lang/Object;Ljava/util/function/IntFunction;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_set_all(vm, ref_arg(args, 0), ref_arg(args, 1), 3),
+    ),
     method(
         "toString",
         "([I)Ljava/lang/String;",
