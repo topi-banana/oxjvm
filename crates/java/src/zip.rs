@@ -604,7 +604,103 @@ pub(crate) const CRC32: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const CHECKSUM_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+const CRC32C_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        write_int_field_named(vm, receiver(args), "value", 0);
+        void()
+    }),
+    method("update", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let byte = crate::int_arg(args, 1) as u8;
+        crc32c_update(vm, receiver(args), &[byte]);
+        void()
+    }),
+    method("update", "([B)V", ACC_PUBLIC, |vm, _, args| {
+        let bytes = crate::lang::array_bytes(vm, ref_arg(args, 1))?;
+        crc32c_update(vm, receiver(args), &bytes);
+        void()
+    }),
+    method("update", "([BII)V", ACC_PUBLIC, |vm, _, args| {
+        let bytes = crate::lang::array_bytes(vm, ref_arg(args, 1))?;
+        let offset = crate::int_arg(args, 2);
+        let count = crate::int_arg(args, 3);
+        if offset < 0 || count < 0 || (offset + count) as usize > bytes.len() {
+            return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+        }
+        crc32c_update(
+            vm,
+            receiver(args),
+            &bytes[offset as usize..(offset + count) as usize],
+        );
+        void()
+    }),
+    method("getValue", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(i64::from(read_int_field(vm, receiver(args), "value") as u32))
+    }),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
+        write_int_field_named(vm, receiver(args), "value", 0);
+        void()
+    }),
+];
+
+pub(crate) const CRC32C: oxjvm_vm::NativeClass = class(
+    "java/util/zip/CRC32C",
+    Some("java/lang/Object"),
+    &["java/util/zip/Checksum"],
+    ACC_PUBLIC,
+    &[field("value", "I", ACC_PRIVATE, None)],
+    &CRC32C_METHODS,
+    None,
+);
+
+const ADLER32_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        write_int_field_named(vm, receiver(args), "value", 1);
+        void()
+    }),
+    method("update", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let byte = crate::int_arg(args, 1) as u8;
+        adler32_update(vm, receiver(args), &[byte]);
+        void()
+    }),
+    method("update", "([B)V", ACC_PUBLIC, |vm, _, args| {
+        let bytes = crate::lang::array_bytes(vm, ref_arg(args, 1))?;
+        adler32_update(vm, receiver(args), &bytes);
+        void()
+    }),
+    method("update", "([BII)V", ACC_PUBLIC, |vm, _, args| {
+        let bytes = crate::lang::array_bytes(vm, ref_arg(args, 1))?;
+        let offset = crate::int_arg(args, 2);
+        let count = crate::int_arg(args, 3);
+        if offset < 0 || count < 0 || (offset + count) as usize > bytes.len() {
+            return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+        }
+        adler32_update(
+            vm,
+            receiver(args),
+            &bytes[offset as usize..(offset + count) as usize],
+        );
+        void()
+    }),
+    method("getValue", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(i64::from(read_int_field(vm, receiver(args), "value") as u32))
+    }),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
+        write_int_field_named(vm, receiver(args), "value", 1);
+        void()
+    }),
+];
+
+pub(crate) const ADLER32: oxjvm_vm::NativeClass = class(
+    "java/util/zip/Adler32",
+    Some("java/lang/Object"),
+    &["java/util/zip/Checksum"],
+    ACC_PUBLIC,
+    &[field("value", "I", ACC_PRIVATE, None)],
+    &ADLER32_METHODS,
+    None,
+);
+
+const CHECKSUM_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     method(
         "update",
         "(I)V",
@@ -626,6 +722,12 @@ const CHECKSUM_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
     method(
         "getValue",
         "()J",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "reset",
+        "()V",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
@@ -652,6 +754,32 @@ fn crc32_update(vm: &mut Vm<'_>, this: ObjectRef, bytes: &[u8]) {
         }
     }
     write_int_field_named(vm, this, "value", !crc as i32);
+}
+
+/// CRC-32C (Castagnoli), the reflected polynomial `0x82F63B78`.
+fn crc32c_update(vm: &mut Vm<'_>, this: ObjectRef, bytes: &[u8]) {
+    let previous = read_int_field(vm, this, "value") as u32;
+    let mut crc = !previous;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0x82F6_3B78 & mask);
+        }
+    }
+    write_int_field_named(vm, this, "value", !crc as i32);
+}
+
+/// Adler-32 (RFC 1950): two running sums modulo 65521, packed `b<<16 | a`.
+fn adler32_update(vm: &mut Vm<'_>, this: ObjectRef, bytes: &[u8]) {
+    let previous = read_int_field(vm, this, "value") as u32;
+    let mut a = previous & 0xFFFF;
+    let mut b = (previous >> 16) & 0xFFFF;
+    for byte in bytes {
+        a = (a + u32::from(*byte)) % 65521;
+        b = (b + a) % 65521;
+    }
+    write_int_field_named(vm, this, "value", ((b << 16) | a) as i32);
 }
 
 // -------------------------------------------------------------------------------------------
