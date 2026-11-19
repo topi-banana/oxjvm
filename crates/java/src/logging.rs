@@ -69,12 +69,48 @@ fn level_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     Ok(())
 }
 
-const LEVEL_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const LEVEL_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method(
         "<init>",
         "(Ljava/lang/String;I)V",
         ACC_PROTECTED,
-        |_, _, _| void(),
+        |vm, _, args| {
+            let this = receiver(args);
+            record_set_ref(vm, this, "name", "Ljava/lang/String;", ref_arg(args, 1));
+            crate::lang::write_int_field(vm, this, "value", crate::int_arg(args, 2));
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;ILjava/lang/String;)V",
+        ACC_PROTECTED,
+        |vm, _, args| {
+            let this = receiver(args);
+            record_set_ref(vm, this, "name", "Ljava/lang/String;", ref_arg(args, 1));
+            crate::lang::write_int_field(vm, this, "value", crate::int_arg(args, 2));
+            record_set_ref(
+                vm,
+                this,
+                "resourceBundleName",
+                "Ljava/lang/String;",
+                ref_arg(args, 3),
+            );
+            void()
+        },
+    ),
+    method(
+        "getResourceBundleName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(record_get_ref(
+                vm,
+                receiver(args),
+                "resourceBundleName",
+                "Ljava/lang/String;",
+            ))
+        },
     ),
     method("intValue", "()I", ACC_PUBLIC, |vm, _, args| {
         int(level_int(vm, receiver(args)))
@@ -143,6 +179,12 @@ pub(crate) const LEVEL: oxjvm_vm::NativeClass = class(
     &[
         field("value", "I", ACC_PRIVATE | ACC_FINAL, None),
         field("name", "Ljava/lang/String;", ACC_PRIVATE | ACC_FINAL, None),
+        field(
+            "resourceBundleName",
+            "Ljava/lang/String;",
+            ACC_PRIVATE,
+            None,
+        ),
         field(
             "ALL",
             "Ljava/util/logging/Level;",
@@ -1087,7 +1129,36 @@ fn publish_to_output(
     Ok(())
 }
 
-const STREAM_HANDLER_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+const STREAM_HANDLER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;Ljava/util/logging/Formatter;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let output = ref_arg(args, 1);
+            let formatter = ref_arg(args, 2);
+            if output.is_null() || formatter.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            record_set_ref(
+                vm,
+                this,
+                "level",
+                "Ljava/util/logging/Level;",
+                ObjectRef::NULL,
+            );
+            record_set_ref(
+                vm,
+                this,
+                "formatter",
+                "Ljava/util/logging/Formatter;",
+                formatter,
+            );
+            record_set_ref(vm, this, "output", "Ljava/lang/Object;", output);
+            void()
+        },
+    ),
     method(
         "publish",
         "(Ljava/util/logging/LogRecord;)V",
@@ -1325,7 +1396,7 @@ fn level_named(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
         .ok_or_else(|| VmError::internal("Level constant missing"))
 }
 
-const LOGGER_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
+const LOGGER_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
     method(
         "getLogger",
         "(Ljava/lang/String;)Ljava/util/logging/Logger;",
@@ -1342,6 +1413,31 @@ const LOGGER_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
         |vm, _, args| {
             let name = crate::string_arg(vm, args[0])?;
             object(logger_from_registry(vm, &name)?)
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PROTECTED,
+        |vm, _, args| {
+            let this = receiver(args);
+            record_set_ref(vm, this, "name", "Ljava/lang/String;", ref_arg(args, 1));
+            record_set_ref(
+                vm,
+                this,
+                "resourceBundleName",
+                "Ljava/lang/String;",
+                ref_arg(args, 2),
+            );
+            crate::lang::write_int_field(vm, this, "useParentHandlers", 1);
+            let list = vm.resolve_class("java/util/ArrayList")?;
+            let list_instance = vm.new_instance(list)?;
+            let (declaring, ctor) = vm
+                .find_method(list, "<init>", "()V")
+                .ok_or_else(|| VmError::internal("ArrayList() missing"))?;
+            vm.invoke_method(declaring, ctor, vec![Value::Ref(list_instance)])?;
+            record_set_ref(vm, this, "handlers", "Ljava/util/ArrayList;", list_instance);
+            void()
         },
     ),
     method(
@@ -1530,7 +1626,40 @@ const LOGGER_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
         "getResourceBundle",
         "()Ljava/util/ResourceBundle;",
         ACC_PUBLIC,
-        |_, _, _| object(ObjectRef::NULL),
+        |vm, _, args| {
+            object(record_get_ref(
+                vm,
+                receiver(args),
+                "resourceBundle",
+                "Ljava/util/ResourceBundle;",
+            ))
+        },
+    ),
+    method(
+        "setResourceBundle",
+        "(Ljava/util/ResourceBundle;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let bundle = ref_arg(args, 1);
+            record_set_ref(
+                vm,
+                this,
+                "resourceBundle",
+                "Ljava/util/ResourceBundle;",
+                bundle,
+            );
+            if bundle.is_null() {
+                record_set_ref(
+                    vm,
+                    this,
+                    "resourceBundleName",
+                    "Ljava/lang/String;",
+                    ObjectRef::NULL,
+                );
+            }
+            void()
+        },
     ),
     method(
         "isLoggable",
@@ -1730,6 +1859,12 @@ pub(crate) const LOGGER: oxjvm_vm::NativeClass = class(
             "resourceBundleName",
             "Ljava/lang/String;",
             ACC_PRIVATE,
+            None,
+        ),
+        field(
+            "resourceBundle",
+            "Ljava/util/ResourceBundle;",
+            ACC_PRIVATE | ACC_VOLATILE,
             None,
         ),
         field("useParentHandlers", "I", ACC_PRIVATE, None),
