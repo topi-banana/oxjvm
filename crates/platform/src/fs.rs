@@ -30,6 +30,8 @@ pub struct FileMetadata {
     pub modified_millis: i64,
     /// Whether the path is read-only.
     pub readonly: bool,
+    /// Unix permission bits (0 when unknown or not applicable).
+    pub mode: u32,
 }
 
 /// Filesystem operations a host can provide to the guest.
@@ -101,6 +103,11 @@ pub trait FileSystem {
 
     /// Create a hard link at `link` for `target`.
     fn hard_link(&mut self, _link: &str, _target: &str) -> bool {
+        false
+    }
+
+    /// Set Unix permission bits; `false` when unsupported or denied.
+    fn set_mode(&mut self, _path: &str, _mode: u32) -> bool {
         false
     }
 }

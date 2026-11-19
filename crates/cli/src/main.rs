@@ -81,6 +81,17 @@ impl oxjvm_platform::FileSystem for PassthroughFileSystem {
             len: metadata.len(),
             modified_millis,
             readonly: metadata.permissions().readonly(),
+            mode: {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    metadata.permissions().mode()
+                }
+                #[cfg(not(unix))]
+                {
+                    0
+                }
+            },
         })
     }
 
@@ -174,6 +185,19 @@ impl oxjvm_platform::FileSystem for PassthroughFileSystem {
 
     fn hard_link(&mut self, link: &str, target: &str) -> bool {
         fs::hard_link(Self::path(target), Self::path(link)).is_ok()
+    }
+
+    fn set_mode(&mut self, path: &str, mode: u32) -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(Self::path(path), fs::Permissions::from_mode(mode)).is_ok()
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (path, mode);
+            false
+        }
     }
 }
 

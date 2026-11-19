@@ -2508,7 +2508,16 @@ fn tree_set_descending_set(
     object(set)
 }
 
-const TREE_SET_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
+/// `TreeSet.reversed()`: a live reverse-ordered view (removals reach this set).
+fn tree_set_reversed(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    object(crate::util::rev_sorted_set_new(vm, receiver(args))?)
+}
+
+const TREE_SET_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
     method("<init>", "()V", ACC_PUBLIC, tree_set_init),
     method(
         "<init>",
@@ -2767,13 +2776,25 @@ const TREE_SET_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
         "reversed",
         "()Ljava/util/SequencedSet;",
         ACC_PUBLIC,
-        tree_set_descending_set,
+        tree_set_reversed,
     ),
     method(
         "reversed",
         "()Ljava/util/NavigableSet;",
         ACC_PUBLIC,
-        tree_set_descending_set,
+        tree_set_reversed,
+    ),
+    method(
+        "reversed",
+        "()Ljava/util/SortedSet;",
+        ACC_PUBLIC,
+        tree_set_reversed,
+    ),
+    method(
+        "reversed",
+        "()Ljava/util/SequencedCollection;",
+        ACC_PUBLIC,
+        tree_set_reversed,
     ),
 ];
 

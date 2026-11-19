@@ -7137,7 +7137,47 @@ fn process_builder_store_command(
     object(this)
 }
 
-const PROCESS_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+/// The stored redirect for `name`, or `Redirect.PIPE` when unset.
+fn process_builder_redirect(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+) -> Result<Value, VmError> {
+    let class = vm.class_of(this);
+    let stored = vm
+        .read_ref_field(this, class, name, "Ljava/lang/ProcessBuilder$Redirect;")
+        .unwrap_or(ObjectRef::NULL);
+    if !stored.is_null() {
+        return object(stored);
+    }
+    let redirect_class = vm.resolve_class("java/lang/ProcessBuilder$Redirect")?;
+    vm.ensure_initialized(redirect_class)?;
+    let pipe = vm
+        .read_static_ref_if_set(
+            redirect_class,
+            "PIPE",
+            "Ljava/lang/ProcessBuilder$Redirect;",
+        )
+        .unwrap_or(ObjectRef::NULL);
+    object(pipe)
+}
+
+fn process_builder_set_redirect(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+    redirect: ObjectRef,
+) -> Result<(), VmError> {
+    if redirect.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, name, "Ljava/lang/ProcessBuilder$Redirect;")?;
+    vm.set_instance_ref(this, declaring, field, redirect);
+    Ok(())
+}
+
+const PROCESS_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
     method(
         "<init>",
         "([Ljava/lang/String;)V",
@@ -7193,37 +7233,82 @@ const PROCESS_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         "redirectInput",
         "(Ljava/lang/ProcessBuilder$Redirect;)Ljava/lang/ProcessBuilder;",
         ACC_PUBLIC,
-        |_, _, args| object(receiver(args)),
+        |vm, _, args| {
+            let this = receiver(args);
+            process_builder_set_redirect(vm, this, "redirectInput", ref_arg(args, 1))?;
+            object(this)
+        },
+    ),
+    method(
+        "redirectInput",
+        "()Ljava/lang/ProcessBuilder$Redirect;",
+        ACC_PUBLIC,
+        |vm, _, args| process_builder_redirect(vm, receiver(args), "redirectInput"),
     ),
     method(
         "redirectOutput",
         "(Ljava/lang/ProcessBuilder$Redirect;)Ljava/lang/ProcessBuilder;",
         ACC_PUBLIC,
-        |_, _, args| object(receiver(args)),
+        |vm, _, args| {
+            let this = receiver(args);
+            process_builder_set_redirect(vm, this, "redirectOutput", ref_arg(args, 1))?;
+            object(this)
+        },
+    ),
+    method(
+        "redirectOutput",
+        "()Ljava/lang/ProcessBuilder$Redirect;",
+        ACC_PUBLIC,
+        |vm, _, args| process_builder_redirect(vm, receiver(args), "redirectOutput"),
     ),
     method(
         "redirectError",
         "(Ljava/lang/ProcessBuilder$Redirect;)Ljava/lang/ProcessBuilder;",
         ACC_PUBLIC,
-        |_, _, args| object(receiver(args)),
+        |vm, _, args| {
+            let this = receiver(args);
+            process_builder_set_redirect(vm, this, "redirectError", ref_arg(args, 1))?;
+            object(this)
+        },
+    ),
+    method(
+        "redirectError",
+        "()Ljava/lang/ProcessBuilder$Redirect;",
+        ACC_PUBLIC,
+        |vm, _, args| process_builder_redirect(vm, receiver(args), "redirectError"),
     ),
     method(
         "redirectInput",
         "(Ljava/io/File;)Ljava/lang/ProcessBuilder;",
         ACC_PUBLIC,
-        |_, _, args| object(receiver(args)),
+        |vm, _, args| {
+            let this = receiver(args);
+            let redirect = new_redirect(vm, "READ", ref_arg(args, 1))?.as_ref();
+            process_builder_set_redirect(vm, this, "redirectInput", redirect)?;
+            object(this)
+        },
     ),
     method(
         "redirectOutput",
         "(Ljava/io/File;)Ljava/lang/ProcessBuilder;",
         ACC_PUBLIC,
-        |_, _, args| object(receiver(args)),
+        |vm, _, args| {
+            let this = receiver(args);
+            let redirect = new_redirect(vm, "WRITE", ref_arg(args, 1))?.as_ref();
+            process_builder_set_redirect(vm, this, "redirectOutput", redirect)?;
+            object(this)
+        },
     ),
     method(
         "redirectError",
         "(Ljava/io/File;)Ljava/lang/ProcessBuilder;",
         ACC_PUBLIC,
-        |_, _, args| object(receiver(args)),
+        |vm, _, args| {
+            let this = receiver(args);
+            let redirect = new_redirect(vm, "WRITE", ref_arg(args, 1))?.as_ref();
+            process_builder_set_redirect(vm, this, "redirectError", redirect)?;
+            object(this)
+        },
     ),
     method(
         "inheritIO",
@@ -7536,7 +7621,27 @@ pub(crate) const PROCESS_BUILDER: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_FINAL,
-    &[field("command", "Ljava/util/List;", ACC_PRIVATE, None)],
+    &[
+        field("command", "Ljava/util/List;", ACC_PRIVATE, None),
+        field(
+            "redirectInput",
+            "Ljava/lang/ProcessBuilder$Redirect;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field(
+            "redirectOutput",
+            "Ljava/lang/ProcessBuilder$Redirect;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field(
+            "redirectError",
+            "Ljava/lang/ProcessBuilder$Redirect;",
+            ACC_PRIVATE,
+            None,
+        ),
+    ],
     &PROCESS_BUILDER_METHODS,
     None,
 );

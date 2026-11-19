@@ -724,7 +724,288 @@ pub(crate) fn new_path(vm: &mut Vm<'_>, path: &str) -> Result<Value, VmError> {
 // Files
 // -------------------------------------------------------------------------------------------
 
-const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 58] = [
+// -------------------------------------------------------------------------------------------
+// POSIX file permissions
+// -------------------------------------------------------------------------------------------
+
+/// The nine POSIX permissions, in `rwxrwxrwx` order, with their mode bits.
+const POSIX_PERMISSIONS: [(&str, u32); 9] = [
+    ("OWNER_READ", 0o400),
+    ("OWNER_WRITE", 0o200),
+    ("OWNER_EXECUTE", 0o100),
+    ("GROUP_READ", 0o040),
+    ("GROUP_WRITE", 0o020),
+    ("GROUP_EXECUTE", 0o010),
+    ("OTHERS_READ", 0o004),
+    ("OTHERS_WRITE", 0o002),
+    ("OTHERS_EXECUTE", 0o001),
+];
+
+fn posix_permission(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/nio/file/attribute/PosixFilePermission")?;
+    vm.ensure_initialized(class)?;
+    Ok(vm
+        .read_static_ref_if_set(class, name, "Ljava/nio/file/attribute/PosixFilePermission;")
+        .unwrap_or(ObjectRef::NULL))
+}
+
+fn posix_file_permission_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/nio/file/attribute/PosixFilePermission")?;
+    for (ordinal, (name, _)) in POSIX_PERMISSIONS.iter().enumerate() {
+        let instance = vm.new_instance(class)?;
+        let (declaring, field) = vm.find_field(class, "name", "Ljava/lang/String;")?;
+        let text = vm.make_string(name)?;
+        vm.set_instance_ref(instance, declaring, field, text);
+        crate::lang::write_int_field(vm, instance, "ordinal", ordinal as i32);
+        vm.set_static_value(
+            class,
+            name,
+            "Ljava/nio/file/attribute/PosixFilePermission;",
+            Value::Ref(instance),
+        );
+    }
+    Ok(())
+}
+
+const POSIX_FILE_PERMISSION_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method("name", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let name = vm
+            .read_ref_field(this, vm.class_of(this), "name", "Ljava/lang/String;")
+            .unwrap_or(ObjectRef::NULL);
+        object(name)
+    }),
+    method("ordinal", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "ordinal"))
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let name = vm
+                .read_ref_field(this, vm.class_of(this), "name", "Ljava/lang/String;")
+                .unwrap_or(ObjectRef::NULL);
+            object(name)
+        },
+    ),
+    method(
+        "values",
+        "()[Ljava/nio/file/attribute/PosixFilePermission;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/nio/file/attribute/PosixFilePermission")?;
+            vm.ensure_initialized(class)?;
+            let array = vm.allocate_object_array(class, POSIX_PERMISSIONS.len())?;
+            for (index, (name, _)) in POSIX_PERMISSIONS.iter().enumerate() {
+                let permission = posix_permission(vm, name)?;
+                vm.array_set_ref(array, index, permission)?;
+            }
+            object(array)
+        },
+    ),
+    method(
+        "valueOf",
+        "(Ljava/lang/String;)Ljava/nio/file/attribute/PosixFilePermission;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = vm.string_or_empty(ref_arg(args, 0));
+            for (candidate, _) in POSIX_PERMISSIONS.iter() {
+                if name == *candidate {
+                    return object(posix_permission(vm, candidate)?);
+                }
+            }
+            Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some(&alloc::format!(
+                    "No enum constant java.nio.file.attribute.PosixFilePermission.{name}"
+                )),
+            ))
+        },
+    ),
+];
+
+pub(crate) const POSIX_FILE_PERMISSION: oxjvm_vm::NativeClass = class(
+    "java/nio/file/attribute/PosixFilePermission",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("ordinal", "I", ACC_PRIVATE, None),
+        field(
+            "OWNER_READ",
+            "Ljava/nio/file/attribute/PosixFilePermission;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "OWNER_WRITE",
+            "Ljava/nio/file/attribute/PosixFilePermission;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "OWNER_EXECUTE",
+            "Ljava/nio/file/attribute/PosixFilePermission;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "GROUP_READ",
+            "Ljava/nio/file/attribute/PosixFilePermission;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "GROUP_WRITE",
+            "Ljava/nio/file/attribute/PosixFilePermission;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "GROUP_EXECUTE",
+            "Ljava/nio/file/attribute/PosixFilePermission;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "OTHERS_READ",
+            "Ljava/nio/file/attribute/PosixFilePermission;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "OTHERS_WRITE",
+            "Ljava/nio/file/attribute/PosixFilePermission;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "OTHERS_EXECUTE",
+            "Ljava/nio/file/attribute/PosixFilePermission;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+    ],
+    &POSIX_FILE_PERMISSION_METHODS,
+    Some(posix_file_permission_clinit),
+);
+
+/// Whether `set` contains the named permission singleton.
+fn posix_set_contains(vm: &mut Vm<'_>, set: ObjectRef, name: &str) -> Result<bool, VmError> {
+    let permission = posix_permission(vm, name)?;
+    let (class, method) = vm.resolve_virtual_method(set, "contains", "(Ljava/lang/Object;)Z")?;
+    Ok(vm
+        .invoke_method(class, method, vec![Value::Ref(set), Value::Ref(permission)])?
+        .as_int()
+        != 0)
+}
+
+const POSIX_FILE_PERMISSIONS_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "fromString",
+        "(Ljava/lang/String;)Ljava/util/Set;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = string_arg(vm, args[0])?;
+            let chars: Vec<char> = text.chars().collect();
+            if chars.len() != 9 {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("Invalid permissions string"),
+                ));
+            }
+            let mut elements = Vec::new();
+            for (index, (name, _)) in POSIX_PERMISSIONS.iter().enumerate() {
+                let expected = "rwxrwxrwx".chars().nth(index).unwrap();
+                if chars[index] == expected {
+                    elements.push(posix_permission(vm, name)?);
+                } else if chars[index] != '-' {
+                    return Err(vm.throw_new(
+                        "java/lang/IllegalArgumentException",
+                        Some("Invalid permissions string"),
+                    ));
+                }
+            }
+            object(crate::util::hash_set_from(vm, &elements)?)
+        },
+    ),
+    method(
+        "toString",
+        "(Ljava/util/Set;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let set = ref_arg(args, 0);
+            let mut text = String::new();
+            for (index, (name, _)) in POSIX_PERMISSIONS.iter().enumerate() {
+                let expected = "rwxrwxrwx".chars().nth(index).unwrap();
+                if posix_set_contains(vm, set, name)? {
+                    text.push(expected);
+                } else {
+                    text.push('-');
+                }
+            }
+            object(vm.make_string(&text)?)
+        },
+    ),
+];
+
+pub(crate) const POSIX_FILE_PERMISSIONS: oxjvm_vm::NativeClass = class(
+    "java/nio/file/attribute/PosixFilePermissions",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[],
+    &POSIX_FILE_PERMISSIONS_METHODS,
+    None,
+);
+
+const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 60] = [
+    method(
+        "getPosixFilePermissions",
+        "(Ljava/nio/file/Path;[Ljava/nio/file/LinkOption;)Ljava/util/Set;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            let Some(metadata) = fs_metadata(vm, &path) else {
+                return Err(vm.throw_new("java/nio/file/NoSuchFileException", Some(&path)));
+            };
+            let mut elements = Vec::new();
+            for (name, bit) in POSIX_PERMISSIONS.iter() {
+                if metadata.mode & bit != 0 {
+                    elements.push(posix_permission(vm, name)?);
+                }
+            }
+            object(crate::util::hash_set_from(vm, &elements)?)
+        },
+    ),
+    method(
+        "setPosixFilePermissions",
+        "(Ljava/nio/file/Path;Ljava/util/Set;)Ljava/nio/file/Path;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path_ref = ref_arg(args, 0);
+            let path = path_string(vm, path_ref);
+            let set = ref_arg(args, 1);
+            let mut mode = 0u32;
+            for (name, bit) in POSIX_PERMISSIONS.iter() {
+                if posix_set_contains(vm, set, name)? {
+                    mode |= bit;
+                }
+            }
+            let ok = vm
+                .host
+                .filesystem()
+                .map(|fs| fs.set_mode(&path, mode))
+                .unwrap_or(false);
+            if !ok {
+                return Err(vm.throw_new("java/lang/UnsupportedOperationException", None));
+            }
+            object(path_ref)
+        },
+    ),
     method(
         "createDirectories",
         "(Ljava/nio/file/Path;[Ljava/nio/file/attribute/FileAttribute;)Ljava/nio/file/Path;",
