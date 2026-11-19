@@ -2350,7 +2350,7 @@ macro_rules! array_hash_code {
     };
 }
 
-const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 149] = [
+const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 161] = [
     method(
         "toString",
         "([I)Ljava/lang/String;",
@@ -2729,6 +2729,86 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 149] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| crate::stream::stream_of_array(vm, ref_arg(args, 0)),
     ),
+    method(
+        "stream",
+        "([Ljava/lang/Object;II)Ljava/util/stream/Stream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            if array.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let from = int_arg(args, 1);
+            let to = int_arg(args, 2);
+            let length = vm.array_length(array)? as i32;
+            arrays_stream_range_check(vm, from, to, length)?;
+            let mut values = Vec::new();
+            for index in from..to {
+                values.push(vm.array_get(array, index)?.as_ref());
+            }
+            object(crate::stream::stream_from(vm, values)?)
+        },
+    ),
+    method(
+        "stream",
+        "([III)Ljava/util/stream/IntStream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            if array.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let from = int_arg(args, 1);
+            let to = int_arg(args, 2);
+            let length = vm.array_length(array)? as i32;
+            arrays_stream_range_check(vm, from, to, length)?;
+            let mut values = Vec::new();
+            for index in from..to {
+                values.push(vm.array_get(array, index)?.as_int());
+            }
+            crate::intstream::int_stream_of(vm, values)
+        },
+    ),
+    method(
+        "stream",
+        "([JII)Ljava/util/stream/LongStream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            if array.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let from = int_arg(args, 1);
+            let to = int_arg(args, 2);
+            let length = vm.array_length(array)? as i32;
+            arrays_stream_range_check(vm, from, to, length)?;
+            let mut values = Vec::new();
+            for index in from..to {
+                values.push(vm.array_get(array, index)?.as_long());
+            }
+            object(crate::primitive_stream::long_stream_from(vm, values)?)
+        },
+    ),
+    method(
+        "stream",
+        "([DII)Ljava/util/stream/DoubleStream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            if array.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let from = int_arg(args, 1);
+            let to = int_arg(args, 2);
+            let length = vm.array_length(array)? as i32;
+            arrays_stream_range_check(vm, from, to, length)?;
+            let mut values = Vec::new();
+            for index in from..to {
+                values.push(vm.array_get(array, index)?.as_double());
+            }
+            object(crate::primitive_stream::double_stream_from(vm, values)?)
+        },
+    ),
     method("sort", "([I)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
         arrays_sort_int(vm, ref_arg(args, 0))
     }),
@@ -2905,6 +2985,126 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 149] = [
                 values.push(vm.array_get(array, index as i32)?.as_long());
             }
             object(crate::primitive_stream::long_stream_from(vm, values)?)
+        },
+    ),
+    method(
+        "spliterator",
+        "([Ljava/lang/Object;)Ljava/util/Spliterator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            if array.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let length = vm.array_length(array)? as i32;
+            arrays_spliterator(
+                vm,
+                array,
+                0,
+                length,
+                "([Ljava/lang/Object;III)Ljava/util/Spliterator;",
+            )
+        },
+    ),
+    method(
+        "spliterator",
+        "([Ljava/lang/Object;II)Ljava/util/Spliterator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_spliterator(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                int_arg(args, 2),
+                "([Ljava/lang/Object;III)Ljava/util/Spliterator;",
+            )
+        },
+    ),
+    method(
+        "spliterator",
+        "([I)Ljava/util/Spliterator$OfInt;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            if array.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let length = vm.array_length(array)? as i32;
+            arrays_spliterator(vm, array, 0, length, "([IIII)Ljava/util/Spliterator$OfInt;")
+        },
+    ),
+    method(
+        "spliterator",
+        "([III)Ljava/util/Spliterator$OfInt;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_spliterator(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                int_arg(args, 2),
+                "([IIII)Ljava/util/Spliterator$OfInt;",
+            )
+        },
+    ),
+    method(
+        "spliterator",
+        "([J)Ljava/util/Spliterator$OfLong;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            if array.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let length = vm.array_length(array)? as i32;
+            arrays_spliterator(vm, array, 0, length, "([JII)Ljava/util/Spliterator$OfLong;")
+        },
+    ),
+    method(
+        "spliterator",
+        "([JII)Ljava/util/Spliterator$OfLong;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_spliterator(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                int_arg(args, 2),
+                "([JII)Ljava/util/Spliterator$OfLong;",
+            )
+        },
+    ),
+    method(
+        "spliterator",
+        "([D)Ljava/util/Spliterator$OfDouble;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            if array.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let length = vm.array_length(array)? as i32;
+            arrays_spliterator(
+                vm,
+                array,
+                0,
+                length,
+                "([DII)Ljava/util/Spliterator$OfDouble;",
+            )
+        },
+    ),
+    method(
+        "spliterator",
+        "([DII)Ljava/util/Spliterator$OfDouble;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_spliterator(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                int_arg(args, 2),
+                "([DII)Ljava/util/Spliterator$OfDouble;",
+            )
         },
     ),
     array_equals!("([B[B)Z"),
@@ -3570,6 +3770,53 @@ fn arrays_sort_objects_range(
 }
 
 /// `Arrays.rangeCheck`: validate a `[from, to)` slice against the array length.
+/// Range check for `Arrays.stream`/`spliterator`: out-of-range indices (including
+/// `from > to`) throw `ArrayIndexOutOfBoundsException`, matching the JDK.
+fn arrays_stream_range_check(
+    vm: &mut Vm<'_>,
+    from: i32,
+    to: i32,
+    length: i32,
+) -> Result<(), VmError> {
+    if from < 0 || from > length || to < from || to > length {
+        return Err(vm.throw_new(
+            "java/lang/ArrayIndexOutOfBoundsException",
+            Some(&alloc::format!(
+                "range [{from}, {to}) out of bounds for length {length}"
+            )),
+        ));
+    }
+    Ok(())
+}
+
+/// Delegate `Arrays.spliterator` to the matching `Spliterators.spliterator`
+/// range factory (characteristics ORDERED | IMMUTABLE).
+fn arrays_spliterator(
+    vm: &mut Vm<'_>,
+    array: ObjectRef,
+    from: i32,
+    to: i32,
+    descriptor: &str,
+) -> Result<Value, VmError> {
+    if array.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let class = vm.resolve_class("java/util/Spliterators")?;
+    let (declaring, method) = vm
+        .find_method(class, "spliterator", descriptor)
+        .ok_or_else(|| VmError::internal("Spliterators.spliterator missing"))?;
+    vm.invoke_method(
+        declaring,
+        method,
+        vec![
+            Value::Ref(array),
+            Value::Int(from),
+            Value::Int(to),
+            Value::Int(0x50),
+        ],
+    )
+}
+
 fn arrays_range_check(vm: &mut Vm<'_>, from: i32, to: i32, length: usize) -> Result<(), VmError> {
     if from > to {
         return Err(vm.throw_new(
