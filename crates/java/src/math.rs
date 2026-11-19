@@ -2009,7 +2009,7 @@ fn big_integer_binary(
     }
 }
 
-const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
+const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -2062,6 +2062,30 @@ const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
             _ => Err(vm.throw_new(
                 "java/lang/ArithmeticException",
                 Some("BigInteger out of long range"),
+            )),
+        }
+    }),
+    method("shortValueExact", "()S", ACC_PUBLIC, |vm, _, args| {
+        let text = big_text(vm, receiver(args));
+        match text.parse::<i128>() {
+            Ok(value) if value >= i128::from(i16::MIN) && value <= i128::from(i16::MAX) => {
+                int(value as i16 as i32)
+            }
+            _ => Err(vm.throw_new(
+                "java/lang/ArithmeticException",
+                Some("BigInteger out of short range"),
+            )),
+        }
+    }),
+    method("byteValueExact", "()B", ACC_PUBLIC, |vm, _, args| {
+        let text = big_text(vm, receiver(args));
+        match text.parse::<i128>() {
+            Ok(value) if value >= i128::from(i8::MIN) && value <= i128::from(i8::MAX) => {
+                int(value as i8 as i32)
+            }
+            _ => Err(vm.throw_new(
+                "java/lang/ArithmeticException",
+                Some("BigInteger out of byte range"),
             )),
         }
     }),
