@@ -218,7 +218,7 @@ pub(crate) const LIST_ITERATOR: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+const COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method(
         "size",
         "()I",
@@ -245,6 +245,15 @@ const COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
     ),
     method(
         "stream",
+        "()Ljava/util/stream/Stream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = collection_elements(vm, receiver(args))?;
+            object(crate::stream::stream_from(vm, elements)?)
+        },
+    ),
+    method(
+        "parallelStream",
         "()Ljava/util/stream/Stream;",
         ACC_PUBLIC,
         |vm, _, args| {
@@ -320,6 +329,26 @@ const COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
         "([Ljava/lang/Object;)[Ljava/lang/Object;",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
+    ),
+    method(
+        "toArray",
+        "(Ljava/util/function/IntFunction;)[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let generator = ref_arg(args, 1);
+            let (class, method) = vm.resolve_virtual_method(this, "size", "()I")?;
+            let size = vm.invoke_method(class, method, vec![Value::Ref(this)])?;
+            let (class, method) =
+                vm.resolve_virtual_method(generator, "apply", "(I)Ljava/lang/Object;")?;
+            let array = vm.invoke_method(class, method, vec![Value::Ref(generator), size])?;
+            let (class, method) = vm.resolve_virtual_method(
+                this,
+                "toArray",
+                "([Ljava/lang/Object;)[Ljava/lang/Object;",
+            )?;
+            vm.invoke_method(class, method, vec![Value::Ref(this), array])
+        },
     ),
 ];
 
@@ -405,72 +434,60 @@ pub(crate) const SEQUENCED_SET: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const SEQUENCED_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const SEQUENCED_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method(
         "putFirst",
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        crate::lang::abstract_method_pub,
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
     ),
     method(
         "putLast",
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        crate::lang::abstract_method_pub,
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
     ),
     method(
-        "getFirst",
+        "firstEntry",
         "()Ljava/util/Map$Entry;",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        crate::lang::abstract_method_pub,
+        ACC_PUBLIC,
+        |vm, _, args| seq_map_default_end(vm, receiver(args), true, false),
     ),
     method(
-        "getLast",
+        "lastEntry",
         "()Ljava/util/Map$Entry;",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        crate::lang::abstract_method_pub,
-    ),
-    method(
-        "removeFirst",
-        "()Ljava/util/Map$Entry;",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        crate::lang::abstract_method_pub,
-    ),
-    method(
-        "removeLast",
-        "()Ljava/util/Map$Entry;",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        crate::lang::abstract_method_pub,
+        ACC_PUBLIC,
+        |vm, _, args| seq_map_default_end(vm, receiver(args), false, false),
     ),
     method(
         "pollFirstEntry",
         "()Ljava/util/Map$Entry;",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        crate::lang::abstract_method_pub,
+        ACC_PUBLIC,
+        |vm, _, args| seq_map_default_end(vm, receiver(args), true, true),
     ),
     method(
         "pollLastEntry",
         "()Ljava/util/Map$Entry;",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        crate::lang::abstract_method_pub,
+        ACC_PUBLIC,
+        |vm, _, args| seq_map_default_end(vm, receiver(args), false, true),
     ),
     method(
         "sequencedKeySet",
         "()Ljava/util/SequencedSet;",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        crate::lang::abstract_method_pub,
+        ACC_PUBLIC,
+        |vm, _, args| object(seq_map_view_new(vm, receiver(args), 0)?),
     ),
     method(
         "sequencedValues",
         "()Ljava/util/SequencedCollection;",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        crate::lang::abstract_method_pub,
+        ACC_PUBLIC,
+        |vm, _, args| object(seq_map_view_new(vm, receiver(args), 1)?),
     ),
     method(
         "sequencedEntrySet",
         "()Ljava/util/SequencedSet;",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        crate::lang::abstract_method_pub,
+        ACC_PUBLIC,
+        |vm, _, args| object(seq_map_view_new(vm, receiver(args), 2)?),
     ),
     method(
         "reversed",
@@ -479,6 +496,58 @@ const SEQUENCED_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         crate::lang::abstract_method_pub,
     ),
 ];
+
+/// JDK `SequencedMap` default end operations: walk the `entrySet` iterator (of this map or its
+/// reversed view), optionally removing the element, and return an unmodifiable entry copy.
+fn seq_map_default_end(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    first: bool,
+    poll: bool,
+) -> Result<Value, VmError> {
+    let source = if first {
+        this
+    } else {
+        let (class, method) =
+            vm.resolve_virtual_method(this, "reversed", "()Ljava/util/SequencedMap;")?;
+        vm.invoke_method(class, method, vec![Value::Ref(this)])?
+            .as_ref()
+    };
+    let (class, method) = vm.resolve_virtual_method(source, "entrySet", "()Ljava/util/Set;")?;
+    let entry_set = vm
+        .invoke_method(class, method, vec![Value::Ref(source)])?
+        .as_ref();
+    let (class, method) =
+        vm.resolve_virtual_method(entry_set, "iterator", "()Ljava/util/Iterator;")?;
+    let iterator = vm
+        .invoke_method(class, method, vec![Value::Ref(entry_set)])?
+        .as_ref();
+    let (class, method) = vm.resolve_virtual_method(iterator, "hasNext", "()Z")?;
+    let has_next = vm
+        .invoke_method(class, method, vec![Value::Ref(iterator)])?
+        .as_int()
+        != 0;
+    if !has_next {
+        return object(ObjectRef::NULL);
+    }
+    let (class, method) = vm.resolve_virtual_method(iterator, "next", "()Ljava/lang/Object;")?;
+    let entry = vm
+        .invoke_method(class, method, vec![Value::Ref(iterator)])?
+        .as_ref();
+    if poll {
+        let (class, method) = vm.resolve_virtual_method(iterator, "remove", "()V")?;
+        vm.invoke_method(class, method, vec![Value::Ref(iterator)])?;
+    }
+    let (class, method) = vm.resolve_virtual_method(entry, "getKey", "()Ljava/lang/Object;")?;
+    let key = vm
+        .invoke_method(class, method, vec![Value::Ref(entry)])?
+        .as_ref();
+    let (class, method) = vm.resolve_virtual_method(entry, "getValue", "()Ljava/lang/Object;")?;
+    let value = vm
+        .invoke_method(class, method, vec![Value::Ref(entry)])?
+        .as_ref();
+    object(new_entry_immutable(vm, key, value)?)
+}
 
 pub(crate) const SEQUENCED_MAP: oxjvm_vm::NativeClass = class(
     "java/util/SequencedMap",
@@ -1296,7 +1365,7 @@ const SORTED_SET_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
 pub(crate) const SORTED_SET: oxjvm_vm::NativeClass = class(
     "java/util/SortedSet",
     Some("java/lang/Object"),
-    &["java/util/Set"],
+    &["java/util/SequencedSet"],
     ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
     &[],
     &SORTED_SET_METHODS,
@@ -1407,6 +1476,20 @@ macro_rules! map_of {
     };
 }
 
+/// Invoke a map operation on `this` via virtual dispatch (used by the `Map` default methods).
+fn map_invoke(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    extra: &[Value],
+) -> Result<Value, VmError> {
+    let (class, method) = vm.resolve_virtual_method(this, name, descriptor)?;
+    let mut args = vec![Value::Ref(this)];
+    args.extend_from_slice(extra);
+    vm.invoke_method(class, method, args)
+}
+
 const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
     method(
         "entry",
@@ -1468,8 +1551,53 @@ const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
     method(
         "computeIfPresent",
         "(Ljava/lang/Object;Ljava/util/function/BiFunction;)Ljava/lang/Object;",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        crate::lang::abstract_method_pub,
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let key = ref_arg(args, 1);
+            let function = ref_arg(args, 2);
+            let old = map_invoke(
+                vm,
+                this,
+                "get",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                &[Value::Ref(key)],
+            )?
+            .as_ref();
+            if old.is_null() {
+                return object(ObjectRef::NULL);
+            }
+            let (class, method) = vm.resolve_virtual_method(
+                function,
+                "apply",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+            )?;
+            let new = vm
+                .invoke_method(
+                    class,
+                    method,
+                    vec![Value::Ref(function), Value::Ref(key), Value::Ref(old)],
+                )?
+                .as_ref();
+            if new.is_null() {
+                map_invoke(
+                    vm,
+                    this,
+                    "remove",
+                    "(Ljava/lang/Object;)Ljava/lang/Object;",
+                    &[Value::Ref(key)],
+                )?;
+                return object(ObjectRef::NULL);
+            }
+            map_invoke(
+                vm,
+                this,
+                "put",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                &[Value::Ref(key), Value::Ref(new)],
+            )?;
+            object(new)
+        },
     ),
     method(
         "put",
@@ -1480,8 +1608,29 @@ const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
     method(
         "putIfAbsent",
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        crate::lang::abstract_method_pub,
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let key = ref_arg(args, 1);
+            let value = map_invoke(
+                vm,
+                this,
+                "get",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                &[Value::Ref(key)],
+            )?
+            .as_ref();
+            if !value.is_null() {
+                return object(value);
+            }
+            map_invoke(
+                vm,
+                this,
+                "put",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                &[Value::Ref(key), args[2]],
+            )
+        },
     ),
     method(
         "get",
@@ -1492,14 +1641,76 @@ const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
     method(
         "getOrDefault",
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        crate::lang::abstract_method_pub,
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let key = ref_arg(args, 1);
+            let value = map_invoke(
+                vm,
+                this,
+                "get",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                &[Value::Ref(key)],
+            )?
+            .as_ref();
+            if !value.is_null() {
+                return object(value);
+            }
+            let present = map_invoke(
+                vm,
+                this,
+                "containsKey",
+                "(Ljava/lang/Object;)Z",
+                &[Value::Ref(key)],
+            )?
+            .as_int()
+                != 0;
+            if present {
+                object(value)
+            } else {
+                object(ref_arg(args, 2))
+            }
+        },
     ),
     method(
         "computeIfAbsent",
         "(Ljava/lang/Object;Ljava/util/function/Function;)Ljava/lang/Object;",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        crate::lang::abstract_method_pub,
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let key = ref_arg(args, 1);
+            let function = ref_arg(args, 2);
+            let value = map_invoke(
+                vm,
+                this,
+                "get",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                &[Value::Ref(key)],
+            )?
+            .as_ref();
+            if !value.is_null() {
+                return object(value);
+            }
+            let (class, method) = vm.resolve_virtual_method(
+                function,
+                "apply",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+            )?;
+            let new = vm
+                .invoke_method(class, method, vec![Value::Ref(function), Value::Ref(key)])?
+                .as_ref();
+            if new.is_null() {
+                return object(ObjectRef::NULL);
+            }
+            map_invoke(
+                vm,
+                this,
+                "put",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                &[Value::Ref(key), Value::Ref(new)],
+            )?;
+            object(new)
+        },
     ),
     method(
         "remove",
@@ -9443,7 +9654,7 @@ pub(crate) const NAVIGABLE_MAP: oxjvm_vm::NativeClass = class(
 pub(crate) const SORTED_MAP: oxjvm_vm::NativeClass = class(
     "java/util/SortedMap",
     Some("java/lang/Object"),
-    &["java/util/Map"],
+    &["java/util/SequencedMap"],
     ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
     &[],
     &[
@@ -9482,6 +9693,18 @@ pub(crate) const SORTED_MAP: oxjvm_vm::NativeClass = class(
             "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/SortedMap;",
             ACC_PUBLIC | ACC_ABSTRACT,
             crate::lang::abstract_method_pub,
+        ),
+        method(
+            "reversed",
+            "()Ljava/util/SequencedMap;",
+            ACC_PUBLIC,
+            |vm, _, args| object(reverse_seq_map_view_new(vm, receiver(args))?),
+        ),
+        method(
+            "reversed",
+            "()Ljava/util/SortedMap;",
+            ACC_PUBLIC,
+            |vm, _, args| object(reverse_seq_map_view_new(vm, receiver(args))?),
         ),
     ],
     None,
@@ -14056,6 +14279,18 @@ pub(crate) fn new_entry(
     Ok(instance)
 }
 
+/// An entry snapshot whose `setValue` throws `UnsupportedOperationException`, as returned by
+/// the `SequencedMap` end operations.
+fn new_entry_immutable(
+    vm: &mut Vm<'_>,
+    key: ObjectRef,
+    value: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    let instance = new_entry(vm, key, value)?;
+    crate::lang::write_int_field(vm, instance, "immutable", 1);
+    Ok(instance)
+}
+
 const OJVM_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     method(
         "getKey",
@@ -14075,6 +14310,7 @@ const OJVM_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
+            check_mutable(vm, this)?;
             let previous = entry_field(vm, this, "value");
             let class = vm.class_of(this);
             let (declaring, field) = vm.find_field(class, "value", "Ljava/lang/Object;")?;
@@ -14133,6 +14369,7 @@ pub(crate) const OJVM_ENTRY: oxjvm_vm::NativeClass = class(
     &[
         field("key", "Ljava/lang/Object;", ACC_PRIVATE, None),
         field("value", "Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("immutable", "I", ACC_PRIVATE, None),
     ],
     &OJVM_ENTRY_METHODS,
     None,
@@ -15079,20 +15316,917 @@ pub(crate) const ENUM_MAP: oxjvm_vm::NativeClass = class(
 // -------------------------------------------------------------------------------------------
 
 /// `LinkedHashMap`: the same insertion-ordered storage as the native HashMap.
+/// Insertion-ordered pairs of a `LinkedHashMap` (or any map sharing the pair-array storage).
+fn lhm_pairs(vm: &Vm<'_>, this: ObjectRef) -> Vec<(ObjectRef, ObjectRef)> {
+    hash_map_pairs(vm, this)
+}
+
+/// `putFirst`/`putLast`: reposition an existing key, then store the new pair at the chosen end.
+fn lhm_put_position(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    key: ObjectRef,
+    value: ObjectRef,
+    first: bool,
+) -> Result<Value, VmError> {
+    check_mutable(vm, this)?;
+    let mut pairs = lhm_pairs(vm, this);
+    let mut previous = ObjectRef::NULL;
+    if let Ok(index) = hash_map_index_of(vm, this, key) {
+        if index >= 0 {
+            previous = pairs.remove(index as usize).1;
+        }
+    }
+    if first {
+        pairs.insert(0, (key, value));
+    } else {
+        pairs.push((key, value));
+    }
+    hash_map_store(vm, this, &pairs)?;
+    object(previous)
+}
+
+/// The first/last key, throwing `NoSuchElementException` when empty.
+fn lhm_end_key(vm: &mut Vm<'_>, this: ObjectRef, first: bool) -> Result<Value, VmError> {
+    let pairs = lhm_pairs(vm, this);
+    let pair = if first { pairs.first() } else { pairs.last() };
+    match pair {
+        Some((key, _)) => object(*key),
+        None => Err(vm.throw_new("java/util/NoSuchElementException", None)),
+    }
+}
+
+/// Remove and return the first/last key, throwing `NoSuchElementException` when empty.
+fn lhm_remove_end(vm: &mut Vm<'_>, this: ObjectRef, first: bool) -> Result<Value, VmError> {
+    check_mutable(vm, this)?;
+    let mut pairs = lhm_pairs(vm, this);
+    if pairs.is_empty() {
+        return Err(vm.throw_new("java/util/NoSuchElementException", None));
+    }
+    let (key, _) = if first {
+        pairs.remove(0)
+    } else {
+        pairs.pop().unwrap()
+    };
+    hash_map_store(vm, this, &pairs)?;
+    object(key)
+}
+
+/// Remove and return the first/last entry as a snapshot, or null when empty.
+fn lhm_poll_end(vm: &mut Vm<'_>, this: ObjectRef, first: bool) -> Result<Value, VmError> {
+    check_mutable(vm, this)?;
+    let mut pairs = lhm_pairs(vm, this);
+    if pairs.is_empty() {
+        return object(ObjectRef::NULL);
+    }
+    let (key, value) = if first {
+        pairs.remove(0)
+    } else {
+        pairs.pop().unwrap()
+    };
+    hash_map_store(vm, this, &pairs)?;
+    object(new_entry_immutable(vm, key, value)?)
+}
+
+/// The first/last entry as an unmodifiable snapshot, or null when empty (no removal).
+fn lhm_end_entry(vm: &mut Vm<'_>, this: ObjectRef, first: bool) -> Result<Value, VmError> {
+    let pairs = lhm_pairs(vm, this);
+    let pair = if first { pairs.first() } else { pairs.last() };
+    match pair {
+        Some((key, value)) => object(new_entry_immutable(vm, *key, *value)?),
+        None => object(ObjectRef::NULL),
+    }
+}
+
+/// Create a live sequenced view over `map`; `kind` selects keys (0), values (1), or entries (2).
+/// Every operation delegates to the map, so mutations through the view reach the backing map.
+pub(crate) fn seq_map_view_new(
+    vm: &mut Vm<'_>,
+    map: ObjectRef,
+    kind: i32,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/OxjvmSeqMapView")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "map", "Ljava/util/SequencedMap;")?;
+    vm.set_instance_ref(instance, declaring, field, map);
+    crate::lang::write_int_field(vm, instance, "kind", kind);
+    Ok(instance)
+}
+
+/// The backing map of a sequenced map view.
+fn seq_view_map(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "map", "Ljava/util/SequencedMap;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+/// The plain collection view (keySet/values/entrySet) a sequenced map view delegates to.
+fn seq_view_collection(vm: &mut Vm<'_>, this: ObjectRef) -> Result<ObjectRef, VmError> {
+    let map = seq_view_map(vm, this);
+    let kind = crate::lang::read_int_field(vm, this, "kind");
+    let (name, descriptor) = match kind {
+        0 => ("keySet", "()Ljava/util/Set;"),
+        1 => ("values", "()Ljava/util/Collection;"),
+        _ => ("entrySet", "()Ljava/util/Set;"),
+    };
+    let (class, method) = vm.resolve_virtual_method(map, name, descriptor)?;
+    Ok(vm
+        .invoke_method(class, method, vec![Value::Ref(map)])?
+        .as_ref())
+}
+
+/// Delegate a collection operation to the plain view of a sequenced map view.
+fn seq_view_delegate(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    extra: &[Value],
+) -> Result<Value, VmError> {
+    let collection = seq_view_collection(vm, this)?;
+    let (class, method) = vm.resolve_virtual_method(collection, name, descriptor)?;
+    let mut args = vec![Value::Ref(collection)];
+    args.extend_from_slice(extra);
+    vm.invoke_method(class, method, args)
+}
+
+/// The first/last element of a sequenced map view, extracted from the map's end entry.
+/// `remove` polls (mutating the map) instead of peeking; an empty map throws NSEE.
+fn seq_view_end(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    first: bool,
+    remove: bool,
+) -> Result<Value, VmError> {
+    let map = seq_view_map(vm, this);
+    let name = match (first, remove) {
+        (true, false) => "firstEntry",
+        (false, false) => "lastEntry",
+        (true, true) => "pollFirstEntry",
+        (false, true) => "pollLastEntry",
+    };
+    let (class, method) = vm.resolve_virtual_method(map, name, "()Ljava/util/Map$Entry;")?;
+    let entry = vm
+        .invoke_method(class, method, vec![Value::Ref(map)])?
+        .as_ref();
+    if entry.is_null() {
+        return Err(vm.throw_new("java/util/NoSuchElementException", None));
+    }
+    let kind = crate::lang::read_int_field(vm, this, "kind");
+    let member = match kind {
+        0 => "getKey",
+        1 => "getValue",
+        _ => return object(entry),
+    };
+    let (class, method) = vm.resolve_virtual_method(entry, member, "()Ljava/lang/Object;")?;
+    vm.invoke_method(class, method, vec![Value::Ref(entry)])
+}
+
+/// The reversed sequenced view: the same kind of view over the map's reversed view.
+fn seq_view_reversed(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError> {
+    let map = seq_view_map(vm, this);
+    let (class, method) =
+        vm.resolve_virtual_method(map, "reversed", "()Ljava/util/SequencedMap;")?;
+    let reversed = vm
+        .invoke_method(class, method, vec![Value::Ref(map)])?
+        .as_ref();
+    let kind = crate::lang::read_int_field(vm, this, "kind");
+    let (name, descriptor) = match kind {
+        0 => ("sequencedKeySet", "()Ljava/util/SequencedSet;"),
+        1 => ("sequencedValues", "()Ljava/util/SequencedCollection;"),
+        _ => ("sequencedEntrySet", "()Ljava/util/SequencedSet;"),
+    };
+    let (class, method) = vm.resolve_virtual_method(reversed, name, descriptor)?;
+    vm.invoke_method(class, method, vec![Value::Ref(reversed)])
+}
+
+const LINKED_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+    method(
+        "putFirst",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            lhm_put_position(vm, receiver(args), ref_arg(args, 1), ref_arg(args, 2), true)
+        },
+    ),
+    method(
+        "putLast",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            lhm_put_position(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                false,
+            )
+        },
+    ),
+    method(
+        "getFirst",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| lhm_end_key(vm, receiver(args), true),
+    ),
+    method(
+        "getLast",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| lhm_end_key(vm, receiver(args), false),
+    ),
+    method(
+        "removeFirst",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| lhm_remove_end(vm, receiver(args), true),
+    ),
+    method(
+        "removeLast",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| lhm_remove_end(vm, receiver(args), false),
+    ),
+    method(
+        "pollFirstEntry",
+        "()Ljava/util/Map$Entry;",
+        ACC_PUBLIC,
+        |vm, _, args| lhm_poll_end(vm, receiver(args), true),
+    ),
+    method(
+        "pollLastEntry",
+        "()Ljava/util/Map$Entry;",
+        ACC_PUBLIC,
+        |vm, _, args| lhm_poll_end(vm, receiver(args), false),
+    ),
+    method(
+        "firstEntry",
+        "()Ljava/util/Map$Entry;",
+        ACC_PUBLIC,
+        |vm, _, args| lhm_end_entry(vm, receiver(args), true),
+    ),
+    method(
+        "lastEntry",
+        "()Ljava/util/Map$Entry;",
+        ACC_PUBLIC,
+        |vm, _, args| lhm_end_entry(vm, receiver(args), false),
+    ),
+    method(
+        "reversed",
+        "()Ljava/util/SequencedMap;",
+        ACC_PUBLIC,
+        |vm, _, args| object(reverse_seq_map_view_new(vm, receiver(args))?),
+    ),
+    method(
+        "sequencedKeySet",
+        "()Ljava/util/SequencedSet;",
+        ACC_PUBLIC,
+        |vm, _, args| object(seq_map_view_new(vm, receiver(args), 0)?),
+    ),
+    method(
+        "sequencedValues",
+        "()Ljava/util/SequencedCollection;",
+        ACC_PUBLIC,
+        |vm, _, args| object(seq_map_view_new(vm, receiver(args), 1)?),
+    ),
+    method(
+        "sequencedEntrySet",
+        "()Ljava/util/SequencedSet;",
+        ACC_PUBLIC,
+        |vm, _, args| object(seq_map_view_new(vm, receiver(args), 2)?),
+    ),
+    method(
+        "forEach",
+        "(Ljava/util/function/BiConsumer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let action = ref_arg(args, 1);
+            let pairs = lhm_pairs(vm, this);
+            let (class, method) = vm.resolve_virtual_method(
+                action,
+                "accept",
+                "(Ljava/lang/Object;Ljava/lang/Object;)V",
+            )?;
+            for (key, value) in pairs {
+                vm.invoke_method(
+                    class,
+                    method,
+                    vec![Value::Ref(action), Value::Ref(key), Value::Ref(value)],
+                )?;
+            }
+            void()
+        },
+    ),
+];
+
 pub(crate) const LINKED_HASH_MAP: oxjvm_vm::NativeClass = class(
     "java/util/LinkedHashMap",
     Some("java/util/HashMap"),
-    &[],
+    &["java/util/SequencedMap"],
     ACC_PUBLIC,
     &[
         field("keys", "[Ljava/lang/Object;", ACC_PRIVATE, None),
         field("values", "[Ljava/lang/Object;", ACC_PRIVATE, None),
         field("size", "I", ACC_PRIVATE, None),
     ],
-    &HASH_MAP_METHODS,
+    &LINKED_HASH_MAP_METHODS,
     None,
 );
 
+/// Reverse-order live view of a `SequencedMap`: every operation delegates to the backing map
+/// with the two ends swapped, so mutations are reflected in the original and `reversed()`
+/// returns the backing map itself. Used by `LinkedHashMap.reversed()` and the `SortedMap`
+/// default `reversed()`.
+fn reverse_view_backing(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(
+        this,
+        vm.class_of(this),
+        "backing",
+        "Ljava/util/SequencedMap;",
+    )
+    .unwrap_or(ObjectRef::NULL)
+}
+
+/// Create a reverse-order view over `map`.
+fn reverse_seq_map_view_new(vm: &mut Vm<'_>, map: ObjectRef) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/OxjvmReverseSeqMapView")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "backing", "Ljava/util/SequencedMap;")?;
+    vm.set_instance_ref(instance, declaring, field, map);
+    Ok(instance)
+}
+
+/// Invoke a method on the backing map of a reverse-order view.
+fn reverse_view_delegate(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    extra: &[Value],
+) -> Result<Value, VmError> {
+    let backing = reverse_view_backing(vm, this);
+    let (class, method) = vm.resolve_virtual_method(backing, name, descriptor)?;
+    let mut args = vec![Value::Ref(backing)];
+    args.extend_from_slice(extra);
+    vm.invoke_method(class, method, args)
+}
+
+/// The backing map's entries in reverse encounter order.
+fn reverse_view_pairs(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+) -> Result<Vec<(ObjectRef, ObjectRef)>, VmError> {
+    let backing = reverse_view_backing(vm, this);
+    let mut pairs = abstract_map_entries(vm, backing)?;
+    pairs.reverse();
+    Ok(pairs)
+}
+
+const REVERSE_SEQ_MAP_VIEW_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        reverse_view_delegate(vm, receiver(args), "size", "()I", &[])
+    }),
+    method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
+        reverse_view_delegate(vm, receiver(args), "isEmpty", "()Z", &[])
+    }),
+    method(
+        "containsKey",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            reverse_view_delegate(
+                vm,
+                receiver(args),
+                "containsKey",
+                "(Ljava/lang/Object;)Z",
+                &[args[1]],
+            )
+        },
+    ),
+    method(
+        "containsValue",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            reverse_view_delegate(
+                vm,
+                receiver(args),
+                "containsValue",
+                "(Ljava/lang/Object;)Z",
+                &[args[1]],
+            )
+        },
+    ),
+    method(
+        "get",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            reverse_view_delegate(
+                vm,
+                receiver(args),
+                "get",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                &[args[1]],
+            )
+        },
+    ),
+    method(
+        "put",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            reverse_view_delegate(
+                vm,
+                receiver(args),
+                "put",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                &[args[1], args[2]],
+            )
+        },
+    ),
+    method("putAll", "(Ljava/util/Map;)V", ACC_PUBLIC, |vm, _, args| {
+        reverse_view_delegate(
+            vm,
+            receiver(args),
+            "putAll",
+            "(Ljava/util/Map;)V",
+            &[args[1]],
+        )
+    }),
+    method(
+        "remove",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            reverse_view_delegate(
+                vm,
+                receiver(args),
+                "remove",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                &[args[1]],
+            )
+        },
+    ),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
+        reverse_view_delegate(vm, receiver(args), "clear", "()V", &[])
+    }),
+    method(
+        "putFirst",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            reverse_view_delegate(
+                vm,
+                receiver(args),
+                "putLast",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                &[args[1], args[2]],
+            )
+        },
+    ),
+    method(
+        "putLast",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            reverse_view_delegate(
+                vm,
+                receiver(args),
+                "putFirst",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                &[args[1], args[2]],
+            )
+        },
+    ),
+    method(
+        "pollFirstEntry",
+        "()Ljava/util/Map$Entry;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            reverse_view_delegate(
+                vm,
+                receiver(args),
+                "pollLastEntry",
+                "()Ljava/util/Map$Entry;",
+                &[],
+            )
+        },
+    ),
+    method(
+        "pollLastEntry",
+        "()Ljava/util/Map$Entry;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            reverse_view_delegate(
+                vm,
+                receiver(args),
+                "pollFirstEntry",
+                "()Ljava/util/Map$Entry;",
+                &[],
+            )
+        },
+    ),
+    method(
+        "firstEntry",
+        "()Ljava/util/Map$Entry;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            reverse_view_delegate(
+                vm,
+                receiver(args),
+                "lastEntry",
+                "()Ljava/util/Map$Entry;",
+                &[],
+            )
+        },
+    ),
+    method(
+        "lastEntry",
+        "()Ljava/util/Map$Entry;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            reverse_view_delegate(
+                vm,
+                receiver(args),
+                "firstEntry",
+                "()Ljava/util/Map$Entry;",
+                &[],
+            )
+        },
+    ),
+    method(
+        "reversed",
+        "()Ljava/util/SequencedMap;",
+        ACC_PUBLIC,
+        |vm, _, args| object(reverse_view_backing(vm, receiver(args))),
+    ),
+    method(
+        "reversed",
+        "()Ljava/util/SortedMap;",
+        ACC_PUBLIC,
+        |vm, _, args| object(reverse_view_backing(vm, receiver(args))),
+    ),
+    method(
+        "sequencedKeySet",
+        "()Ljava/util/SequencedSet;",
+        ACC_PUBLIC,
+        |vm, _, args| object(seq_map_view_new(vm, receiver(args), 0)?),
+    ),
+    method(
+        "sequencedValues",
+        "()Ljava/util/SequencedCollection;",
+        ACC_PUBLIC,
+        |vm, _, args| object(seq_map_view_new(vm, receiver(args), 1)?),
+    ),
+    method(
+        "sequencedEntrySet",
+        "()Ljava/util/SequencedSet;",
+        ACC_PUBLIC,
+        |vm, _, args| object(seq_map_view_new(vm, receiver(args), 2)?),
+    ),
+    method(
+        "forEach",
+        "(Ljava/util/function/BiConsumer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let action = ref_arg(args, 1);
+            let pairs = reverse_view_pairs(vm, this)?;
+            let (class, method) = vm.resolve_virtual_method(
+                action,
+                "accept",
+                "(Ljava/lang/Object;Ljava/lang/Object;)V",
+            )?;
+            for (key, value) in pairs {
+                vm.invoke_method(
+                    class,
+                    method,
+                    vec![Value::Ref(action), Value::Ref(key), Value::Ref(value)],
+                )?;
+            }
+            void()
+        },
+    ),
+    method("keySet", "()Ljava/util/Set;", ACC_PUBLIC, |vm, _, args| {
+        let keys: Vec<ObjectRef> = reverse_view_pairs(vm, receiver(args))?
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        object(hash_set_from(vm, &keys)?)
+    }),
+    method(
+        "values",
+        "()Ljava/util/Collection;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let values: Vec<ObjectRef> = reverse_view_pairs(vm, receiver(args))?
+                .into_iter()
+                .map(|(_, v)| v)
+                .collect();
+            object(array_list_from(vm, &values)?)
+        },
+    ),
+    method(
+        "entrySet",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let pairs = reverse_view_pairs(vm, receiver(args))?;
+            let mut entries = Vec::with_capacity(pairs.len());
+            for (key, value) in pairs {
+                entries.push(new_entry(vm, key, value)?);
+            }
+            object(hash_set_from(vm, &entries)?)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            reverse_view_delegate(
+                vm,
+                receiver(args),
+                "equals",
+                "(Ljava/lang/Object;)Z",
+                &[args[1]],
+            )
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        reverse_view_delegate(vm, receiver(args), "hashCode", "()I", &[])
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let pairs = reverse_view_pairs(vm, receiver(args))?;
+            let mut text = String::from("{");
+            for (index, (key, value)) in pairs.iter().enumerate() {
+                if index > 0 {
+                    text.push_str(", ");
+                }
+                text.push_str(&value_to_string(vm, *key)?);
+                text.push('=');
+                text.push_str(&value_to_string(vm, *value)?);
+            }
+            text.push('}');
+            object(vm.make_string(&text)?)
+        },
+    ),
+];
+
+pub(crate) const OXJVM_REVERSE_SEQ_MAP_VIEW: oxjvm_vm::NativeClass = class(
+    "java/util/OxjvmReverseSeqMapView",
+    Some("java/lang/Object"),
+    &["java/util/SequencedMap"],
+    ACC_PUBLIC,
+    &[field(
+        "backing",
+        "Ljava/util/SequencedMap;",
+        ACC_PRIVATE,
+        None,
+    )],
+    &REVERSE_SEQ_MAP_VIEW_METHODS,
+    None,
+);
+/// A live sequenced view over a `SequencedMap`'s keys/values/entries (`kind` 0/1/2). Collection
+/// operations delegate to the map's plain view; the sequenced end operations delegate to the
+/// map's `firstEntry`/`lastEntry`/`pollFirstEntry`/`pollLastEntry`, so removals reach the map.
+const OXJVM_SEQ_MAP_VIEW_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        seq_view_delegate(vm, receiver(args), "size", "()I", &[])
+    }),
+    method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
+        seq_view_delegate(vm, receiver(args), "isEmpty", "()Z", &[])
+    }),
+    method(
+        "contains",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            seq_view_delegate(
+                vm,
+                receiver(args),
+                "contains",
+                "(Ljava/lang/Object;)Z",
+                &[args[1]],
+            )
+        },
+    ),
+    method(
+        "iterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            seq_view_delegate(
+                vm,
+                receiver(args),
+                "iterator",
+                "()Ljava/util/Iterator;",
+                &[],
+            )
+        },
+    ),
+    method(
+        "toArray",
+        "()[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            seq_view_delegate(vm, receiver(args), "toArray", "()[Ljava/lang/Object;", &[])
+        },
+    ),
+    method(
+        "toArray",
+        "([Ljava/lang/Object;)[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            seq_view_delegate(
+                vm,
+                receiver(args),
+                "toArray",
+                "([Ljava/lang/Object;)[Ljava/lang/Object;",
+                &[args[1]],
+            )
+        },
+    ),
+    method(
+        "toArray",
+        "(Ljava/util/function/IntFunction;)[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            seq_view_delegate(
+                vm,
+                receiver(args),
+                "toArray",
+                "(Ljava/util/function/IntFunction;)[Ljava/lang/Object;",
+                &[args[1]],
+            )
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            seq_view_delegate(vm, receiver(args), "toString", "()Ljava/lang/String;", &[])
+        },
+    ),
+    method(
+        "remove",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            seq_view_delegate(
+                vm,
+                receiver(args),
+                "remove",
+                "(Ljava/lang/Object;)Z",
+                &[args[1]],
+            )
+        },
+    ),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
+        seq_view_delegate(vm, receiver(args), "clear", "()V", &[])
+    }),
+    method(
+        "removeAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            seq_view_delegate(
+                vm,
+                receiver(args),
+                "removeAll",
+                "(Ljava/util/Collection;)Z",
+                &[args[1]],
+            )
+        },
+    ),
+    method(
+        "retainAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            seq_view_delegate(
+                vm,
+                receiver(args),
+                "retainAll",
+                "(Ljava/util/Collection;)Z",
+                &[args[1]],
+            )
+        },
+    ),
+    method(
+        "removeIf",
+        "(Ljava/util/function/Predicate;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            seq_view_delegate(
+                vm,
+                receiver(args),
+                "removeIf",
+                "(Ljava/util/function/Predicate;)Z",
+                &[args[1]],
+            )
+        },
+    ),
+    method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/UnsupportedOperationException", None))
+    }),
+    method(
+        "addAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method(
+        "addFirst",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method(
+        "addLast",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method(
+        "getFirst",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| seq_view_end(vm, receiver(args), true, false),
+    ),
+    method(
+        "getLast",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| seq_view_end(vm, receiver(args), false, false),
+    ),
+    method(
+        "removeFirst",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| seq_view_end(vm, receiver(args), true, true),
+    ),
+    method(
+        "removeLast",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| seq_view_end(vm, receiver(args), false, true),
+    ),
+    method(
+        "reversed",
+        "()Ljava/util/SequencedCollection;",
+        ACC_PUBLIC,
+        |vm, _, args| seq_view_reversed(vm, receiver(args)),
+    ),
+    method(
+        "reversed",
+        "()Ljava/util/SequencedSet;",
+        ACC_PUBLIC,
+        |vm, _, args| seq_view_reversed(vm, receiver(args)),
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if crate::lang::read_int_field(vm, this, "kind") == 1 {
+                return boolean(this == ref_arg(args, 1));
+            }
+            seq_view_delegate(vm, this, "equals", "(Ljava/lang/Object;)Z", &[args[1]])
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if crate::lang::read_int_field(vm, this, "kind") == 1 {
+            return int(object_hash(vm, this)?);
+        }
+        seq_view_delegate(vm, this, "hashCode", "()I", &[])
+    }),
+];
+
+pub(crate) const OXJVM_SEQ_MAP_VIEW: oxjvm_vm::NativeClass = class(
+    "java/util/OxjvmSeqMapView",
+    Some("java/lang/Object"),
+    &[
+        "java/util/SequencedCollection",
+        "java/util/SequencedSet",
+        "java/util/Set",
+    ],
+    ACC_PUBLIC,
+    &[
+        field("map", "Ljava/util/SequencedMap;", ACC_PRIVATE, None),
+        field("kind", "I", ACC_PRIVATE, None),
+    ],
+    &OXJVM_SEQ_MAP_VIEW_METHODS,
+    None,
+);
 fn enum_set_map(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
     hash_set_map(vm, this)
 }

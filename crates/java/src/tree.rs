@@ -19,7 +19,7 @@ use oxjvm_vm::{ClassId, ObjectRef, Value, Vm, VmError};
 use crate::util::{
     array_list_from, collection_elements, collection_remove_all, collection_retain_all,
     collection_to_array_into, hash_set_present, keys_equal, new_entry, object_hash,
-    value_to_string,
+    seq_map_view_new, value_to_string,
 };
 use crate::{boolean, class, field, int, method, object, receiver, ref_arg, void};
 
@@ -1173,7 +1173,7 @@ fn tree_map_descending_key_set(
     object(set)
 }
 
-const TREE_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 60] = [
+const TREE_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 63] = [
     method("<init>", "()V", ACC_PUBLIC, tree_map_init),
     method(
         "<init>",
@@ -1475,8 +1475,26 @@ const TREE_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 60] = [
         tree_map_descending_map,
     ),
     method(
+        "putFirst",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method(
+        "putLast",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method(
         "reversed",
         "()Ljava/util/SequencedMap;",
+        ACC_PUBLIC,
+        tree_map_descending_map,
+    ),
+    method(
+        "reversed",
+        "()Ljava/util/NavigableMap;",
         ACC_PUBLIC,
         tree_map_descending_map,
     ),
@@ -1484,19 +1502,19 @@ const TREE_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 60] = [
         "sequencedKeySet",
         "()Ljava/util/SequencedSet;",
         ACC_PUBLIC,
-        tree_map_key_set,
+        |vm, _, args| object(seq_map_view_new(vm, receiver(args), 0)?),
     ),
     method(
         "sequencedValues",
         "()Ljava/util/SequencedCollection;",
         ACC_PUBLIC,
-        tree_map_values,
+        |vm, _, args| object(seq_map_view_new(vm, receiver(args), 1)?),
     ),
     method(
         "sequencedEntrySet",
         "()Ljava/util/SequencedSet;",
         ACC_PUBLIC,
-        tree_map_entry_set,
+        |vm, _, args| object(seq_map_view_new(vm, receiver(args), 2)?),
     ),
     method(
         "navigableKeySet",
@@ -2037,7 +2055,7 @@ fn tree_set_descending_set(
     object(set)
 }
 
-const TREE_SET_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
+const TREE_SET_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
     method("<init>", "()V", ACC_PUBLIC, tree_set_init),
     method(
         "<init>",
@@ -2239,6 +2257,67 @@ const TREE_SET_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
     ),
     method(
         "descendingSet",
+        "()Ljava/util/NavigableSet;",
+        ACC_PUBLIC,
+        tree_set_descending_set,
+    ),
+    method(
+        "getFirst",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        tree_set_first,
+    ),
+    method("getLast", "()Ljava/lang/Object;", ACC_PUBLIC, tree_set_last),
+    method(
+        "removeFirst",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let Some(element) = vm.sorted_map(this).and_then(|map| map.key_at(0)) else {
+                return Err(vm.throw_new("java/util/NoSuchElementException", None));
+            };
+            remove_key(vm, this, element)?;
+            object(element)
+        },
+    ),
+    method(
+        "removeLast",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let size = size_of(vm, this) as usize;
+            let Some(element) = vm
+                .sorted_map(this)
+                .and_then(|map| map.key_at(size.saturating_sub(1)))
+            else {
+                return Err(vm.throw_new("java/util/NoSuchElementException", None));
+            };
+            remove_key(vm, this, element)?;
+            object(element)
+        },
+    ),
+    method(
+        "addFirst",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method(
+        "addLast",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method(
+        "reversed",
+        "()Ljava/util/SequencedSet;",
+        ACC_PUBLIC,
+        tree_set_descending_set,
+    ),
+    method(
+        "reversed",
         "()Ljava/util/NavigableSet;",
         ACC_PUBLIC,
         tree_set_descending_set,
