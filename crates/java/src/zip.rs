@@ -1504,3 +1504,572 @@ pub(crate) const DEFLATER: oxjvm_vm::NativeClass = class(
     &DEFLATER_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// GZIP / Deflater stream wrappers built on Deflater/Inflater.
+//
+// These use an eager model: the input side reads the whole underlying stream and
+// inflates it once, the output side buffers writes and deflates on finish/close.
+// This covers the ByteArray-based round-trip and header tests.
+// -------------------------------------------------------------------------------------------
+
+fn filter_in(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    read_ref_field(vm, this, "in", "Ljava/io/InputStream;").unwrap_or(ObjectRef::NULL)
+}
+
+fn filter_out(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    read_ref_field(vm, this, "out", "Ljava/io/OutputStream;").unwrap_or(ObjectRef::NULL)
+}
+
+fn read_in_array(
+    vm: &mut Vm<'_>,
+    input: ObjectRef,
+    arr: ObjectRef,
+    off: i32,
+    len: i32,
+) -> Result<i32, VmError> {
+    let (class, method) = vm.resolve_virtual_method(input, "read", "([BII)I")?;
+    Ok(vm
+        .invoke_method(
+            class,
+            method,
+            vec![
+                Value::Ref(input),
+                Value::Ref(arr),
+                Value::Int(off),
+                Value::Int(len),
+            ],
+        )?
+        .as_int())
+}
+
+fn write_out_bytes(vm: &mut Vm<'_>, out: ObjectRef, bytes: &[u8]) -> Result<(), VmError> {
+    let arr = crate::lang::byte_array_from(vm, bytes)?;
+    let (class, method) = vm.resolve_virtual_method(out, "write", "([B)V")?;
+    vm.invoke_method(class, method, vec![Value::Ref(out), Value::Ref(arr)])?;
+    Ok(())
+}
+
+fn read_all_input(vm: &mut Vm<'_>, input: ObjectRef) -> Result<Vec<u8>, VmError> {
+    let mut out = Vec::new();
+    let chunk = vm.allocate_array_of(ArrayComponent::Byte, 4096)?;
+    loop {
+        let n = read_in_array(vm, input, chunk, 0, 4096)?;
+        if n <= 0 {
+            break;
+        }
+        for i in 0..n {
+            out.push(vm.array_get(chunk, i)?.as_int() as u8);
+        }
+    }
+    Ok(out)
+}
+
+fn set_native_input(vm: &mut Vm<'_>, target: ObjectRef, data: &[u8]) -> Result<(), VmError> {
+    let arr = crate::lang::byte_array_from(vm, data)?;
+    let (class, method) = vm.resolve_virtual_method(target, "setInput", "([B)V")?;
+    vm.invoke_method(class, method, vec![Value::Ref(target), Value::Ref(arr)])?;
+    Ok(())
+}
+
+fn le32(bytes: &[u8]) -> u32 {
+    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+/// Return the index where DEFLATE data begins in a GZIP member (RFC 1952).
+fn gzip_header_end(comp: &[u8]) -> Result<usize, VmError> {
+    if comp.len() < 10 || comp[0] != 0x1f || comp[1] != 0x8b || comp[2] != 8 {
+        return Err(VmError::internal("bad gzip header"));
+    }
+    let flg = comp[3];
+    let mut pos = 10usize;
+    if flg & 0x04 != 0 {
+        if pos + 2 > comp.len() {
+            return Err(VmError::internal("truncated gzip extra"));
+        }
+        let xlen = u16::from_le_bytes([comp[pos], comp[pos + 1]]) as usize;
+        pos += 2 + xlen;
+    }
+    if flg & 0x08 != 0 {
+        while pos < comp.len() && comp[pos] != 0 {
+            pos += 1;
+        }
+        pos += 1;
+    }
+    if flg & 0x10 != 0 {
+        while pos < comp.len() && comp[pos] != 0 {
+            pos += 1;
+        }
+        pos += 1;
+    }
+    if flg & 0x02 != 0 {
+        pos += 2;
+    }
+    if pos > comp.len() {
+        return Err(VmError::internal("truncated gzip header"));
+    }
+    Ok(pos)
+}
+
+fn ensure_decompressed(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    if read_int_field(vm, this, "filled") != 0 {
+        return Ok(());
+    }
+    let input = filter_in(vm, this);
+    let comp = read_all_input(vm, input)?;
+    let inf =
+        read_ref_field(vm, this, "inf", "Ljava/util/zip/Inflater;").unwrap_or(ObjectRef::NULL);
+    let gzip = read_int_field(vm, this, "gzip") != 0;
+    let data: Vec<u8>;
+    let mut trailer_crc = 0u32;
+    let mut trailer_size = 0u32;
+    if gzip {
+        let hdr = gzip_header_end(&comp)
+            .map_err(|_| vm.throw_new("java/util/zip/ZipException", Some("Not in GZIP format")))?;
+        if comp.len() < hdr + 8 {
+            return Err(vm.throw_new("java/util/zip/ZipException", Some("Corrupt GZIP trailer")));
+        }
+        let end = comp.len() - 8;
+        data = comp[hdr..end].to_vec();
+        trailer_crc = le32(&comp[end..]);
+        trailer_size = le32(&comp[end + 4..]);
+    } else {
+        data = comp;
+    }
+    set_native_input(vm, inf, &data)?;
+    let mut dec = Vec::new();
+    let chunk = vm.allocate_array_of(ArrayComponent::Byte, 4096)?;
+    loop {
+        let n = inflater_do_inflate(vm, inf, chunk, 0, 4096)?.as_int();
+        if n <= 0 {
+            break;
+        }
+        for i in 0..n {
+            dec.push(vm.array_get(chunk, i)?.as_int() as u8);
+        }
+    }
+    if gzip && (crc32(&dec) != trailer_crc || dec.len() as u32 != trailer_size) {
+        return Err(vm.throw_new("java/util/zip/ZipException", Some("Corrupt GZIP trailer")));
+    }
+    write_buf_field(vm, this, "dbuf", &dec)?;
+    write_int_field_named(vm, this, "dpos", 0);
+    write_int_field_named(vm, this, "filled", 1);
+    Ok(())
+}
+
+fn inflater_stream_read(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    out: ObjectRef,
+    off: i32,
+    len: i32,
+) -> Result<Value, VmError> {
+    ensure_decompressed(vm, this)?;
+    let dbuf = read_buf_field(vm, this, "dbuf");
+    let dpos = read_int_field(vm, this, "dpos").max(0) as usize;
+    if dpos >= dbuf.len() {
+        return int(-1);
+    }
+    if len == 0 {
+        return int(0);
+    }
+    let n = (len.max(0) as usize).min(dbuf.len() - dpos);
+    for i in 0..n {
+        vm.array_set(
+            out,
+            off + i as i32,
+            Value::Int(i32::from(dbuf[dpos + i] as i8)),
+            false,
+        )?;
+    }
+    write_int_field_named(vm, this, "dpos", (dpos + n) as i32);
+    int(n as i32)
+}
+
+fn inflater_stream_ctor(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    input: ObjectRef,
+    inf: ObjectRef,
+    gzip: bool,
+) -> Result<(), VmError> {
+    let (declaring, field) = vm.find_field(vm.class_of(this), "in", "Ljava/io/InputStream;")?;
+    vm.set_instance_ref(this, declaring, field, input);
+    write_ref_field(vm, this, "inf", "Ljava/util/zip/Inflater;", inf);
+    write_int_field_named(vm, this, "gzip", i32::from(gzip));
+    Ok(())
+}
+
+const INFLATER_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+    method(
+        "<init>",
+        "(Ljava/io/InputStream;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let inf = new_instance(vm, "java/util/zip/Inflater")?;
+            inflater_stream_ctor(vm, this, ref_arg(args, 1), inf, false)?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/InputStream;Ljava/util/zip/Inflater;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            inflater_stream_ctor(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                false,
+            )?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/InputStream;Ljava/util/zip/Inflater;I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            if crate::int_arg(args, 3) <= 0 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("size <= 0")));
+            }
+            inflater_stream_ctor(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                false,
+            )?;
+            void()
+        },
+    ),
+    method("read", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let one = vm.allocate_array_of(ArrayComponent::Byte, 1)?;
+        let n = inflater_stream_read(vm, this, one, 0, 1)?.as_int();
+        if n <= 0 {
+            return int(-1);
+        }
+        int(vm.array_get(one, 0)?.as_int() & 0xFF)
+    }),
+    method("read", "([B)I", ACC_PUBLIC, |vm, _, args| {
+        let out = ref_arg(args, 1);
+        let len = vm.array_length(out)? as i32;
+        inflater_stream_read(vm, receiver(args), out, 0, len)
+    }),
+    method("read", "([BII)I", ACC_PUBLIC, |vm, _, args| {
+        inflater_stream_read(
+            vm,
+            receiver(args),
+            ref_arg(args, 1),
+            crate::int_arg(args, 2),
+            crate::int_arg(args, 3),
+        )
+    }),
+    method("available", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        ensure_decompressed(vm, this)?;
+        let dbuf = read_buf_field(vm, this, "dbuf");
+        let dpos = read_int_field(vm, this, "dpos").max(0) as usize;
+        int(i32::from(dpos < dbuf.len()))
+    }),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        let input = filter_in(vm, receiver(args));
+        if !input.is_null() {
+            let (class, method) = vm.resolve_virtual_method(input, "close", "()V")?;
+            vm.invoke_method(class, method, vec![Value::Ref(input)])?;
+        }
+        void()
+    }),
+    method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let mut remaining = crate::long_arg(args, 1);
+        let chunk = vm.allocate_array_of(ArrayComponent::Byte, 4096)?;
+        let mut skipped = 0i64;
+        while remaining > 0 {
+            let want = remaining.min(4096) as i32;
+            let n = inflater_stream_read(vm, this, chunk, 0, want)?.as_int();
+            if n <= 0 {
+                break;
+            }
+            skipped += i64::from(n);
+            remaining -= i64::from(n);
+        }
+        long(skipped)
+    }),
+    method("markSupported", "()Z", ACC_PUBLIC, |_, _, _| {
+        crate::boolean(false)
+    }),
+    method("mark", "(I)V", ACC_PUBLIC, |_, _, _| void()),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/io/IOException", Some("mark not supported")))
+    }),
+];
+
+pub(crate) const INFLATER_INPUT_STREAM: oxjvm_vm::NativeClass = class(
+    "java/util/zip/InflaterInputStream",
+    Some("java/io/FilterInputStream"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("inf", "Ljava/util/zip/Inflater;", ACC_PROTECTED, None),
+        field("dbuf", "[B", ACC_PRIVATE, None),
+        field("dpos", "I", ACC_PRIVATE, None),
+        field("filled", "I", ACC_PRIVATE, None),
+        field("gzip", "I", ACC_PRIVATE, None),
+    ],
+    &INFLATER_INPUT_STREAM_METHODS,
+    None,
+);
+
+const GZIP_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "<init>",
+        "(Ljava/io/InputStream;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let inf = new_instance(vm, "java/util/zip/Inflater")?;
+            let (class, method) = vm.resolve_virtual_method(inf, "<init>", "(Z)V")?;
+            vm.invoke_method(class, method, vec![Value::Ref(inf), Value::Int(1)])?;
+            inflater_stream_ctor(vm, this, ref_arg(args, 1), inf, true)?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/InputStream;I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if crate::int_arg(args, 2) <= 0 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("size <= 0")));
+            }
+            let inf = new_instance(vm, "java/util/zip/Inflater")?;
+            let (class, method) = vm.resolve_virtual_method(inf, "<init>", "(Z)V")?;
+            vm.invoke_method(class, method, vec![Value::Ref(inf), Value::Int(1)])?;
+            inflater_stream_ctor(vm, this, ref_arg(args, 1), inf, true)?;
+            void()
+        },
+    ),
+];
+
+pub(crate) const GZIP_INPUT_STREAM: oxjvm_vm::NativeClass = class(
+    "java/util/zip/GZIPInputStream",
+    Some("java/util/zip/InflaterInputStream"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &GZIP_INPUT_STREAM_METHODS,
+    None,
+);
+
+fn append_ibuf(vm: &mut Vm<'_>, this: ObjectRef, bytes: &[u8]) -> Result<(), VmError> {
+    let mut buf = read_buf_field(vm, this, "ibuf");
+    buf.extend_from_slice(bytes);
+    write_buf_field(vm, this, "ibuf", &buf)
+}
+
+fn deflater_output_finish(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    if read_int_field(vm, this, "done") != 0 {
+        return Ok(());
+    }
+    let def =
+        read_ref_field(vm, this, "def", "Ljava/util/zip/Deflater;").unwrap_or(ObjectRef::NULL);
+    let ibuf = read_buf_field(vm, this, "ibuf");
+    let out = filter_out(vm, this);
+    let gzip = read_int_field(vm, this, "gzip") != 0;
+    set_native_input(vm, def, &ibuf)?;
+    let (class, method) = vm.resolve_virtual_method(def, "finish", "()V")?;
+    vm.invoke_method(class, method, vec![Value::Ref(def)])?;
+    let chunk = vm.allocate_array_of(ArrayComponent::Byte, 4096)?;
+    loop {
+        let n = deflater_do_deflate(vm, def, chunk, 0, 4096)?.as_int();
+        if n <= 0 {
+            break;
+        }
+        let mut slice = Vec::with_capacity(n as usize);
+        for i in 0..n {
+            slice.push(vm.array_get(chunk, i)?.as_int() as u8);
+        }
+        write_out_bytes(vm, out, &slice)?;
+    }
+    if gzip {
+        let mut trailer = crc32(&ibuf).to_le_bytes().to_vec();
+        trailer.extend_from_slice(&(ibuf.len() as u32).to_le_bytes());
+        write_out_bytes(vm, out, &trailer)?;
+    }
+    write_int_field_named(vm, this, "done", 1);
+    Ok(())
+}
+
+fn deflater_output_ctor(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    out: ObjectRef,
+    def: ObjectRef,
+    gzip: bool,
+) -> Result<(), VmError> {
+    let (declaring, field) = vm.find_field(vm.class_of(this), "out", "Ljava/io/OutputStream;")?;
+    vm.set_instance_ref(this, declaring, field, out);
+    write_ref_field(vm, this, "def", "Ljava/util/zip/Deflater;", def);
+    write_int_field_named(vm, this, "gzip", i32::from(gzip));
+    if gzip {
+        write_out_bytes(vm, out, &[0x1f, 0x8b, 0x08, 0x00, 0, 0, 0, 0, 0x00, 0xff])?;
+    }
+    Ok(())
+}
+
+const DEFLATER_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let def = new_instance(vm, "java/util/zip/Deflater")?;
+            deflater_output_ctor(vm, this, ref_arg(args, 1), def, false)?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;Z)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let def = new_instance(vm, "java/util/zip/Deflater")?;
+            deflater_output_ctor(vm, this, ref_arg(args, 1), def, false)?;
+            void()
+        },
+    ),
+    method("write", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let byte = crate::int_arg(args, 1) as u8;
+        append_ibuf(vm, receiver(args), &[byte])?;
+        void()
+    }),
+    method("write", "([B)V", ACC_PUBLIC, |vm, _, args| {
+        let bytes = crate::lang::array_bytes(vm, ref_arg(args, 1))?;
+        append_ibuf(vm, receiver(args), &bytes)?;
+        void()
+    }),
+    method("write", "([BII)V", ACC_PUBLIC, |vm, _, args| {
+        let bytes = crate::lang::array_bytes(vm, ref_arg(args, 1))?;
+        let off = crate::int_arg(args, 2);
+        let len = crate::int_arg(args, 3);
+        if off < 0 || len < 0 || (off + len) as usize > bytes.len() {
+            return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+        }
+        append_ibuf(
+            vm,
+            receiver(args),
+            &bytes[off as usize..(off + len) as usize],
+        )?;
+        void()
+    }),
+    method("finish", "()V", ACC_PUBLIC, |vm, _, args| {
+        deflater_output_finish(vm, receiver(args))?;
+        void()
+    }),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        deflater_output_finish(vm, this)?;
+        let out = filter_out(vm, this);
+        if !out.is_null() {
+            let (class, method) = vm.resolve_virtual_method(out, "close", "()V")?;
+            vm.invoke_method(class, method, vec![Value::Ref(out)])?;
+        }
+        void()
+    }),
+    method("flush", "()V", ACC_PUBLIC, |vm, _, args| {
+        let out = filter_out(vm, receiver(args));
+        if !out.is_null() {
+            let (class, method) = vm.resolve_virtual_method(out, "flush", "()V")?;
+            vm.invoke_method(class, method, vec![Value::Ref(out)])?;
+        }
+        void()
+    }),
+];
+
+pub(crate) const DEFLATER_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
+    "java/util/zip/DeflaterOutputStream",
+    Some("java/io/FilterOutputStream"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("def", "Ljava/util/zip/Deflater;", ACC_PROTECTED, None),
+        field("ibuf", "[B", ACC_PRIVATE, None),
+        field("done", "I", ACC_PRIVATE, None),
+        field("gzip", "I", ACC_PRIVATE, None),
+    ],
+    &DEFLATER_OUTPUT_STREAM_METHODS,
+    None,
+);
+
+fn gzip_output_ctor(vm: &mut Vm<'_>, this: ObjectRef, out: ObjectRef) -> Result<(), VmError> {
+    let def = new_instance(vm, "java/util/zip/Deflater")?;
+    let (class, method) = vm.resolve_virtual_method(def, "<init>", "(IZ)V")?;
+    vm.invoke_method(
+        class,
+        method,
+        vec![Value::Ref(def), Value::Int(-1), Value::Int(1)],
+    )?;
+    deflater_output_ctor(vm, this, out, def, true)
+}
+
+const GZIP_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            gzip_output_ctor(vm, receiver(args), ref_arg(args, 1))?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            if crate::int_arg(args, 2) <= 0 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("size <= 0")));
+            }
+            gzip_output_ctor(vm, receiver(args), ref_arg(args, 1))?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;Z)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            gzip_output_ctor(vm, receiver(args), ref_arg(args, 1))?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;IZ)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            if crate::int_arg(args, 2) <= 0 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("size <= 0")));
+            }
+            gzip_output_ctor(vm, receiver(args), ref_arg(args, 1))?;
+            void()
+        },
+    ),
+];
+
+pub(crate) const GZIP_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
+    "java/util/zip/GZIPOutputStream",
+    Some("java/util/zip/DeflaterOutputStream"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &GZIP_OUTPUT_STREAM_METHODS,
+    None,
+);
