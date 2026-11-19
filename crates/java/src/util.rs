@@ -10612,6 +10612,72 @@ pub(crate) const REVERSE_COMPARATOR: oxjvm_vm::NativeClass = class(
     None,
 );
 
+/// `Comparators$NullComparator`: orders null before (or after) non-null values, delegating
+/// non-null comparisons to the wrapped comparator (or treating them as equal when it is null).
+const NULL_COMPARATOR_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "compare",
+    "(Ljava/lang/Object;Ljava/lang/Object;)I",
+    ACC_PUBLIC,
+    |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let delegate = vm
+            .read_ref_field(this, class, "comparator", "Ljava/util/Comparator;")
+            .unwrap_or(ObjectRef::NULL);
+        let nulls_first = crate::lang::read_int_field(vm, this, "nullsFirst") != 0;
+        let a = ref_arg(args, 1);
+        let b = ref_arg(args, 2);
+        let ordering = match (a.is_null(), b.is_null()) {
+            (true, true) => 0,
+            (true, false) => {
+                if nulls_first {
+                    -1
+                } else {
+                    1
+                }
+            }
+            (false, true) => {
+                if nulls_first {
+                    1
+                } else {
+                    -1
+                }
+            }
+            (false, false) => {
+                if delegate.is_null() {
+                    0
+                } else {
+                    let (class, method) = vm.resolve_virtual_method(
+                        delegate,
+                        "compare",
+                        "(Ljava/lang/Object;Ljava/lang/Object;)I",
+                    )?;
+                    vm.invoke_method(
+                        class,
+                        method,
+                        vec![Value::Ref(delegate), Value::Ref(a), Value::Ref(b)],
+                    )?
+                    .as_int()
+                }
+            }
+        };
+        int(ordering)
+    },
+)];
+
+pub(crate) const NULL_COMPARATOR: oxjvm_vm::NativeClass = class(
+    "java/util/Comparators$NullComparator",
+    Some("java/lang/Object"),
+    &["java/util/Comparator"],
+    ACC_PUBLIC,
+    &[
+        field("comparator", "Ljava/util/Comparator;", ACC_PRIVATE, None),
+        field("nullsFirst", "I", ACC_PRIVATE, None),
+    ],
+    &NULL_COMPARATOR_METHODS,
+    None,
+);
+
 // -------------------------------------------------------------------------------------------
 // Comparator.comparing / thenComparing
 // -------------------------------------------------------------------------------------------

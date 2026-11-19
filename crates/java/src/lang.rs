@@ -9493,7 +9493,21 @@ fn comparator_natural(vm: &mut Vm<'_>) -> Result<Value, VmError> {
     object(instance)
 }
 
-const COMPARATOR_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+/// `Comparator.nullsFirst`/`nullsLast`: wrap a comparator with null ordering.
+fn comparator_nulls(
+    vm: &mut Vm<'_>,
+    comparator: ObjectRef,
+    nulls_first: bool,
+) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/util/Comparators$NullComparator")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "comparator", "Ljava/util/Comparator;")?;
+    vm.set_instance_ref(instance, declaring, field, comparator);
+    write_int_field(vm, instance, "nullsFirst", i32::from(nulls_first));
+    object(instance)
+}
+
+const COMPARATOR_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
     method(
         "compare",
         "(Ljava/lang/Object;Ljava/lang/Object;)I",
@@ -9603,6 +9617,18 @@ const COMPARATOR_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
             vm.set_instance_ref(instance, declaring, field, natural);
             object(instance)
         },
+    ),
+    method(
+        "nullsFirst",
+        "(Ljava/util/Comparator;)Ljava/util/Comparator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| comparator_nulls(vm, ref_arg(args, 0), true),
+    ),
+    method(
+        "nullsLast",
+        "(Ljava/util/Comparator;)Ljava/util/Comparator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| comparator_nulls(vm, ref_arg(args, 0), false),
     ),
 ];
 

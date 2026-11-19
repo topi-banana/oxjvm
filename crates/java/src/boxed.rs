@@ -1027,7 +1027,7 @@ fn unsigned_radix_string(mut value: u64, radix: i32) -> String {
     digits.iter().rev().collect()
 }
 
-const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
+const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 48] = [
     method("<init>", "(J)V", ACC_PUBLIC, |vm, _, args| {
         write_value_long(vm, receiver(args), long_arg(args, 1));
         void()
@@ -1399,6 +1399,10 @@ const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
     method("signum", "(J)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
         int(long_arg(args, 0).signum() as i32)
     }),
+    method("hashCode", "(J)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        let value = long_arg(args, 0);
+        int((value ^ (value >> 32)) as i32)
+    }),
 ];
 
 /// `Long.getLong`: the system property parsed as a long, or the default when unset/unparseable.
@@ -1538,7 +1542,7 @@ pub(crate) const LONG: oxjvm_vm::NativeClass = class(
 // Short / Byte / Boolean / Character / Float / Double / Void
 // -------------------------------------------------------------------------------------------
 
-const SHORT_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+const SHORT_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method("<init>", "(S)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), int_arg(args, 1));
         void()
@@ -1642,6 +1646,12 @@ const SHORT_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
         ACC_PUBLIC | ACC_STATIC,
         |_, _, args| int(i32::from((int_arg(args, 0) as i16).swap_bytes())),
     ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_value_int(vm, receiver(args)))
+    }),
+    method("hashCode", "(S)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        int(i32::from(int_arg(args, 0) as i16))
+    }),
 ];
 
 pub(crate) const SHORT: oxjvm_vm::NativeClass = class(
@@ -1674,7 +1684,7 @@ pub(crate) const SHORT: oxjvm_vm::NativeClass = class(
     Some(short_clinit),
 );
 
-const BYTE_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const BYTE_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method("<init>", "(B)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), int_arg(args, 1));
         void()
@@ -1754,6 +1764,12 @@ const BYTE_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
             int(compare_ints(a, b))
         },
     ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_value_int(vm, receiver(args)))
+    }),
+    method("hashCode", "(B)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        int(i32::from(int_arg(args, 0) as i8))
+    }),
 ];
 
 pub(crate) const BYTE: oxjvm_vm::NativeClass = class(
@@ -1786,7 +1802,7 @@ pub(crate) const BYTE: oxjvm_vm::NativeClass = class(
     Some(byte_clinit),
 );
 
-const BOOLEAN_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const BOOLEAN_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method("<init>", "(Z)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), i32::from(bool_arg(args, 1)));
         void()
@@ -1812,6 +1828,30 @@ const BOOLEAN_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         } else {
             1237
         })
+    }),
+    method(
+        "logicalAnd",
+        "(ZZ)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| boolean(bool_arg(args, 0) && bool_arg(args, 1)),
+    ),
+    method(
+        "logicalOr",
+        "(ZZ)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| boolean(bool_arg(args, 0) || bool_arg(args, 1)),
+    ),
+    method(
+        "logicalXor",
+        "(ZZ)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| boolean(bool_arg(args, 0) ^ bool_arg(args, 1)),
+    ),
+    method("compare", "(ZZ)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        int(i32::from(bool_arg(args, 0)) - i32::from(bool_arg(args, 1)))
+    }),
+    method("hashCode", "(Z)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        int(if bool_arg(args, 0) { 1231 } else { 1237 })
     }),
     method(
         "equals",
@@ -1940,7 +1980,7 @@ fn boolean_get_boolean(
     ))
 }
 
-const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 52] = [
+const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
     method("<init>", "(C)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), int_arg(args, 1));
         void()
@@ -2089,6 +2129,12 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 52] = [
     ),
     method("hashCode", "(C)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
         int(int_arg(args, 0))
+    }),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_value_int(vm, receiver(args)))
+    }),
+    method("compare", "(CC)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        int(int_arg(args, 0) - int_arg(args, 1))
     }),
     method(
         "reverseBytes",
@@ -2734,7 +2780,49 @@ fn float_to_hex_string(value: f32) -> String {
     }
 }
 
-const FLOAT_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
+/// JDK `Math.max`/`min` semantics: NaN propagates and +0.0 outranks -0.0 for max (vice versa
+/// for min), which Rust's `f32::max`/`min` do not guarantee.
+fn jdk_float_max(a: f32, b: f32) -> f32 {
+    if a.is_nan() || b.is_nan() {
+        return f32::NAN;
+    }
+    if a == 0.0 && b == 0.0 {
+        return f32::from_bits(a.to_bits() & b.to_bits());
+    }
+    if a > b { a } else { b }
+}
+
+fn jdk_float_min(a: f32, b: f32) -> f32 {
+    if a.is_nan() || b.is_nan() {
+        return f32::NAN;
+    }
+    if a == 0.0 && b == 0.0 {
+        return f32::from_bits(a.to_bits() | b.to_bits());
+    }
+    if a < b { a } else { b }
+}
+
+fn jdk_double_max(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        return f64::NAN;
+    }
+    if a == 0.0 && b == 0.0 {
+        return f64::from_bits(a.to_bits() & b.to_bits());
+    }
+    if a > b { a } else { b }
+}
+
+fn jdk_double_min(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        return f64::NAN;
+    }
+    if a == 0.0 && b == 0.0 {
+        return f64::from_bits(a.to_bits() | b.to_bits());
+    }
+    if a < b { a } else { b }
+}
+
+const FLOAT_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
     method("<init>", "(F)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(
             vm,
@@ -2900,6 +2988,37 @@ const FLOAT_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
         ACC_PUBLIC | ACC_STATIC,
         |_, _, args| float(float16_to_float(int_arg(args, 0) as u16)),
     ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let bits = read_value_int(vm, receiver(args)) as u32;
+        int(if f32::from_bits(bits).is_nan() {
+            0x7FC0_0000u32 as i32
+        } else {
+            bits as i32
+        })
+    }),
+    method("hashCode", "(F)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        let value = crate::float_arg(args, 0);
+        int(if value.is_nan() {
+            0x7FC0_0000u32 as i32
+        } else {
+            value.to_bits() as i32
+        })
+    }),
+    method("sum", "(FF)F", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        float(crate::float_arg(args, 0) + crate::float_arg(args, 1))
+    }),
+    method("max", "(FF)F", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        float(jdk_float_max(
+            crate::float_arg(args, 0),
+            crate::float_arg(args, 1),
+        ))
+    }),
+    method("min", "(FF)F", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        float(jdk_float_min(
+            crate::float_arg(args, 0),
+            crate::float_arg(args, 1),
+        ))
+    }),
 ];
 
 fn float16_to_float(bits: u16) -> f32 {
@@ -3022,7 +3141,7 @@ pub(crate) const FLOAT: oxjvm_vm::NativeClass = class(
     Some(float_clinit),
 );
 
-const DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
+const DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
     method("<init>", "(D)V", ACC_PUBLIC, |vm, _, args| {
         write_value_long(
             vm,
@@ -3201,14 +3320,34 @@ const DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
         ))
     }),
     method("max", "(DD)D", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
-        Ok(Value::Double(
-            crate::double_arg(args, 0).max(crate::double_arg(args, 1)),
-        ))
+        Ok(Value::Double(jdk_double_max(
+            crate::double_arg(args, 0),
+            crate::double_arg(args, 1),
+        )))
     }),
     method("min", "(DD)D", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
-        Ok(Value::Double(
-            crate::double_arg(args, 0).min(crate::double_arg(args, 1)),
-        ))
+        Ok(Value::Double(jdk_double_min(
+            crate::double_arg(args, 0),
+            crate::double_arg(args, 1),
+        )))
+    }),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let bits = read_value_long(vm, receiver(args)) as u64;
+        let bits = if f64::from_bits(bits).is_nan() {
+            0x7FF8_0000_0000_0000u64
+        } else {
+            bits
+        };
+        int((bits ^ (bits >> 32)) as i32)
+    }),
+    method("hashCode", "(D)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        let value = crate::double_arg(args, 0);
+        let bits = if value.is_nan() {
+            0x7FF8_0000_0000_0000u64
+        } else {
+            value.to_bits()
+        };
+        int((bits ^ (bits >> 32)) as i32)
     }),
 ];
 

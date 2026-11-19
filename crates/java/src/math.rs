@@ -761,6 +761,220 @@ fn math_mul_exact_long(
         .map(Value::Long)
 }
 
+// -------------------------------------------------------------------------------------------
+// Fused multiply-add, correctly rounded via exact integer arithmetic (no hardware FMA in
+// no_std). The product mantissa (at most 2*mb bits) and the addend are aligned in a u128
+// accumulator with the larger operand kept exact; only the smaller operand may lose low bits
+// to a sticky flag, which is enough for round-to-nearest-even because the integer part then
+// always spans more than mb bits.
+
+/// Shift `value` by `shift` (negative = right), returning the truncated result and whether any
+/// nonzero bits were discarded.
+fn fma_shift(value: u128, shift: i32) -> (u128, bool) {
+    if shift >= 0 {
+        if shift >= 128 {
+            (0, value != 0)
+        } else {
+            (value << shift, false)
+        }
+    } else {
+        let n = (-shift) as u32;
+        if n >= 128 {
+            (0, value != 0)
+        } else {
+            (value >> n, value & ((1u128 << n) - 1) != 0)
+        }
+    }
+}
+
+/// Round `magnitude * 2^base` (with a sticky bit below the accumulator) to the nearest float
+/// of the given format and return its raw bits. `mb` counts the implicit mantissa bit.
+fn fma_round(
+    magnitude: u128,
+    base: i32,
+    sign: bool,
+    sticky: bool,
+    mb: u32,
+    bias: i32,
+    sub_exp: i32,
+    width: u32,
+) -> u64 {
+    let sign_bit = if sign { 1u64 << (width - 1) } else { 0 };
+    if magnitude == 0 {
+        return sign_bit;
+    }
+    let frac_bits = mb - 1;
+    let frac_mask = (1u64 << frac_bits) - 1;
+    let max_be = (1u64 << (width - mb)) - 1;
+    let bitlen = 128 - magnitude.leading_zeros();
+    let mut e = base + bitlen as i32 - mb as i32;
+    let mut m: u64;
+    if bitlen <= mb {
+        m = (magnitude << (mb - bitlen)) as u64;
+    } else {
+        let s = bitlen - mb;
+        let low = magnitude & ((1u128 << s) - 1);
+        m = (magnitude >> s) as u64;
+        let half = 1u128 << (s - 1);
+        if low > half || (low == half && (sticky || m & 1 != 0)) {
+            m += 1;
+        }
+        if m == 1u64 << mb {
+            m >>= 1;
+            e += 1;
+        }
+    }
+    let be = e + bias + frac_bits as i32;
+    if be >= max_be as i32 {
+        return sign_bit | (max_be << frac_bits);
+    }
+    if be > 0 {
+        return sign_bit | ((be as u64) << frac_bits) | (m & frac_mask);
+    }
+    // Subnormal (or zero) result: round m * 2^(e - sub_exp) into the fraction field.
+    let d = sub_exp - e;
+    if d > mb as i32 {
+        return sign_bit;
+    }
+    if d == mb as i32 {
+        if m > 1u64 << frac_bits || sticky {
+            return sign_bit | 1;
+        }
+        return sign_bit;
+    }
+    let low = m & ((1u64 << d) - 1);
+    let mut frac = m >> d;
+    let half = 1u64 << (d - 1);
+    if low > half || (low == half && (sticky || frac & 1 != 0)) {
+        frac += 1;
+    }
+    if frac == 1u64 << frac_bits {
+        return sign_bit | (1u64 << frac_bits);
+    }
+    sign_bit | frac
+}
+
+/// Exact fused multiply-add over raw bits of one format. `width` is 32 or 64, `mb` the
+/// mantissa width including the implicit bit, `bias` the exponent bias and `sub_exp` the
+/// exponent of one fraction-field unit (the smallest subnormal).
+fn fma_core(x: u64, y: u64, z: u64, width: u32, mb: u32, bias: i32, sub_exp: i32) -> u64 {
+    let frac_bits = mb - 1;
+    let frac_mask = (1u64 << frac_bits) - 1;
+    let max_be = (1u64 << (width - mb)) - 1;
+    let sx = x >> (width - 1) != 0;
+    let sy = y >> (width - 1) != 0;
+    let sz = z >> (width - 1) != 0;
+    let bex = (x >> frac_bits) & max_be;
+    let bey = (y >> frac_bits) & max_be;
+    let bez = (z >> frac_bits) & max_be;
+    let fx = x & frac_mask;
+    let fy = y & frac_mask;
+    let fz = z & frac_mask;
+    let nan_bits = (max_be << frac_bits) | (1u64 << (frac_bits - 1));
+    if bex == max_be || bey == max_be || bez == max_be {
+        if (bex == max_be && fx != 0) || (bey == max_be && fy != 0) || (bez == max_be && fz != 0) {
+            return nan_bits;
+        }
+        let sp = sx ^ sy;
+        if bex == max_be || bey == max_be {
+            if bez == max_be && sz != sp {
+                return nan_bits;
+            }
+            return (u64::from(sp) << (width - 1)) | (max_be << frac_bits);
+        }
+        return z;
+    }
+    // Normalize each finite operand to value = m * 2^e with m in [2^(mb-1), 2^mb), or m = 0.
+    let normalize = |be: u64, frac: u64| -> (u64, i32) {
+        if be == 0 {
+            if frac == 0 {
+                (0, 0)
+            } else {
+                let k = frac.leading_zeros() - (64 - mb);
+                (frac << k, sub_exp - k as i32)
+            }
+        } else {
+            (
+                frac | (1u64 << frac_bits),
+                be as i32 - bias - frac_bits as i32,
+            )
+        }
+    };
+    let (mx, ex) = normalize(bex, fx);
+    let (my, ey) = normalize(bey, fy);
+    let (mz, ez) = normalize(bez, fz);
+    let sp = sx ^ sy;
+    let product = u128::from(mx) * u128::from(my);
+    let ep = ex + ey;
+    if product == 0 && mz == 0 {
+        return u64::from(sp && sz) << (width - 1);
+    }
+    if product == 0 {
+        return z;
+    }
+    if mz == 0 {
+        return fma_round(product, ep, sp, false, mb, bias, sub_exp, width);
+    }
+    let bitlen_p = 128 - product.leading_zeros();
+    let tp = ep + bitlen_p as i32 - 1;
+    let tz = ez + frac_bits as i32;
+    let (magnitude, base, sign, sticky) = if sp == sz {
+        let base = tp.max(tz) - 120;
+        let (p, sp_lost) = fma_shift(product, ep - base);
+        let (zv, sz_lost) = fma_shift(u128::from(mz), ez - base);
+        (p + zv, base, sp, sp_lost || sz_lost)
+    } else if tp >= tz {
+        // Keep the product exact; the addend may lose low bits to sticky.
+        let base = tp - 120;
+        let p = product << (120 - bitlen_p + 1);
+        let (zv, sz_lost) = fma_shift(u128::from(mz), ez - base);
+        if p > zv {
+            (p - zv - u128::from(sz_lost), base, sp, sz_lost)
+        } else if p == zv {
+            (0, base, false, false)
+        } else {
+            (zv - p, base, sz, false)
+        }
+    } else {
+        // Keep the addend exact; the product may lose low bits to sticky.
+        let base = tz - 120;
+        let zv = u128::from(mz) << (120 - frac_bits);
+        let (p, sp_lost) = fma_shift(product, ep - base);
+        if zv > p {
+            (zv - p - u128::from(sp_lost), base, sz, sp_lost)
+        } else if zv == p {
+            (0, base, false, false)
+        } else {
+            (p - zv, base, sp, false)
+        }
+    };
+    fma_round(magnitude, base, sign, sticky, mb, bias, sub_exp, width)
+}
+
+fn fma_f64(x: f64, y: f64, z: f64) -> f64 {
+    f64::from_bits(fma_core(
+        x.to_bits(),
+        y.to_bits(),
+        z.to_bits(),
+        64,
+        53,
+        1023,
+        -1074,
+    ))
+}
+
+fn fma_f32(x: f32, y: f32, z: f32) -> f32 {
+    f32::from_bits(fma_core(
+        u64::from(x.to_bits()),
+        u64::from(y.to_bits()),
+        u64::from(z.to_bits()),
+        32,
+        24,
+        127,
+        -149,
+    ) as u32)
+}
+
 macro_rules! math_methods {
     () => {{
         [
@@ -1388,12 +1602,26 @@ macro_rules! math_methods {
             method("scalb", "(DI)D", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
                 double(double_arg(args, 0) * pow2(int_arg(args, 1)))
             }),
+            method("fma", "(DDD)D", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+                double(fma_f64(
+                    double_arg(args, 0),
+                    double_arg(args, 1),
+                    double_arg(args, 2),
+                ))
+            }),
+            method("fma", "(FFF)F", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+                float(fma_f32(
+                    float_arg(args, 0),
+                    float_arg(args, 1),
+                    float_arg(args, 2),
+                ))
+            }),
         ]
     }};
 }
 
-const MATH_METHODS: [oxjvm_vm::NativeMethodDef; 84] = math_methods!();
-const STRICT_MATH_METHODS: [oxjvm_vm::NativeMethodDef; 84] = math_methods!();
+const MATH_METHODS: [oxjvm_vm::NativeMethodDef; 86] = math_methods!();
+const STRICT_MATH_METHODS: [oxjvm_vm::NativeMethodDef; 86] = math_methods!();
 
 pub(crate) const MATH: oxjvm_vm::NativeClass = class(
     "java/lang/Math",
