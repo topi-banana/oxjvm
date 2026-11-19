@@ -18,8 +18,8 @@ use oxjvm_vm::{ClassId, ObjectRef, Value, Vm, VmError};
 
 use crate::util::{
     array_list_from, collection_elements, collection_remove_all, collection_retain_all,
-    collection_to_array_into, hash_set_present, keys_equal, new_entry, object_hash,
-    seq_map_view_new, value_to_string,
+    collection_to_array_into, hash_set_present, keys_equal, new_entry, new_entry_immutable,
+    object_hash, seq_map_view_new, value_to_string,
 };
 use crate::{boolean, class, field, int, method, object, receiver, ref_arg, void};
 
@@ -660,48 +660,6 @@ fn tree_map_replace_all(
     void()
 }
 
-/// `TreeMap.keySet()`: the keys, in the map's order.
-fn tree_map_key_set(
-    vm: &mut Vm<'_>,
-    _c: oxjvm_vm::NativeContext,
-    args: &[Value],
-) -> Result<Value, VmError> {
-    let this = receiver(args);
-    let set = new_sorted_map(vm, "java/util/TreeSet", ordering_of(vm, this))?;
-    let present = hash_set_present(vm)?;
-    for key in keys(vm, this) {
-        put_value(vm, set, key, present)?;
-    }
-    object(set)
-}
-
-/// `TreeMap.values()`: the values, in the map's order.
-fn tree_map_values(
-    vm: &mut Vm<'_>,
-    _c: oxjvm_vm::NativeContext,
-    args: &[Value],
-) -> Result<Value, VmError> {
-    let list = array_list_from(vm, &values(vm, receiver(args)))?;
-    object(list)
-}
-
-/// `TreeMap.entrySet()`: the entries, in the map's order.
-fn tree_map_entry_set(
-    vm: &mut Vm<'_>,
-    _c: oxjvm_vm::NativeContext,
-    args: &[Value],
-) -> Result<Value, VmError> {
-    let this = receiver(args);
-    let order = new_entry_order(vm, this)?;
-    let set = new_sorted_map(vm, "java/util/TreeSet", order)?;
-    let present = hash_set_present(vm)?;
-    for (key, value) in entries(vm, this) {
-        let entry = new_entry(vm, key, value)?;
-        put_value(vm, set, entry, present)?;
-    }
-    object(set)
-}
-
 /// `TreeMap.toString()`: `{key=value, ...}` in the map's order.
 fn tree_map_to_string(
     vm: &mut Vm<'_>,
@@ -833,7 +791,7 @@ fn tree_map_first_entry(
     else {
         return object(ObjectRef::NULL);
     };
-    object(new_entry(vm, key, value)?)
+    object(new_entry_immutable(vm, key, value)?)
 }
 
 /// `TreeMap.lastEntry()`.
@@ -850,7 +808,7 @@ fn tree_map_last_entry(
     else {
         return object(ObjectRef::NULL);
     };
-    object(new_entry(vm, key, value)?)
+    object(new_entry_immutable(vm, key, value)?)
 }
 
 /// Remove the first (`first`) or last entry of the map and return it.
@@ -865,7 +823,7 @@ fn tree_map_poll_entry(
         return Ok(ObjectRef::NULL);
     };
     let value = remove_key(vm, this, key)?;
-    new_entry(vm, key, value)
+    new_entry_immutable(vm, key, value)
 }
 
 /// `TreeMap.pollFirstEntry()`: remove and return the first entry.
@@ -1304,18 +1262,20 @@ const TREE_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 63] = [
         }
         void()
     }),
-    method("keySet", "()Ljava/util/Set;", ACC_PUBLIC, tree_map_key_set),
+    method("keySet", "()Ljava/util/Set;", ACC_PUBLIC, |vm, _, args| {
+        object(tree_view_new(vm, receiver(args), 0)?)
+    }),
     method(
         "values",
         "()Ljava/util/Collection;",
         ACC_PUBLIC,
-        tree_map_values,
+        |vm, _, args| object(tree_view_new(vm, receiver(args), 1)?),
     ),
     method(
         "entrySet",
         "()Ljava/util/Set;",
         ACC_PUBLIC,
-        tree_map_entry_set,
+        |vm, _, args| object(tree_view_new(vm, receiver(args), 2)?),
     ),
     method(
         "toString",
@@ -1490,13 +1450,13 @@ const TREE_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 63] = [
         "reversed",
         "()Ljava/util/SequencedMap;",
         ACC_PUBLIC,
-        tree_map_descending_map,
+        |vm, _, args| object(crate::util::reverse_seq_map_view_new(vm, receiver(args))?),
     ),
     method(
         "reversed",
         "()Ljava/util/NavigableMap;",
         ACC_PUBLIC,
-        tree_map_descending_map,
+        |vm, _, args| object(crate::util::reverse_seq_map_view_new(vm, receiver(args))?),
     ),
     method(
         "sequencedKeySet",
@@ -1549,6 +1509,499 @@ pub(crate) const TREE_MAP: oxjvm_vm::NativeClass = class(
     None,
 );
 
+// -------------------------------------------------------------------------------------------
+// Live TreeMap collection views (keySet/values/entrySet): removals reach the backing map.
+// -------------------------------------------------------------------------------------------
+
+fn tree_view_backing(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "backing", "Ljava/util/TreeMap;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn tree_view_kind(vm: &Vm<'_>, this: ObjectRef) -> i32 {
+    crate::lang::read_int_field(vm, this, "kind")
+}
+
+fn tree_view_new(vm: &mut Vm<'_>, backing: ObjectRef, kind: i32) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/OxjvmTreeMapView")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "backing", "Ljava/util/TreeMap;")?;
+    vm.set_instance_ref(instance, declaring, field, backing);
+    crate::lang::write_int_field(vm, instance, "kind", kind);
+    Ok(instance)
+}
+
+fn tree_view_elements(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Vec<ObjectRef>, VmError> {
+    let backing = tree_view_backing(vm, this);
+    tree_elements(vm, backing, tree_view_kind(vm, this))
+}
+
+/// The backing map's keys (0), values (1), or entry snapshots (2).
+fn tree_elements(
+    vm: &mut Vm<'_>,
+    backing: ObjectRef,
+    kind: i32,
+) -> Result<Vec<ObjectRef>, VmError> {
+    Ok(match kind {
+        0 => keys(vm, backing),
+        1 => values(vm, backing),
+        _ => {
+            let mut out = Vec::new();
+            for (key, value) in entries(vm, backing) {
+                out.push(new_entry(vm, key, value)?);
+            }
+            out
+        }
+    })
+}
+
+/// Remove `element` from the backing map, interpreting it per the view kind.
+fn tree_remove_element(
+    vm: &mut Vm<'_>,
+    backing: ObjectRef,
+    kind: i32,
+    element: ObjectRef,
+) -> Result<bool, VmError> {
+    match kind {
+        0 => {
+            let removed = remove_key(vm, backing, element)?;
+            Ok(!removed.is_null())
+        }
+        1 => {
+            for (key, value) in entries(vm, backing) {
+                if keys_equal(vm, value, element)? {
+                    remove_key(vm, backing, key)?;
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        _ => {
+            let Some((key, value)) = entry_key_value(vm, element)? else {
+                return Ok(false);
+            };
+            for (k, v) in entries(vm, backing) {
+                if keys_equal(vm, k, key)? && keys_equal(vm, v, value)? {
+                    remove_key(vm, backing, k)?;
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+    }
+}
+
+/// The key/value of a `Map.Entry` object, or None when `element` is not an entry.
+fn entry_key_value(
+    vm: &mut Vm<'_>,
+    element: ObjectRef,
+) -> Result<Option<(ObjectRef, ObjectRef)>, VmError> {
+    let entry_class = vm.resolve_class("java/util/Map$Entry")?;
+    if element.is_null() || !vm.is_instance(element, entry_class) {
+        return Ok(None);
+    }
+    let (class, method) = vm.resolve_virtual_method(element, "getKey", "()Ljava/lang/Object;")?;
+    let key = vm
+        .invoke_method(class, method, vec![Value::Ref(element)])?
+        .as_ref();
+    let (class, method) = vm.resolve_virtual_method(element, "getValue", "()Ljava/lang/Object;")?;
+    let value = vm
+        .invoke_method(class, method, vec![Value::Ref(element)])?
+        .as_ref();
+    Ok(Some((key, value)))
+}
+
+const TREE_MAP_VIEW_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(size_of(vm, tree_view_backing(vm, receiver(args))))
+    }),
+    method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(size_of(vm, tree_view_backing(vm, receiver(args))) == 0)
+    }),
+    method(
+        "contains",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let backing = tree_view_backing(vm, this);
+            let element = ref_arg(args, 1);
+            match tree_view_kind(vm, this) {
+                0 => {
+                    let (class, method) =
+                        vm.resolve_virtual_method(backing, "containsKey", "(Ljava/lang/Object;)Z")?;
+                    vm.invoke_method(
+                        class,
+                        method,
+                        vec![Value::Ref(backing), Value::Ref(element)],
+                    )
+                }
+                1 => {
+                    let (class, method) = vm.resolve_virtual_method(
+                        backing,
+                        "containsValue",
+                        "(Ljava/lang/Object;)Z",
+                    )?;
+                    vm.invoke_method(
+                        class,
+                        method,
+                        vec![Value::Ref(backing), Value::Ref(element)],
+                    )
+                }
+                _ => {
+                    let Some((key, value)) = entry_key_value(vm, element)? else {
+                        return boolean(false);
+                    };
+                    for (k, v) in entries(vm, backing) {
+                        if keys_equal(vm, k, key)? && keys_equal(vm, v, value)? {
+                            return boolean(true);
+                        }
+                    }
+                    boolean(false)
+                }
+            }
+        },
+    ),
+    method(
+        "iterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let elements = tree_view_elements(vm, this)?;
+            let class = vm.resolve_class("java/util/OxjvmTreeMapIterator")?;
+            let iterator = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "backing", "Ljava/util/TreeMap;")?;
+            vm.set_instance_ref(iterator, declaring, field, tree_view_backing(vm, this));
+            crate::lang::write_int_field(vm, iterator, "kind", tree_view_kind(vm, this));
+            let object_class = vm.resolve_class("java/lang/Object")?;
+            let array = vm.allocate_object_array(object_class, elements.len())?;
+            for (index, element) in elements.iter().enumerate() {
+                vm.array_set_ref(array, index, *element)?;
+            }
+            let (declaring, field) = vm.find_field(class, "elements", "[Ljava/lang/Object;")?;
+            vm.set_instance_ref(iterator, declaring, field, array);
+            crate::lang::write_int_field(vm, iterator, "cursor", 0);
+            crate::lang::write_int_field(vm, iterator, "last", -1);
+            object(iterator)
+        },
+    ),
+    method(
+        "toArray",
+        "()[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = tree_view_elements(vm, receiver(args))?;
+            let object_class = vm.resolve_class("java/lang/Object")?;
+            let array = vm.allocate_object_array(object_class, elements.len())?;
+            for (index, element) in elements.iter().enumerate() {
+                vm.array_set_ref(array, index, *element)?;
+            }
+            object(array)
+        },
+    ),
+    method(
+        "toArray",
+        "([Ljava/lang/Object;)[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = tree_view_elements(vm, receiver(args))?;
+            collection_to_array_into(vm, &elements, ref_arg(args, 1))
+        },
+    ),
+    method(
+        "toArray",
+        "(Ljava/util/function/IntFunction;)[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let elements = tree_view_elements(vm, this)?;
+            let generator = ref_arg(args, 1);
+            let (class, method) =
+                vm.resolve_virtual_method(generator, "apply", "(I)Ljava/lang/Object;")?;
+            let array = vm
+                .invoke_method(
+                    class,
+                    method,
+                    vec![Value::Ref(generator), Value::Int(elements.len() as i32)],
+                )?
+                .as_ref();
+            collection_to_array_into(vm, &elements, array)
+        },
+    ),
+    method(
+        "forEach",
+        "(Ljava/util/function/Consumer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = tree_view_elements(vm, receiver(args))?;
+            let action = ref_arg(args, 1);
+            let (class, method) =
+                vm.resolve_virtual_method(action, "accept", "(Ljava/lang/Object;)V")?;
+            for element in elements {
+                vm.invoke_method(class, method, vec![Value::Ref(action), Value::Ref(element)])?;
+            }
+            void()
+        },
+    ),
+    method(
+        "remove",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let removed = tree_remove_element(
+                vm,
+                tree_view_backing(vm, this),
+                tree_view_kind(vm, this),
+                ref_arg(args, 1),
+            )?;
+            boolean(removed)
+        },
+    ),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
+        let backing = tree_view_backing(vm, receiver(args));
+        let (class, method) = vm.resolve_virtual_method(backing, "clear", "()V")?;
+        vm.invoke_method(class, method, vec![Value::Ref(backing)])
+    }),
+    method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/UnsupportedOperationException", None))
+    }),
+    method(
+        "addAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method(
+        "removeAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let elements = tree_view_elements(vm, this)?;
+            let (class, method) =
+                vm.resolve_virtual_method(other, "contains", "(Ljava/lang/Object;)Z")?;
+            let mut changed = false;
+            for element in elements {
+                let contained = vm
+                    .invoke_method(class, method, vec![Value::Ref(other), Value::Ref(element)])?
+                    .as_int()
+                    != 0;
+                if contained {
+                    changed |= tree_remove_element(
+                        vm,
+                        tree_view_backing(vm, this),
+                        tree_view_kind(vm, this),
+                        element,
+                    )?;
+                }
+            }
+            boolean(changed)
+        },
+    ),
+    method(
+        "retainAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let elements = tree_view_elements(vm, this)?;
+            let (class, method) =
+                vm.resolve_virtual_method(other, "contains", "(Ljava/lang/Object;)Z")?;
+            let mut changed = false;
+            for element in elements {
+                let contained = vm
+                    .invoke_method(class, method, vec![Value::Ref(other), Value::Ref(element)])?
+                    .as_int()
+                    != 0;
+                if !contained {
+                    changed |= tree_remove_element(
+                        vm,
+                        tree_view_backing(vm, this),
+                        tree_view_kind(vm, this),
+                        element,
+                    )?;
+                }
+            }
+            boolean(changed)
+        },
+    ),
+    method(
+        "removeIf",
+        "(Ljava/util/function/Predicate;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let predicate = ref_arg(args, 1);
+            let elements = tree_view_elements(vm, this)?;
+            let (class, method) =
+                vm.resolve_virtual_method(predicate, "test", "(Ljava/lang/Object;)Z")?;
+            let mut changed = false;
+            for element in elements {
+                let matched = vm
+                    .invoke_method(
+                        class,
+                        method,
+                        vec![Value::Ref(predicate), Value::Ref(element)],
+                    )?
+                    .as_int()
+                    != 0;
+                if matched {
+                    changed |= tree_remove_element(
+                        vm,
+                        tree_view_backing(vm, this),
+                        tree_view_kind(vm, this),
+                        element,
+                    )?;
+                }
+            }
+            boolean(changed)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if tree_view_kind(vm, this) == 1 {
+                return boolean(this == other);
+            }
+            if this == other {
+                return boolean(true);
+            }
+            let set_class = vm.resolve_class("java/util/Set")?;
+            if other.is_null() || !vm.is_instance(other, set_class) {
+                return boolean(false);
+            }
+            let elements = tree_view_elements(vm, this)?;
+            let (class, method) = vm.resolve_virtual_method(other, "size", "()I")?;
+            let size = vm
+                .invoke_method(class, method, vec![Value::Ref(other)])?
+                .as_int();
+            if size != elements.len() as i32 {
+                return boolean(false);
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(other, "contains", "(Ljava/lang/Object;)Z")?;
+            for element in elements {
+                let contained = vm
+                    .invoke_method(class, method, vec![Value::Ref(other), Value::Ref(element)])?
+                    .as_int()
+                    != 0;
+                if !contained {
+                    return boolean(false);
+                }
+            }
+            boolean(true)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if tree_view_kind(vm, this) == 1 {
+            return int(object_hash(vm, this)?);
+        }
+        let elements = tree_view_elements(vm, this)?;
+        let mut sum = 0i32;
+        for element in elements {
+            sum = sum.wrapping_add(object_hash(vm, element)?);
+        }
+        int(sum)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = tree_view_elements(vm, receiver(args))?;
+            let mut text = String::from("[");
+            for (index, element) in elements.iter().enumerate() {
+                if index > 0 {
+                    text.push_str(", ");
+                }
+                text.push_str(&value_to_string(vm, *element)?);
+            }
+            text.push(']');
+            object(vm.make_string(&text)?)
+        },
+    ),
+];
+
+pub(crate) const TREE_MAP_VIEW: oxjvm_vm::NativeClass = class(
+    "java/util/OxjvmTreeMapView",
+    Some("java/lang/Object"),
+    &["java/util/Collection", "java/util/Set"],
+    ACC_PUBLIC,
+    &[
+        field("backing", "Ljava/util/TreeMap;", ACC_PRIVATE, None),
+        field("kind", "I", ACC_PRIVATE, None),
+    ],
+    &TREE_MAP_VIEW_METHODS,
+    None,
+);
+
+const TREE_MAP_ITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method("hasNext", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let cursor = crate::lang::read_int_field(vm, this, "cursor");
+        let array = vm
+            .read_ref_field(this, vm.class_of(this), "elements", "[Ljava/lang/Object;")
+            .unwrap_or(ObjectRef::NULL);
+        boolean((cursor as usize) < vm.array_length(array)?)
+    }),
+    method("next", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let cursor = crate::lang::read_int_field(vm, this, "cursor");
+        let array = vm
+            .read_ref_field(this, vm.class_of(this), "elements", "[Ljava/lang/Object;")
+            .unwrap_or(ObjectRef::NULL);
+        if (cursor as usize) >= vm.array_length(array)? {
+            return Err(vm.throw_new("java/util/NoSuchElementException", None));
+        }
+        let element = vm.array_get(array, cursor)?;
+        crate::lang::write_int_field(vm, this, "last", cursor);
+        crate::lang::write_int_field(vm, this, "cursor", cursor + 1);
+        Ok(element)
+    }),
+    method("remove", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let last = crate::lang::read_int_field(vm, this, "last");
+        if last < 0 {
+            return Err(vm.throw_new("java/lang/IllegalStateException", None));
+        }
+        let array = vm
+            .read_ref_field(this, vm.class_of(this), "elements", "[Ljava/lang/Object;")
+            .unwrap_or(ObjectRef::NULL);
+        let element = vm.array_get(array, last)?.as_ref();
+        let backing = vm
+            .read_ref_field(this, vm.class_of(this), "backing", "Ljava/util/TreeMap;")
+            .unwrap_or(ObjectRef::NULL);
+        let kind = crate::lang::read_int_field(vm, this, "kind");
+        tree_remove_element(vm, backing, kind, element)?;
+        crate::lang::write_int_field(vm, this, "last", -1);
+        void()
+    }),
+];
+
+pub(crate) const TREE_MAP_ITERATOR: oxjvm_vm::NativeClass = class(
+    "java/util/OxjvmTreeMapIterator",
+    Some("java/lang/Object"),
+    &["java/util/Iterator"],
+    ACC_PUBLIC,
+    &[
+        field("backing", "Ljava/util/TreeMap;", ACC_PRIVATE, None),
+        field("kind", "I", ACC_PRIVATE, None),
+        field("elements", "[Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("cursor", "I", ACC_PRIVATE, None),
+        field("last", "I", ACC_PRIVATE, None),
+    ],
+    &TREE_MAP_ITERATOR_METHODS,
+    None,
+);
 // -------------------------------------------------------------------------------------------
 // ConcurrentSkipListMap (a concurrent sorted map; reuses the TreeMap sorted-map storage and
 // methods, which satisfies the functional NavigableMap/Map contract tests)
@@ -2343,15 +2796,6 @@ pub(crate) const TREE_SET: oxjvm_vm::NativeClass = class(
 // -------------------------------------------------------------------------------------------
 // The orderings the sorted views need
 // -------------------------------------------------------------------------------------------
-
-/// A `Comparator` that orders the entries of a map by their keys.
-fn new_entry_order(vm: &mut Vm<'_>, map: ObjectRef) -> Result<ObjectRef, VmError> {
-    let class = vm.resolve_class("java/util/OxjvmEntryOrder")?;
-    let instance = vm.new_instance(class)?;
-    let (declaring, field) = vm.find_field(class, "source", "Ljava/lang/Object;")?;
-    vm.set_instance_ref(instance, declaring, field, map);
-    Ok(instance)
-}
 
 /// `OxjvmEntryOrder.compare(Object, Object)`: compare two entries by their keys.
 fn entry_order_compare(

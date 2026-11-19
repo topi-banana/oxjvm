@@ -10527,19 +10527,40 @@ const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 70] = [
         "checkedMap",
         "(Ljava/util/Map;Ljava/lang/Class;Ljava/lang/Class;)Ljava/util/Map;",
         ACC_PUBLIC | ACC_STATIC,
-        |_, _, args| object(ref_arg(args, 0)),
+        |vm, _, args| {
+            object(checked_map_new(
+                vm,
+                ref_arg(args, 0),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+            )?)
+        },
     ),
     method(
         "checkedSortedMap",
         "(Ljava/util/SortedMap;Ljava/lang/Class;Ljava/lang/Class;)Ljava/util/SortedMap;",
         ACC_PUBLIC | ACC_STATIC,
-        |_, _, args| object(ref_arg(args, 0)),
+        |vm, _, args| {
+            object(checked_map_new(
+                vm,
+                ref_arg(args, 0),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+            )?)
+        },
     ),
     method(
         "checkedNavigableMap",
         "(Ljava/util/NavigableMap;Ljava/lang/Class;Ljava/lang/Class;)Ljava/util/NavigableMap;",
         ACC_PUBLIC | ACC_STATIC,
-        |_, _, args| object(ref_arg(args, 0)),
+        |vm, _, args| {
+            object(checked_map_new(
+                vm,
+                ref_arg(args, 0),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+            )?)
+        },
     ),
     method(
         "checkedQueue",
@@ -10551,19 +10572,19 @@ const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 70] = [
         "unmodifiableSet",
         "(Ljava/util/Set;)Ljava/util/Set;",
         ACC_PUBLIC | ACC_STATIC,
-        |_, _, args| object(ref_arg(args, 0)),
+        |vm, _, args| object(unmodifiable_collection_new(vm, ref_arg(args, 0))?),
     ),
     method(
         "unmodifiableMap",
         "(Ljava/util/Map;)Ljava/util/Map;",
         ACC_PUBLIC | ACC_STATIC,
-        |_, _, args| object(ref_arg(args, 0)),
+        |vm, _, args| object(unmodifiable_seq_map_new(vm, ref_arg(args, 0))?),
     ),
     method(
         "unmodifiableCollection",
         "(Ljava/util/Collection;)Ljava/util/Collection;",
         ACC_PUBLIC | ACC_STATIC,
-        |_, _, args| object(ref_arg(args, 0)),
+        |vm, _, args| object(unmodifiable_collection_new(vm, ref_arg(args, 0))?),
     ),
     method(
         "newSetFromMap",
@@ -10656,13 +10677,13 @@ const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 70] = [
         "unmodifiableSortedMap",
         "(Ljava/util/SortedMap;)Ljava/util/SortedMap;",
         ACC_PUBLIC | ACC_STATIC,
-        |_, _, args| object(ref_arg(args, 0)),
+        |vm, _, args| object(unmodifiable_seq_map_new(vm, ref_arg(args, 0))?),
     ),
     method(
         "unmodifiableNavigableMap",
         "(Ljava/util/NavigableMap;)Ljava/util/NavigableMap;",
         ACC_PUBLIC | ACC_STATIC,
-        |_, _, args| object(ref_arg(args, 0)),
+        |vm, _, args| object(unmodifiable_seq_map_new(vm, ref_arg(args, 0))?),
     ),
     method(
         "list",
@@ -10871,7 +10892,7 @@ const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 70] = [
         "unmodifiableSequencedMap",
         "(Ljava/util/SequencedMap;)Ljava/util/SequencedMap;",
         ACC_PUBLIC | ACC_STATIC,
-        |_, _, args| object(ref_arg(args, 0)),
+        |vm, _, args| object(unmodifiable_seq_map_new(vm, ref_arg(args, 0))?),
     ),
 ];
 
@@ -14281,7 +14302,7 @@ pub(crate) fn new_entry(
 
 /// An entry snapshot whose `setValue` throws `UnsupportedOperationException`, as returned by
 /// the `SequencedMap` end operations.
-fn new_entry_immutable(
+pub(crate) fn new_entry_immutable(
     vm: &mut Vm<'_>,
     key: ObjectRef,
     value: ObjectRef,
@@ -15648,7 +15669,10 @@ fn reverse_view_backing(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
 }
 
 /// Create a reverse-order view over `map`.
-fn reverse_seq_map_view_new(vm: &mut Vm<'_>, map: ObjectRef) -> Result<ObjectRef, VmError> {
+pub(crate) fn reverse_seq_map_view_new(
+    vm: &mut Vm<'_>,
+    map: ObjectRef,
+) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class("java/util/OxjvmReverseSeqMapView")?;
     let instance = vm.new_instance(class)?;
     let (declaring, field) = vm.find_field(class, "backing", "Ljava/util/SequencedMap;")?;
@@ -15909,22 +15933,24 @@ const REVERSE_SEQ_MAP_VIEW_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         },
     ),
     method("keySet", "()Ljava/util/Set;", ACC_PUBLIC, |vm, _, args| {
-        let keys: Vec<ObjectRef> = reverse_view_pairs(vm, receiver(args))?
-            .into_iter()
-            .map(|(k, _)| k)
-            .collect();
-        object(hash_set_from(vm, &keys)?)
+        object(map_view_new(
+            vm,
+            reverse_view_backing(vm, receiver(args)),
+            0,
+            true,
+        )?)
     }),
     method(
         "values",
         "()Ljava/util/Collection;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let values: Vec<ObjectRef> = reverse_view_pairs(vm, receiver(args))?
-                .into_iter()
-                .map(|(_, v)| v)
-                .collect();
-            object(array_list_from(vm, &values)?)
+            object(map_view_new(
+                vm,
+                reverse_view_backing(vm, receiver(args)),
+                1,
+                true,
+            )?)
         },
     ),
     method(
@@ -15932,12 +15958,12 @@ const REVERSE_SEQ_MAP_VIEW_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         "()Ljava/util/Set;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let pairs = reverse_view_pairs(vm, receiver(args))?;
-            let mut entries = Vec::with_capacity(pairs.len());
-            for (key, value) in pairs {
-                entries.push(new_entry(vm, key, value)?);
-            }
-            object(hash_set_from(vm, &entries)?)
+            object(map_view_new(
+                vm,
+                reverse_view_backing(vm, receiver(args)),
+                2,
+                true,
+            )?)
         },
     ),
     method(
@@ -16225,6 +16251,1989 @@ pub(crate) const OXJVM_SEQ_MAP_VIEW: oxjvm_vm::NativeClass = class(
         field("kind", "I", ACC_PRIVATE, None),
     ],
     &OXJVM_SEQ_MAP_VIEW_METHODS,
+    None,
+);
+// -------------------------------------------------------------------------------------------
+// Live map collection views (keySet/values/entrySet), optionally reverse-ordered: removals
+// reach the backing map through its `remove` operation.
+// -------------------------------------------------------------------------------------------
+
+fn map_view_backing(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(
+        this,
+        vm.class_of(this),
+        "backing",
+        "Ljava/util/SequencedMap;",
+    )
+    .unwrap_or(ObjectRef::NULL)
+}
+
+fn map_view_new(
+    vm: &mut Vm<'_>,
+    backing: ObjectRef,
+    kind: i32,
+    reversed: bool,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/OxjvmMapView")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "backing", "Ljava/util/SequencedMap;")?;
+    vm.set_instance_ref(instance, declaring, field, backing);
+    crate::lang::write_int_field(vm, instance, "kind", kind);
+    crate::lang::write_int_field(vm, instance, "reversed", i32::from(reversed));
+    Ok(instance)
+}
+
+fn map_view_elements(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Vec<ObjectRef>, VmError> {
+    let backing = map_view_backing(vm, this);
+    let mut pairs = abstract_map_entries(vm, backing)?;
+    if crate::lang::read_int_field(vm, this, "reversed") != 0 {
+        pairs.reverse();
+    }
+    let kind = crate::lang::read_int_field(vm, this, "kind");
+    let mut out = Vec::with_capacity(pairs.len());
+    for (key, value) in pairs {
+        out.push(match kind {
+            0 => key,
+            1 => value,
+            _ => new_entry(vm, key, value)?,
+        });
+    }
+    Ok(out)
+}
+
+/// The key/value of a `Map.Entry`, or None when `element` is not an entry.
+fn map_entry_key_value(
+    vm: &mut Vm<'_>,
+    element: ObjectRef,
+) -> Result<Option<(ObjectRef, ObjectRef)>, VmError> {
+    let entry_class = vm.resolve_class("java/util/Map$Entry")?;
+    if element.is_null() || !vm.is_instance(element, entry_class) {
+        return Ok(None);
+    }
+    let (class, method) = vm.resolve_virtual_method(element, "getKey", "()Ljava/lang/Object;")?;
+    let key = vm
+        .invoke_method(class, method, vec![Value::Ref(element)])?
+        .as_ref();
+    let (class, method) = vm.resolve_virtual_method(element, "getValue", "()Ljava/lang/Object;")?;
+    let value = vm
+        .invoke_method(class, method, vec![Value::Ref(element)])?
+        .as_ref();
+    Ok(Some((key, value)))
+}
+
+/// Remove `element` from the backing map, interpreting it per the view kind.
+fn map_view_remove_element(
+    vm: &mut Vm<'_>,
+    backing: ObjectRef,
+    kind: i32,
+    element: ObjectRef,
+) -> Result<bool, VmError> {
+    let remove = |vm: &mut Vm<'_>, key: ObjectRef| -> Result<bool, VmError> {
+        let (class, method) =
+            vm.resolve_virtual_method(backing, "remove", "(Ljava/lang/Object;)Ljava/lang/Object;")?;
+        let removed = vm
+            .invoke_method(class, method, vec![Value::Ref(backing), Value::Ref(key)])?
+            .as_ref();
+        Ok(!removed.is_null())
+    };
+    match kind {
+        0 => remove(vm, element),
+        1 => {
+            for (key, value) in abstract_map_entries(vm, backing)? {
+                if keys_equal(vm, value, element)? {
+                    return remove(vm, key);
+                }
+            }
+            Ok(false)
+        }
+        _ => {
+            let Some((key, value)) = map_entry_key_value(vm, element)? else {
+                return Ok(false);
+            };
+            for (k, v) in abstract_map_entries(vm, backing)? {
+                if keys_equal(vm, k, key)? && keys_equal(vm, v, value)? {
+                    return remove(vm, k);
+                }
+            }
+            Ok(false)
+        }
+    }
+}
+
+const OXJVM_MAP_VIEW_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        let backing = map_view_backing(vm, receiver(args));
+        map_invoke(vm, backing, "size", "()I", &[])
+    }),
+    method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let backing = map_view_backing(vm, receiver(args));
+        map_invoke(vm, backing, "isEmpty", "()Z", &[])
+    }),
+    method(
+        "contains",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let backing = map_view_backing(vm, this);
+            let element = ref_arg(args, 1);
+            match crate::lang::read_int_field(vm, this, "kind") {
+                0 => map_invoke(
+                    vm,
+                    backing,
+                    "containsKey",
+                    "(Ljava/lang/Object;)Z",
+                    &[Value::Ref(element)],
+                ),
+                1 => map_invoke(
+                    vm,
+                    backing,
+                    "containsValue",
+                    "(Ljava/lang/Object;)Z",
+                    &[Value::Ref(element)],
+                ),
+                _ => {
+                    let Some((key, value)) = map_entry_key_value(vm, element)? else {
+                        return boolean(false);
+                    };
+                    for (k, v) in abstract_map_entries(vm, backing)? {
+                        if keys_equal(vm, k, key)? && keys_equal(vm, v, value)? {
+                            return boolean(true);
+                        }
+                    }
+                    boolean(false)
+                }
+            }
+        },
+    ),
+    method(
+        "iterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let elements = map_view_elements(vm, this)?;
+            let class = vm.resolve_class("java/util/OxjvmMapIterator")?;
+            let iterator = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "backing", "Ljava/util/SequencedMap;")?;
+            vm.set_instance_ref(iterator, declaring, field, map_view_backing(vm, this));
+            crate::lang::write_int_field(
+                vm,
+                iterator,
+                "kind",
+                crate::lang::read_int_field(vm, this, "kind"),
+            );
+            let object_class = vm.resolve_class("java/lang/Object")?;
+            let array = vm.allocate_object_array(object_class, elements.len())?;
+            for (index, element) in elements.iter().enumerate() {
+                vm.array_set_ref(array, index, *element)?;
+            }
+            let (declaring, field) = vm.find_field(class, "elements", "[Ljava/lang/Object;")?;
+            vm.set_instance_ref(iterator, declaring, field, array);
+            crate::lang::write_int_field(vm, iterator, "cursor", 0);
+            crate::lang::write_int_field(vm, iterator, "last", -1);
+            object(iterator)
+        },
+    ),
+    method(
+        "toArray",
+        "()[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = map_view_elements(vm, receiver(args))?;
+            let object_class = vm.resolve_class("java/lang/Object")?;
+            let array = vm.allocate_object_array(object_class, elements.len())?;
+            for (index, element) in elements.iter().enumerate() {
+                vm.array_set_ref(array, index, *element)?;
+            }
+            object(array)
+        },
+    ),
+    method(
+        "toArray",
+        "([Ljava/lang/Object;)[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = map_view_elements(vm, receiver(args))?;
+            collection_to_array_into(vm, &elements, ref_arg(args, 1))
+        },
+    ),
+    method(
+        "toArray",
+        "(Ljava/util/function/IntFunction;)[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = map_view_elements(vm, receiver(args))?;
+            let generator = ref_arg(args, 1);
+            let (class, method) =
+                vm.resolve_virtual_method(generator, "apply", "(I)Ljava/lang/Object;")?;
+            let array = vm
+                .invoke_method(
+                    class,
+                    method,
+                    vec![Value::Ref(generator), Value::Int(elements.len() as i32)],
+                )?
+                .as_ref();
+            collection_to_array_into(vm, &elements, array)
+        },
+    ),
+    method(
+        "forEach",
+        "(Ljava/util/function/Consumer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = map_view_elements(vm, receiver(args))?;
+            let action = ref_arg(args, 1);
+            let (class, method) =
+                vm.resolve_virtual_method(action, "accept", "(Ljava/lang/Object;)V")?;
+            for element in elements {
+                vm.invoke_method(class, method, vec![Value::Ref(action), Value::Ref(element)])?;
+            }
+            void()
+        },
+    ),
+    method(
+        "remove",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let removed = map_view_remove_element(
+                vm,
+                map_view_backing(vm, this),
+                crate::lang::read_int_field(vm, this, "kind"),
+                ref_arg(args, 1),
+            )?;
+            boolean(removed)
+        },
+    ),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
+        let backing = map_view_backing(vm, receiver(args));
+        map_invoke(vm, backing, "clear", "()V", &[])
+    }),
+    method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/UnsupportedOperationException", None))
+    }),
+    method(
+        "addAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method(
+        "removeAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let elements = map_view_elements(vm, this)?;
+            let mut changed = false;
+            for element in elements {
+                let contained = map_invoke(
+                    vm,
+                    other,
+                    "contains",
+                    "(Ljava/lang/Object;)Z",
+                    &[Value::Ref(element)],
+                )?
+                .as_int()
+                    != 0;
+                if contained {
+                    changed |= map_view_remove_element(
+                        vm,
+                        map_view_backing(vm, this),
+                        crate::lang::read_int_field(vm, this, "kind"),
+                        element,
+                    )?;
+                }
+            }
+            boolean(changed)
+        },
+    ),
+    method(
+        "retainAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let elements = map_view_elements(vm, this)?;
+            let mut changed = false;
+            for element in elements {
+                let contained = map_invoke(
+                    vm,
+                    other,
+                    "contains",
+                    "(Ljava/lang/Object;)Z",
+                    &[Value::Ref(element)],
+                )?
+                .as_int()
+                    != 0;
+                if !contained {
+                    changed |= map_view_remove_element(
+                        vm,
+                        map_view_backing(vm, this),
+                        crate::lang::read_int_field(vm, this, "kind"),
+                        element,
+                    )?;
+                }
+            }
+            boolean(changed)
+        },
+    ),
+    method(
+        "removeIf",
+        "(Ljava/util/function/Predicate;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let predicate = ref_arg(args, 1);
+            let elements = map_view_elements(vm, this)?;
+            let (class, method) =
+                vm.resolve_virtual_method(predicate, "test", "(Ljava/lang/Object;)Z")?;
+            let mut changed = false;
+            for element in elements {
+                let matched = vm
+                    .invoke_method(
+                        class,
+                        method,
+                        vec![Value::Ref(predicate), Value::Ref(element)],
+                    )?
+                    .as_int()
+                    != 0;
+                if matched {
+                    changed |= map_view_remove_element(
+                        vm,
+                        map_view_backing(vm, this),
+                        crate::lang::read_int_field(vm, this, "kind"),
+                        element,
+                    )?;
+                }
+            }
+            boolean(changed)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if crate::lang::read_int_field(vm, this, "kind") == 1 {
+                return boolean(this == other);
+            }
+            if this == other {
+                return boolean(true);
+            }
+            let set_class = vm.resolve_class("java/util/Set")?;
+            if other.is_null() || !vm.is_instance(other, set_class) {
+                return boolean(false);
+            }
+            let elements = map_view_elements(vm, this)?;
+            let size = map_invoke(vm, other, "size", "()I", &[])?.as_int();
+            if size != elements.len() as i32 {
+                return boolean(false);
+            }
+            for element in elements {
+                let contained = map_invoke(
+                    vm,
+                    other,
+                    "contains",
+                    "(Ljava/lang/Object;)Z",
+                    &[Value::Ref(element)],
+                )?
+                .as_int()
+                    != 0;
+                if !contained {
+                    return boolean(false);
+                }
+            }
+            boolean(true)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if crate::lang::read_int_field(vm, this, "kind") == 1 {
+            return int(object_hash(vm, this)?);
+        }
+        let elements = map_view_elements(vm, this)?;
+        let mut sum = 0i32;
+        for element in elements {
+            sum = sum.wrapping_add(object_hash(vm, element)?);
+        }
+        int(sum)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = map_view_elements(vm, receiver(args))?;
+            let mut text = String::from("[");
+            for (index, element) in elements.iter().enumerate() {
+                if index > 0 {
+                    text.push_str(", ");
+                }
+                text.push_str(&value_to_string(vm, *element)?);
+            }
+            text.push(']');
+            object(vm.make_string(&text)?)
+        },
+    ),
+];
+
+pub(crate) const OXJVM_MAP_VIEW: oxjvm_vm::NativeClass = class(
+    "java/util/OxjvmMapView",
+    Some("java/lang/Object"),
+    &["java/util/Collection", "java/util/Set"],
+    ACC_PUBLIC,
+    &[
+        field("backing", "Ljava/util/SequencedMap;", ACC_PRIVATE, None),
+        field("kind", "I", ACC_PRIVATE, None),
+        field("reversed", "I", ACC_PRIVATE, None),
+    ],
+    &OXJVM_MAP_VIEW_METHODS,
+    None,
+);
+
+const OXJVM_MAP_ITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method("hasNext", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let cursor = crate::lang::read_int_field(vm, this, "cursor");
+        let array = vm
+            .read_ref_field(this, vm.class_of(this), "elements", "[Ljava/lang/Object;")
+            .unwrap_or(ObjectRef::NULL);
+        boolean((cursor as usize) < vm.array_length(array)?)
+    }),
+    method("next", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let cursor = crate::lang::read_int_field(vm, this, "cursor");
+        let array = vm
+            .read_ref_field(this, vm.class_of(this), "elements", "[Ljava/lang/Object;")
+            .unwrap_or(ObjectRef::NULL);
+        if (cursor as usize) >= vm.array_length(array)? {
+            return Err(vm.throw_new("java/util/NoSuchElementException", None));
+        }
+        let element = vm.array_get(array, cursor)?;
+        crate::lang::write_int_field(vm, this, "last", cursor);
+        crate::lang::write_int_field(vm, this, "cursor", cursor + 1);
+        Ok(element)
+    }),
+    method("remove", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let last = crate::lang::read_int_field(vm, this, "last");
+        if last < 0 {
+            return Err(vm.throw_new("java/lang/IllegalStateException", None));
+        }
+        let array = vm
+            .read_ref_field(this, vm.class_of(this), "elements", "[Ljava/lang/Object;")
+            .unwrap_or(ObjectRef::NULL);
+        let element = vm.array_get(array, last)?.as_ref();
+        let backing = vm
+            .read_ref_field(
+                this,
+                vm.class_of(this),
+                "backing",
+                "Ljava/util/SequencedMap;",
+            )
+            .unwrap_or(ObjectRef::NULL);
+        let kind = crate::lang::read_int_field(vm, this, "kind");
+        map_view_remove_element(vm, backing, kind, element)?;
+        crate::lang::write_int_field(vm, this, "last", -1);
+        void()
+    }),
+];
+
+pub(crate) const OXJVM_MAP_ITERATOR: oxjvm_vm::NativeClass = class(
+    "java/util/OxjvmMapIterator",
+    Some("java/lang/Object"),
+    &["java/util/Iterator"],
+    ACC_PUBLIC,
+    &[
+        field("backing", "Ljava/util/SequencedMap;", ACC_PRIVATE, None),
+        field("kind", "I", ACC_PRIVATE, None),
+        field("elements", "[Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("cursor", "I", ACC_PRIVATE, None),
+        field("last", "I", ACC_PRIVATE, None),
+    ],
+    &OXJVM_MAP_ITERATOR_METHODS,
+    None,
+);
+// -------------------------------------------------------------------------------------------
+// Checked wrappers (Collections.checked*Map): mutators type-check keys/values against the
+// given Class tokens and throw ClassCastException on mismatch; reads delegate.
+// -------------------------------------------------------------------------------------------
+
+fn checked_type_check(vm: &mut Vm<'_>, obj: ObjectRef, ty: ObjectRef) -> Result<(), VmError> {
+    let (class, method) = vm.resolve_virtual_method(ty, "isInstance", "(Ljava/lang/Object;)Z")?;
+    let ok = vm
+        .invoke_method(class, method, vec![Value::Ref(ty), Value::Ref(obj)])?
+        .as_int()
+        != 0;
+    if ok {
+        Ok(())
+    } else {
+        Err(vm.throw_new("java/lang/ClassCastException", None))
+    }
+}
+
+fn checked_map_backing(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(
+        this,
+        vm.class_of(this),
+        "backing",
+        "Ljava/util/SequencedMap;",
+    )
+    .unwrap_or(ObjectRef::NULL)
+}
+
+fn checked_map_types(vm: &Vm<'_>, this: ObjectRef) -> (ObjectRef, ObjectRef) {
+    let class = vm.class_of(this);
+    let key_type = vm
+        .read_ref_field(this, class, "keyType", "Ljava/lang/Class;")
+        .unwrap_or(ObjectRef::NULL);
+    let value_type = vm
+        .read_ref_field(this, class, "valueType", "Ljava/lang/Class;")
+        .unwrap_or(ObjectRef::NULL);
+    (key_type, value_type)
+}
+
+fn checked_map_delegate(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    extra: &[Value],
+) -> Result<Value, VmError> {
+    let backing = checked_map_backing(vm, this);
+    let (class, method) = vm.resolve_virtual_method(backing, name, descriptor)?;
+    let mut args = vec![Value::Ref(backing)];
+    args.extend_from_slice(extra);
+    vm.invoke_method(class, method, args)
+}
+
+/// Wrap a map in a checked sequenced view.
+fn checked_map_new(
+    vm: &mut Vm<'_>,
+    backing: ObjectRef,
+    key_type: ObjectRef,
+    value_type: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/OxjvmCheckedSeqMap")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "backing", "Ljava/util/SequencedMap;")?;
+    vm.set_instance_ref(instance, declaring, field, backing);
+    let (declaring, field) = vm.find_field(class, "keyType", "Ljava/lang/Class;")?;
+    vm.set_instance_ref(instance, declaring, field, key_type);
+    let (declaring, field) = vm.find_field(class, "valueType", "Ljava/lang/Class;")?;
+    vm.set_instance_ref(instance, declaring, field, value_type);
+    Ok(instance)
+}
+
+/// Wrap an entry so `setValue` type-checks the new value.
+fn checked_entry_new(
+    vm: &mut Vm<'_>,
+    entry: ObjectRef,
+    value_type: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/OxjvmCheckedEntry")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "entry", "Ljava/util/Map$Entry;")?;
+    vm.set_instance_ref(instance, declaring, field, entry);
+    let (declaring, field) = vm.find_field(class, "valueType", "Ljava/lang/Class;")?;
+    vm.set_instance_ref(instance, declaring, field, value_type);
+    Ok(instance)
+}
+
+/// Wrap an entry when it is a `Map.Entry`, otherwise pass it through.
+fn checked_wrap_element(
+    vm: &mut Vm<'_>,
+    element: ObjectRef,
+    value_type: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    let entry_class = vm.resolve_class("java/util/Map$Entry")?;
+    if !element.is_null() && vm.is_instance(element, entry_class) {
+        checked_entry_new(vm, element, value_type)
+    } else {
+        Ok(element)
+    }
+}
+
+/// The checked map's first/last/poll entry, wrapped so `setValue` type-checks.
+fn checked_map_end(vm: &mut Vm<'_>, this: ObjectRef, name: &str) -> Result<Value, VmError> {
+    let entry = checked_map_delegate(vm, this, name, "()Ljava/util/Map$Entry;", &[])?.as_ref();
+    if entry.is_null() {
+        return object(ObjectRef::NULL);
+    }
+    let (_, value_type) = checked_map_types(vm, this);
+    object(checked_entry_new(vm, entry, value_type)?)
+}
+
+/// Type-check a key/value pair before a mutating map operation.
+fn checked_map_check_pair(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    key: ObjectRef,
+    value: ObjectRef,
+) -> Result<(), VmError> {
+    let (key_type, value_type) = checked_map_types(vm, this);
+    checked_type_check(vm, key, key_type)?;
+    checked_type_check(vm, value, value_type)
+}
+
+const OXJVM_CHECKED_SEQ_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        checked_map_delegate(vm, receiver(args), "size", "()I", &[])
+    }),
+    method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
+        checked_map_delegate(vm, receiver(args), "isEmpty", "()Z", &[])
+    }),
+    method(
+        "containsKey",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            checked_map_delegate(
+                vm,
+                receiver(args),
+                "containsKey",
+                "(Ljava/lang/Object;)Z",
+                &[args[1]],
+            )
+        },
+    ),
+    method(
+        "containsValue",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            checked_map_delegate(
+                vm,
+                receiver(args),
+                "containsValue",
+                "(Ljava/lang/Object;)Z",
+                &[args[1]],
+            )
+        },
+    ),
+    method(
+        "get",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            checked_map_delegate(
+                vm,
+                receiver(args),
+                "get",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                &[args[1]],
+            )
+        },
+    ),
+    method(
+        "forEach",
+        "(Ljava/util/function/BiConsumer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            checked_map_delegate(
+                vm,
+                receiver(args),
+                "forEach",
+                "(Ljava/util/function/BiConsumer;)V",
+                &[args[1]],
+            )
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            checked_map_delegate(
+                vm,
+                receiver(args),
+                "equals",
+                "(Ljava/lang/Object;)Z",
+                &[args[1]],
+            )
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        checked_map_delegate(vm, receiver(args), "hashCode", "()I", &[])
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            checked_map_delegate(vm, receiver(args), "toString", "()Ljava/lang/String;", &[])
+        },
+    ),
+    method(
+        "firstKey",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            checked_map_delegate(vm, receiver(args), "firstKey", "()Ljava/lang/Object;", &[])
+        },
+    ),
+    method(
+        "lastKey",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            checked_map_delegate(vm, receiver(args), "lastKey", "()Ljava/lang/Object;", &[])
+        },
+    ),
+    method(
+        "comparator",
+        "()Ljava/util/Comparator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            checked_map_delegate(
+                vm,
+                receiver(args),
+                "comparator",
+                "()Ljava/util/Comparator;",
+                &[],
+            )
+        },
+    ),
+    method("keySet", "()Ljava/util/Set;", ACC_PUBLIC, |vm, _, args| {
+        checked_map_delegate(vm, receiver(args), "keySet", "()Ljava/util/Set;", &[])
+    }),
+    method(
+        "values",
+        "()Ljava/util/Collection;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            checked_map_delegate(
+                vm,
+                receiver(args),
+                "values",
+                "()Ljava/util/Collection;",
+                &[],
+            )
+        },
+    ),
+    method(
+        "entrySet",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let set =
+                checked_map_delegate(vm, this, "entrySet", "()Ljava/util/Set;", &[])?.as_ref();
+            let (key_type, value_type) = checked_map_types(vm, this);
+            object(checked_view_new(vm, set, key_type, value_type)?)
+        },
+    ),
+    method(
+        "sequencedKeySet",
+        "()Ljava/util/SequencedSet;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            checked_map_delegate(
+                vm,
+                receiver(args),
+                "sequencedKeySet",
+                "()Ljava/util/SequencedSet;",
+                &[],
+            )
+        },
+    ),
+    method(
+        "sequencedValues",
+        "()Ljava/util/SequencedCollection;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            checked_map_delegate(
+                vm,
+                receiver(args),
+                "sequencedValues",
+                "()Ljava/util/SequencedCollection;",
+                &[],
+            )
+        },
+    ),
+    method(
+        "sequencedEntrySet",
+        "()Ljava/util/SequencedSet;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let set = checked_map_delegate(
+                vm,
+                this,
+                "sequencedEntrySet",
+                "()Ljava/util/SequencedSet;",
+                &[],
+            )?
+            .as_ref();
+            let (key_type, value_type) = checked_map_types(vm, this);
+            object(checked_view_new(vm, set, key_type, value_type)?)
+        },
+    ),
+    method(
+        "reversed",
+        "()Ljava/util/SequencedMap;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let reversed =
+                checked_map_delegate(vm, this, "reversed", "()Ljava/util/SequencedMap;", &[])?
+                    .as_ref();
+            let (key_type, value_type) = checked_map_types(vm, this);
+            object(checked_map_new(vm, reversed, key_type, value_type)?)
+        },
+    ),
+    method(
+        "reversed",
+        "()Ljava/util/SortedMap;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let reversed =
+                checked_map_delegate(vm, this, "reversed", "()Ljava/util/SequencedMap;", &[])?
+                    .as_ref();
+            let (key_type, value_type) = checked_map_types(vm, this);
+            object(checked_map_new(vm, reversed, key_type, value_type)?)
+        },
+    ),
+    method(
+        "reversed",
+        "()Ljava/util/NavigableMap;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let reversed =
+                checked_map_delegate(vm, this, "reversed", "()Ljava/util/SequencedMap;", &[])?
+                    .as_ref();
+            let (key_type, value_type) = checked_map_types(vm, this);
+            object(checked_map_new(vm, reversed, key_type, value_type)?)
+        },
+    ),
+    method(
+        "put",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            checked_map_check_pair(vm, this, ref_arg(args, 1), ref_arg(args, 2))?;
+            checked_map_delegate(
+                vm,
+                this,
+                "put",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                &[args[1], args[2]],
+            )
+        },
+    ),
+    method("putAll", "(Ljava/util/Map;)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let other = ref_arg(args, 1);
+        for (key, value) in abstract_map_entries(vm, other)? {
+            checked_map_check_pair(vm, this, key, value)?;
+        }
+        checked_map_delegate(vm, this, "putAll", "(Ljava/util/Map;)V", &[args[1]])
+    }),
+    method(
+        "putFirst",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            checked_map_check_pair(vm, this, ref_arg(args, 1), ref_arg(args, 2))?;
+            checked_map_delegate(
+                vm,
+                this,
+                "putFirst",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                &[args[1], args[2]],
+            )
+        },
+    ),
+    method(
+        "putLast",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            checked_map_check_pair(vm, this, ref_arg(args, 1), ref_arg(args, 2))?;
+            checked_map_delegate(
+                vm,
+                this,
+                "putLast",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                &[args[1], args[2]],
+            )
+        },
+    ),
+    method(
+        "remove",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            checked_map_delegate(
+                vm,
+                receiver(args),
+                "remove",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                &[args[1]],
+            )
+        },
+    ),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
+        checked_map_delegate(vm, receiver(args), "clear", "()V", &[])
+    }),
+    method(
+        "pollFirstEntry",
+        "()Ljava/util/Map$Entry;",
+        ACC_PUBLIC,
+        |vm, _, args| checked_map_end(vm, receiver(args), "pollFirstEntry"),
+    ),
+    method(
+        "pollLastEntry",
+        "()Ljava/util/Map$Entry;",
+        ACC_PUBLIC,
+        |vm, _, args| checked_map_end(vm, receiver(args), "pollLastEntry"),
+    ),
+    method(
+        "firstEntry",
+        "()Ljava/util/Map$Entry;",
+        ACC_PUBLIC,
+        |vm, _, args| checked_map_end(vm, receiver(args), "firstEntry"),
+    ),
+    method(
+        "lastEntry",
+        "()Ljava/util/Map$Entry;",
+        ACC_PUBLIC,
+        |vm, _, args| checked_map_end(vm, receiver(args), "lastEntry"),
+    ),
+];
+
+pub(crate) const OXJVM_CHECKED_SEQ_MAP: oxjvm_vm::NativeClass = class(
+    "java/util/OxjvmCheckedSeqMap",
+    Some("java/lang/Object"),
+    &["java/util/SequencedMap", "java/util/Map"],
+    ACC_PUBLIC,
+    &[
+        field("backing", "Ljava/util/SequencedMap;", ACC_PRIVATE, None),
+        field("keyType", "Ljava/lang/Class;", ACC_PRIVATE, None),
+        field("valueType", "Ljava/lang/Class;", ACC_PRIVATE, None),
+    ],
+    &OXJVM_CHECKED_SEQ_MAP_METHODS,
+    None,
+);
+
+fn checked_entry_backing(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "entry", "Ljava/util/Map$Entry;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn checked_entry_delegate(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    extra: &[Value],
+) -> Result<Value, VmError> {
+    let backing = checked_entry_backing(vm, this);
+    let (class, method) = vm.resolve_virtual_method(backing, name, descriptor)?;
+    let mut args = vec![Value::Ref(backing)];
+    args.extend_from_slice(extra);
+    vm.invoke_method(class, method, args)
+}
+
+const OXJVM_CHECKED_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method(
+        "getKey",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            checked_entry_delegate(vm, receiver(args), "getKey", "()Ljava/lang/Object;", &[])
+        },
+    ),
+    method(
+        "getValue",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            checked_entry_delegate(vm, receiver(args), "getValue", "()Ljava/lang/Object;", &[])
+        },
+    ),
+    method(
+        "setValue",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let value_type = vm
+                .read_ref_field(this, vm.class_of(this), "valueType", "Ljava/lang/Class;")
+                .unwrap_or(ObjectRef::NULL);
+            checked_type_check(vm, ref_arg(args, 1), value_type)?;
+            checked_entry_delegate(
+                vm,
+                this,
+                "setValue",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                &[args[1]],
+            )
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            checked_entry_delegate(
+                vm,
+                receiver(args),
+                "equals",
+                "(Ljava/lang/Object;)Z",
+                &[args[1]],
+            )
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        checked_entry_delegate(vm, receiver(args), "hashCode", "()I", &[])
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            checked_entry_delegate(vm, receiver(args), "toString", "()Ljava/lang/String;", &[])
+        },
+    ),
+];
+
+pub(crate) const OXJVM_CHECKED_ENTRY: oxjvm_vm::NativeClass = class(
+    "java/util/OxjvmCheckedEntry",
+    Some("java/lang/Object"),
+    &["java/util/Map$Entry"],
+    ACC_PUBLIC,
+    &[
+        field("entry", "Ljava/util/Map$Entry;", ACC_PRIVATE, None),
+        field("valueType", "Ljava/lang/Class;", ACC_PRIVATE, None),
+    ],
+    &OXJVM_CHECKED_ENTRY_METHODS,
+    None,
+);
+
+fn checked_view_backing(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "backing", "Ljava/util/Collection;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn checked_view_types(vm: &Vm<'_>, this: ObjectRef) -> (ObjectRef, ObjectRef) {
+    let class = vm.class_of(this);
+    let key_type = vm
+        .read_ref_field(this, class, "keyType", "Ljava/lang/Class;")
+        .unwrap_or(ObjectRef::NULL);
+    let value_type = vm
+        .read_ref_field(this, class, "valueType", "Ljava/lang/Class;")
+        .unwrap_or(ObjectRef::NULL);
+    (key_type, value_type)
+}
+
+fn checked_view_delegate(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    extra: &[Value],
+) -> Result<Value, VmError> {
+    let backing = checked_view_backing(vm, this);
+    let (class, method) = vm.resolve_virtual_method(backing, name, descriptor)?;
+    let mut args = vec![Value::Ref(backing)];
+    args.extend_from_slice(extra);
+    vm.invoke_method(class, method, args)
+}
+
+/// Wrap an entry-set view so its entries type-check `setValue`.
+fn checked_view_new(
+    vm: &mut Vm<'_>,
+    backing: ObjectRef,
+    key_type: ObjectRef,
+    value_type: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/OxjvmCheckedSeqView")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "backing", "Ljava/util/Collection;")?;
+    vm.set_instance_ref(instance, declaring, field, backing);
+    let (declaring, field) = vm.find_field(class, "keyType", "Ljava/lang/Class;")?;
+    vm.set_instance_ref(instance, declaring, field, key_type);
+    let (declaring, field) = vm.find_field(class, "valueType", "Ljava/lang/Class;")?;
+    vm.set_instance_ref(instance, declaring, field, value_type);
+    Ok(instance)
+}
+
+/// Type-check an entry element before adding it to a checked entry-set view.
+fn checked_view_check_element(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    element: ObjectRef,
+) -> Result<(), VmError> {
+    let (key_type, value_type) = checked_view_types(vm, this);
+    let Some((key, value)) = map_entry_key_value(vm, element)? else {
+        return Err(vm.throw_new("java/lang/ClassCastException", None));
+    };
+    checked_type_check(vm, key, key_type)?;
+    checked_type_check(vm, value, value_type)
+}
+
+/// A checked view end operation: delegate, then wrap the returned entry.
+fn checked_view_end(vm: &mut Vm<'_>, this: ObjectRef, name: &str) -> Result<Value, VmError> {
+    let element = checked_view_delegate(vm, this, name, "()Ljava/lang/Object;", &[])?.as_ref();
+    let (_, value_type) = checked_view_types(vm, this);
+    object(checked_wrap_element(vm, element, value_type)?)
+}
+
+const OXJVM_CHECKED_SEQ_VIEW_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        checked_view_delegate(vm, receiver(args), "size", "()I", &[])
+    }),
+    method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
+        checked_view_delegate(vm, receiver(args), "isEmpty", "()Z", &[])
+    }),
+    method(
+        "contains",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            checked_view_delegate(
+                vm,
+                receiver(args),
+                "contains",
+                "(Ljava/lang/Object;)Z",
+                &[args[1]],
+            )
+        },
+    ),
+    method(
+        "iterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let iterator =
+                checked_view_delegate(vm, this, "iterator", "()Ljava/util/Iterator;", &[])?
+                    .as_ref();
+            let (key_type, value_type) = checked_view_types(vm, this);
+            let class = vm.resolve_class("java/util/OxjvmCheckedIterator")?;
+            let instance = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "backing", "Ljava/util/Iterator;")?;
+            vm.set_instance_ref(instance, declaring, field, iterator);
+            let (declaring, field) = vm.find_field(class, "keyType", "Ljava/lang/Class;")?;
+            vm.set_instance_ref(instance, declaring, field, key_type);
+            let (declaring, field) = vm.find_field(class, "valueType", "Ljava/lang/Class;")?;
+            vm.set_instance_ref(instance, declaring, field, value_type);
+            object(instance)
+        },
+    ),
+    method(
+        "reversed",
+        "()Ljava/util/SequencedSet;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let reversed =
+                checked_view_delegate(vm, this, "reversed", "()Ljava/util/SequencedSet;", &[])?
+                    .as_ref();
+            let (key_type, value_type) = checked_view_types(vm, this);
+            object(checked_view_new(vm, reversed, key_type, value_type)?)
+        },
+    ),
+    method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        checked_view_check_element(vm, this, ref_arg(args, 1))?;
+        checked_view_delegate(vm, this, "add", "(Ljava/lang/Object;)Z", &[args[1]])
+    }),
+    method(
+        "addFirst",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            checked_view_check_element(vm, this, ref_arg(args, 1))?;
+            checked_view_delegate(vm, this, "addFirst", "(Ljava/lang/Object;)V", &[args[1]])
+        },
+    ),
+    method(
+        "addLast",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            checked_view_check_element(vm, this, ref_arg(args, 1))?;
+            checked_view_delegate(vm, this, "addLast", "(Ljava/lang/Object;)V", &[args[1]])
+        },
+    ),
+    method(
+        "getFirst",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| checked_view_end(vm, receiver(args), "getFirst"),
+    ),
+    method(
+        "getLast",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| checked_view_end(vm, receiver(args), "getLast"),
+    ),
+    method(
+        "removeFirst",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| checked_view_end(vm, receiver(args), "removeFirst"),
+    ),
+    method(
+        "removeLast",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| checked_view_end(vm, receiver(args), "removeLast"),
+    ),
+    method(
+        "toArray",
+        "()[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let array =
+                checked_view_delegate(vm, this, "toArray", "()[Ljava/lang/Object;", &[])?.as_ref();
+            let (_, value_type) = checked_view_types(vm, this);
+            let length = vm.array_length(array)?;
+            let object_class = vm.resolve_class("java/lang/Object")?;
+            let out = vm.allocate_object_array(object_class, length)?;
+            for index in 0..length {
+                let element = vm.array_get(array, index as i32)?.as_ref();
+                let wrapped = checked_wrap_element(vm, element, value_type)?;
+                vm.array_set_ref(out, index, wrapped)?;
+            }
+            object(out)
+        },
+    ),
+    method(
+        "toArray",
+        "([Ljava/lang/Object;)[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            checked_view_delegate(
+                vm,
+                receiver(args),
+                "toArray",
+                "([Ljava/lang/Object;)[Ljava/lang/Object;",
+                &[args[1]],
+            )
+        },
+    ),
+    method(
+        "forEach",
+        "(Ljava/util/function/Consumer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let array =
+                checked_view_delegate(vm, this, "toArray", "()[Ljava/lang/Object;", &[])?.as_ref();
+            let (_, value_type) = checked_view_types(vm, this);
+            let action = ref_arg(args, 1);
+            let (class, method) =
+                vm.resolve_virtual_method(action, "accept", "(Ljava/lang/Object;)V")?;
+            let length = vm.array_length(array)?;
+            for index in 0..length {
+                let element = vm.array_get(array, index as i32)?.as_ref();
+                let wrapped = checked_wrap_element(vm, element, value_type)?;
+                vm.invoke_method(class, method, vec![Value::Ref(action), Value::Ref(wrapped)])?;
+            }
+            void()
+        },
+    ),
+    method(
+        "remove",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            checked_view_delegate(
+                vm,
+                receiver(args),
+                "remove",
+                "(Ljava/lang/Object;)Z",
+                &[args[1]],
+            )
+        },
+    ),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
+        checked_view_delegate(vm, receiver(args), "clear", "()V", &[])
+    }),
+];
+
+pub(crate) const OXJVM_CHECKED_SEQ_VIEW: oxjvm_vm::NativeClass = class(
+    "java/util/OxjvmCheckedSeqView",
+    Some("java/lang/Object"),
+    &[
+        "java/util/SequencedSet",
+        "java/util/SequencedCollection",
+        "java/util/Set",
+        "java/util/Collection",
+    ],
+    ACC_PUBLIC,
+    &[
+        field("backing", "Ljava/util/Collection;", ACC_PRIVATE, None),
+        field("keyType", "Ljava/lang/Class;", ACC_PRIVATE, None),
+        field("valueType", "Ljava/lang/Class;", ACC_PRIVATE, None),
+    ],
+    &OXJVM_CHECKED_SEQ_VIEW_METHODS,
+    None,
+);
+
+const OXJVM_CHECKED_ITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method("hasNext", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let backing = vm
+            .read_ref_field(this, vm.class_of(this), "backing", "Ljava/util/Iterator;")
+            .unwrap_or(ObjectRef::NULL);
+        let (class, method) = vm.resolve_virtual_method(backing, "hasNext", "()Z")?;
+        vm.invoke_method(class, method, vec![Value::Ref(backing)])
+    }),
+    method("next", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let backing = vm
+            .read_ref_field(this, vm.class_of(this), "backing", "Ljava/util/Iterator;")
+            .unwrap_or(ObjectRef::NULL);
+        let (class, method) = vm.resolve_virtual_method(backing, "next", "()Ljava/lang/Object;")?;
+        let element = vm
+            .invoke_method(class, method, vec![Value::Ref(backing)])?
+            .as_ref();
+        let value_type = vm
+            .read_ref_field(this, vm.class_of(this), "valueType", "Ljava/lang/Class;")
+            .unwrap_or(ObjectRef::NULL);
+        object(checked_wrap_element(vm, element, value_type)?)
+    }),
+    method("remove", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let backing = vm
+            .read_ref_field(this, vm.class_of(this), "backing", "Ljava/util/Iterator;")
+            .unwrap_or(ObjectRef::NULL);
+        let (class, method) = vm.resolve_virtual_method(backing, "remove", "()V")?;
+        vm.invoke_method(class, method, vec![Value::Ref(backing)])
+    }),
+];
+
+pub(crate) const OXJVM_CHECKED_ITERATOR: oxjvm_vm::NativeClass = class(
+    "java/util/OxjvmCheckedIterator",
+    Some("java/lang/Object"),
+    &["java/util/Iterator"],
+    ACC_PUBLIC,
+    &[
+        field("backing", "Ljava/util/Iterator;", ACC_PRIVATE, None),
+        field("keyType", "Ljava/lang/Class;", ACC_PRIVATE, None),
+        field("valueType", "Ljava/lang/Class;", ACC_PRIVATE, None),
+    ],
+    &OXJVM_CHECKED_ITERATOR_METHODS,
+    None,
+);
+// -------------------------------------------------------------------------------------------
+// Unmodifiable wrappers (Collections.unmodifiable*): reads delegate, mutators throw UOE.
+// -------------------------------------------------------------------------------------------
+
+fn unmod_collection_backing(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "backing", "Ljava/util/Collection;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn unmod_collection_delegate(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    extra: &[Value],
+) -> Result<Value, VmError> {
+    let backing = unmod_collection_backing(vm, this);
+    let (class, method) = vm.resolve_virtual_method(backing, name, descriptor)?;
+    let mut args = vec![Value::Ref(backing)];
+    args.extend_from_slice(extra);
+    vm.invoke_method(class, method, args)
+}
+
+/// Wrap a collection in an unmodifiable view.
+fn unmodifiable_collection_new(vm: &mut Vm<'_>, backing: ObjectRef) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/OxjvmUnmodCollection")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "backing", "Ljava/util/Collection;")?;
+    vm.set_instance_ref(instance, declaring, field, backing);
+    Ok(instance)
+}
+
+const OXJVM_UNMOD_COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        unmod_collection_delegate(vm, receiver(args), "size", "()I", &[])
+    }),
+    method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
+        unmod_collection_delegate(vm, receiver(args), "isEmpty", "()Z", &[])
+    }),
+    method(
+        "contains",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            unmod_collection_delegate(
+                vm,
+                receiver(args),
+                "contains",
+                "(Ljava/lang/Object;)Z",
+                &[args[1]],
+            )
+        },
+    ),
+    method(
+        "iterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let iterator =
+                unmod_collection_delegate(vm, this, "iterator", "()Ljava/util/Iterator;", &[])?
+                    .as_ref();
+            let class = vm.resolve_class("java/util/OxjvmUnmodIterator")?;
+            let instance = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "backing", "Ljava/util/Iterator;")?;
+            vm.set_instance_ref(instance, declaring, field, iterator);
+            object(instance)
+        },
+    ),
+    method(
+        "toArray",
+        "()[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            unmod_collection_delegate(vm, receiver(args), "toArray", "()[Ljava/lang/Object;", &[])
+        },
+    ),
+    method(
+        "toArray",
+        "([Ljava/lang/Object;)[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            unmod_collection_delegate(
+                vm,
+                receiver(args),
+                "toArray",
+                "([Ljava/lang/Object;)[Ljava/lang/Object;",
+                &[args[1]],
+            )
+        },
+    ),
+    method(
+        "toArray",
+        "(Ljava/util/function/IntFunction;)[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            unmod_collection_delegate(
+                vm,
+                receiver(args),
+                "toArray",
+                "(Ljava/util/function/IntFunction;)[Ljava/lang/Object;",
+                &[args[1]],
+            )
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            unmod_collection_delegate(vm, receiver(args), "toString", "()Ljava/lang/String;", &[])
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            unmod_collection_delegate(
+                vm,
+                receiver(args),
+                "equals",
+                "(Ljava/lang/Object;)Z",
+                &[args[1]],
+            )
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        unmod_collection_delegate(vm, receiver(args), "hashCode", "()I", &[])
+    }),
+    method(
+        "forEach",
+        "(Ljava/util/function/Consumer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            unmod_collection_delegate(
+                vm,
+                receiver(args),
+                "forEach",
+                "(Ljava/util/function/Consumer;)V",
+                &[args[1]],
+            )
+        },
+    ),
+    method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/UnsupportedOperationException", None))
+    }),
+    method(
+        "addAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method("remove", "(Ljava/lang/Object;)Z", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/UnsupportedOperationException", None))
+    }),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/UnsupportedOperationException", None))
+    }),
+    method(
+        "removeAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method(
+        "retainAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method(
+        "removeIf",
+        "(Ljava/util/function/Predicate;)Z",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+];
+
+pub(crate) const OXJVM_UNMOD_COLLECTION: oxjvm_vm::NativeClass = class(
+    "java/util/OxjvmUnmodCollection",
+    Some("java/lang/Object"),
+    &["java/util/Collection", "java/util/Set"],
+    ACC_PUBLIC,
+    &[field(
+        "backing",
+        "Ljava/util/Collection;",
+        ACC_PRIVATE,
+        None,
+    )],
+    &OXJVM_UNMOD_COLLECTION_METHODS,
+    None,
+);
+
+const OXJVM_UNMOD_ITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method("hasNext", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let backing = vm
+            .read_ref_field(this, vm.class_of(this), "backing", "Ljava/util/Iterator;")
+            .unwrap_or(ObjectRef::NULL);
+        let (class, method) = vm.resolve_virtual_method(backing, "hasNext", "()Z")?;
+        vm.invoke_method(class, method, vec![Value::Ref(backing)])
+    }),
+    method("next", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let backing = vm
+            .read_ref_field(this, vm.class_of(this), "backing", "Ljava/util/Iterator;")
+            .unwrap_or(ObjectRef::NULL);
+        let (class, method) = vm.resolve_virtual_method(backing, "next", "()Ljava/lang/Object;")?;
+        vm.invoke_method(class, method, vec![Value::Ref(backing)])
+    }),
+    method("remove", "()V", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/UnsupportedOperationException", None))
+    }),
+];
+
+pub(crate) const OXJVM_UNMOD_ITERATOR: oxjvm_vm::NativeClass = class(
+    "java/util/OxjvmUnmodIterator",
+    Some("java/lang/Object"),
+    &["java/util/Iterator"],
+    ACC_PUBLIC,
+    &[field("backing", "Ljava/util/Iterator;", ACC_PRIVATE, None)],
+    &OXJVM_UNMOD_ITERATOR_METHODS,
+    None,
+);
+
+fn unmod_map_backing(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(
+        this,
+        vm.class_of(this),
+        "backing",
+        "Ljava/util/SequencedMap;",
+    )
+    .unwrap_or(ObjectRef::NULL)
+}
+
+fn unmod_map_delegate(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    extra: &[Value],
+) -> Result<Value, VmError> {
+    let backing = unmod_map_backing(vm, this);
+    let (class, method) = vm.resolve_virtual_method(backing, name, descriptor)?;
+    let mut args = vec![Value::Ref(backing)];
+    args.extend_from_slice(extra);
+    vm.invoke_method(class, method, args)
+}
+
+/// Wrap a map in an unmodifiable sequenced view.
+fn unmodifiable_seq_map_new(vm: &mut Vm<'_>, backing: ObjectRef) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/OxjvmUnmodSeqMap")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "backing", "Ljava/util/SequencedMap;")?;
+    vm.set_instance_ref(instance, declaring, field, backing);
+    Ok(instance)
+}
+
+/// An unmodifiable copy of the backing map's first/last entry.
+fn unmod_map_end(vm: &mut Vm<'_>, this: ObjectRef, first: bool) -> Result<Value, VmError> {
+    let name = if first { "firstEntry" } else { "lastEntry" };
+    let entry = unmod_map_delegate(vm, this, name, "()Ljava/util/Map$Entry;", &[])?.as_ref();
+    if entry.is_null() {
+        return object(ObjectRef::NULL);
+    }
+    let (class, method) = vm.resolve_virtual_method(entry, "getKey", "()Ljava/lang/Object;")?;
+    let key = vm
+        .invoke_method(class, method, vec![Value::Ref(entry)])?
+        .as_ref();
+    let (class, method) = vm.resolve_virtual_method(entry, "getValue", "()Ljava/lang/Object;")?;
+    let value = vm
+        .invoke_method(class, method, vec![Value::Ref(entry)])?
+        .as_ref();
+    object(new_entry_immutable(vm, key, value)?)
+}
+
+/// The backing map's keySet/values/entrySet wrapped unmodifiable.
+fn unmod_map_view(vm: &mut Vm<'_>, this: ObjectRef, kind: i32) -> Result<Value, VmError> {
+    let (name, descriptor) = match kind {
+        0 => ("keySet", "()Ljava/util/Set;"),
+        1 => ("values", "()Ljava/util/Collection;"),
+        _ => ("entrySet", "()Ljava/util/Set;"),
+    };
+    let view = unmod_map_delegate(vm, this, name, descriptor, &[])?.as_ref();
+    object(unmodifiable_collection_new(vm, view)?)
+}
+
+const OXJVM_UNMOD_SEQ_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        unmod_map_delegate(vm, receiver(args), "size", "()I", &[])
+    }),
+    method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
+        unmod_map_delegate(vm, receiver(args), "isEmpty", "()Z", &[])
+    }),
+    method(
+        "containsKey",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            unmod_map_delegate(
+                vm,
+                receiver(args),
+                "containsKey",
+                "(Ljava/lang/Object;)Z",
+                &[args[1]],
+            )
+        },
+    ),
+    method(
+        "containsValue",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            unmod_map_delegate(
+                vm,
+                receiver(args),
+                "containsValue",
+                "(Ljava/lang/Object;)Z",
+                &[args[1]],
+            )
+        },
+    ),
+    method(
+        "get",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            unmod_map_delegate(
+                vm,
+                receiver(args),
+                "get",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                &[args[1]],
+            )
+        },
+    ),
+    method(
+        "getOrDefault",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            unmod_map_delegate(
+                vm,
+                receiver(args),
+                "getOrDefault",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                &[args[1], args[2]],
+            )
+        },
+    ),
+    method(
+        "forEach",
+        "(Ljava/util/function/BiConsumer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            unmod_map_delegate(
+                vm,
+                receiver(args),
+                "forEach",
+                "(Ljava/util/function/BiConsumer;)V",
+                &[args[1]],
+            )
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            unmod_map_delegate(
+                vm,
+                receiver(args),
+                "equals",
+                "(Ljava/lang/Object;)Z",
+                &[args[1]],
+            )
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        unmod_map_delegate(vm, receiver(args), "hashCode", "()I", &[])
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            unmod_map_delegate(vm, receiver(args), "toString", "()Ljava/lang/String;", &[])
+        },
+    ),
+    method(
+        "firstEntry",
+        "()Ljava/util/Map$Entry;",
+        ACC_PUBLIC,
+        |vm, _, args| unmod_map_end(vm, receiver(args), true),
+    ),
+    method(
+        "lastEntry",
+        "()Ljava/util/Map$Entry;",
+        ACC_PUBLIC,
+        |vm, _, args| unmod_map_end(vm, receiver(args), false),
+    ),
+    method(
+        "put",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method("putAll", "(Ljava/util/Map;)V", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/UnsupportedOperationException", None))
+    }),
+    method(
+        "remove",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/UnsupportedOperationException", None))
+    }),
+    method(
+        "putFirst",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method(
+        "putLast",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method(
+        "pollFirstEntry",
+        "()Ljava/util/Map$Entry;",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method(
+        "pollLastEntry",
+        "()Ljava/util/Map$Entry;",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method(
+        "putIfAbsent",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method(
+        "replace",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method(
+        "replace",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method(
+        "compute",
+        "(Ljava/lang/Object;Ljava/util/function/BiFunction;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method(
+        "computeIfAbsent",
+        "(Ljava/lang/Object;Ljava/util/function/Function;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method(
+        "computeIfPresent",
+        "(Ljava/lang/Object;Ljava/util/function/BiFunction;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method(
+        "merge",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/util/function/BiFunction;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method("keySet", "()Ljava/util/Set;", ACC_PUBLIC, |vm, _, args| {
+        unmod_map_view(vm, receiver(args), 0)
+    }),
+    method(
+        "values",
+        "()Ljava/util/Collection;",
+        ACC_PUBLIC,
+        |vm, _, args| unmod_map_view(vm, receiver(args), 1),
+    ),
+    method(
+        "entrySet",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC,
+        |vm, _, args| unmod_map_view(vm, receiver(args), 2),
+    ),
+    method(
+        "sequencedKeySet",
+        "()Ljava/util/SequencedSet;",
+        ACC_PUBLIC,
+        |vm, _, args| object(seq_map_view_new(vm, receiver(args), 0)?),
+    ),
+    method(
+        "sequencedValues",
+        "()Ljava/util/SequencedCollection;",
+        ACC_PUBLIC,
+        |vm, _, args| object(seq_map_view_new(vm, receiver(args), 1)?),
+    ),
+    method(
+        "sequencedEntrySet",
+        "()Ljava/util/SequencedSet;",
+        ACC_PUBLIC,
+        |vm, _, args| object(seq_map_view_new(vm, receiver(args), 2)?),
+    ),
+    method(
+        "reversed",
+        "()Ljava/util/SequencedMap;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let reversed =
+                unmod_map_delegate(vm, this, "reversed", "()Ljava/util/SequencedMap;", &[])?
+                    .as_ref();
+            object(unmodifiable_seq_map_new(vm, reversed)?)
+        },
+    ),
+    method(
+        "reversed",
+        "()Ljava/util/SortedMap;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let reversed =
+                unmod_map_delegate(vm, this, "reversed", "()Ljava/util/SequencedMap;", &[])?
+                    .as_ref();
+            object(unmodifiable_seq_map_new(vm, reversed)?)
+        },
+    ),
+    method(
+        "reversed",
+        "()Ljava/util/NavigableMap;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let reversed =
+                unmod_map_delegate(vm, this, "reversed", "()Ljava/util/SequencedMap;", &[])?
+                    .as_ref();
+            object(unmodifiable_seq_map_new(vm, reversed)?)
+        },
+    ),
+    method(
+        "firstKey",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            unmod_map_delegate(vm, receiver(args), "firstKey", "()Ljava/lang/Object;", &[])
+        },
+    ),
+    method(
+        "lastKey",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            unmod_map_delegate(vm, receiver(args), "lastKey", "()Ljava/lang/Object;", &[])
+        },
+    ),
+    method(
+        "comparator",
+        "()Ljava/util/Comparator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            unmod_map_delegate(
+                vm,
+                receiver(args),
+                "comparator",
+                "()Ljava/util/Comparator;",
+                &[],
+            )
+        },
+    ),
+];
+
+pub(crate) const OXJVM_UNMOD_SEQ_MAP: oxjvm_vm::NativeClass = class(
+    "java/util/OxjvmUnmodSeqMap",
+    Some("java/lang/Object"),
+    &["java/util/SequencedMap", "java/util/Map"],
+    ACC_PUBLIC,
+    &[field(
+        "backing",
+        "Ljava/util/SequencedMap;",
+        ACC_PRIVATE,
+        None,
+    )],
+    &OXJVM_UNMOD_SEQ_MAP_METHODS,
     None,
 );
 fn enum_set_map(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
