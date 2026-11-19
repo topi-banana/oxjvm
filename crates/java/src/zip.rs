@@ -1075,3 +1075,400 @@ pub(crate) const ZIP_FILE: oxjvm_vm::NativeClass = class(
     &ZIP_FILE_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// Deflater / Inflater: DEFLATE compression built on the platform's raw inflate.
+//
+// The compressor emits valid stored (uncompressed) DEFLATE blocks, which any
+// inflater accepts; the decompressor uses the dependency-free platform inflate.
+// Both buffer their input and produce output eagerly, which covers the
+// setInput/deflate/inflate round-trips the tests exercise.
+// -------------------------------------------------------------------------------------------
+
+fn read_buf_field(vm: &mut Vm<'_>, this: ObjectRef, name: &str) -> Vec<u8> {
+    match read_ref_field(vm, this, name, "[B") {
+        Some(array) if !array.is_null() => crate::lang::array_bytes(vm, array).unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+fn write_buf_field(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+    bytes: &[u8],
+) -> Result<(), VmError> {
+    let array = crate::lang::byte_array_from(vm, bytes)?;
+    write_ref_field(vm, this, name, "[B", array);
+    Ok(())
+}
+
+fn append_input(vm: &mut Vm<'_>, this: ObjectRef, bytes: &[u8]) -> Result<(), VmError> {
+    let mut buf = read_buf_field(vm, this, "buf");
+    buf.extend_from_slice(bytes);
+    let total = read_long_field(vm, this, "totalIn") + bytes.len() as i64;
+    write_long_field(vm, this, "totalIn", total);
+    write_buf_field(vm, this, "buf", &buf)
+}
+
+fn copy_pending(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    out: ObjectRef,
+    off: i32,
+    len: i32,
+) -> Result<i32, VmError> {
+    let pending = read_buf_field(vm, this, "pending");
+    let pos = read_int_field(vm, this, "pendingPos").max(0) as usize;
+    if pos >= pending.len() {
+        return Ok(0);
+    }
+    let n = (pending.len() - pos).min(len.max(0) as usize);
+    for i in 0..n {
+        vm.array_set(
+            out,
+            off + i as i32,
+            Value::Int(i32::from(pending[pos + i] as i8)),
+            false,
+        )?;
+    }
+    write_int_field_named(vm, this, "pendingPos", (pos + n) as i32);
+    let total = read_long_field(vm, this, "totalOut") + n as i64;
+    write_long_field(vm, this, "totalOut", total);
+    Ok(n as i32)
+}
+
+fn pending_exhausted(vm: &mut Vm<'_>, this: ObjectRef) -> bool {
+    let pending = read_buf_field(vm, this, "pending");
+    read_int_field(vm, this, "pendingPos").max(0) as usize >= pending.len()
+}
+
+/// Encode `data` as a sequence of stored (BTYPE=00) DEFLATE blocks (RFC 1951).
+fn deflate_stored(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    if data.is_empty() {
+        out.push(0x01);
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0xFFFFu16.to_le_bytes());
+        return out;
+    }
+    let mut chunks = data.chunks(65535).peekable();
+    while let Some(chunk) = chunks.next() {
+        let final_block = chunks.peek().is_none();
+        out.push(if final_block { 0x01 } else { 0x00 });
+        let len = chunk.len() as u16;
+        out.extend_from_slice(&len.to_le_bytes());
+        out.extend_from_slice(&(!len).to_le_bytes());
+        out.extend_from_slice(chunk);
+    }
+    out
+}
+
+fn adler32_bytes(data: &[u8]) -> u32 {
+    let mut a: u32 = 1;
+    let mut b: u32 = 0;
+    for byte in data {
+        a = (a + u32::from(*byte)) % 65521;
+        b = (b + a) % 65521;
+    }
+    (b << 16) | a
+}
+
+/// Wrap raw DEFLATE in a zlib stream (RFC 1950): header, data, big-endian Adler-32.
+fn zlib_wrap(raw: &[u8], data: &[u8]) -> Vec<u8> {
+    let mut out = vec![0x78, 0x9C];
+    out.extend_from_slice(raw);
+    out.extend_from_slice(&adler32_bytes(data).to_be_bytes());
+    out
+}
+
+fn inflater_do_inflate(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    out: ObjectRef,
+    off: i32,
+    len: i32,
+) -> Result<Value, VmError> {
+    let n = copy_pending(vm, this, out, off, len)?;
+    if n > 0 {
+        return int(n);
+    }
+    if read_int_field(vm, this, "finished") != 0 {
+        return int(0);
+    }
+    let buf = read_buf_field(vm, this, "buf");
+    let nowrap = read_int_field(vm, this, "nowrap") != 0;
+    let raw: &[u8] = if nowrap || buf.len() < 2 {
+        &buf
+    } else {
+        &buf[2..]
+    };
+    match oxjvm_platform::inflate::inflate(raw, 1 << 28) {
+        Ok(decoded) => {
+            write_buf_field(vm, this, "pending", &decoded)?;
+            write_int_field_named(vm, this, "pendingPos", 0);
+            write_int_field_named(vm, this, "finished", 1);
+            write_int_field_named(vm, this, "needInput", 0);
+            let n = copy_pending(vm, this, out, off, len)?;
+            int(n)
+        }
+        Err(oxjvm_platform::inflate::InflateError::Truncated) => {
+            write_int_field_named(vm, this, "needInput", 1);
+            int(0)
+        }
+        Err(_) => Err(vm.throw_new(
+            "java/util/zip/DataFormatException",
+            Some("invalid deflate stream"),
+        )),
+    }
+}
+
+const INFLATER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        write_int_field_named(vm, receiver(args), "nowrap", 0);
+        void()
+    }),
+    method("<init>", "(Z)V", ACC_PUBLIC, |vm, _, args| {
+        write_int_field_named(vm, receiver(args), "nowrap", crate::int_arg(args, 1));
+        void()
+    }),
+    method("setInput", "([B)V", ACC_PUBLIC, |vm, _, args| {
+        let bytes = crate::lang::array_bytes(vm, ref_arg(args, 1))?;
+        append_input(vm, receiver(args), &bytes)?;
+        write_int_field_named(vm, receiver(args), "needInput", 0);
+        void()
+    }),
+    method("setInput", "([BII)V", ACC_PUBLIC, |vm, _, args| {
+        let bytes = crate::lang::array_bytes(vm, ref_arg(args, 1))?;
+        let off = crate::int_arg(args, 2);
+        let len = crate::int_arg(args, 3);
+        if off < 0 || len < 0 || (off + len) as usize > bytes.len() {
+            return Err(vm.throw_new("java/lang/ArrayIndexOutOfBoundsException", None));
+        }
+        append_input(
+            vm,
+            receiver(args),
+            &bytes[off as usize..(off + len) as usize],
+        )?;
+        write_int_field_named(vm, receiver(args), "needInput", 0);
+        void()
+    }),
+    method("inflate", "([B)I", ACC_PUBLIC, |vm, _, args| {
+        let out = ref_arg(args, 1);
+        let len = vm.array_length(out)? as i32;
+        inflater_do_inflate(vm, receiver(args), out, 0, len)
+    }),
+    method("inflate", "([BII)I", ACC_PUBLIC, |vm, _, args| {
+        inflater_do_inflate(
+            vm,
+            receiver(args),
+            ref_arg(args, 1),
+            crate::int_arg(args, 2),
+            crate::int_arg(args, 3),
+        )
+    }),
+    method("needsInput", "()Z", ACC_PUBLIC, |vm, _, args| {
+        crate::boolean(
+            read_int_field(vm, receiver(args), "needInput") != 0
+                && read_int_field(vm, receiver(args), "finished") == 0,
+        )
+    }),
+    method("needsDictionary", "()Z", ACC_PUBLIC, |_, _, _| {
+        crate::boolean(false)
+    }),
+    method("finished", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        crate::boolean(read_int_field(vm, this, "finished") != 0 && pending_exhausted(vm, this))
+    }),
+    method("getRemaining", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if read_int_field(vm, this, "finished") != 0 {
+            return int(0);
+        }
+        int(read_buf_field(vm, this, "buf").len() as i32)
+    }),
+    method("getTotalIn", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_long_field(vm, receiver(args), "totalIn") as i32)
+    }),
+    method("getTotalOut", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_long_field(vm, receiver(args), "totalOut") as i32)
+    }),
+    method("getBytesRead", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(read_long_field(vm, receiver(args), "totalIn"))
+    }),
+    method("getBytesWritten", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(read_long_field(vm, receiver(args), "totalOut"))
+    }),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        write_buf_field(vm, this, "buf", &[])?;
+        write_buf_field(vm, this, "pending", &[])?;
+        write_int_field_named(vm, this, "pendingPos", 0);
+        write_int_field_named(vm, this, "finished", 0);
+        write_int_field_named(vm, this, "needInput", 0);
+        write_long_field(vm, this, "totalIn", 0);
+        write_long_field(vm, this, "totalOut", 0);
+        void()
+    }),
+    method("end", "()V", ACC_PUBLIC, |_, _, _| void()),
+];
+
+pub(crate) const INFLATER: oxjvm_vm::NativeClass = class(
+    "java/util/zip/Inflater",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("buf", "[B", ACC_PRIVATE, None),
+        field("pending", "[B", ACC_PRIVATE, None),
+        field("pendingPos", "I", ACC_PRIVATE, None),
+        field("nowrap", "I", ACC_PRIVATE, None),
+        field("finished", "I", ACC_PRIVATE, None),
+        field("needInput", "I", ACC_PRIVATE, None),
+        field("totalIn", "J", ACC_PRIVATE, None),
+        field("totalOut", "J", ACC_PRIVATE, None),
+    ],
+    &INFLATER_METHODS,
+    None,
+);
+
+fn deflater_do_deflate(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    out: ObjectRef,
+    off: i32,
+    len: i32,
+) -> Result<Value, VmError> {
+    let n = copy_pending(vm, this, out, off, len)?;
+    if n > 0 {
+        return int(n);
+    }
+    if read_int_field(vm, this, "finished") != 0 {
+        return int(0);
+    }
+    if read_int_field(vm, this, "finish") == 0 {
+        return int(0);
+    }
+    let buf = read_buf_field(vm, this, "buf");
+    let nowrap = read_int_field(vm, this, "nowrap") != 0;
+    let raw = deflate_stored(&buf);
+    let wrapped = if nowrap { raw } else { zlib_wrap(&raw, &buf) };
+    write_buf_field(vm, this, "pending", &wrapped)?;
+    write_int_field_named(vm, this, "pendingPos", 0);
+    write_int_field_named(vm, this, "finished", 1);
+    let n = copy_pending(vm, this, out, off, len)?;
+    int(n)
+}
+
+const DEFLATER_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        write_int_field_named(vm, receiver(args), "level", -1);
+        void()
+    }),
+    method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        write_int_field_named(vm, receiver(args), "level", crate::int_arg(args, 1));
+        void()
+    }),
+    method("<init>", "(IZ)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        write_int_field_named(vm, this, "level", crate::int_arg(args, 1));
+        write_int_field_named(vm, this, "nowrap", crate::int_arg(args, 2));
+        void()
+    }),
+    method("setInput", "([B)V", ACC_PUBLIC, |vm, _, args| {
+        let bytes = crate::lang::array_bytes(vm, ref_arg(args, 1))?;
+        append_input(vm, receiver(args), &bytes)?;
+        void()
+    }),
+    method("setInput", "([BII)V", ACC_PUBLIC, |vm, _, args| {
+        let bytes = crate::lang::array_bytes(vm, ref_arg(args, 1))?;
+        let off = crate::int_arg(args, 2);
+        let len = crate::int_arg(args, 3);
+        if off < 0 || len < 0 || (off + len) as usize > bytes.len() {
+            return Err(vm.throw_new("java/lang/ArrayIndexOutOfBoundsException", None));
+        }
+        append_input(
+            vm,
+            receiver(args),
+            &bytes[off as usize..(off + len) as usize],
+        )?;
+        void()
+    }),
+    method("deflate", "([B)I", ACC_PUBLIC, |vm, _, args| {
+        let out = ref_arg(args, 1);
+        let len = vm.array_length(out)? as i32;
+        deflater_do_deflate(vm, receiver(args), out, 0, len)
+    }),
+    method("deflate", "([BII)I", ACC_PUBLIC, |vm, _, args| {
+        deflater_do_deflate(
+            vm,
+            receiver(args),
+            ref_arg(args, 1),
+            crate::int_arg(args, 2),
+            crate::int_arg(args, 3),
+        )
+    }),
+    method("finish", "()V", ACC_PUBLIC, |vm, _, args| {
+        write_int_field_named(vm, receiver(args), "finish", 1);
+        void()
+    }),
+    method("finished", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        crate::boolean(read_int_field(vm, this, "finished") != 0 && pending_exhausted(vm, this))
+    }),
+    method("needsInput", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        crate::boolean(
+            read_int_field(vm, this, "finish") == 0 && read_buf_field(vm, this, "buf").is_empty(),
+        )
+    }),
+    method("getTotalIn", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_long_field(vm, receiver(args), "totalIn") as i32)
+    }),
+    method("getTotalOut", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_long_field(vm, receiver(args), "totalOut") as i32)
+    }),
+    method("getBytesRead", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(read_long_field(vm, receiver(args), "totalIn"))
+    }),
+    method("getBytesWritten", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(read_long_field(vm, receiver(args), "totalOut"))
+    }),
+    method("setLevel", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        write_int_field_named(vm, receiver(args), "level", crate::int_arg(args, 1));
+        void()
+    }),
+    method("setStrategy", "(I)V", ACC_PUBLIC, |_, _, _| void()),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        write_buf_field(vm, this, "buf", &[])?;
+        write_buf_field(vm, this, "pending", &[])?;
+        write_int_field_named(vm, this, "pendingPos", 0);
+        write_int_field_named(vm, this, "finish", 0);
+        write_int_field_named(vm, this, "finished", 0);
+        write_long_field(vm, this, "totalIn", 0);
+        write_long_field(vm, this, "totalOut", 0);
+        void()
+    }),
+    method("end", "()V", ACC_PUBLIC, |_, _, _| void()),
+];
+
+pub(crate) const DEFLATER: oxjvm_vm::NativeClass = class(
+    "java/util/zip/Deflater",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("buf", "[B", ACC_PRIVATE, None),
+        field("pending", "[B", ACC_PRIVATE, None),
+        field("pendingPos", "I", ACC_PRIVATE, None),
+        field("nowrap", "I", ACC_PRIVATE, None),
+        field("finish", "I", ACC_PRIVATE, None),
+        field("finished", "I", ACC_PRIVATE, None),
+        field("level", "I", ACC_PRIVATE, None),
+        field("totalIn", "J", ACC_PRIVATE, None),
+        field("totalOut", "J", ACC_PRIVATE, None),
+    ],
+    &DEFLATER_METHODS,
+    None,
+);

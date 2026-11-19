@@ -2154,7 +2154,7 @@ fn string_get_bytes_charset_object(
 }
 
 /// Allocate a guest `byte[]` with `bytes` as its contents.
-fn byte_array_from(vm: &mut Vm<'_>, bytes: &[u8]) -> Result<ObjectRef, VmError> {
+pub(crate) fn byte_array_from(vm: &mut Vm<'_>, bytes: &[u8]) -> Result<ObjectRef, VmError> {
     let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, bytes.len())?;
     for (index, byte) in bytes.iter().enumerate() {
         vm.array_set(
