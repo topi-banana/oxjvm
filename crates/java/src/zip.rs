@@ -1657,14 +1657,13 @@ fn ensure_decompressed(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> 
     Ok(())
 }
 
-fn inflater_stream_read(
+fn serve_dbuf(
     vm: &mut Vm<'_>,
     this: ObjectRef,
     out: ObjectRef,
     off: i32,
     len: i32,
 ) -> Result<Value, VmError> {
-    ensure_decompressed(vm, this)?;
     let dbuf = read_buf_field(vm, this, "dbuf");
     let dpos = read_int_field(vm, this, "dpos").max(0) as usize;
     if dpos >= dbuf.len() {
@@ -1684,6 +1683,17 @@ fn inflater_stream_read(
     }
     write_int_field_named(vm, this, "dpos", (dpos + n) as i32);
     int(n as i32)
+}
+
+fn inflater_stream_read(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    out: ObjectRef,
+    off: i32,
+    len: i32,
+) -> Result<Value, VmError> {
+    ensure_decompressed(vm, this)?;
+    serve_dbuf(vm, this, out, off, len)
 }
 
 fn inflater_stream_ctor(
@@ -2071,5 +2081,304 @@ pub(crate) const GZIP_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC,
     &[],
     &GZIP_OUTPUT_STREAM_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// DeflaterInputStream / InflaterOutputStream: the remaining zip stream wrappers.
+// -------------------------------------------------------------------------------------------
+
+fn deflater_input_fill(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    if read_int_field(vm, this, "filled") != 0 {
+        return Ok(());
+    }
+    let input = filter_in(vm, this);
+    let raw = read_all_input(vm, input)?;
+    let def =
+        read_ref_field(vm, this, "def", "Ljava/util/zip/Deflater;").unwrap_or(ObjectRef::NULL);
+    set_native_input(vm, def, &raw)?;
+    let (class, method) = vm.resolve_virtual_method(def, "finish", "()V")?;
+    vm.invoke_method(class, method, vec![Value::Ref(def)])?;
+    let mut comp = Vec::new();
+    let chunk = vm.allocate_array_of(ArrayComponent::Byte, 4096)?;
+    loop {
+        let n = deflater_do_deflate(vm, def, chunk, 0, 4096)?.as_int();
+        if n <= 0 {
+            break;
+        }
+        for i in 0..n {
+            comp.push(vm.array_get(chunk, i)?.as_int() as u8);
+        }
+    }
+    write_buf_field(vm, this, "dbuf", &comp)?;
+    write_int_field_named(vm, this, "dpos", 0);
+    write_int_field_named(vm, this, "filled", 1);
+    Ok(())
+}
+
+fn deflater_input_ctor(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    input: ObjectRef,
+    def: ObjectRef,
+) -> Result<(), VmError> {
+    if input.is_null() || def.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let (declaring, field) = vm.find_field(vm.class_of(this), "in", "Ljava/io/InputStream;")?;
+    vm.set_instance_ref(this, declaring, field, input);
+    write_ref_field(vm, this, "def", "Ljava/util/zip/Deflater;", def);
+    Ok(())
+}
+
+const DEFLATER_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+    method(
+        "<init>",
+        "(Ljava/io/InputStream;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let def = new_instance(vm, "java/util/zip/Deflater")?;
+            deflater_input_ctor(vm, this, ref_arg(args, 1), def)?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/InputStream;Ljava/util/zip/Deflater;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            deflater_input_ctor(vm, receiver(args), ref_arg(args, 1), ref_arg(args, 2))?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/InputStream;Ljava/util/zip/Deflater;I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            if crate::int_arg(args, 3) <= 0 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("size <= 0")));
+            }
+            deflater_input_ctor(vm, receiver(args), ref_arg(args, 1), ref_arg(args, 2))?;
+            void()
+        },
+    ),
+    method("read", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        deflater_input_fill(vm, this)?;
+        let one = vm.allocate_array_of(ArrayComponent::Byte, 1)?;
+        let n = serve_dbuf(vm, this, one, 0, 1)?.as_int();
+        if n <= 0 {
+            return int(-1);
+        }
+        int(vm.array_get(one, 0)?.as_int() & 0xFF)
+    }),
+    method("read", "([B)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        deflater_input_fill(vm, this)?;
+        let out = ref_arg(args, 1);
+        let len = vm.array_length(out)? as i32;
+        serve_dbuf(vm, this, out, 0, len)
+    }),
+    method("read", "([BII)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        deflater_input_fill(vm, this)?;
+        serve_dbuf(
+            vm,
+            this,
+            ref_arg(args, 1),
+            crate::int_arg(args, 2),
+            crate::int_arg(args, 3),
+        )
+    }),
+    method("available", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        deflater_input_fill(vm, this)?;
+        let dbuf = read_buf_field(vm, this, "dbuf");
+        let dpos = read_int_field(vm, this, "dpos").max(0) as usize;
+        int(i32::from(dpos < dbuf.len()))
+    }),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        let input = filter_in(vm, receiver(args));
+        if !input.is_null() {
+            let (class, method) = vm.resolve_virtual_method(input, "close", "()V")?;
+            vm.invoke_method(class, method, vec![Value::Ref(input)])?;
+        }
+        void()
+    }),
+    method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        deflater_input_fill(vm, this)?;
+        let mut remaining = crate::long_arg(args, 1);
+        let chunk = vm.allocate_array_of(ArrayComponent::Byte, 4096)?;
+        let mut skipped = 0i64;
+        while remaining > 0 {
+            let want = remaining.min(4096) as i32;
+            let n = serve_dbuf(vm, this, chunk, 0, want)?.as_int();
+            if n <= 0 {
+                break;
+            }
+            skipped += i64::from(n);
+            remaining -= i64::from(n);
+        }
+        long(skipped)
+    }),
+    method("markSupported", "()Z", ACC_PUBLIC, |_, _, _| {
+        crate::boolean(false)
+    }),
+    method("mark", "(I)V", ACC_PUBLIC, |_, _, _| void()),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/io/IOException", Some("mark not supported")))
+    }),
+];
+
+pub(crate) const DEFLATER_INPUT_STREAM: oxjvm_vm::NativeClass = class(
+    "java/util/zip/DeflaterInputStream",
+    Some("java/io/FilterInputStream"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("def", "Ljava/util/zip/Deflater;", ACC_PROTECTED, None),
+        field("dbuf", "[B", ACC_PRIVATE, None),
+        field("dpos", "I", ACC_PRIVATE, None),
+        field("filled", "I", ACC_PRIVATE, None),
+    ],
+    &DEFLATER_INPUT_STREAM_METHODS,
+    None,
+);
+
+fn inflater_output_finish(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    if read_int_field(vm, this, "done") != 0 {
+        return Ok(());
+    }
+    let inf =
+        read_ref_field(vm, this, "inf", "Ljava/util/zip/Inflater;").unwrap_or(ObjectRef::NULL);
+    let ibuf = read_buf_field(vm, this, "ibuf");
+    let out = filter_out(vm, this);
+    set_native_input(vm, inf, &ibuf)?;
+    let chunk = vm.allocate_array_of(ArrayComponent::Byte, 4096)?;
+    loop {
+        let n = inflater_do_inflate(vm, inf, chunk, 0, 4096)?.as_int();
+        if n <= 0 {
+            break;
+        }
+        let mut slice = Vec::with_capacity(n as usize);
+        for i in 0..n {
+            slice.push(vm.array_get(chunk, i)?.as_int() as u8);
+        }
+        write_out_bytes(vm, out, &slice)?;
+    }
+    write_int_field_named(vm, this, "done", 1);
+    Ok(())
+}
+
+fn inflater_output_ctor(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    out: ObjectRef,
+    inf: ObjectRef,
+) -> Result<(), VmError> {
+    if out.is_null() || inf.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let (declaring, field) = vm.find_field(vm.class_of(this), "out", "Ljava/io/OutputStream;")?;
+    vm.set_instance_ref(this, declaring, field, out);
+    write_ref_field(vm, this, "inf", "Ljava/util/zip/Inflater;", inf);
+    Ok(())
+}
+
+const INFLATER_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let inf = new_instance(vm, "java/util/zip/Inflater")?;
+            inflater_output_ctor(vm, this, ref_arg(args, 1), inf)?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;Ljava/util/zip/Inflater;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            inflater_output_ctor(vm, receiver(args), ref_arg(args, 1), ref_arg(args, 2))?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;Ljava/util/zip/Inflater;I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            if crate::int_arg(args, 3) <= 0 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("size <= 0")));
+            }
+            inflater_output_ctor(vm, receiver(args), ref_arg(args, 1), ref_arg(args, 2))?;
+            void()
+        },
+    ),
+    method("write", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let byte = crate::int_arg(args, 1) as u8;
+        append_ibuf(vm, receiver(args), &[byte])?;
+        void()
+    }),
+    method("write", "([B)V", ACC_PUBLIC, |vm, _, args| {
+        let bytes = crate::lang::array_bytes(vm, ref_arg(args, 1))?;
+        append_ibuf(vm, receiver(args), &bytes)?;
+        void()
+    }),
+    method("write", "([BII)V", ACC_PUBLIC, |vm, _, args| {
+        let bytes = crate::lang::array_bytes(vm, ref_arg(args, 1))?;
+        let off = crate::int_arg(args, 2);
+        let len = crate::int_arg(args, 3);
+        if off < 0 || len < 0 || (off + len) as usize > bytes.len() {
+            return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+        }
+        append_ibuf(
+            vm,
+            receiver(args),
+            &bytes[off as usize..(off + len) as usize],
+        )?;
+        void()
+    }),
+    method("finish", "()V", ACC_PUBLIC, |vm, _, args| {
+        inflater_output_finish(vm, receiver(args))?;
+        void()
+    }),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        inflater_output_finish(vm, this)?;
+        let out = filter_out(vm, this);
+        if !out.is_null() {
+            let (class, method) = vm.resolve_virtual_method(out, "close", "()V")?;
+            vm.invoke_method(class, method, vec![Value::Ref(out)])?;
+        }
+        void()
+    }),
+    method("flush", "()V", ACC_PUBLIC, |vm, _, args| {
+        let out = filter_out(vm, receiver(args));
+        if !out.is_null() {
+            let (class, method) = vm.resolve_virtual_method(out, "flush", "()V")?;
+            vm.invoke_method(class, method, vec![Value::Ref(out)])?;
+        }
+        void()
+    }),
+];
+
+pub(crate) const INFLATER_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
+    "java/util/zip/InflaterOutputStream",
+    Some("java/io/FilterOutputStream"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("inf", "Ljava/util/zip/Inflater;", ACC_PROTECTED, None),
+        field("ibuf", "[B", ACC_PRIVATE, None),
+        field("done", "I", ACC_PRIVATE, None),
+    ],
+    &INFLATER_OUTPUT_STREAM_METHODS,
     None,
 );
