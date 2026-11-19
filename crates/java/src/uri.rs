@@ -18,7 +18,10 @@ fn uri_text(vm: &Vm<'_>, this: ObjectRef) -> String {
 
 /// The authority part (`//...` up to the path), without the leading slashes.
 fn uri_authority(text: &str) -> Option<&str> {
-    let rest = text.find(':').map(|index| &text[index + 1..])?;
+    let rest = match text.find(':') {
+        Some(index) => &text[index + 1..],
+        None => text,
+    };
     let rest = rest.strip_prefix("//")?;
     Some(rest.split(['/', '?', '#']).next().unwrap_or(rest))
 }
@@ -38,6 +41,30 @@ fn uri_part(text: &str, marker: char, end: char) -> Option<String> {
 fn uri_scheme(text: &str) -> Option<String> {
     let index = text.find(':')?;
     Some(text[..index].into())
+}
+
+/// The raw path component: skip the scheme and any `//authority`, stop at the
+/// query/fragment. Opaque URIs (a scheme whose part does not start with `/`)
+/// have no path; hierarchical URIs may have an empty path.
+fn uri_raw_path(text: &str) -> Option<&str> {
+    let has_scheme = text.contains(':');
+    let rest = match text.find(':') {
+        Some(index) => &text[index + 1..],
+        None => text,
+    };
+    let path = if let Some(after) = rest.strip_prefix("//") {
+        match after.find(['/', '?', '#']) {
+            Some(index) => &after[index..],
+            None => "",
+        }
+    } else if rest.starts_with('/') {
+        rest
+    } else if has_scheme {
+        return None;
+    } else {
+        rest
+    };
+    Some(path.split(['?', '#']).next().unwrap_or(path))
 }
 
 /// Percent-decode a URI path (`%20` becomes a space); malformed escapes stay as they are.
@@ -249,38 +276,159 @@ fn uri_init_parts(
     let path = string_arg(vm, args[5])?;
     let query = string_arg(vm, args[6])?;
     let fragment = string_arg(vm, args[7])?;
-    let mut text = String::new();
-    if !scheme.is_empty() {
-        text.push_str(&scheme);
-        text.push(':');
-    }
-    if !host.is_empty() {
-        text.push_str("//");
-        if !user_info.is_empty() {
-            text.push_str(&user_info);
-            text.push('@');
-        }
-        text.push_str(&host);
-        if port != -1 {
-            text.push_str(&alloc::format!(":{port}"));
-        }
-    }
-    text.push_str(&path);
-    if !query.is_empty() {
-        text.push('?');
-        text.push_str(&query);
-    }
-    if !fragment.is_empty() {
-        text.push('#');
-        text.push_str(&fragment);
-    }
+    let text = uri_parts_text(&scheme, &user_info, &host, port, &path, &query, &fragment);
     let this = receiver(args);
     vm.set_string_field(this, vm.class_of(this), "string", &text)?;
     void()
 }
 
-const URI_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
+/// Assemble a URI string from its components (no quoting; the caller decides
+/// which components are already escaped).
+fn uri_parts_text(
+    scheme: &str,
+    user_info: &str,
+    host: &str,
+    port: i32,
+    path: &str,
+    query: &str,
+    fragment: &str,
+) -> String {
+    let mut text = String::new();
+    if !scheme.is_empty() {
+        text.push_str(scheme);
+        text.push(':');
+    }
+    if !host.is_empty() {
+        text.push_str("//");
+        if !user_info.is_empty() {
+            text.push_str(user_info);
+            text.push('@');
+        }
+        text.push_str(host);
+        if port != -1 {
+            text.push_str(&alloc::format!(":{port}"));
+        }
+    }
+    text.push_str(path);
+    if !query.is_empty() {
+        text.push('?');
+        text.push_str(query);
+    }
+    if !fragment.is_empty() {
+        text.push('#');
+        text.push_str(fragment);
+    }
+    text
+}
+
+/// Percent-encode characters outside the URI path/query/fragment allowed set,
+/// matching the JDK's component quoting (spaces become `%20`, etc.).
+fn uri_quote(text: &str) -> String {
+    let mut out = String::new();
+    for byte in text.bytes() {
+        let allowed = byte.is_ascii_alphanumeric()
+            || matches!(
+                byte,
+                b'-' | b'_'
+                    | b'.'
+                    | b'!'
+                    | b'~'
+                    | b'*'
+                    | b'\''
+                    | b'('
+                    | b')'
+                    | b':'
+                    | b'@'
+                    | b'&'
+                    | b'='
+                    | b'+'
+                    | b'$'
+                    | b','
+                    | b';'
+                    | b'/'
+                    | b'%'
+            );
+        if allowed {
+            out.push(byte as char);
+        } else {
+            out.push_str(&alloc::format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+const URI_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
     method("<init>", "(Ljava/lang/String;)V", ACC_PUBLIC, uri_init),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let scheme = vm.string_or_empty(ref_arg(args, 1));
+            let ssp = vm.string_or_empty(ref_arg(args, 2));
+            let fragment = vm.string_or_empty(ref_arg(args, 3));
+            let mut text = String::new();
+            if !scheme.is_empty() {
+                text.push_str(&scheme);
+                text.push(':');
+            }
+            text.push_str(&uri_quote(&ssp));
+            if !fragment.is_empty() {
+                text.push('#');
+                text.push_str(&uri_quote(&fragment));
+            }
+            let this = receiver(args);
+            vm.set_string_field(this, vm.class_of(this), "string", &text)?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let scheme = vm.string_or_empty(ref_arg(args, 1));
+            let host = vm.string_or_empty(ref_arg(args, 2));
+            let path = vm.string_or_empty(ref_arg(args, 3));
+            let fragment = vm.string_or_empty(ref_arg(args, 4));
+            let text = uri_parts_text(
+                &scheme,
+                "",
+                &host,
+                -1,
+                &uri_quote(&path),
+                "",
+                &uri_quote(&fragment),
+            );
+            let this = receiver(args);
+            vm.set_string_field(this, vm.class_of(this), "string", &text)?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let scheme = vm.string_or_empty(ref_arg(args, 1));
+            let authority = vm.string_or_empty(ref_arg(args, 2));
+            let path = vm.string_or_empty(ref_arg(args, 3));
+            let query = vm.string_or_empty(ref_arg(args, 4));
+            let fragment = vm.string_or_empty(ref_arg(args, 5));
+            let text = uri_parts_text(
+                &scheme,
+                "",
+                &authority,
+                -1,
+                &uri_quote(&path),
+                &uri_quote(&query),
+                &uri_quote(&fragment),
+            );
+            let this = receiver(args);
+            vm.set_string_field(this, vm.class_of(this), "string", &text)?;
+            void()
+        },
+    ),
     method(
         "compareTo",
         "(Ljava/net/URI;)I",
@@ -354,11 +502,10 @@ const URI_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let text = uri_text(vm, receiver(args));
-            let path = match text.find(':') {
-                Some(index) => &text[index + 1..],
-                None => text.as_str(),
-            };
-            object(vm.make_string(&percent_decode(path))?)
+            match uri_raw_path(&text) {
+                Some(path) => object(vm.make_string(&percent_decode(path))?),
+                None => object(ObjectRef::NULL),
+            }
         },
     ),
     method(
@@ -367,11 +514,9 @@ const URI_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let text = uri_text(vm, receiver(args));
-            match text.find(':') {
-                Some(index) if !text[index + 1..].is_empty() => {
-                    object(vm.make_string(&text[index + 1..])?)
-                }
-                _ => object(ObjectRef::NULL),
+            match uri_raw_path(&text) {
+                Some(path) => object(vm.make_string(path)?),
+                None => object(ObjectRef::NULL),
             }
         },
     ),
@@ -390,6 +535,9 @@ const URI_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
             {
                 Some(host) => {
                     let host = host.split(':').next().unwrap_or(host);
+                    if host.is_empty() {
+                        return object(ObjectRef::NULL);
+                    }
                     object(vm.intern(host)?)
                 }
                 None => object(ObjectRef::NULL),
@@ -428,8 +576,8 @@ const URI_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         |vm, _, args| {
             let text = uri_text(vm, receiver(args));
             match uri_authority(&text) {
-                Some(authority) => object(vm.intern(authority)?),
-                None => object(ObjectRef::NULL),
+                Some(authority) if !authority.is_empty() => object(vm.intern(authority)?),
+                _ => object(ObjectRef::NULL),
             }
         },
     ),
@@ -490,7 +638,11 @@ const URI_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
     }),
     method("isOpaque", "()Z", ACC_PUBLIC, |vm, _, args| {
         let text = uri_text(vm, receiver(args));
-        boolean(uri_authority(&text).is_none())
+        let opaque = match text.find(':') {
+            Some(index) => !text[index + 1..].starts_with('/'),
+            None => false,
+        };
+        boolean(opaque)
     }),
     method(
         "equals",
