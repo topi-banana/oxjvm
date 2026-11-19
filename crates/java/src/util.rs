@@ -8825,7 +8825,7 @@ pub(crate) const SORTED_MAP: oxjvm_vm::NativeClass = class(
 // Properties
 // -------------------------------------------------------------------------------------------
 
-const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
+const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
     method("<init>", "()V", ACC_PUBLIC, properties_init),
     method(
         "<init>",
@@ -8938,6 +8938,74 @@ const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
                 "(Ljava/lang/Object;)Z",
                 vec![Value::Ref(ref_arg(args, 1))],
             )
+        },
+    ),
+    method(
+        "contains",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            properties_map_call(
+                vm,
+                receiver(args),
+                "containsValue",
+                "(Ljava/lang/Object;)Z",
+                vec![Value::Ref(ref_arg(args, 1))],
+            )
+        },
+    ),
+    method(
+        "containsValue",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            properties_map_call(
+                vm,
+                receiver(args),
+                "containsValue",
+                "(Ljava/lang/Object;)Z",
+                vec![Value::Ref(ref_arg(args, 1))],
+            )
+        },
+    ),
+    method(
+        "getOrDefault",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            properties_map_call(
+                vm,
+                receiver(args),
+                "getOrDefault",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                vec![Value::Ref(ref_arg(args, 1)), Value::Ref(ref_arg(args, 2))],
+            )
+        },
+    ),
+    method(
+        "keys",
+        "()Ljava/util/Enumeration;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let keys: Vec<ObjectRef> = hash_map_pairs(vm, properties_map(vm, this))
+                .into_iter()
+                .map(|(key, _)| key)
+                .collect();
+            object(new_enumeration(vm, &keys)?)
+        },
+    ),
+    method(
+        "elements",
+        "()Ljava/util/Enumeration;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let values: Vec<ObjectRef> = hash_map_pairs(vm, properties_map(vm, this))
+                .into_iter()
+                .map(|(_, value)| value)
+                .collect();
+            object(new_enumeration(vm, &values)?)
         },
     ),
     method("size", "()I", ACC_PUBLIC, |vm, _, args| {

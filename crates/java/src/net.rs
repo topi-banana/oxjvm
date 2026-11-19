@@ -1299,7 +1299,7 @@ pub(crate) const URL_DECODER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const URL_CONNECTION_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const URL_CONNECTION_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method(
         "getInputStream",
         "()Ljava/io/InputStream;",
@@ -1353,7 +1353,95 @@ const URL_CONNECTION_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         )
     }),
     method("connect", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "guessContentTypeFromStream",
+        "(Ljava/io/InputStream;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let stream = ref_arg(args, 0);
+            if stream.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let (class, method) = vm.resolve_virtual_method(stream, "markSupported", "()Z")?;
+            if vm
+                .invoke_method(class, method, vec![Value::Ref(stream)])?
+                .as_int()
+                == 0
+            {
+                return object(ObjectRef::NULL);
+            }
+            let (class, method) = vm.resolve_virtual_method(stream, "mark", "(I)V")?;
+            vm.invoke_method(class, method, vec![Value::Ref(stream), Value::Int(16)])?;
+            let (class, method) = vm.resolve_virtual_method(stream, "read", "()I")?;
+            let mut bytes = [-1i32; 16];
+            for slot in bytes.iter_mut() {
+                *slot = vm
+                    .invoke_method(class, method, vec![Value::Ref(stream)])?
+                    .as_int();
+            }
+            let (class, method) = vm.resolve_virtual_method(stream, "reset", "()V")?;
+            vm.invoke_method(class, method, vec![Value::Ref(stream)])?;
+            match guess_content_type_magic(&bytes) {
+                Some(name) => object(vm.make_string(name)?),
+                None => object(ObjectRef::NULL),
+            }
+        },
+    ),
 ];
+
+/// Magic-byte sniffing behind `URLConnection.guessContentTypeFromStream`.
+fn guess_content_type_magic(c: &[i32]) -> Option<&'static str> {
+    let starts = |prefix: &[i32]| c.len() >= prefix.len() && c[..prefix.len()] == *prefix;
+    let starts_ci = |prefix: &[i32]| {
+        c.len() >= prefix.len()
+            && c[..prefix.len()]
+                .iter()
+                .zip(prefix.iter())
+                .all(|(&byte, &want)| {
+                    let lower = if (0x41..=0x5a).contains(&byte) {
+                        byte + 0x20
+                    } else {
+                        byte
+                    };
+                    lower == want
+                })
+    };
+    if starts(&[0x47, 0x49, 0x46, 0x38]) {
+        return Some("image/gif");
+    }
+    if starts(&[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) {
+        return Some("image/png");
+    }
+    if c.len() >= 4
+        && c[0] == 0xff
+        && c[1] == 0xd8
+        && c[2] == 0xff
+        && (c[3] == 0xe0 || c[3] == 0xee)
+    {
+        return Some("image/jpeg");
+    }
+    if starts(&[0x49, 0x49, 0x2a, 0x00]) || starts(&[0x4d, 0x4d, 0x00, 0x2a]) {
+        return Some("image/tiff");
+    }
+    if starts(&[0x3c, 0x3f, 0x78, 0x6d, 0x6c]) {
+        return Some("application/xml");
+    }
+    if starts(&[0xca, 0xfe, 0xba, 0xbe]) {
+        return Some("application/java-vm");
+    }
+    if starts(&[0x2e, 0x73, 0x6e, 0x64]) {
+        return Some("audio/basic");
+    }
+    if starts(&[0x52, 0x49, 0x46, 0x46]) {
+        return Some("audio/x-wav");
+    }
+    if starts_ci(&[0x3c, 0x68, 0x74, 0x6d, 0x6c])
+        || starts_ci(&[0x3c, 0x21, 0x64, 0x6f, 0x63, 0x74, 0x79, 0x70, 0x65])
+    {
+        return Some("text/html");
+    }
+    None
+}
 
 fn url_connection_path(vm: &Vm<'_>, connection: ObjectRef) -> String {
     let url = vm

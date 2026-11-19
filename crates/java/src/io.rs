@@ -856,7 +856,7 @@ pub(crate) const INPUT_STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const BYTE_ARRAY_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const BYTE_ARRAY_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method("<init>", "([B)V", ACC_PUBLIC, byte_array_input_init),
     method("<init>", "([BII)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
@@ -876,6 +876,8 @@ const BYTE_ARRAY_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         vm.set_instance_int(this, declaring, field, offset);
         let (declaring, field) = vm.find_field(class, "count", "I")?;
         vm.set_instance_int(this, declaring, field, count);
+        let (declaring, field) = vm.find_field(class, "mark", "I")?;
+        vm.set_instance_int(this, declaring, field, offset);
         void()
     }),
     method(
@@ -939,8 +941,27 @@ const BYTE_ARRAY_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         int((length - pos).max(0))
     }),
     method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
-    method("mark", "(I)V", ACC_PUBLIC, |_, _, _| void()),
-    method("reset", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("mark", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let pos = vm
+            .read_instance_int_named(this, class, "pos", "I")
+            .unwrap_or(0);
+        let (declaring, field) = vm.find_field(class, "mark", "I")?;
+        vm.set_instance_int(this, declaring, field, pos);
+        void()
+    }),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let mark = vm
+            .read_instance_int_named(this, class, "mark", "I")
+            .unwrap_or(0);
+        let (declaring, field) = vm.find_field(class, "pos", "I")?;
+        vm.set_instance_int(this, declaring, field, mark);
+        void()
+    }),
+    method("markSupported", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
     method(
         "transferTo",
         "(Ljava/io/OutputStream;)J",
@@ -1006,6 +1027,8 @@ fn byte_array_input_init(
     };
     let (declaring, field) = vm.find_field(class, "count", "I")?;
     vm.set_instance_int(this, declaring, field, total);
+    let (declaring, field) = vm.find_field(class, "mark", "I")?;
+    vm.set_instance_int(this, declaring, field, 0);
     void()
 }
 
@@ -1018,6 +1041,7 @@ pub(crate) const BYTE_ARRAY_INPUT_STREAM: oxjvm_vm::NativeClass = class(
         field("buf", "[B", ACC_PROTECTED, None),
         field("pos", "I", ACC_PROTECTED, None),
         field("count", "I", ACC_PROTECTED, None),
+        field("mark", "I", ACC_PROTECTED, None),
     ],
     &BYTE_ARRAY_INPUT_METHODS,
     None,
