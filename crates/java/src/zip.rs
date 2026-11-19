@@ -265,7 +265,7 @@ pub(crate) const ZIP_ENTRY: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const ZIP_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const ZIP_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method(
         "<init>",
         "(Ljava/io/OutputStream;)V",
@@ -309,6 +309,23 @@ const ZIP_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
                 .ok_or_else(|| VmError::internal("ZipOutputStream.<init> missing"))?;
             vm.invoke_method(declaring, ctor, vec![Value::Ref(this), Value::Ref(target)])?;
             write_ref_field(vm, this, "charset", "Ljava/nio/charset/Charset;", charset);
+            void()
+        },
+    ),
+    method(
+        "setComment",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let comment = ref_arg(args, 1);
+            if !comment.is_null() && vm.string_or_empty(comment).into_bytes().len() > 0xFFFF {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("invalid comment length"),
+                ));
+            }
+            write_ref_field(vm, this, "comment", "Ljava/lang/String;", comment);
             void()
         },
     ),
@@ -401,6 +418,7 @@ pub(crate) const ZIP_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
         field("offset", "J", ACC_PRIVATE, None),
         field("entryOffset", "J", ACC_PRIVATE, None),
         field("charset", "Ljava/nio/charset/Charset;", ACC_PRIVATE, None),
+        field("comment", "Ljava/lang/String;", ACC_PRIVATE, None),
     ],
     &ZIP_OUTPUT_STREAM_METHODS,
     None,
@@ -543,6 +561,9 @@ fn zip_finish(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError> {
         central.extend_from_slice(&offset.to_le_bytes());
         central.extend_from_slice(&name_bytes);
     }
+    let comment_bytes = read_string_field(vm, this, "comment")
+        .unwrap_or_default()
+        .into_bytes();
     let mut end = Vec::new();
     end.extend_from_slice(&0x0605_4B50u32.to_le_bytes());
     end.extend_from_slice(&0u16.to_le_bytes());
@@ -551,7 +572,8 @@ fn zip_finish(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError> {
     end.extend_from_slice(&(entries.len() as u16).to_le_bytes());
     end.extend_from_slice(&(central.len() as u32).to_le_bytes());
     end.extend_from_slice(&(cd_offset as u32).to_le_bytes());
-    end.extend_from_slice(&0u16.to_le_bytes());
+    end.extend_from_slice(&(comment_bytes.len() as u16).to_le_bytes());
+    end.extend_from_slice(&comment_bytes);
     let mut tail = central;
     tail.extend_from_slice(&end);
     zip_write_target(vm, this, &tail)?;
@@ -984,6 +1006,13 @@ pub(crate) fn zip_file_init(
     let raw = zip_byte_array(vm, &bytes)?;
     let (declaring, field) = vm.find_field(class, "bytes", "[B")?;
     vm.set_instance_ref(this, declaring, field, raw);
+    let comment = if archive.comment().is_empty() {
+        ObjectRef::NULL
+    } else {
+        vm.make_string(archive.comment())?
+    };
+    let (declaring, field) = vm.find_field(class, "comment", "Ljava/lang/String;")?;
+    vm.set_instance_ref(this, declaring, field, comment);
     void()
 }
 
@@ -1029,7 +1058,7 @@ pub(crate) fn zip_file_input_stream(vm: &mut Vm<'_>, data: &[u8]) -> Result<Valu
     object(instance)
 }
 
-const ZIP_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const ZIP_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method("<init>", "(Ljava/io/File;)V", ACC_PUBLIC, |vm, _, args| {
         let path = crate::file::file_path(vm, ref_arg(args, 1));
         zip_file_init(vm, receiver(args), &path)
@@ -1115,6 +1144,22 @@ const ZIP_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         },
     ),
     method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "getComment",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(
+                vm.read_ref_field(
+                    receiver(args),
+                    vm.class_of(receiver(args)),
+                    "comment",
+                    "Ljava/lang/String;",
+                )
+                .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
 ];
 
 /// `java.util.zip.ZipFile`: a random-access zip archive read from the host filesystem.
@@ -1127,6 +1172,7 @@ pub(crate) const ZIP_FILE: oxjvm_vm::NativeClass = class(
         field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("entries", "Ljava/util/List;", ACC_PRIVATE, None),
         field("bytes", "[B", ACC_PRIVATE, None),
+        field("comment", "Ljava/lang/String;", ACC_PRIVATE, None),
     ],
     &ZIP_FILE_METHODS,
     None,

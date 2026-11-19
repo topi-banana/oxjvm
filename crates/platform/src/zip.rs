@@ -86,6 +86,7 @@ pub struct ZipEntry {
 pub struct ZipArchive<'a> {
     bytes: &'a [u8],
     entries: Vec<ZipEntry>,
+    comment: String,
 }
 
 const EOCD_SIGNATURE: u32 = 0x0605_4B50;
@@ -100,6 +101,13 @@ impl<'a> ZipArchive<'a> {
     /// Returns [`ZipError`] when the archive is malformed.
     pub fn new(bytes: &'a [u8]) -> Result<Self, ZipError> {
         let eocd = find_eocd(bytes).ok_or(ZipError::NoCentralDirectory)?;
+        let comment_len = read_u16(bytes, eocd + 20)? as usize;
+        let comment_start = eocd + 22;
+        let comment_end = comment_start
+            .checked_add(comment_len)
+            .filter(|&end| end <= bytes.len())
+            .ok_or(ZipError::Malformed("comment extends past end"))?;
+        let comment = String::from_utf8_lossy(&bytes[comment_start..comment_end]).into_owned();
         let entry_count = read_u16(bytes, eocd + 10)? as usize;
         let directory_size = read_u32(bytes, eocd + 12)? as usize;
         let directory_offset = read_u32(bytes, eocd + 16)? as usize;
@@ -143,7 +151,17 @@ impl<'a> ZipArchive<'a> {
         if entries.len() != entry_count {
             return Err(ZipError::Malformed("central directory entry count"));
         }
-        Ok(Self { bytes, entries })
+        Ok(Self {
+            bytes,
+            entries,
+            comment,
+        })
+    }
+
+    /// The archive comment from the end-of-central-directory record.
+    #[must_use]
+    pub fn comment(&self) -> &str {
+        &self.comment
     }
 
     /// All members, in central-directory order.
