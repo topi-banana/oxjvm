@@ -1110,13 +1110,52 @@ pub(crate) const REENTRANT_READ_WRITE_LOCK: oxjvm_vm::NativeClass = class(
 // CompletableFuture (completed futures only)
 // -------------------------------------------------------------------------------------------
 
-const COMPLETABLE_FUTURE_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
+const COMPLETABLE_FUTURE_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "completedFuture",
         "(Ljava/lang/Object;)Ljava/util/concurrent/CompletableFuture;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| completable_completed(vm, ref_arg(args, 0)),
+    ),
+    method(
+        "allOf",
+        "([Ljava/util/concurrent/CompletableFuture;)Ljava/util/concurrent/CompletableFuture;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let futures = ref_arg(args, 0);
+            if futures.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let length = vm.array_length(futures)?;
+            for index in 0..length {
+                let future = vm.array_get(futures, index as i32)?.as_ref();
+                if future.is_null() {
+                    return Err(vm.throw_new("java/lang/NullPointerException", None));
+                }
+            }
+            completable_completed(vm, ObjectRef::NULL)
+        },
+    ),
+    method(
+        "anyOf",
+        "([Ljava/util/concurrent/CompletableFuture;)Ljava/util/concurrent/CompletableFuture;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let futures = ref_arg(args, 0);
+            if futures.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let length = vm.array_length(futures)?;
+            if length == 0 {
+                return completable_completed(vm, ObjectRef::NULL);
+            }
+            let first = vm.array_get(futures, 0)?.as_ref();
+            if first.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(completable_result(vm, first))
+        },
     ),
     method(
         "supplyAsync",

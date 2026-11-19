@@ -36,7 +36,7 @@ pub(crate) fn double_stream_from(vm: &mut Vm<'_>, values: Vec<f64>) -> Result<Ob
     new_double_stream(vm, values)
 }
 
-fn new_double_stream(vm: &mut Vm<'_>, values: Vec<f64>) -> Result<ObjectRef, VmError> {
+pub(crate) fn new_double_stream(vm: &mut Vm<'_>, values: Vec<f64>) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class("java/util/stream/OjvmDoubleStream")?;
     let instance = vm.new_instance(class)?;
     let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Double, values.len())?;
@@ -52,7 +52,7 @@ pub(crate) fn long_stream_from(vm: &mut Vm<'_>, values: Vec<i64>) -> Result<Obje
     new_long_stream(vm, values)
 }
 
-fn new_long_stream(vm: &mut Vm<'_>, values: Vec<i64>) -> Result<ObjectRef, VmError> {
+pub(crate) fn new_long_stream(vm: &mut Vm<'_>, values: Vec<i64>) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class("java/util/stream/OjvmLongStream")?;
     let instance = vm.new_instance(class)?;
     let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Long, values.len())?;
@@ -198,7 +198,13 @@ fn optional_long(vm: &mut Vm<'_>, value: Option<i64>) -> Result<Value, VmError> 
     object(instance)
 }
 
-const DOUBLE_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
+const DOUBLE_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
+    method(
+        "of",
+        "(D)Ljava/util/stream/DoubleStream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| object(new_double_stream(vm, vec![crate::double_arg(args, 0)])?),
+    ),
     method(
         "of",
         "([D)Ljava/util/stream/DoubleStream;",
@@ -642,7 +648,13 @@ pub(crate) const OJVM_DOUBLE_STREAM: oxjvm_vm::NativeClass = class(
 // LongStream
 // -------------------------------------------------------------------------------------------
 
-const LONG_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
+const LONG_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
+    method(
+        "of",
+        "(J)Ljava/util/stream/LongStream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| object(new_long_stream(vm, vec![crate::long_arg(args, 0)])?),
+    ),
     method(
         "of",
         "([J)Ljava/util/stream/LongStream;",

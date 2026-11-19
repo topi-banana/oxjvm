@@ -67,7 +67,13 @@ fn call_int_consumer(vm: &mut Vm<'_>, consumer: ObjectRef, value: i32) -> Result
     Ok(())
 }
 
-const INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
+const INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
+    method(
+        "of",
+        "(I)Ljava/util/stream/IntStream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| int_stream_of(vm, vec![crate::int_arg(args, 0)]),
+    ),
     method(
         "of",
         "([I)Ljava/util/stream/IntStream;",

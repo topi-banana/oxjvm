@@ -2251,14 +2251,17 @@ fn lambda_invoke_native(
         let count = sam.parameters.len().min(call_args.len());
         let argument_start = call_args.len() - count;
         let parameter_start = target_params.len().saturating_sub(count);
-        for index in 0..count {
-            let sam_type = &sam.parameters[index];
-            if let Some(FieldType::Base(base)) = target_params.get(parameter_start + index) {
-                let is_reference = matches!(sam_type, FieldType::Object(_) | FieldType::Array(_));
-                if is_reference {
-                    let converted = unbox_primitive(vm, *base, call_args[argument_start + index])?;
-                    call_args[argument_start + index] = converted;
+        for (index, sam_type) in sam.parameters.iter().enumerate().take(count) {
+            let target_type = target_params.get(parameter_start + index);
+            let slot = argument_start + index;
+            match (sam_type, target_type) {
+                (FieldType::Object(_) | FieldType::Array(_), Some(FieldType::Base(base))) => {
+                    call_args[slot] = unbox_primitive(vm, *base, call_args[slot])?;
                 }
+                (FieldType::Base(base), Some(FieldType::Object(_) | FieldType::Array(_))) => {
+                    call_args[slot] = box_primitive(vm, *base, call_args[slot])?;
+                }
+                _ => {}
             }
         }
         let result = vm.invoke_handle(&target, &call_args)?;

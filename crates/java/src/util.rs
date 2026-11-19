@@ -4589,7 +4589,7 @@ pub(crate) const ARRAYS: oxjvm_vm::NativeClass = class(
 // Random (exactly the java.util.Random LCG)
 // -------------------------------------------------------------------------------------------
 
-const RANDOM_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+const RANDOM_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
     method("<init>", "()V", ACC_PUBLIC, random_init),
     method("<init>", "(J)V", ACC_PUBLIC, random_init_seed),
     method("setSeed", "(J)V", ACC_PUBLIC, |vm, _, args| {
@@ -4703,6 +4703,110 @@ const RANDOM_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
         }
         void()
     }),
+    method(
+        "ints",
+        "()Ljava/util/stream/IntStream;",
+        ACC_PUBLIC,
+        |vm, _, args| random_int_stream(vm, receiver(args), RANDOM_STREAM_CAP, None),
+    ),
+    method(
+        "ints",
+        "(J)Ljava/util/stream/IntStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let count = random_stream_count(vm, long_arg(args, 1))?;
+            random_int_stream(vm, receiver(args), count, None)
+        },
+    ),
+    method(
+        "ints",
+        "(II)Ljava/util/stream/IntStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let range = random_int_range(vm, int_arg(args, 1), int_arg(args, 2))?;
+            random_int_stream(vm, receiver(args), RANDOM_STREAM_CAP, Some(range))
+        },
+    ),
+    method(
+        "ints",
+        "(JII)Ljava/util/stream/IntStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let count = random_stream_count(vm, long_arg(args, 1))?;
+            let range = random_int_range(vm, int_arg(args, 2), int_arg(args, 3))?;
+            random_int_stream(vm, receiver(args), count, Some(range))
+        },
+    ),
+    method(
+        "longs",
+        "()Ljava/util/stream/LongStream;",
+        ACC_PUBLIC,
+        |vm, _, args| random_long_stream(vm, receiver(args), RANDOM_STREAM_CAP, None),
+    ),
+    method(
+        "longs",
+        "(J)Ljava/util/stream/LongStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let count = random_stream_count(vm, long_arg(args, 1))?;
+            random_long_stream(vm, receiver(args), count, None)
+        },
+    ),
+    method(
+        "longs",
+        "(JJ)Ljava/util/stream/LongStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let range = random_long_range(vm, long_arg(args, 1), long_arg(args, 2))?;
+            random_long_stream(vm, receiver(args), RANDOM_STREAM_CAP, Some(range))
+        },
+    ),
+    method(
+        "longs",
+        "(JJJ)Ljava/util/stream/LongStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let count = random_stream_count(vm, long_arg(args, 1))?;
+            let range = random_long_range(vm, long_arg(args, 2), long_arg(args, 3))?;
+            random_long_stream(vm, receiver(args), count, Some(range))
+        },
+    ),
+    method(
+        "doubles",
+        "()Ljava/util/stream/DoubleStream;",
+        ACC_PUBLIC,
+        |vm, _, args| random_double_stream(vm, receiver(args), RANDOM_STREAM_CAP, None),
+    ),
+    method(
+        "doubles",
+        "(J)Ljava/util/stream/DoubleStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let count = random_stream_count(vm, long_arg(args, 1))?;
+            random_double_stream(vm, receiver(args), count, None)
+        },
+    ),
+    method(
+        "doubles",
+        "(DD)Ljava/util/stream/DoubleStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let range =
+                random_double_range(vm, crate::double_arg(args, 1), crate::double_arg(args, 2))?;
+            random_double_stream(vm, receiver(args), RANDOM_STREAM_CAP, Some(range))
+        },
+    ),
+    method(
+        "doubles",
+        "(JDD)Ljava/util/stream/DoubleStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let count = random_stream_count(vm, long_arg(args, 1))?;
+            let range =
+                random_double_range(vm, crate::double_arg(args, 2), crate::double_arg(args, 3))?;
+            random_double_stream(vm, receiver(args), count, Some(range))
+        },
+    ),
 ];
 
 fn random_init(
@@ -4757,6 +4861,164 @@ fn next_random_bounded(vm: &mut Vm<'_>, this: ObjectRef, bound: i32) -> Result<i
             return Ok(value);
         }
     }
+}
+
+/// Materialized length of an infinite random stream, matching the eager-stream cap used by
+/// the other unbounded sources.
+const RANDOM_STREAM_CAP: usize = 1024;
+
+fn random_stream_count(vm: &mut Vm<'_>, size: i64) -> Result<usize, VmError> {
+    if size < 0 {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("size must be non-negative"),
+        ));
+    }
+    Ok(size as usize)
+}
+
+fn random_next_long(vm: &mut Vm<'_>, this: ObjectRef) -> Result<i64, VmError> {
+    let high = next_random_int(vm, this, 32, &[])?.as_int();
+    let low = next_random_int(vm, this, 32, &[])?.as_int();
+    Ok(((high as i64) << 32).wrapping_add(i64::from(low)))
+}
+
+fn random_next_double(vm: &mut Vm<'_>, this: ObjectRef) -> Result<f64, VmError> {
+    let high = next_random_int(vm, this, 26, &[])?.as_int();
+    let low = next_random_int(vm, this, 27, &[])?.as_int();
+    let value = ((high as i64) << 27).wrapping_add(i64::from(low));
+    Ok(value as f64 / (1i64 << 53) as f64)
+}
+
+/// JDK `Random.nextLong(origin, bound)`: power-of-two masking, otherwise unsigned rejection.
+fn random_bounded_long(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    origin: i64,
+    bound: i64,
+) -> Result<i64, VmError> {
+    let n = bound.wrapping_sub(origin);
+    if n <= 0 {
+        loop {
+            let r = random_next_long(vm, this)?;
+            if r >= origin && r < bound {
+                return Ok(r);
+            }
+        }
+    }
+    let m = n - 1;
+    let mut r = random_next_long(vm, this)?;
+    if (n & m) == 0 {
+        r &= m;
+    } else {
+        let mut u = (r as u64) >> 1;
+        loop {
+            r = (u % n as u64) as i64;
+            let check = u.wrapping_add(m as u64).wrapping_sub(r as u64);
+            if check < (1u64 << 63) {
+                break;
+            }
+            u = (random_next_long(vm, this)? as u64) >> 1;
+        }
+    }
+    Ok(r.wrapping_add(origin))
+}
+
+fn random_bounded_double(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    origin: f64,
+    bound: f64,
+) -> Result<f64, VmError> {
+    let unit = random_next_double(vm, this)?;
+    let mut result = origin + unit * (bound - origin);
+    if result >= bound || result.is_nan() {
+        result = f64::from_bits(bound.to_bits() - 1);
+    }
+    Ok(result)
+}
+
+fn random_int_stream(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    count: usize,
+    range: Option<(i32, i32)>,
+) -> Result<Value, VmError> {
+    let mut values = Vec::with_capacity(count.min(RANDOM_STREAM_CAP));
+    for _ in 0..count {
+        let value = match range {
+            None => next_random_int(vm, this, 32, &[])?.as_int(),
+            Some((origin, bound)) => {
+                origin.wrapping_add(next_random_bounded(vm, this, bound.wrapping_sub(origin))?)
+            }
+        };
+        values.push(value);
+    }
+    object(crate::intstream::int_stream_from(vm, values)?)
+}
+
+fn random_long_stream(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    count: usize,
+    range: Option<(i64, i64)>,
+) -> Result<Value, VmError> {
+    let mut values = Vec::with_capacity(count.min(RANDOM_STREAM_CAP));
+    for _ in 0..count {
+        let value = match range {
+            None => random_next_long(vm, this)?,
+            Some((origin, bound)) => random_bounded_long(vm, this, origin, bound)?,
+        };
+        values.push(value);
+    }
+    object(crate::primitive_stream::new_long_stream(vm, values)?)
+}
+
+fn random_double_stream(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    count: usize,
+    range: Option<(f64, f64)>,
+) -> Result<Value, VmError> {
+    let mut values = Vec::with_capacity(count.min(RANDOM_STREAM_CAP));
+    for _ in 0..count {
+        let value = match range {
+            None => random_next_double(vm, this)?,
+            Some((origin, bound)) => random_bounded_double(vm, this, origin, bound)?,
+        };
+        values.push(value);
+    }
+    object(crate::primitive_stream::new_double_stream(vm, values)?)
+}
+
+fn random_int_range(vm: &mut Vm<'_>, origin: i32, bound: i32) -> Result<(i32, i32), VmError> {
+    if bound <= origin {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("bound must be greater than origin"),
+        ));
+    }
+    Ok((origin, bound))
+}
+
+fn random_long_range(vm: &mut Vm<'_>, origin: i64, bound: i64) -> Result<(i64, i64), VmError> {
+    if bound <= origin {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("bound must be greater than origin"),
+        ));
+    }
+    Ok((origin, bound))
+}
+
+fn random_double_range(vm: &mut Vm<'_>, origin: f64, bound: f64) -> Result<(f64, f64), VmError> {
+    if origin >= bound || origin.is_nan() || bound.is_nan() {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("bound must be greater than origin"),
+        ));
+    }
+    Ok((origin, bound))
 }
 
 fn next_random_int(

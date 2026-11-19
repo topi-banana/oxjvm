@@ -2893,7 +2893,7 @@ fn file_reader_content(vm: &Vm<'_>, this: ObjectRef) -> String {
         .unwrap_or_default()
 }
 
-fn file_reader_init(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+fn file_reader_init(vm: &mut Vm<'_>, args: &[Value], canonical: &str) -> Result<Value, VmError> {
     let this = receiver(args);
     let path = file_reader_path(vm, this);
     let bytes = vm
@@ -2901,7 +2901,7 @@ fn file_reader_init(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
         .filesystem()
         .and_then(|fs| fs.read(&path))
         .unwrap_or_default();
-    let content = String::from_utf8_lossy(&bytes).into_owned();
+    let content = String::from_utf16_lossy(&crate::charset::decode(&bytes, canonical));
     let class = vm.class_of(this);
     let (declaring, field) = vm.find_field(class, "content", "Ljava/lang/String;")?;
     let value = vm.make_string(&content)?;
@@ -2911,7 +2911,16 @@ fn file_reader_init(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
     void()
 }
 
-const FILE_READER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+/// Resolve the charset argument of a `FileReader` constructor; a null charset is an NPE.
+fn file_reader_charset(vm: &mut Vm<'_>, charset: ObjectRef) -> Result<&'static str, VmError> {
+    if charset.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let name = crate::charset::name_of(vm, charset);
+    Ok(crate::charset::canonical_name(&name).unwrap_or("UTF-8"))
+}
+
+const FILE_READER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -2921,7 +2930,7 @@ const FILE_READER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
             let (declaring, field) =
                 vm.find_field(vm.class_of(this), "path", "Ljava/lang/String;")?;
             vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
-            file_reader_init(vm, args)
+            file_reader_init(vm, args, "UTF-8")
         },
     ),
     method("<init>", "(Ljava/io/File;)V", ACC_PUBLIC, |vm, _, args| {
@@ -2933,8 +2942,39 @@ const FILE_READER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         let path_value = vm.make_string(&path)?;
         let (declaring, field) = vm.find_field(vm.class_of(this), "path", "Ljava/lang/String;")?;
         vm.set_instance_ref(this, declaring, field, path_value);
-        file_reader_init(vm, args)
+        file_reader_init(vm, args, "UTF-8")
     }),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/nio/charset/Charset;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let canonical = file_reader_charset(vm, ref_arg(args, 2))?;
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "path", "Ljava/lang/String;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            file_reader_init(vm, args, canonical)
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/File;Ljava/nio/charset/Charset;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let canonical = file_reader_charset(vm, ref_arg(args, 2))?;
+            let file = ref_arg(args, 1);
+            let path = vm
+                .read_string_field(file, vm.class_of(file), "path")
+                .unwrap_or_default();
+            let path_value = vm.make_string(&path)?;
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "path", "Ljava/lang/String;")?;
+            vm.set_instance_ref(this, declaring, field, path_value);
+            file_reader_init(vm, args, canonical)
+        },
+    ),
     method("read", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let content = file_reader_content(vm, this);
