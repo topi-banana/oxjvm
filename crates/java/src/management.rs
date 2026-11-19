@@ -11,9 +11,7 @@ use alloc::vec::Vec;
 use oxjvm_classfile::flags::*;
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
-use crate::{
-    boolean, class, field, int, long, method, object, receiver, ref_arg, void,
-};
+use crate::{boolean, class, field, int, long, method, object, receiver, ref_arg, void};
 
 // -------------------------------------------------------------------------------------------
 // Helpers
