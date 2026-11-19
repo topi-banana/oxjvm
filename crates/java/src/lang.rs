@@ -8780,12 +8780,40 @@ fn thread_local_with_initial(
 // ClassLoader
 // -------------------------------------------------------------------------------------------
 
-const CLASS_LOADER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const CLASS_LOADER_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method(
         "getSystemClassLoader",
         "()Ljava/lang/ClassLoader;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _| object(system_class_loader(vm)?),
+    ),
+    method(
+        "getSystemResource",
+        "(Ljava/lang/String;)Ljava/net/URL;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = string_arg(vm, args[0])?;
+            object(first_resource_url(vm, &name)?)
+        },
+    ),
+    method(
+        "getSystemResources",
+        "(Ljava/lang/String;)Ljava/util/Enumeration;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = string_arg(vm, args[0])?;
+            let urls = resource_urls(vm, &name)?;
+            object(crate::util::new_enumeration(vm, &urls)?)
+        },
+    ),
+    method(
+        "getSystemResourceAsStream",
+        "(Ljava/lang/String;)Ljava/io/InputStream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = string_arg(vm, args[0])?;
+            resource_as_stream(vm, &name)
+        },
     ),
     method(
         "getPlatformClassLoader",

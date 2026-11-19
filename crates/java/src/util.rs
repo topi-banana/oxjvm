@@ -1407,7 +1407,7 @@ macro_rules! map_of {
     };
 }
 
-const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
+const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
     method(
         "entry",
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map$Entry;",
@@ -1442,6 +1442,26 @@ const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
                     .as_ref();
                 pairs.push((key, value));
             }
+            map_of_pairs(vm, &pairs)
+        },
+    ),
+    method(
+        "copyOf",
+        "(Ljava/util/Map;)Ljava/util/Map;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let map = ref_arg(args, 0);
+            if map.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            // An immutable map produced by `Map.of`/`ofEntries`/`copyOf` is returned as-is,
+            // matching the JDK identity guarantee.
+            if vm.class_name(vm.class_of(map)) == "java/util/HashMap"
+                && crate::lang::read_int_field(vm, map, "immutable") == 1
+            {
+                return object(map);
+            }
+            let pairs = abstract_map_entries(vm, map)?;
             map_of_pairs(vm, &pairs)
         },
     ),
@@ -7008,13 +7028,59 @@ pub(crate) const CONCURRENT_LINKED_DEQUE: oxjvm_vm::NativeClass = class(
 ///
 /// The snapshot iterator and per-write copying are unobservable in a cooperative runtime, so
 /// inheriting `ArrayList`'s storage keeps the list semantics in one place.
+const COPY_ON_WRITE_ARRAY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "addIfAbsent",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let element = ref_arg(args, 1);
+            let (cc, cm) = vm.resolve_virtual_method(this, "contains", "(Ljava/lang/Object;)Z")?;
+            if vm
+                .invoke_method(cc, cm, vec![Value::Ref(this), Value::Ref(element)])?
+                .as_int()
+                != 0
+            {
+                return boolean(false);
+            }
+            let (ac, am) = vm.resolve_virtual_method(this, "add", "(Ljava/lang/Object;)Z")?;
+            vm.invoke_method(ac, am, vec![Value::Ref(this), Value::Ref(element)])?;
+            boolean(true)
+        },
+    ),
+    method(
+        "addAllAbsent",
+        "(Ljava/util/Collection;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let elements = collection_elements(vm, ref_arg(args, 1))?;
+            let (cc, cm) = vm.resolve_virtual_method(this, "contains", "(Ljava/lang/Object;)Z")?;
+            let (ac, am) = vm.resolve_virtual_method(this, "add", "(Ljava/lang/Object;)Z")?;
+            let mut added = 0i32;
+            for element in elements {
+                if vm
+                    .invoke_method(cc, cm, vec![Value::Ref(this), Value::Ref(element)])?
+                    .as_int()
+                    == 0
+                {
+                    vm.invoke_method(ac, am, vec![Value::Ref(this), Value::Ref(element)])?;
+                    added += 1;
+                }
+            }
+            int(added)
+        },
+    ),
+];
+
 pub(crate) const COPY_ON_WRITE_ARRAY_LIST: oxjvm_vm::NativeClass = class(
     "java/util/concurrent/CopyOnWriteArrayList",
     Some("java/util/ArrayList"),
     &["java/util/RandomAccess"],
     ACC_PUBLIC,
     &[],
-    &[],
+    &COPY_ON_WRITE_ARRAY_LIST_METHODS,
     None,
 );
 
@@ -15429,7 +15495,7 @@ fn new_time_zone(vm: &mut Vm<'_>, id: &str) -> Result<Value, VmError> {
     object(instance)
 }
 
-const TIME_ZONE_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const TIME_ZONE_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
     method(
         "getDefault",
         "()Ljava/util/TimeZone;",
@@ -15471,6 +15537,43 @@ const TIME_ZONE_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
                 id
             };
             new_time_zone(vm, &id)
+        },
+    ),
+    method(
+        "getTimeZone",
+        "(Ljava/time/ZoneId;)Ljava/util/TimeZone;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let zone = ref_arg(args, 0);
+            if zone.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(zone, "getId", "()Ljava/lang/String;")?;
+            let id = vm
+                .invoke_method(class, method, vec![Value::Ref(zone)])?
+                .as_ref();
+            let id = vm.string_or_empty(id);
+            let id = if id.is_empty() {
+                String::from("GMT")
+            } else {
+                id
+            };
+            new_time_zone(vm, &id)
+        },
+    ),
+    method(
+        "toZoneId",
+        "()Ljava/time/ZoneId;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let id = time_zone_id(vm, receiver(args));
+            let zone_class = vm.resolve_class("java/time/ZoneId")?;
+            let (declaring, method) = vm
+                .find_method(zone_class, "of", "(Ljava/lang/String;)Ljava/time/ZoneId;")
+                .ok_or_else(|| VmError::internal("ZoneId.of missing"))?;
+            let id_value = vm.make_string(&id)?;
+            vm.invoke_method(declaring, method, vec![Value::Ref(id_value)])
         },
     ),
     method(
