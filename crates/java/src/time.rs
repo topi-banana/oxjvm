@@ -2231,7 +2231,104 @@ fn local_time_string(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError>
     object(vm.make_string(&text)?)
 }
 
-const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 51] = [
+/// `LocalDate.datesUntil`: an ordered stream of dates from this date (inclusive) to `end`
+/// (exclusive), stepping by one day or by the given positive `Period`.
+fn local_date_dates_until(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    end: ObjectRef,
+    step: Option<ObjectRef>,
+) -> Result<Value, VmError> {
+    if end.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let end_day = read_long_field(vm, end, "epochDay");
+    if end_day < read_long_field(vm, this, "epochDay") {
+        let (class, method) = vm.resolve_virtual_method(end, "toString", "()Ljava/lang/String;")?;
+        let end_text = vm.invoke_method(class, method, vec![Value::Ref(end)])?;
+        let (class, method) =
+            vm.resolve_virtual_method(this, "toString", "()Ljava/lang/String;")?;
+        let this_text = vm.invoke_method(class, method, vec![Value::Ref(this)])?;
+        let message = alloc::format!(
+            "{} < {}",
+            vm.string_or_empty(end_text.as_ref()),
+            vm.string_or_empty(this_text.as_ref())
+        );
+        return Err(vm.throw_new("java/lang/IllegalArgumentException", Some(&message)));
+    }
+    let mut elements = Vec::new();
+    match step {
+        None => {
+            let mut day = read_long_field(vm, this, "epochDay");
+            while day < end_day {
+                elements.push(local_date_new(vm, day)?);
+                day += 1;
+            }
+        }
+        Some(period) => {
+            let (class, method) = vm.resolve_virtual_method(period, "isZero", "()Z")?;
+            let zero = vm
+                .invoke_method(class, method, vec![Value::Ref(period)])?
+                .as_int()
+                != 0;
+            let (class, method) = vm.resolve_virtual_method(period, "isNegative", "()Z")?;
+            let negative = vm
+                .invoke_method(class, method, vec![Value::Ref(period)])?
+                .as_int()
+                != 0;
+            if zero || negative {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("step must be positive"),
+                ));
+            }
+            let years = i64::from(read_int_field(vm, period, "years"));
+            let months = i64::from(read_int_field(vm, period, "months"));
+            let days = i64::from(read_int_field(vm, period, "days"));
+            let total_months = years * 12 + months;
+            let date_class = vm.class_of(this);
+            let (_, plus_months) = vm
+                .find_method(date_class, "plusMonths", "(J)Ljava/time/LocalDate;")
+                .ok_or_else(|| VmError::internal("LocalDate.plusMonths missing"))?;
+            let (declaring, plus_days) = vm
+                .find_method(date_class, "plusDays", "(J)Ljava/time/LocalDate;")
+                .ok_or_else(|| VmError::internal("LocalDate.plusDays missing"))?;
+            // Each element is `start.plus(step.multipliedBy(n))`, not repeated addition, so
+            // end-of-month clamping does not drift (2020-01-30 + 2 months = 2020-03-30).
+            let mut index = 0i64;
+            loop {
+                let months_to_add = total_months.checked_mul(index).ok_or_else(|| {
+                    vm.throw_new("java/lang/ArithmeticException", Some("long overflow"))
+                })?;
+                let days_to_add = days.checked_mul(index).ok_or_else(|| {
+                    vm.throw_new("java/lang/ArithmeticException", Some("long overflow"))
+                })?;
+                let candidate = vm
+                    .invoke_method(
+                        declaring,
+                        plus_months,
+                        vec![Value::Ref(this), long(months_to_add)?],
+                    )?
+                    .as_ref();
+                let candidate = vm
+                    .invoke_method(
+                        declaring,
+                        plus_days,
+                        vec![Value::Ref(candidate), long(days_to_add)?],
+                    )?
+                    .as_ref();
+                if read_long_field(vm, candidate, "epochDay") >= end_day {
+                    break;
+                }
+                elements.push(candidate);
+                index += 1;
+            }
+        }
+    }
+    object(crate::stream::stream_from(vm, elements)?)
+}
+
+const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
     method(
         "of",
         "(III)Ljava/time/LocalDate;",
@@ -2867,6 +2964,24 @@ const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 51] = [
                     vec![Value::Ref(unit), Value::Ref(this), Value::Ref(end)],
                 )
             }
+        },
+    ),
+    method(
+        "datesUntil",
+        "(Ljava/time/LocalDate;)Ljava/util/stream/Stream;",
+        ACC_PUBLIC,
+        |vm, _, args| local_date_dates_until(vm, receiver(args), ref_arg(args, 1), None),
+    ),
+    method(
+        "datesUntil",
+        "(Ljava/time/LocalDate;Ljava/time/Period;)Ljava/util/stream/Stream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let step = ref_arg(args, 2);
+            if step.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            local_date_dates_until(vm, receiver(args), ref_arg(args, 1), Some(step))
         },
     ),
 ];
@@ -4391,7 +4506,7 @@ fn period_shift(
     Ok(result)
 }
 
-const PERIOD_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
+const PERIOD_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method(
         "of",
         "(III)Ljava/time/Period;",
@@ -4447,6 +4562,14 @@ const PERIOD_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
             read_int_field(vm, this, "years") == 0
                 && read_int_field(vm, this, "months") == 0
                 && read_int_field(vm, this, "days") == 0,
+        )
+    }),
+    method("isNegative", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        crate::boolean(
+            read_int_field(vm, this, "years") < 0
+                || read_int_field(vm, this, "months") < 0
+                || read_int_field(vm, this, "days") < 0,
         )
     }),
     method(

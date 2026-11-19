@@ -7,7 +7,7 @@ use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
 use crate::{boolean, class, field, method, object, receiver, ref_arg, void};
 
-const OPTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const OPTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
     method(
         "<init>",
         "(Ljava/lang/Object;)V",
@@ -227,6 +227,38 @@ const OPTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
             } else {
                 optional_new(vm, ObjectRef::NULL)
             }
+        },
+    ),
+    method(
+        "or",
+        "(Ljava/util/function/Supplier;)Ljava/util/Optional;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if !optional_value(vm, this).is_null() {
+                return object(this);
+            }
+            let supplier = ref_arg(args, 1);
+            if supplier.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(supplier, "get", "()Ljava/lang/Object;")?;
+            let result = vm.invoke_method(class, method, vec![Value::Ref(supplier)])?;
+            if result.as_ref().is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            Ok(result)
+        },
+    ),
+    method(
+        "stream",
+        "()Ljava/util/stream/Stream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let value = optional_value(vm, receiver(args));
+            let elements = if value.is_null() { vec![] } else { vec![value] };
+            object(crate::stream::stream_from(vm, elements)?)
         },
     ),
     method(
