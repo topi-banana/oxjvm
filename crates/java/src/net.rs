@@ -605,11 +605,16 @@ fn resolve_url(base: &str, relative: &str) -> String {
         Some(index) => &base_path[..=index],
         None => "/",
     };
+    let (rel_path, suffix) = match relative.find(['?', '#']) {
+        Some(index) => (&relative[..index], &relative[index..]),
+        None => (relative, ""),
+    };
+    let merged = crate::uri::normalize_uri_path(&alloc::format!("{directory}{rel_path}"));
     match parts.authority {
         Some(authority) => {
-            alloc::format!("{}://{authority}{}{relative}", parts.protocol, directory)
+            alloc::format!("{}://{authority}{merged}{suffix}", parts.protocol)
         }
-        None => alloc::format!("{}:{}{relative}", parts.protocol, directory),
+        None => alloc::format!("{}:{merged}{suffix}", parts.protocol),
     }
 }
 

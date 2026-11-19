@@ -62,6 +62,170 @@ fn percent_decode(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// The components of a URI reference, split loosely on the raw text.
+struct UriParts<'a> {
+    scheme: Option<&'a str>,
+    authority: Option<&'a str>,
+    path: &'a str,
+    query: Option<&'a str>,
+    fragment: Option<&'a str>,
+}
+
+fn parse_uri(text: &str) -> UriParts<'_> {
+    let (scheme, rest) = match text.split_once(':') {
+        Some((scheme, rest))
+            if scheme
+                .chars()
+                .next()
+                .is_some_and(|first| first.is_ascii_alphabetic())
+                && scheme
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')) =>
+        {
+            (Some(scheme), rest)
+        }
+        _ => (None, text),
+    };
+    let (rest, fragment) = match rest.split_once('#') {
+        Some((rest, fragment)) => (rest, Some(fragment)),
+        None => (rest, None),
+    };
+    let (rest, query) = match rest.split_once('?') {
+        Some((rest, query)) => (rest, Some(query)),
+        None => (rest, None),
+    };
+    let (authority, path) = match rest.strip_prefix("//") {
+        Some(after) => match after.find('/') {
+            Some(index) => (Some(&after[..index]), &after[index..]),
+            None => (Some(after), ""),
+        },
+        None => (None, rest),
+    };
+    UriParts {
+        scheme,
+        authority,
+        path,
+        query,
+        fragment,
+    }
+}
+
+/// Normalize dot segments in a URI path the way `java.net.URI` does: remove
+/// "." segments and ".." segments together with their predecessor, collapse
+/// redundant slashes, and keep leading ".." segments and any trailing slash.
+pub(crate) fn normalize_uri_path(path: &str) -> String {
+    if path.is_empty() {
+        return String::new();
+    }
+    let absolute = path.starts_with('/');
+    let trailing = path.ends_with('/');
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in path.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                if segments.last().is_some_and(|prev| *prev != "..") {
+                    segments.pop();
+                } else {
+                    segments.push("..");
+                }
+            }
+            _ => segments.push(segment),
+        }
+    }
+    // Prevent scheme-name confusion in a relative path.
+    if !absolute && segments.first().is_some_and(|first| first.contains(':')) {
+        segments.insert(0, ".");
+    }
+    let mut out = String::new();
+    if absolute {
+        out.push('/');
+    }
+    out.push_str(&segments.join("/"));
+    if trailing && !out.ends_with('/') {
+        out.push('/');
+    }
+    out
+}
+
+/// Merge a relative child path into the base path directory (RFC 2396 5.2).
+fn resolve_uri_path(base: &str, child: &str, base_absolute: bool) -> String {
+    let directory = match base.rfind('/') {
+        Some(index) => &base[..=index],
+        None => "",
+    };
+    let merged = if child.is_empty() {
+        String::from(directory)
+    } else if base.contains('/') || !base_absolute {
+        alloc::format!("{directory}{child}")
+    } else {
+        alloc::format!("/{child}")
+    };
+    normalize_uri_path(&merged)
+}
+
+/// Resolve `child` against `base`, following `java.net.URI.resolve`.
+fn resolve_uri(base: &str, child: &str) -> String {
+    let base_parts = parse_uri(base);
+    let child_parts = parse_uri(child);
+    let opaque = |parts: &UriParts<'_>| {
+        parts.scheme.is_some() && parts.authority.is_none() && !parts.path.starts_with('/')
+    };
+    if opaque(&child_parts) || opaque(&base_parts) {
+        return String::from(child);
+    }
+    // A lone fragment replaces the base fragment and keeps everything else.
+    if child_parts.scheme.is_none()
+        && child_parts.authority.is_none()
+        && child_parts.path.is_empty()
+        && child_parts.query.is_none()
+        && child_parts.fragment.is_some()
+    {
+        if base_parts.fragment == child_parts.fragment {
+            return String::from(base);
+        }
+        let head = base.split('#').next().unwrap_or(base);
+        return alloc::format!("{head}#{}", child_parts.fragment.unwrap_or_default());
+    }
+    if child_parts.scheme.is_some() {
+        return String::from(child);
+    }
+    let (authority, path) = match child_parts.authority {
+        Some(authority) => (Some(authority), String::from(child_parts.path)),
+        None => {
+            let path = if child_parts.path.starts_with('/') {
+                String::from(child_parts.path)
+            } else {
+                resolve_uri_path(
+                    base_parts.path,
+                    child_parts.path,
+                    base_parts.scheme.is_some(),
+                )
+            };
+            (base_parts.authority, path)
+        }
+    };
+    let mut out = String::new();
+    if let Some(scheme) = base_parts.scheme {
+        out.push_str(scheme);
+        out.push(':');
+    }
+    if let Some(authority) = authority {
+        out.push_str("//");
+        out.push_str(authority);
+    }
+    out.push_str(&path);
+    if let Some(query) = child_parts.query {
+        out.push('?');
+        out.push_str(query);
+    }
+    if let Some(fragment) = child_parts.fragment {
+        out.push('#');
+        out.push_str(fragment);
+    }
+    out
+}
+
 fn uri_init(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
@@ -115,7 +279,7 @@ fn uri_init_parts(
     void()
 }
 
-const URI_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
+const URI_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
     method("<init>", "(Ljava/lang/String;)V", ACC_PUBLIC, uri_init),
     method(
         "compareTo",
@@ -304,7 +468,7 @@ const URI_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
                 None => text.as_str(),
             };
             let rest = rest.split('#').next().unwrap_or(rest);
-            object(vm.intern(rest)?)
+            object(vm.intern(&percent_decode(rest))?)
         },
     ),
     method(
@@ -367,6 +531,28 @@ const URI_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
         }
         object(crate::net::new_url(vm, &text)?)
     }),
+    method(
+        "resolve",
+        "(Ljava/net/URI;)Ljava/net/URI;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let base = uri_text(vm, receiver(args));
+            let child = uri_text(vm, ref_arg(args, 1));
+            let text = resolve_uri(&base, &child);
+            new_uri(vm, &text)
+        },
+    ),
+    method(
+        "resolve",
+        "(Ljava/lang/String;)Ljava/net/URI;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let base = uri_text(vm, receiver(args));
+            let child = string_arg(vm, args[1])?;
+            let text = resolve_uri(&base, &child);
+            new_uri(vm, &text)
+        },
+    ),
     method(
         "relativize",
         "(Ljava/net/URI;)Ljava/net/URI;",
