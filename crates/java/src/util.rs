@@ -7777,7 +7777,7 @@ pub(crate) const ARRAY_LIST_LIST_ITERATOR: oxjvm_vm::NativeClass = class(
 const HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
     method("<init>", "()V", ACC_PUBLIC, hash_map_init),
     method("<init>", "(I)V", ACC_PUBLIC, hash_map_init),
-    method("<init>", "(IF)V", ACC_PUBLIC, hash_map_init),
+    method("<init>", "(IF)V", ACC_PUBLIC, hash_map_init_capacity_factor),
     method("<init>", "(IFZ)V", ACC_PUBLIC, hash_map_init),
     method(
         "<init>",
@@ -7986,6 +7986,38 @@ fn hash_map_init(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
+    hash_map_store(vm, receiver(args), &[])?;
+    void()
+}
+
+/// Validate the `(int initialCapacity, float loadFactor)` constructor arguments
+/// shared by HashMap/Hashtable/HashSet/WeakHashMap, matching the JDK.
+fn map_check_capacity_load_factor(
+    vm: &mut Vm<'_>,
+    capacity: i32,
+    load_factor: f32,
+) -> Result<(), VmError> {
+    if capacity < 0 {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("Illegal initial capacity"),
+        ));
+    }
+    if load_factor <= 0.0 || load_factor.is_nan() {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("Illegal load factor"),
+        ));
+    }
+    Ok(())
+}
+
+fn hash_map_init_capacity_factor(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    map_check_capacity_load_factor(vm, int_arg(args, 1), crate::float_arg(args, 2))?;
     hash_map_store(vm, receiver(args), &[])?;
     void()
 }
@@ -11370,7 +11402,7 @@ pub(crate) fn hash_set_present(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
     Ok(instance)
 }
 
-const HASH_SET_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
+const HASH_SET_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let map = new_hash_map(vm)?;
         let this = receiver(args);
@@ -11380,6 +11412,15 @@ const HASH_SET_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
         void()
     }),
     method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let map = new_hash_map(vm)?;
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let (declaring, field) = vm.find_field(class, "map", "Ljava/util/HashMap;")?;
+        vm.set_instance_ref(this, declaring, field, map);
+        void()
+    }),
+    method("<init>", "(IF)V", ACC_PUBLIC, |vm, _, args| {
+        map_check_capacity_load_factor(vm, int_arg(args, 1), crate::float_arg(args, 2))?;
         let map = new_hash_map(vm)?;
         let this = receiver(args);
         let class = vm.class_of(this);
@@ -12201,7 +12242,7 @@ fn hashtable_map(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
     hash_set_map(vm, this)
 }
 
-const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
+const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let map = new_hash_map(vm)?;
         let this = receiver(args);
@@ -12211,6 +12252,15 @@ const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
         void()
     }),
     method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let map = new_hash_map(vm)?;
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let (declaring, field) = vm.find_field(class, "map", "Ljava/util/HashMap;")?;
+        vm.set_instance_ref(this, declaring, field, map);
+        void()
+    }),
+    method("<init>", "(IF)V", ACC_PUBLIC, |vm, _, args| {
+        map_check_capacity_load_factor(vm, int_arg(args, 1), crate::float_arg(args, 2))?;
         let map = new_hash_map(vm)?;
         let this = receiver(args);
         let class = vm.class_of(this);
@@ -13861,7 +13911,7 @@ fn enum_map_init(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
     void()
 }
 
-const ENUM_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
+const ENUM_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
     method(
         "<init>",
         "(Ljava/lang/Class;)V",
@@ -14035,6 +14085,19 @@ const ENUM_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
         |vm, _, args| {
             let map = enum_map_map(vm, receiver(args));
             hash_map_call(vm, map, "entrySet", "()Ljava/util/Set;", &[])
+        },
+    ),
+    method(
+        "clone",
+        "()Ljava/util/EnumMap;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.resolve_class("java/util/EnumMap")?;
+            let clone = vm.new_instance(class)?;
+            enum_map_init(vm, &[Value::Ref(clone)])?;
+            concurrent_put_all(vm, clone, this)?;
+            object(clone)
         },
     ),
 ];
