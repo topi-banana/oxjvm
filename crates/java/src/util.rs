@@ -2110,7 +2110,11 @@ const OBJECTS_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
     ),
 ];
 
-fn objects_deep_equals(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmError> {
+pub(crate) fn objects_deep_equals(
+    vm: &mut Vm<'_>,
+    a: ObjectRef,
+    b: ObjectRef,
+) -> Result<bool, VmError> {
     if a == b {
         return Ok(true);
     }
@@ -2152,7 +2156,10 @@ fn objects_deep_equals(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bo
     }
 }
 
-fn objects_deep_hash_code(vm: &mut Vm<'_>, reference: ObjectRef) -> Result<i32, VmError> {
+pub(crate) fn objects_deep_hash_code(
+    vm: &mut Vm<'_>,
+    reference: ObjectRef,
+) -> Result<i32, VmError> {
     if reference.is_null() {
         return Ok(0);
     }
@@ -6935,7 +6942,7 @@ fn bi_function_apply(
         .as_ref())
 }
 
-fn abstract_map_entries(
+pub(crate) fn abstract_map_entries(
     vm: &mut Vm<'_>,
     map: ObjectRef,
 ) -> Result<Vec<(ObjectRef, ObjectRef)>, VmError> {
@@ -11201,6 +11208,17 @@ pub(crate) fn hash_set_from(vm: &mut Vm<'_>, elements: &[ObjectRef]) -> Result<O
 /// A fresh `HashMap` (the `Collectors.toMap` backing store).
 pub(crate) fn hash_map_new(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
     new_hash_map(vm)
+}
+
+/// A fresh, empty `LinkedHashMap` (insertion-ordered).
+pub(crate) fn linked_hash_map_new(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/LinkedHashMap")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, ctor) = vm
+        .find_method(class, "<init>", "()V")
+        .ok_or_else(|| VmError::internal("LinkedHashMap() missing"))?;
+    vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
+    Ok(instance)
 }
 
 /// `map.put(key, value)`, discarding the previous value.

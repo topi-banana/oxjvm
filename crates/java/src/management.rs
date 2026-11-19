@@ -11,7 +11,9 @@ use alloc::vec::Vec;
 use oxjvm_classfile::flags::*;
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
-use crate::{boolean, class, field, int, long, method, object, receiver, ref_arg, void};
+use crate::{
+    boolean, class, field, int, long, method, object, receiver, ref_arg, void,
+};
 
 // -------------------------------------------------------------------------------------------
 // Helpers
@@ -5871,13 +5873,421 @@ pub(crate) const QUERY_EXP: oxjvm_vm::NativeClass = class(
     &[],
     None,
 );
+// -------------------------------------------------------------------------------------------
+// Descriptor storage shared by DescriptorSupport and ImmutableDescriptor. Fields live in an
+// insertion-ordered LinkedHashMap keyed by the original-case name; lookups, equals and hashCode
+// are case-insensitive, matching the javax.management contract.
+
+fn descriptor_map(vm: &mut Vm<'_>, this: ObjectRef) -> Result<ObjectRef, VmError> {
+    let class = vm.class_of(this);
+    if let Some(map) = vm.read_ref_field(this, class, "fields", "Ljava/util/LinkedHashMap;") {
+        if !map.is_null() {
+            return Ok(map);
+        }
+    }
+    let map = crate::util::linked_hash_map_new(vm)?;
+    let (declaring, field) = vm.find_field(class, "fields", "Ljava/util/LinkedHashMap;")?;
+    vm.set_instance_ref(this, declaring, field, map);
+    Ok(map)
+}
+
+fn descriptor_pairs(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+) -> Result<Vec<(ObjectRef, ObjectRef)>, VmError> {
+    let map = descriptor_map(vm, this)?;
+    Ok(crate::util::hash_map_pairs(vm, map))
+}
+
+fn descriptor_put(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: ObjectRef,
+    value: ObjectRef,
+) -> Result<(), VmError> {
+    let map = descriptor_map(vm, this)?;
+    let want = vm.string_or_empty(name).to_lowercase();
+    let mut key = name;
+    for (existing, _) in crate::util::hash_map_pairs(vm, map) {
+        if vm.string_or_empty(existing).to_lowercase() == want {
+            key = existing;
+            break;
+        }
+    }
+    crate::util::hash_map_insert(vm, map, key, value)?;
+    Ok(())
+}
+
+fn descriptor_get(vm: &mut Vm<'_>, this: ObjectRef, name: &str) -> Result<ObjectRef, VmError> {
+    let want = name.to_lowercase();
+    for (key, value) in descriptor_pairs(vm, this)? {
+        if vm.string_or_empty(key).to_lowercase() == want {
+            return Ok(value);
+        }
+    }
+    Ok(ObjectRef::NULL)
+}
+
+fn descriptor_contains(vm: &mut Vm<'_>, this: ObjectRef, name: &str) -> Result<bool, VmError> {
+    let want = name.to_lowercase();
+    for (key, _) in descriptor_pairs(vm, this)? {
+        if vm.string_or_empty(key).to_lowercase() == want {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn descriptor_remove(vm: &mut Vm<'_>, this: ObjectRef, name: &str) -> Result<(), VmError> {
+    let want = name.to_lowercase();
+    let pairs = descriptor_pairs(vm, this)?;
+    let fresh = crate::util::linked_hash_map_new(vm)?;
+    for (key, value) in pairs {
+        if vm.string_or_empty(key).to_lowercase() != want {
+            crate::util::hash_map_insert(vm, fresh, key, value)?;
+        }
+    }
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, "fields", "Ljava/util/LinkedHashMap;")?;
+    vm.set_instance_ref(this, declaring, field, fresh);
+    Ok(())
+}
+
+/// Java `String.hashCode` over the UTF-16 code units of `text`.
+fn descriptor_hash_code(vm: &mut Vm<'_>, this: ObjectRef) -> Result<i32, VmError> {
+    let mut hash = 0i32;
+    for (key, value) in descriptor_pairs(vm, this)? {
+        let name_hash = java_string_hash(&vm.string_or_empty(key).to_lowercase());
+        let value_hash = crate::util::objects_deep_hash_code(vm, value)?;
+        hash = hash.wrapping_add(name_hash ^ value_hash);
+    }
+    Ok(hash)
+}
+
+fn descriptor_equals(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmError> {
+    if a == b {
+        return Ok(true);
+    }
+    if b.is_null() {
+        return Ok(false);
+    }
+    let descriptor_class = vm.resolve_class("javax/management/Descriptor")?;
+    if !vm.is_instance(b, descriptor_class) {
+        return Ok(false);
+    }
+    let pairs_a = descriptor_pairs(vm, a)?;
+    let pairs_b = descriptor_pairs(vm, b)?;
+    if pairs_a.len() != pairs_b.len() {
+        return Ok(false);
+    }
+    for (key, value) in pairs_a {
+        let name = vm.string_or_empty(key);
+        if !descriptor_contains(vm, b, &name)? {
+            return Ok(false);
+        }
+        let other = descriptor_get(vm, b, &name)?;
+        if !crate::util::objects_deep_equals(vm, value, other)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Shallow-copy an array value (defensive copy for immutable descriptors); non-arrays pass through.
+fn descriptor_clone_array(vm: &mut Vm<'_>, array: ObjectRef) -> Result<ObjectRef, VmError> {
+    if array.is_null() {
+        return Ok(array);
+    }
+    let is_array = matches!(
+        vm.heap.get(array).map(|object| &object.data),
+        Some(oxjvm_vm::ObjectData::Array(_))
+    );
+    if !is_array {
+        return Ok(array);
+    }
+    let class = vm.class_of(array);
+    let len = vm.array_length(array)?;
+    let copy = vm.allocate_array(class, len)?;
+    for index in 0..len {
+        let value = vm.array_get(array, index as i32)?;
+        vm.array_set(copy, index as i32, value, false)?;
+    }
+    Ok(copy)
+}
+
+fn descriptor_field_names(vm: &mut Vm<'_>, this: ObjectRef) -> Result<ObjectRef, VmError> {
+    let pairs = descriptor_pairs(vm, this)?;
+    let string_class = vm.resolve_class("java/lang/String")?;
+    let array = vm.allocate_object_array(string_class, pairs.len())?;
+    for (index, (key, _)) in pairs.iter().enumerate() {
+        vm.array_set_ref(array, index, *key)?;
+    }
+    Ok(array)
+}
+
+fn descriptor_field_values(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    names: ObjectRef,
+    clone: bool,
+) -> Result<ObjectRef, VmError> {
+    let wanted: Vec<String> = if names.is_null() {
+        descriptor_pairs(vm, this)?
+            .into_iter()
+            .map(|(key, _)| vm.string_or_empty(key))
+            .collect()
+    } else {
+        let len = vm.array_length(names)?;
+        let mut wanted_names = Vec::with_capacity(len);
+        for index in 0..len {
+            let name = vm.array_get(names, index as i32)?.as_ref();
+            wanted_names.push(vm.string_or_empty(name));
+        }
+        wanted_names
+    };
+    let object_class = vm.resolve_class("java/lang/Object")?;
+    let array = vm.allocate_object_array(object_class, wanted.len())?;
+    for (index, name) in wanted.iter().enumerate() {
+        let mut value = descriptor_get(vm, this, name)?;
+        if clone {
+            value = descriptor_clone_array(vm, value)?;
+        }
+        vm.array_set_ref(array, index, value)?;
+    }
+    Ok(array)
+}
+
+fn descriptor_to_string(vm: &mut Vm<'_>, this: ObjectRef) -> Result<String, VmError> {
+    let mut out = String::from("{");
+    for (index, (key, value)) in descriptor_pairs(vm, this)?.iter().enumerate() {
+        if index > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&vm.string_or_empty(*key));
+        out.push('=');
+        if value.is_null() {
+            out.push_str("null");
+        } else {
+            let (class, method) =
+                vm.resolve_virtual_method(*value, "toString", "()Ljava/lang/String;")?;
+            let text = vm.invoke_method(class, method, vec![Value::Ref(*value)])?;
+            out.push_str(&vm.string_or_empty(text.as_ref()));
+        }
+    }
+    out.push('}');
+    Ok(out)
+}
+
+fn descriptor_init_from_arrays(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    names: ObjectRef,
+    values: ObjectRef,
+    clone: bool,
+) -> Result<(), VmError> {
+    if names.is_null() || values.is_null() {
+        return Ok(());
+    }
+    let name_len = vm.array_length(names)?;
+    let value_len = vm.array_length(values)?;
+    if name_len != value_len {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("field names and values must have the same length"),
+        ));
+    }
+    for index in 0..name_len {
+        let name = vm.array_get(names, index as i32)?.as_ref();
+        if name.is_null() {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("null field name"),
+            ));
+        }
+        let mut value = vm.array_get(values, index as i32)?.as_ref();
+        if clone {
+            value = descriptor_clone_array(vm, value)?;
+        }
+        descriptor_put(vm, this, name, value)?;
+    }
+    Ok(())
+}
+
+fn descriptor_get_field_value(
+    vm: &mut Vm<'_>,
+    args: &[Value],
+    clone: bool,
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let name = vm.string_or_empty(ref_arg(args, 1));
+    let mut value = descriptor_get(vm, this, &name)?;
+    if clone {
+        value = descriptor_clone_array(vm, value)?;
+    }
+    object(value)
+}
+
+fn descriptor_get_field_values(
+    vm: &mut Vm<'_>,
+    args: &[Value],
+    clone: bool,
+) -> Result<Value, VmError> {
+    object(descriptor_field_values(
+        vm,
+        receiver(args),
+        ref_arg(args, 1),
+        clone,
+    )?)
+}
+
+/// Build an exception instance (without throwing) to use as a cause.
+fn descriptor_make_cause(
+    vm: &mut Vm<'_>,
+    class_name: &str,
+    message: &str,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class(class_name)?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, ctor) = vm
+        .find_method(class, "<init>", "(Ljava/lang/String;)V")
+        .ok_or_else(|| VmError::internal("exception(String) missing"))?;
+    let message = vm.make_string(message)?;
+    vm.invoke_method(
+        declaring,
+        ctor,
+        vec![Value::Ref(instance), Value::Ref(message)],
+    )?;
+    Ok(instance)
+}
+
+/// Immutable descriptors reject mutation with a `RuntimeOperationsException`. Bad field names
+/// (null/empty) wrap an `IllegalArgumentException`; otherwise the cause is `UnsupportedOperationException`.
+fn immutable_descriptor_reject(vm: &mut Vm<'_>, names: ObjectRef) -> Result<Value, VmError> {
+    let mut bad_name = false;
+    if !names.is_null() {
+        let len = vm.array_length(names)?;
+        for index in 0..len {
+            let name = vm.array_get(names, index as i32)?.as_ref();
+            if name.is_null() || vm.string_or_empty(name).is_empty() {
+                bad_name = true;
+                break;
+            }
+        }
+    }
+    let (cause_class, message) = if bad_name {
+        (
+            "java/lang/IllegalArgumentException",
+            "field name must not be null or empty",
+        )
+    } else {
+        (
+            "java/lang/UnsupportedOperationException",
+            "this descriptor is immutable",
+        )
+    };
+    let cause = descriptor_make_cause(vm, cause_class, message)?;
+    Err(vm.throw_new_with_cause("javax/management/RuntimeOperationsException", cause))
+}
+
+fn immutable_descriptor_reject_name(vm: &mut Vm<'_>, name: ObjectRef) -> Result<Value, VmError> {
+    let bad = name.is_null() || vm.string_or_empty(name).is_empty();
+    let (cause_class, message) = if bad {
+        (
+            "java/lang/IllegalArgumentException",
+            "field name must not be null or empty",
+        )
+    } else {
+        (
+            "java/lang/UnsupportedOperationException",
+            "this descriptor is immutable",
+        )
+    };
+    let cause = descriptor_make_cause(vm, cause_class, message)?;
+    Err(vm.throw_new_with_cause("javax/management/RuntimeOperationsException", cause))
+}
+
+const DESCRIPTOR_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+    method(
+        "getFieldValue",
+        "(Ljava/lang/String;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getFieldNames",
+        "()[Ljava/lang/String;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getFieldValues",
+        "([Ljava/lang/String;)[Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "setField",
+        "(Ljava/lang/String;Ljava/lang/Object;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "setFields",
+        "([Ljava/lang/String;[Ljava/lang/Object;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "removeField",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "isValid",
+        "()Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "isEmpty",
+        "()Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "clone",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "hashCode",
+        "()I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
 pub(crate) const DESCRIPTOR: oxjvm_vm::NativeClass = class(
     "javax/management/Descriptor",
     Some("java/lang/Object"),
     &["java/io/Serializable", "java/lang/Cloneable"],
     ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
     &[],
-    &[],
+    &DESCRIPTOR_METHODS,
     None,
 );
 pub(crate) const DESCRIPTOR_READ: oxjvm_vm::NativeClass = class(
@@ -5889,27 +6299,301 @@ pub(crate) const DESCRIPTOR_READ: oxjvm_vm::NativeClass = class(
     &[],
     None,
 );
+const DESCRIPTOR_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+    method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "<init>",
+        "([Ljava/lang/String;[Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            descriptor_init_from_arrays(vm, this, ref_arg(args, 1), ref_arg(args, 2), false)?;
+            void()
+        },
+    ),
+    method(
+        "getFieldValue",
+        "(Ljava/lang/String;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| descriptor_get_field_value(vm, args, false),
+    ),
+    method(
+        "getFieldNames",
+        "()[Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| object(descriptor_field_names(vm, receiver(args))?),
+    ),
+    method(
+        "getFieldValues",
+        "([Ljava/lang/String;)[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| descriptor_get_field_values(vm, args, false),
+    ),
+    method(
+        "setField",
+        "(Ljava/lang/String;Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let name = ref_arg(args, 1);
+            if name.is_null() {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("null field name"),
+                ));
+            }
+            descriptor_put(vm, this, name, ref_arg(args, 2))?;
+            void()
+        },
+    ),
+    method(
+        "setFields",
+        "([Ljava/lang/String;[Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            descriptor_init_from_arrays(vm, this, ref_arg(args, 1), ref_arg(args, 2), false)?;
+            void()
+        },
+    ),
+    method(
+        "removeField",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = vm.string_or_empty(ref_arg(args, 1));
+            descriptor_remove(vm, receiver(args), &name)?;
+            void()
+        },
+    ),
+    method("isValid", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
+    method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(descriptor_pairs(vm, receiver(args))?.is_empty())
+    }),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| boolean(descriptor_equals(vm, receiver(args), ref_arg(args, 1))?),
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(descriptor_hash_code(vm, receiver(args))?)
+    }),
+    method(
+        "clone",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let copy = vm.new_instance(class)?;
+            for (key, value) in descriptor_pairs(vm, this)? {
+                let value = descriptor_clone_array(vm, value)?;
+                descriptor_put(vm, copy, key, value)?;
+            }
+            object(copy)
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = descriptor_to_string(vm, receiver(args))?;
+            object(vm.make_string(&text)?)
+        },
+    ),
+];
+
 pub(crate) const DESCRIPTOR_SUPPORT: oxjvm_vm::NativeClass = class(
     "javax/management/DescriptorSupport",
     Some("java/lang/Object"),
     &["javax/management/Descriptor"],
     ACC_PUBLIC,
-    &[],
-    &[],
+    &[field(
+        "fields",
+        "Ljava/util/LinkedHashMap;",
+        ACC_PRIVATE,
+        None,
+    )],
+    &DESCRIPTOR_SUPPORT_METHODS,
     None,
 );
+const IMMUTABLE_DESCRIPTOR_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+    method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "<init>",
+        "([Ljava/lang/String;[Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            descriptor_init_from_arrays(vm, this, ref_arg(args, 1), ref_arg(args, 2), true)?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "([Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let fields = ref_arg(args, 1);
+            if !fields.is_null() {
+                let len = vm.array_length(fields)?;
+                for index in 0..len {
+                    let field = vm.array_get(fields, index as i32)?.as_ref();
+                    let text = vm.string_or_empty(field);
+                    let (name, value) = match text.split_once('=') {
+                        Some((name, value)) => (name, value),
+                        None => (text.as_str(), ""),
+                    };
+                    let name = vm.make_string(name)?;
+                    let value = vm.make_string(value)?;
+                    descriptor_put(vm, this, name, value)?;
+                }
+            }
+            void()
+        },
+    ),
+    method("<init>", "(Ljava/util/Map;)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let map = ref_arg(args, 1);
+        if !map.is_null() {
+            for (key, value) in crate::util::abstract_map_entries(vm, map)? {
+                let value = descriptor_clone_array(vm, value)?;
+                descriptor_put(vm, this, key, value)?;
+            }
+        }
+        void()
+    }),
+    method(
+        "union",
+        "([Ljavax/management/Descriptor;)Ljavax/management/ImmutableDescriptor;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let descriptors = ref_arg(args, 0);
+            let immutable_class = vm.resolve_class("javax/management/ImmutableDescriptor")?;
+            let empty = vm
+                .read_static_ref_if_set(
+                    immutable_class,
+                    "EMPTY_DESCRIPTOR",
+                    "Ljavax/management/ImmutableDescriptor;",
+                )
+                .unwrap_or(ObjectRef::NULL);
+            let mut inputs: Vec<ObjectRef> = Vec::new();
+            let mut all_pairs: Vec<(ObjectRef, ObjectRef)> = Vec::new();
+            let mut any_non_empty = false;
+            if !descriptors.is_null() {
+                let len = vm.array_length(descriptors)?;
+                for index in 0..len {
+                    let descriptor = vm.array_get(descriptors, index as i32)?.as_ref();
+                    if descriptor.is_null() {
+                        continue;
+                    }
+                    inputs.push(descriptor);
+                    let pairs = descriptor_pairs(vm, descriptor)?;
+                    if !pairs.is_empty() {
+                        any_non_empty = true;
+                    }
+                    all_pairs.extend(pairs);
+                }
+            }
+            if !any_non_empty {
+                return object(empty);
+            }
+            let result = vm.new_instance(immutable_class)?;
+            for (key, value) in &all_pairs {
+                let value = descriptor_clone_array(vm, *value)?;
+                descriptor_put(vm, result, *key, value)?;
+            }
+            for descriptor in &inputs {
+                if vm.class_of(*descriptor) == immutable_class
+                    && descriptor_equals(vm, result, *descriptor)?
+                {
+                    return object(*descriptor);
+                }
+            }
+            object(result)
+        },
+    ),
+    method(
+        "getFieldValue",
+        "(Ljava/lang/String;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| descriptor_get_field_value(vm, args, true),
+    ),
+    method(
+        "getFieldNames",
+        "()[Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| object(descriptor_field_names(vm, receiver(args))?),
+    ),
+    method(
+        "getFieldValues",
+        "([Ljava/lang/String;)[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| descriptor_get_field_values(vm, args, true),
+    ),
+    method(
+        "setField",
+        "(Ljava/lang/String;Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| immutable_descriptor_reject_name(vm, ref_arg(args, 1)),
+    ),
+    method(
+        "setFields",
+        "([Ljava/lang/String;[Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| immutable_descriptor_reject(vm, ref_arg(args, 1)),
+    ),
+    method(
+        "removeField",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| immutable_descriptor_reject_name(vm, ref_arg(args, 1)),
+    ),
+    method("isValid", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
+    method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(descriptor_pairs(vm, receiver(args))?.is_empty())
+    }),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| boolean(descriptor_equals(vm, receiver(args), ref_arg(args, 1))?),
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(descriptor_hash_code(vm, receiver(args))?)
+    }),
+    method("clone", "()Ljava/lang/Object;", ACC_PUBLIC, |_, _, args| {
+        object(receiver(args))
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = descriptor_to_string(vm, receiver(args))?;
+            object(vm.make_string(&text)?)
+        },
+    ),
+];
+
 pub(crate) const IMMUTABLE_DESCRIPTOR: oxjvm_vm::NativeClass = class(
     "javax/management/ImmutableDescriptor",
     Some("java/lang/Object"),
     &["javax/management/Descriptor"],
     ACC_PUBLIC | ACC_FINAL,
-    &[field(
-        "EMPTY_DESCRIPTOR",
-        "Ljavax/management/ImmutableDescriptor;",
-        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
-        None,
-    )],
-    &[],
+    &[
+        field(
+            "EMPTY_DESCRIPTOR",
+            "Ljavax/management/ImmutableDescriptor;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field("fields", "Ljava/util/LinkedHashMap;", ACC_PRIVATE, None),
+    ],
+    &IMMUTABLE_DESCRIPTOR_METHODS,
     Some(|vm| {
         let class = vm.resolve_class("javax/management/ImmutableDescriptor")?;
         let instance = vm.new_instance(class)?;
@@ -5922,6 +6606,50 @@ pub(crate) const IMMUTABLE_DESCRIPTOR: oxjvm_vm::NativeClass = class(
         Ok(())
     }),
 );
+pub(crate) const MODELMBEAN_DESCRIPTOR_SUPPORT: oxjvm_vm::NativeClass = class(
+    "javax/management/modelmbean/DescriptorSupport",
+    Some("java/lang/Object"),
+    &["javax/management/Descriptor"],
+    ACC_PUBLIC,
+    &[field(
+        "fields",
+        "Ljava/util/LinkedHashMap;",
+        ACC_PRIVATE,
+        None,
+    )],
+    &DESCRIPTOR_SUPPORT_METHODS,
+    None,
+);
+
+pub(crate) const RUNTIME_OPERATIONS_EXCEPTION: oxjvm_vm::NativeClass = class(
+    "javax/management/RuntimeOperationsException",
+    Some("java/lang/RuntimeException"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &[
+        method(
+            "<init>",
+            "()V",
+            ACC_PUBLIC,
+            crate::throwable::exception_ctor,
+        ),
+        method(
+            "<init>",
+            "(Ljava/lang/String;)V",
+            ACC_PUBLIC,
+            crate::throwable::exception_ctor,
+        ),
+        method(
+            "<init>",
+            "(Ljava/lang/Throwable;)V",
+            ACC_PUBLIC,
+            crate::throwable::exception_ctor,
+        ),
+    ],
+    None,
+);
+
 pub(crate) const MXBEAN_TYPE: oxjvm_vm::NativeClass = class(
     "javax/management/MXBean",
     Some("java/lang/annotation/Annotation"),
