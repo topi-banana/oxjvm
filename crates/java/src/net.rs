@@ -687,7 +687,20 @@ fn url_port(authority: &str) -> i32 {
     }
 }
 
-const URL_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
+/// Build a URL spec from protocol/host/port/file parts, matching the JDK's
+/// `URL(protocol, host, port, file)` constructors (an empty host drops the `//`).
+fn url_from_parts(protocol: &str, host: &str, port: i32, file: &str) -> String {
+    if host.is_empty() {
+        return alloc::format!("{protocol}:{file}");
+    }
+    if port >= 0 {
+        alloc::format!("{protocol}://{host}:{port}{file}")
+    } else {
+        alloc::format!("{protocol}://{host}{file}")
+    }
+}
+
+const URL_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -720,6 +733,20 @@ const URL_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
     ),
     method(
         "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let protocol = string_arg(vm, args[1])?;
+            let host = string_arg(vm, args[2])?;
+            let file = string_arg(vm, args[3])?;
+            let text = url_from_parts(&protocol, &host, -1, &file);
+            let this = receiver(args);
+            vm.set_string_field(this, vm.class_of(this), "spec", &text)?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
         "(Ljava/lang/String;Ljava/lang/String;ILjava/lang/String;)V",
         ACC_PUBLIC,
         |vm, _, args| {
@@ -727,12 +754,7 @@ const URL_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
             let host = string_arg(vm, args[2])?;
             let port = int_arg(args, 3);
             let file = string_arg(vm, args[4])?;
-            let authority = if port >= 0 {
-                alloc::format!("{host}:{port}")
-            } else {
-                host
-            };
-            let text = alloc::format!("{protocol}://{authority}{file}");
+            let text = url_from_parts(&protocol, &host, port, &file);
             let this = receiver(args);
             vm.set_string_field(this, vm.class_of(this), "spec", &text)?;
             void()
@@ -817,7 +839,16 @@ const URL_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
             None => int(-1),
         }
     }),
-    method("getDefaultPort", "()I", ACC_PUBLIC, |_, _, _| int(-1)),
+    method("getDefaultPort", "()I", ACC_PUBLIC, |vm, _, args| {
+        let text = url_text(vm, receiver(args));
+        let protocol = text.split_once(':').map_or("", |(protocol, _)| protocol);
+        int(match protocol {
+            "http" => 80,
+            "https" => 443,
+            "ftp" => 21,
+            _ => -1,
+        })
+    }),
     method(
         "getPath",
         "()Ljava/lang/String;",
@@ -1304,7 +1335,7 @@ pub(crate) const URL_DECODER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const URL_CONNECTION_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const URL_CONNECTION_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method(
         "getInputStream",
         "()Ljava/io/InputStream;",
@@ -1392,7 +1423,121 @@ const URL_CONNECTION_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
             }
         },
     ),
+    method(
+        "guessContentTypeFromName",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = ref_arg(args, 0);
+            if name.is_null() {
+                return object(ObjectRef::NULL);
+            }
+            let map = url_connection_file_name_map(vm)?;
+            let (class, method) = vm.resolve_virtual_method(
+                map,
+                "getContentTypeFor",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+            )?;
+            vm.invoke_method(class, method, vec![Value::Ref(map), Value::Ref(name)])
+        },
+    ),
+    method(
+        "getFileNameMap",
+        "()Ljava/net/FileNameMap;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(url_connection_file_name_map(vm)?),
+    ),
+    method(
+        "setDefaultUseCaches",
+        "(Ljava/lang/String;Z)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let protocol = ref_arg(args, 0);
+            if protocol.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let map = url_connection_default_use_caches(vm)?;
+            let value = url_connection_box_boolean(vm, crate::bool_arg(args, 1))?;
+            crate::util::hash_map_insert(vm, map, protocol, value)?;
+            void()
+        },
+    ),
+    method(
+        "getDefaultUseCaches",
+        "(Ljava/lang/String;)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let protocol = ref_arg(args, 0);
+            if protocol.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let map = url_connection_default_use_caches(vm)?;
+            let value = crate::util::hash_map_lookup(vm, map, protocol)?;
+            if value.is_null() {
+                return boolean(true);
+            }
+            let (class, method) = vm.resolve_virtual_method(value, "booleanValue", "()Z")?;
+            let result = vm.invoke_method(class, method, vec![Value::Ref(value)])?;
+            boolean(result.as_int() != 0)
+        },
+    ),
+    method(
+        "setDefaultRequestProperty",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, _| void(),
+    ),
+    method(
+        "getDefaultRequestProperty",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
 ];
+
+/// The lazily-created per-protocol `defaultUseCaches` map on `URLConnection`.
+fn url_connection_default_use_caches(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/net/URLConnection")?;
+    if let Some(map) = vm.read_static_ref_if_set(class, "defaultUseCaches", "Ljava/util/HashMap;") {
+        return Ok(map);
+    }
+    let map = crate::util::hash_map_new(vm)?;
+    vm.set_static_value(
+        class,
+        "defaultUseCaches",
+        "Ljava/util/HashMap;",
+        Value::Ref(map),
+    );
+    Ok(map)
+}
+
+/// The lazily-created `FileNameMap` singleton handed out by `getFileNameMap`.
+fn url_connection_file_name_map(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/net/URLConnection")?;
+    if let Some(map) = vm.read_static_ref_if_set(class, "fileNameMap", "Ljava/net/FileNameMap;") {
+        return Ok(map);
+    }
+    let impl_class = vm.resolve_class("java/net/OjvmFileNameMap")?;
+    let instance = vm.new_instance(impl_class)?;
+    vm.set_static_value(
+        class,
+        "fileNameMap",
+        "Ljava/net/FileNameMap;",
+        Value::Ref(instance),
+    );
+    Ok(instance)
+}
+
+/// Box a boolean through `Boolean.valueOf` for the `defaultUseCaches` map.
+fn url_connection_box_boolean(vm: &mut Vm<'_>, value: bool) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/lang/Boolean")?;
+    let (declaring, method) = vm
+        .find_method(class, "valueOf", "(Z)Ljava/lang/Boolean;")
+        .ok_or_else(|| vm.throw_new("java/lang/NoSuchMethodError", Some("Boolean.valueOf")))?;
+    Ok(vm
+        .invoke_method(declaring, method, vec![Value::Int(i32::from(value))])?
+        .as_ref())
+}
 
 /// Magic-byte sniffing behind `URLConnection.guessContentTypeFromStream`.
 fn guess_content_type_magic(c: &[i32]) -> Option<&'static str> {
@@ -1471,10 +1616,105 @@ pub(crate) const URL_CONNECTION: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_ABSTRACT,
-    &[field("url", "Ljava/net/URL;", ACC_PRIVATE, None)],
+    &[
+        field("url", "Ljava/net/URL;", ACC_PRIVATE, None),
+        field(
+            "defaultUseCaches",
+            "Ljava/util/HashMap;",
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
+        field(
+            "fileNameMap",
+            "Ljava/net/FileNameMap;",
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
+    ],
     &URL_CONNECTION_METHODS,
     None,
 );
+
+const FILE_NAME_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "getContentTypeFor",
+    "(Ljava/lang/String;)Ljava/lang/String;",
+    ACC_PUBLIC | ACC_ABSTRACT,
+    crate::lang::abstract_method_pub,
+)];
+
+/// `java.net.FileNameMap`: maps file names to MIME content types.
+pub(crate) const FILE_NAME_MAP: oxjvm_vm::NativeClass = class(
+    "java/net/FileNameMap",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &FILE_NAME_MAP_METHODS,
+    None,
+);
+
+const OJVM_FILE_NAME_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "getContentTypeFor",
+    "(Ljava/lang/String;)Ljava/lang/String;",
+    ACC_PUBLIC,
+    |vm, _, args| {
+        let name = vm.string_or_empty(ref_arg(args, 1));
+        match content_type_for(&name) {
+            Some(kind) => object(vm.make_string(kind)?),
+            None => object(ObjectRef::NULL),
+        }
+    },
+)];
+
+/// The default `FileNameMap` implementation backed by the JDK's
+/// `content-types.properties` extension table.
+pub(crate) const OJVM_FILE_NAME_MAP: oxjvm_vm::NativeClass = class(
+    "java/net/OjvmFileNameMap",
+    Some("java/lang/Object"),
+    &["java/net/FileNameMap"],
+    ACC_PUBLIC,
+    &[],
+    &OJVM_FILE_NAME_MAP_METHODS,
+    None,
+);
+
+/// Extension-to-content-type lookup matching the JDK's default table
+/// (case-insensitive, last `.` suffix; unknown extensions map to null).
+fn content_type_for(name: &str) -> Option<&'static str> {
+    let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "html" | "htm" => "text/html",
+        "txt" | "text" | "java" | "c" | "h" | "pl" | "py" => "text/plain",
+        "css" => "text/css",
+        "js" => "text/javascript",
+        "xml" => "application/xml",
+        "json" => "application/json",
+        "pdf" => "application/pdf",
+        "gif" => "image/gif",
+        "jpg" | "jpeg" | "jpe" => "image/jpeg",
+        "png" => "image/png",
+        "tif" | "tiff" => "image/tiff",
+        "bmp" => "image/bmp",
+        "zip" => "application/zip",
+        "jar" => "application/java-archive",
+        "gz" => "application/gzip",
+        "tar" => "application/x-tar",
+        "wav" => "audio/x-wav",
+        "au" | "snd" => "audio/basic",
+        "mp3" => "audio/mpeg",
+        "mpg" => "video/mpeg",
+        "avi" => "application/x-troff-msvideo",
+        "ps" | "eps" => "application/postscript",
+        "dvi" => "application/x-dvi",
+        "rtf" => "application/rtf",
+        "doc" => "application/msword",
+        "xls" => "application/vnd.ms-excel",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "bin" | "exe" | "o" => "application/octet-stream",
+        "sh" => "application/x-shar",
+        _ => return None,
+    })
+}
 
 // -------------------------------------------------------------------------------------------
 // Tier 2.1 shells: networking types not yet fully implemented
