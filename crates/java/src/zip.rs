@@ -1143,19 +1143,23 @@ fn pending_exhausted(vm: &mut Vm<'_>, this: ObjectRef) -> bool {
     read_int_field(vm, this, "pendingPos").max(0) as usize >= pending.len()
 }
 
-/// Encode `data` as a sequence of stored (BTYPE=00) DEFLATE blocks (RFC 1951).
-fn deflate_stored(data: &[u8]) -> Vec<u8> {
+/// Encode `data` as stored (BTYPE=00) DEFLATE blocks (RFC 1951). When
+/// `final_block` is set the last block carries BFINAL=1; an empty `data` with
+/// `final_block` emits the terminating empty stored block.
+fn stored_blocks(data: &[u8], final_block: bool) -> Vec<u8> {
     let mut out = Vec::new();
     if data.is_empty() {
-        out.push(0x01);
-        out.extend_from_slice(&0u16.to_le_bytes());
-        out.extend_from_slice(&0xFFFFu16.to_le_bytes());
+        if final_block {
+            out.push(0x01);
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0xFFFFu16.to_le_bytes());
+        }
         return out;
     }
     let mut chunks = data.chunks(65535).peekable();
     while let Some(chunk) = chunks.next() {
-        let final_block = chunks.peek().is_none();
-        out.push(if final_block { 0x01 } else { 0x00 });
+        let is_last = final_block && chunks.peek().is_none();
+        out.push(if is_last { 0x01 } else { 0x00 });
         let len = chunk.len() as u16;
         out.extend_from_slice(&len.to_le_bytes());
         out.extend_from_slice(&(!len).to_le_bytes());
@@ -1164,22 +1168,15 @@ fn deflate_stored(data: &[u8]) -> Vec<u8> {
     out
 }
 
-fn adler32_bytes(data: &[u8]) -> u32 {
-    let mut a: u32 = 1;
-    let mut b: u32 = 0;
+/// Continue an Adler-32 (RFC 1950) running checksum `prev` over `data`.
+fn adler32_step(prev: u32, data: &[u8]) -> u32 {
+    let mut a = prev & 0xFFFF;
+    let mut b = (prev >> 16) & 0xFFFF;
     for byte in data {
         a = (a + u32::from(*byte)) % 65521;
         b = (b + a) % 65521;
     }
     (b << 16) | a
-}
-
-/// Wrap raw DEFLATE in a zlib stream (RFC 1950): header, data, big-endian Adler-32.
-fn zlib_wrap(raw: &[u8], data: &[u8]) -> Vec<u8> {
-    let mut out = vec![0x78, 0x9C];
-    out.extend_from_slice(raw);
-    out.extend_from_slice(&adler32_bytes(data).to_be_bytes());
-    out
 }
 
 fn inflater_do_inflate(
@@ -1346,33 +1343,64 @@ fn deflater_do_deflate(
     if read_int_field(vm, this, "finished") != 0 {
         return int(0);
     }
-    if read_int_field(vm, this, "finish") == 0 {
-        return int(0);
+    let nowrap = read_int_field(vm, this, "nowrap") != 0;
+    let mut pending = Vec::new();
+    // Emit the zlib header (RFC 1950) once, before the first block.
+    if !nowrap && read_int_field(vm, this, "headerSent") == 0 {
+        pending.extend_from_slice(&[0x78, 0x9C]);
+        write_int_field_named(vm, this, "headerSent", 1);
     }
     let buf = read_buf_field(vm, this, "buf");
-    let nowrap = read_int_field(vm, this, "nowrap") != 0;
-    let raw = deflate_stored(&buf);
-    let wrapped = if nowrap { raw } else { zlib_wrap(&raw, &buf) };
-    write_buf_field(vm, this, "pending", &wrapped)?;
+    let finishing = read_int_field(vm, this, "finish") != 0;
+    if !buf.is_empty() {
+        // Stream the buffered input as stored blocks; when finishing, mark the
+        // last block final and append the trailer so one call can complete.
+        pending.extend_from_slice(&stored_blocks(&buf, finishing));
+        let adler = adler32_step(read_long_field(vm, this, "adler") as u32, &buf);
+        write_long_field(vm, this, "adler", i64::from(adler));
+        write_buf_field(vm, this, "buf", &[])?;
+        if finishing {
+            if !nowrap {
+                pending.extend_from_slice(&adler.to_be_bytes());
+            }
+            write_int_field_named(vm, this, "finished", 1);
+        }
+    } else if finishing {
+        // Terminate with a final empty stored block, then the Adler-32 trailer.
+        pending.extend_from_slice(&stored_blocks(&[], true));
+        if !nowrap {
+            let adler = read_long_field(vm, this, "adler") as u32;
+            pending.extend_from_slice(&adler.to_be_bytes());
+        }
+        write_int_field_named(vm, this, "finished", 1);
+    }
+    if pending.is_empty() {
+        return int(0);
+    }
+    write_buf_field(vm, this, "pending", &pending)?;
     write_int_field_named(vm, this, "pendingPos", 0);
-    write_int_field_named(vm, this, "finished", 1);
     let n = copy_pending(vm, this, out, off, len)?;
     int(n)
 }
 
 const DEFLATER_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
-        write_int_field_named(vm, receiver(args), "level", -1);
+        let this = receiver(args);
+        write_int_field_named(vm, this, "level", -1);
+        write_long_field(vm, this, "adler", 1);
         void()
     }),
     method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        write_int_field_named(vm, receiver(args), "level", crate::int_arg(args, 1));
+        let this = receiver(args);
+        write_int_field_named(vm, this, "level", crate::int_arg(args, 1));
+        write_long_field(vm, this, "adler", 1);
         void()
     }),
     method("<init>", "(IZ)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         write_int_field_named(vm, this, "level", crate::int_arg(args, 1));
         write_int_field_named(vm, this, "nowrap", crate::int_arg(args, 2));
+        write_long_field(vm, this, "adler", 1);
         void()
     }),
     method("setInput", "([B)V", ACC_PUBLIC, |vm, _, args| {
@@ -1446,6 +1474,8 @@ const DEFLATER_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         write_int_field_named(vm, this, "pendingPos", 0);
         write_int_field_named(vm, this, "finish", 0);
         write_int_field_named(vm, this, "finished", 0);
+        write_int_field_named(vm, this, "headerSent", 0);
+        write_long_field(vm, this, "adler", 1);
         write_long_field(vm, this, "totalIn", 0);
         write_long_field(vm, this, "totalOut", 0);
         void()
@@ -1466,6 +1496,8 @@ pub(crate) const DEFLATER: oxjvm_vm::NativeClass = class(
         field("finish", "I", ACC_PRIVATE, None),
         field("finished", "I", ACC_PRIVATE, None),
         field("level", "I", ACC_PRIVATE, None),
+        field("headerSent", "I", ACC_PRIVATE, None),
+        field("adler", "J", ACC_PRIVATE, None),
         field("totalIn", "J", ACC_PRIVATE, None),
         field("totalOut", "J", ACC_PRIVATE, None),
     ],
