@@ -15131,7 +15131,7 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     era * 146_097 + day_of_era - 719_468
 }
 
-const DATE_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
+const DATE_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
     method("<init>", "()V", ACC_PUBLIC, date_init),
     method("<init>", "(J)V", ACC_PUBLIC, date_init),
     method("<init>", "(III)V", ACC_PUBLIC, date_init_fields),
@@ -15142,6 +15142,39 @@ const DATE_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
         crate::lang::write_long_field(vm, receiver(args), "time", long_arg(args, 1));
         void()
     }),
+    method(
+        "toInstant",
+        "()Ljava/time/Instant;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let time = crate::lang::read_long_field(vm, receiver(args), "time");
+            crate::time::instant_new(
+                vm,
+                time.div_euclid(1000),
+                (time.rem_euclid(1000) * 1_000_000) as i32,
+            )
+        },
+    ),
+    method(
+        "from",
+        "(Ljava/time/Instant;)Ljava/util/Date;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let instant = ref_arg(args, 0);
+            if instant.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let seconds = crate::lang::read_long_field(vm, instant, "epochSecond");
+            let nano = i64::from(crate::lang::read_int_field(vm, instant, "nano"));
+            let millis = seconds
+                .saturating_mul(1000)
+                .saturating_add(nano / 1_000_000);
+            let class = vm.resolve_class("java/util/Date")?;
+            let instance = vm.new_instance(class)?;
+            crate::lang::write_long_field(vm, instance, "time", millis);
+            object(instance)
+        },
+    ),
     method(
         "before",
         "(Ljava/util/Date;)Z",

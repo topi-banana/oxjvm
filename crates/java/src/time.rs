@@ -520,7 +520,7 @@ pub(crate) const DURATION: oxjvm_vm::NativeClass = class(
     Some(duration_clinit),
 );
 
-const INSTANT_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
+const INSTANT_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
     method(
         "now",
         "()Ljava/time/Instant;",
@@ -715,6 +715,18 @@ const INSTANT_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
         },
     ),
     method(
+        "plus",
+        "(Ljava/time/temporal/TemporalAmount;)Ljava/time/Instant;",
+        ACC_PUBLIC,
+        |vm, _, args| instant_shift_amount(vm, receiver(args), ref_arg(args, 1), false),
+    ),
+    method(
+        "minus",
+        "(Ljava/time/temporal/TemporalAmount;)Ljava/time/Instant;",
+        ACC_PUBLIC,
+        |vm, _, args| instant_shift_amount(vm, receiver(args), ref_arg(args, 1), true),
+    ),
+    method(
         "isAfter",
         "(Ljava/time/Instant;)Z",
         ACC_PUBLIC,
@@ -904,12 +916,57 @@ const INSTANT_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
     ),
 ];
 
-fn instant_new(vm: &mut Vm<'_>, epoch_second: i64, nano: i32) -> Result<Value, VmError> {
+pub(crate) fn instant_new(vm: &mut Vm<'_>, epoch_second: i64, nano: i32) -> Result<Value, VmError> {
     let class = vm.resolve_class("java/time/Instant")?;
     let instance = vm.new_instance(class)?;
     write_long_field(vm, instance, "epochSecond", epoch_second);
     write_int_field(vm, instance, "nano", nano);
     object(instance)
+}
+
+/// `Instant.plus(amount)` / `Instant.minus(amount)` for a `TemporalAmount`.
+///
+/// A `Duration` contributes its whole nanosecond count; a `Period` contributes
+/// only its days (years and months are unsupported on the time-line, matching
+/// the JDK's `UnsupportedTemporalTypeException`). Anything else is rejected.
+fn instant_shift_amount(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    amount: ObjectRef,
+    subtract: bool,
+) -> Result<Value, VmError> {
+    let duration_class = vm.resolve_class("java/time/Duration")?;
+    let period_class = vm.resolve_class("java/time/Period")?;
+    let (delta_secs, delta_nanos) = if vm.is_instance(amount, duration_class) {
+        let mut nanos = read_long_field(vm, amount, "nanos");
+        if subtract {
+            nanos = -nanos;
+        }
+        (
+            nanos.div_euclid(1_000_000_000),
+            nanos.rem_euclid(1_000_000_000),
+        )
+    } else if vm.is_instance(amount, period_class) {
+        if read_int_field(vm, amount, "years") != 0 || read_int_field(vm, amount, "months") != 0 {
+            return Err(unsupported_unit(vm));
+        }
+        let mut secs = i64::from(read_int_field(vm, amount, "days")).saturating_mul(86_400);
+        if subtract {
+            secs = -secs;
+        }
+        (secs, 0)
+    } else {
+        return Err(unsupported_unit(vm));
+    };
+    let total_nanos = i64::from(read_int_field(vm, this, "nano")) + delta_nanos;
+    let epoch_second = read_long_field(vm, this, "epochSecond")
+        .saturating_add(delta_secs)
+        .saturating_add(total_nanos.div_euclid(1_000_000_000));
+    instant_new(
+        vm,
+        epoch_second,
+        total_nanos.rem_euclid(1_000_000_000) as i32,
+    )
 }
 
 /// Parse an ISO-8601 instant such as `2020-01-15T10:30:45Z` (with an optional
@@ -1147,12 +1204,24 @@ pub(crate) const DATE_TIME_FORMATTER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method(
         "now",
         "()Ljava/time/ZonedDateTime;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _| {
+            let millis = vm.host_time_millis();
+            zoned_date_time_new(vm, millis, (millis.rem_euclid(1000) * 1_000_000) as i32)
+        },
+    ),
+    method(
+        "now",
+        "(Ljava/time/ZoneId;)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let millis = vm.host_time_millis();
             zoned_date_time_new(vm, millis, (millis.rem_euclid(1000) * 1_000_000) as i32)
         },
@@ -2162,7 +2231,7 @@ fn local_time_string(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError>
     object(vm.make_string(&text)?)
 }
 
-const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 50] = [
+const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 51] = [
     method(
         "of",
         "(III)Ljava/time/LocalDate;",
@@ -2531,6 +2600,25 @@ const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 50] = [
         |vm, _, args| {
             let epoch_day = read_long_field(vm, receiver(args), "epochDay");
             object(local_date_time_new(vm, epoch_day, 0)?)
+        },
+    ),
+    method(
+        "atStartOfDay",
+        "(Ljava/time/ZoneId;)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let zone = ref_arg(args, 1);
+            if zone.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let epoch_day = read_long_field(vm, receiver(args), "epochDay");
+            let offset = zone_offset_seconds(vm, zone);
+            let local_second = epoch_day.saturating_mul(86_400);
+            zoned_date_time_new(
+                vm,
+                (local_second - i64::from(offset)).saturating_mul(1000),
+                0,
+            )
         },
     ),
     method(
