@@ -9492,6 +9492,9 @@ fn comparator_from_function(
     function: ObjectRef,
     comparator: ObjectRef,
 ) -> Result<Value, VmError> {
+    if function.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
     let class = vm.resolve_class("java/util/Comparator$FunctionComparator")?;
     let instance = vm.new_instance(class)?;
     let (declaring, field) = vm.find_field(class, "function", "Ljava/util/function/Function;")?;
@@ -9502,13 +9505,11 @@ fn comparator_from_function(
 }
 
 fn comparator_natural(vm: &mut Vm<'_>) -> Result<Value, VmError> {
-    let class = vm.resolve_class("java/util/Comparators$NaturalOrderComparator")?;
-    let instance = vm.new_instance(class)?;
-    object(instance)
+    object(crate::util::comparator_natural_singleton(vm)?)
 }
 
 /// `Comparator.nullsFirst`/`nullsLast`: wrap a comparator with null ordering.
-fn comparator_nulls(
+pub(crate) fn comparator_nulls(
     vm: &mut Vm<'_>,
     comparator: ObjectRef,
     nulls_first: bool,
@@ -9592,7 +9593,13 @@ const COMPARATOR_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
         "comparing",
         "(Ljava/util/function/Function;Ljava/util/Comparator;)Ljava/util/Comparator;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| comparator_from_function(vm, ref_arg(args, 0), ref_arg(args, 1)),
+        |vm, _, args| {
+            let key_comparator = ref_arg(args, 1);
+            if key_comparator.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            comparator_from_function(vm, ref_arg(args, 0), key_comparator)
+        },
     ),
     method(
         "comparingInt",
@@ -9622,15 +9629,7 @@ const COMPARATOR_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
         "reverseOrder",
         "()Ljava/util/Comparator;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| {
-            let natural = comparator_natural(vm)?.as_ref();
-            let class = vm.resolve_class("java/util/Collections$ReverseComparator")?;
-            let instance = vm.new_instance(class)?;
-            let (declaring, field) =
-                vm.find_field(class, "comparator", "Ljava/util/Comparator;")?;
-            vm.set_instance_ref(instance, declaring, field, natural);
-            object(instance)
-        },
+        |vm, _, _| object(crate::util::comparator_reverse_singleton(vm)?),
     ),
     method(
         "nullsFirst",

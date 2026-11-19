@@ -124,7 +124,7 @@ const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 50] = [
         |vm, _, args| {
             let a = read_value_int(vm, receiver(args));
             let b = read_value_int(vm, ref_arg(args, 1));
-            int(a - b)
+            int(compare_ints(a, b))
         },
     ),
     method(
@@ -647,42 +647,47 @@ fn compare_longs(a: i64, b: i64) -> i32 {
     }
 }
 
+/// JDK `Float.compare`: numeric order first, then the canonical bit pattern as a tie-break so
+/// that NaN equals NaN and outranks every value while -0.0 sorts below +0.0.
 fn compare_floats(a: f32, b: f32) -> i32 {
-    match (a.is_nan(), b.is_nan()) {
-        (true, true) => 0,
-        (true, false) => 1,
-        (false, true) => -1,
-        (false, false) => compare_ints(
-            a.partial_cmp(&b).map_or(0, |order| {
-                use core::cmp::Ordering::{Greater, Less};
-                match order {
-                    Greater => 1,
-                    Less => -1,
-                    _ => 0,
-                }
-            }),
-            0,
-        ),
+    if a < b {
+        return -1;
     }
+    if a > b {
+        return 1;
+    }
+    let ab = if a.is_nan() {
+        0x7FC0_0000u32 as i32
+    } else {
+        a.to_bits() as i32
+    };
+    let bb = if b.is_nan() {
+        0x7FC0_0000u32 as i32
+    } else {
+        b.to_bits() as i32
+    };
+    ab.cmp(&bb) as i32
 }
 
+/// JDK `Double.compare`: see `compare_floats`.
 fn compare_doubles(a: f64, b: f64) -> i32 {
-    match (a.is_nan(), b.is_nan()) {
-        (true, true) => 0,
-        (true, false) => 1,
-        (false, true) => -1,
-        (false, false) => compare_ints(
-            a.partial_cmp(&b).map_or(0, |order| {
-                use core::cmp::Ordering::{Greater, Less};
-                match order {
-                    Greater => 1,
-                    Less => -1,
-                    _ => 0,
-                }
-            }),
-            0,
-        ),
+    if a < b {
+        return -1;
     }
+    if a > b {
+        return 1;
+    }
+    let ab = if a.is_nan() {
+        0x7FF8_0000_0000_0000u64 as i64
+    } else {
+        a.to_bits() as i64
+    };
+    let bb = if b.is_nan() {
+        0x7FF8_0000_0000_0000u64 as i64
+    } else {
+        b.to_bits() as i64
+    };
+    ab.cmp(&bb) as i32
 }
 
 /// The `value` field of a boxed primitive, whose descriptor varies by class

@@ -9851,13 +9851,13 @@ const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 70] = [
         "reverseOrder",
         "()Ljava/util/Comparator;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| new_reverse_comparator(vm, ObjectRef::NULL),
+        |vm, _, _| object(comparator_reverse_singleton(vm)?),
     ),
     method(
         "reverseOrder",
         "(Ljava/util/Comparator;)Ljava/util/Comparator;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| new_reverse_comparator(vm, ref_arg(args, 0)),
+        |vm, _, args| comparator_reverse_order(vm, ref_arg(args, 0)),
     ),
     method(
         "addAll",
@@ -10593,13 +10593,64 @@ fn new_sorted_map_empty(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
     Ok(map)
 }
 
-/// Create a `Collections$ReverseComparator`, ordering by `delegate` (natural order when `null`).
-fn new_reverse_comparator(vm: &mut Vm<'_>, delegate: ObjectRef) -> Result<Value, VmError> {
-    let class = vm.resolve_class("java/util/Collections$ReverseComparator")?;
+/// The singleton `Comparators$NaturalOrderComparator.INSTANCE`.
+pub(crate) fn comparator_natural_singleton(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/Comparators$NaturalOrderComparator")?;
+    if let Some(existing) = vm.read_static_ref_if_set(class, "INSTANCE", "Ljava/util/Comparator;") {
+        return Ok(existing);
+    }
     let instance = vm.new_instance(class)?;
-    vm.protect(instance);
-    let (declaring, field) = vm.find_field(class, "comparator", "Ljava/util/Comparator;")?;
-    vm.set_instance_ref(instance, declaring, field, delegate);
+    vm.set_static_value(
+        class,
+        "INSTANCE",
+        "Ljava/util/Comparator;",
+        Value::Ref(instance),
+    );
+    Ok(instance)
+}
+
+/// The singleton `Collections$ReverseComparator.REVERSE_ORDER`.
+pub(crate) fn comparator_reverse_singleton(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/Collections$ReverseComparator")?;
+    if let Some(existing) =
+        vm.read_static_ref_if_set(class, "REVERSE_ORDER", "Ljava/util/Comparator;")
+    {
+        return Ok(existing);
+    }
+    let instance = vm.new_instance(class)?;
+    vm.set_static_value(
+        class,
+        "REVERSE_ORDER",
+        "Ljava/util/Comparator;",
+        Value::Ref(instance),
+    );
+    Ok(instance)
+}
+
+/// `Collections.reverseOrder(cmp)` with the JDK identity semantics: the two singletons swap,
+/// a `ReverseComparator2` unwraps to its delegate, anything else gets wrapped.
+pub(crate) fn comparator_reverse_order(vm: &mut Vm<'_>, cmp: ObjectRef) -> Result<Value, VmError> {
+    if cmp.is_null() {
+        return object(comparator_reverse_singleton(vm)?);
+    }
+    let reverse = comparator_reverse_singleton(vm)?;
+    if cmp == reverse {
+        return object(comparator_natural_singleton(vm)?);
+    }
+    let natural = comparator_natural_singleton(vm)?;
+    if cmp == natural {
+        return object(reverse);
+    }
+    let class = vm.resolve_class("java/util/Collections$ReverseComparator2")?;
+    if vm.is_instance(cmp, class) {
+        let delegate = vm
+            .read_ref_field(cmp, class, "cmp", "Ljava/util/Comparator;")
+            .unwrap_or(ObjectRef::NULL);
+        return object(delegate);
+    }
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "cmp", "Ljava/util/Comparator;")?;
+    vm.set_instance_ref(instance, declaring, field, cmp);
     object(instance)
 }
 
@@ -10609,14 +10660,14 @@ fn natural_compare(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<i32, V
     if a.is_null() || b.is_null() {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
-    if vm.string_utf16(a).is_some() && vm.string_utf16(b).is_some() {
-        let an = vm.string_or_empty(a);
-        let bn = vm.string_or_empty(b);
-        return Ok(match an.cmp(&bn) {
-            core::cmp::Ordering::Less => -1,
-            core::cmp::Ordering::Equal => 0,
-            core::cmp::Ordering::Greater => 1,
-        });
+    if let (Some(au), Some(bu)) = (vm.string_utf16(a), vm.string_utf16(b)) {
+        let shared = au.len().min(bu.len());
+        for index in 0..shared {
+            if au[index] != bu[index] {
+                return Ok(i32::from(au[index]) - i32::from(bu[index]));
+            }
+        }
+        return Ok(au.len() as i32 - bu.len() as i32);
     }
     let (class, method) = vm.resolve_virtual_method(a, "compareTo", "(Ljava/lang/Object;)I")?;
     Ok(vm
@@ -10675,7 +10726,12 @@ pub(crate) const NATURAL_ORDER_COMPARATOR: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &["java/util/Comparator"],
     ACC_PUBLIC,
-    &[],
+    &[field(
+        "INSTANCE",
+        "Ljava/util/Comparator;",
+        ACC_PRIVATE | ACC_STATIC,
+        None,
+    )],
     &NATURAL_ORDER_COMPARATOR_METHODS,
     None,
 );
@@ -10686,68 +10742,160 @@ pub(crate) const REVERSE_COMPARATOR: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &["java/util/Comparator"],
     ACC_PUBLIC,
-    &[field(
-        "comparator",
-        "Ljava/util/Comparator;",
-        ACC_PRIVATE,
-        None,
-    )],
+    &[
+        field("comparator", "Ljava/util/Comparator;", ACC_PRIVATE, None),
+        field(
+            "REVERSE_ORDER",
+            "Ljava/util/Comparator;",
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
+    ],
     &REVERSE_COMPARATOR_METHODS,
     None,
 );
 
-/// `Comparators$NullComparator`: orders null before (or after) non-null values, delegating
-/// non-null comparisons to the wrapped comparator (or treating them as equal when it is null).
-const NULL_COMPARATOR_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+const REVERSE_COMPARATOR2_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
     "compare",
     "(Ljava/lang/Object;Ljava/lang/Object;)I",
     ACC_PUBLIC,
     |vm, _, args| {
         let this = receiver(args);
-        let class = vm.class_of(this);
         let delegate = vm
-            .read_ref_field(this, class, "comparator", "Ljava/util/Comparator;")
+            .read_ref_field(this, vm.class_of(this), "cmp", "Ljava/util/Comparator;")
             .unwrap_or(ObjectRef::NULL);
-        let nulls_first = crate::lang::read_int_field(vm, this, "nullsFirst") != 0;
         let a = ref_arg(args, 1);
         let b = ref_arg(args, 2);
-        let ordering = match (a.is_null(), b.is_null()) {
-            (true, true) => 0,
-            (true, false) => {
-                if nulls_first {
-                    -1
-                } else {
-                    1
-                }
-            }
-            (false, true) => {
-                if nulls_first {
-                    1
-                } else {
-                    -1
-                }
-            }
-            (false, false) => {
-                if delegate.is_null() {
-                    0
-                } else {
-                    let (class, method) = vm.resolve_virtual_method(
-                        delegate,
-                        "compare",
-                        "(Ljava/lang/Object;Ljava/lang/Object;)I",
-                    )?;
-                    vm.invoke_method(
-                        class,
-                        method,
-                        vec![Value::Ref(delegate), Value::Ref(a), Value::Ref(b)],
-                    )?
-                    .as_int()
-                }
-            }
-        };
-        int(ordering)
+        let (class, method) = vm.resolve_virtual_method(
+            delegate,
+            "compare",
+            "(Ljava/lang/Object;Ljava/lang/Object;)I",
+        )?;
+        let ordering = vm
+            .invoke_method(
+                class,
+                method,
+                vec![Value::Ref(delegate), Value::Ref(a), Value::Ref(b)],
+            )?
+            .as_int();
+        int(-ordering)
     },
 )];
+
+/// `Collections$ReverseComparator2`: wraps an arbitrary comparator, negating its ordering;
+/// `Collections.reverseOrder` unwraps it so double reversal returns the original instance.
+pub(crate) const REVERSE_COMPARATOR2: oxjvm_vm::NativeClass = class(
+    "java/util/Collections$ReverseComparator2",
+    Some("java/lang/Object"),
+    &["java/util/Comparator"],
+    ACC_PUBLIC,
+    &[field("cmp", "Ljava/util/Comparator;", ACC_PRIVATE, None)],
+    &REVERSE_COMPARATOR2_METHODS,
+    None,
+);
+
+/// `Comparators$NullComparator`: orders null before (or after) non-null values, delegating
+/// non-null comparisons to the wrapped comparator (or treating them as equal when it is null).
+const NULL_COMPARATOR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method(
+        "reversed",
+        "()Ljava/util/Comparator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let real = vm
+                .read_ref_field(this, class, "comparator", "Ljava/util/Comparator;")
+                .unwrap_or(ObjectRef::NULL);
+            let nulls_first = crate::lang::read_int_field(vm, this, "nullsFirst") != 0;
+            let reversed_real = if real.is_null() {
+                ObjectRef::NULL
+            } else {
+                comparator_reverse_order(vm, real)?.as_ref()
+            };
+            crate::lang::comparator_nulls(vm, reversed_real, !nulls_first)
+        },
+    ),
+    method(
+        "thenComparing",
+        "(Ljava/util/Comparator;)Ljava/util/Comparator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if other.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let class = vm.class_of(this);
+            let real = vm
+                .read_ref_field(this, class, "comparator", "Ljava/util/Comparator;")
+                .unwrap_or(ObjectRef::NULL);
+            let nulls_first = crate::lang::read_int_field(vm, this, "nullsFirst") != 0;
+            let new_real = if real.is_null() {
+                other
+            } else {
+                let (rc, rm) = vm.resolve_virtual_method(
+                    real,
+                    "thenComparing",
+                    "(Ljava/util/Comparator;)Ljava/util/Comparator;",
+                )?;
+                vm.invoke_method(rc, rm, vec![Value::Ref(real), Value::Ref(other)])?
+                    .as_ref()
+            };
+            crate::lang::comparator_nulls(vm, new_real, nulls_first)
+        },
+    ),
+    method(
+        "compare",
+        "(Ljava/lang/Object;Ljava/lang/Object;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let delegate = vm
+                .read_ref_field(this, class, "comparator", "Ljava/util/Comparator;")
+                .unwrap_or(ObjectRef::NULL);
+            let nulls_first = crate::lang::read_int_field(vm, this, "nullsFirst") != 0;
+            let a = ref_arg(args, 1);
+            let b = ref_arg(args, 2);
+            let ordering = match (a.is_null(), b.is_null()) {
+                (true, true) => 0,
+                (true, false) => {
+                    if nulls_first {
+                        -1
+                    } else {
+                        1
+                    }
+                }
+                (false, true) => {
+                    if nulls_first {
+                        1
+                    } else {
+                        -1
+                    }
+                }
+                (false, false) => {
+                    if delegate.is_null() {
+                        0
+                    } else {
+                        let (class, method) = vm.resolve_virtual_method(
+                            delegate,
+                            "compare",
+                            "(Ljava/lang/Object;Ljava/lang/Object;)I",
+                        )?;
+                        vm.invoke_method(
+                            class,
+                            method,
+                            vec![Value::Ref(delegate), Value::Ref(a), Value::Ref(b)],
+                        )?
+                        .as_int()
+                    }
+                }
+            };
+            int(ordering)
+        },
+    ),
+];
 
 pub(crate) const NULL_COMPARATOR: oxjvm_vm::NativeClass = class(
     "java/util/Comparators$NullComparator",
@@ -10906,7 +11054,7 @@ pub(crate) fn comparator_default_reversed(
     vm: &mut Vm<'_>,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    new_reverse_comparator(vm, receiver(args))
+    comparator_reverse_order(vm, receiver(args))
 }
 
 /// `Comparator.min(a, b)` default method: the lesser argument per `compare` (first on ties).
@@ -11097,6 +11245,9 @@ pub(crate) fn comparator_from_primitive(
     function: ObjectRef,
     kind: i32,
 ) -> Result<Value, VmError> {
+    if function.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
     let class = vm.resolve_class("java/util/Comparator$PrimitiveComparator")?;
     let instance = vm.new_instance(class)?;
     let (declaring, field) = vm.find_field(class, "function", "Ljava/lang/Object;")?;
