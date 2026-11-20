@@ -2796,7 +2796,7 @@ fn arrays_set_all(
     void()
 }
 
-const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 196] = [
+const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 204] = [
     method(
         "setAll",
         "([ILjava/util/function/IntUnaryOperator;)V",
@@ -4195,6 +4195,126 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 196] = [
             let length = vm.array_length(array)?;
             arrays_range_check(vm, from, to, length)?;
             arrays_sort_objects_range(vm, array, from as usize, to as usize, Some(comparator))
+        },
+    ),
+    method(
+        "fill",
+        "([IIII)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_fill_range(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                int_arg(args, 2),
+                int(int_arg(args, 3))?,
+                false,
+            )
+        },
+    ),
+    method(
+        "fill",
+        "([JIIJ)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_fill_range(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                int_arg(args, 2),
+                long(long_arg(args, 3))?,
+                false,
+            )
+        },
+    ),
+    method(
+        "fill",
+        "([FIIF)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_fill_range(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                int_arg(args, 2),
+                crate::float(crate::float_arg(args, 3))?,
+                false,
+            )
+        },
+    ),
+    method(
+        "fill",
+        "([DIID)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_fill_range(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                int_arg(args, 2),
+                crate::double(crate::double_arg(args, 3))?,
+                false,
+            )
+        },
+    ),
+    method(
+        "fill",
+        "([BIIB)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_fill_range(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                int_arg(args, 2),
+                int(int_arg(args, 3))?,
+                false,
+            )
+        },
+    ),
+    method(
+        "fill",
+        "([CIIC)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_fill_range(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                int_arg(args, 2),
+                int(int_arg(args, 3))?,
+                false,
+            )
+        },
+    ),
+    method(
+        "fill",
+        "([SIIS)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_fill_range(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                int_arg(args, 2),
+                int(int_arg(args, 3))?,
+                false,
+            )
+        },
+    ),
+    method(
+        "fill",
+        "([ZIIZ)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_fill_range(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                int_arg(args, 2),
+                int(int_arg(args, 3))?,
+                false,
+            )
         },
     ),
 ];
@@ -11539,6 +11659,16 @@ fn properties_store(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
         text.push_str(&value);
         text.push('\n');
     }
+    if let Some((declaring, method)) =
+        vm.find_method(vm.class_of(stream), "write", "(Ljava/lang/String;)V")
+    {
+        let string = vm.make_string(&text)?;
+        return vm.invoke_method(
+            declaring,
+            method,
+            vec![Value::Ref(stream), Value::Ref(string)],
+        );
+    }
     let bytes = text.into_bytes();
     let array = vm.allocate_array_of(ArrayComponent::Byte, bytes.len())?;
     for (index, byte) in bytes.iter().enumerate() {
@@ -17137,7 +17267,7 @@ fn seq_view_reversed(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError>
     vm.invoke_method(class, method, vec![Value::Ref(reversed)])
 }
 
-const LINKED_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+const LINKED_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method(
         "putFirst",
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
@@ -17255,6 +17385,55 @@ const LINKED_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
             void()
         },
     ),
+    method("<init>", "(IFZ)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let map_class = vm.resolve_class("java/util/HashMap")?;
+        let (declaring, ctor) = vm
+            .find_method(map_class, "<init>", "(IF)V")
+            .ok_or_else(|| VmError::internal("HashMap lacks its constructor"))?;
+        vm.invoke_method(
+            declaring,
+            ctor,
+            vec![
+                Value::Ref(this),
+                int(int_arg(args, 1))?,
+                crate::float(crate::float_arg(args, 2))?,
+            ],
+        )?;
+        let class = vm.class_of(this);
+        let (declaring, field) = vm.find_field(class, "accessOrder", "Z")?;
+        vm.set_instance_int(this, declaring, field, int_arg(args, 3));
+        void()
+    }),
+    method(
+        "get",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let key = ref_arg(args, 1);
+            let map_class = vm.resolve_class("java/util/HashMap")?;
+            let (declaring, method) = vm
+                .find_method(map_class, "get", "(Ljava/lang/Object;)Ljava/lang/Object;")
+                .ok_or_else(|| VmError::internal("HashMap.get missing"))?;
+            let result =
+                vm.invoke_method(declaring, method, vec![Value::Ref(this), Value::Ref(key)])?;
+            let access_order = vm
+                .read_instance_int_named(this, vm.class_of(this), "accessOrder", "Z")
+                .unwrap_or(0);
+            if access_order != 0 {
+                if let Ok(index) = hash_map_index_of(vm, this, key) {
+                    if index >= 0 {
+                        let mut pairs = lhm_pairs(vm, this);
+                        let pair = pairs.remove(index as usize);
+                        pairs.push(pair);
+                        hash_map_store(vm, this, &pairs)?;
+                    }
+                }
+            }
+            Ok(result)
+        },
+    ),
 ];
 
 pub(crate) const LINKED_HASH_MAP: oxjvm_vm::NativeClass = class(
@@ -17266,6 +17445,7 @@ pub(crate) const LINKED_HASH_MAP: oxjvm_vm::NativeClass = class(
         field("keys", "[Ljava/lang/Object;", ACC_PRIVATE, None),
         field("values", "[Ljava/lang/Object;", ACC_PRIVATE, None),
         field("size", "I", ACC_PRIVATE, None),
+        field("accessOrder", "Z", ACC_PRIVATE, None),
     ],
     &LINKED_HASH_MAP_METHODS,
     None,

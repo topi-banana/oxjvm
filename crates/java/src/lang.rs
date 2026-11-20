@@ -3707,6 +3707,7 @@ pub(crate) fn format_string(
         let mut alternate = false;
         let mut plus_sign = false;
         let mut space_sign = false;
+        let mut grouping = false;
         let mut width = 0usize;
         loop {
             match chars.peek() {
@@ -3728,6 +3729,10 @@ pub(crate) fn format_string(
                 }
                 Some(' ') => {
                     space_sign = true;
+                    chars.next();
+                }
+                Some(',') => {
+                    grouping = true;
                     chars.next();
                 }
                 Some(digit) if digit.is_ascii_digit() => {
@@ -3774,6 +3779,20 @@ pub(crate) fn format_string(
                 argument += 1;
                 let number = object_to_long(vm, value);
                 let mut text = oxjvm_vm::format::long_to_string(number);
+                if grouping {
+                    let (sign, digits) = match text.strip_prefix('-') {
+                        Some(rest) => ("-", rest),
+                        None => ("", text.as_str()),
+                    };
+                    let mut grouped = String::new();
+                    for (index, ch) in digits.chars().enumerate() {
+                        if index > 0 && (digits.len() - index) % 3 == 0 {
+                            grouped.push(',');
+                        }
+                        grouped.push(ch);
+                    }
+                    text = alloc::format!("{sign}{grouped}");
+                }
                 if number < 0 {
                     prefix_len = 1;
                 } else if plus_sign || space_sign {
@@ -3815,10 +3834,17 @@ pub(crate) fn format_string(
             's' | 'S' => {
                 let value = arguments.get(argument).copied().unwrap_or(ObjectRef::NULL);
                 argument += 1;
-                vm.display_value(
+                let mut text = vm.display_value(
                     &oxjvm_classfile::FieldType::Object("java/lang/Object".into()),
                     Value::Ref(value),
-                )?
+                )?;
+                if spec == 'S' {
+                    text = text.to_uppercase();
+                }
+                if let Some(limit) = precision {
+                    text = text.chars().take(limit).collect();
+                }
+                text
             }
             'f' => {
                 let value = arguments.get(argument).copied().unwrap_or(ObjectRef::NULL);
