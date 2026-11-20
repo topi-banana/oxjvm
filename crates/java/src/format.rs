@@ -4474,7 +4474,15 @@ fn number_parse_boxed(vm: &mut Vm<'_>, text: &str) -> Result<Value, VmError> {
 pub(crate) fn parse_date_text(text: &str) -> i64 {
     let cleaned: String = text
         .chars()
-        .filter(|ch| ch.is_ascii_digit() || *ch == '/' || *ch == ':' || *ch == ',' || *ch == '.')
+        .filter(|ch| {
+            ch.is_ascii_digit()
+                || *ch == '/'
+                || *ch == ':'
+                || *ch == ','
+                || *ch == '.'
+                || *ch == '-'
+                || *ch == ' '
+        })
         .collect();
     let mut numbers = Vec::new();
     let mut current = String::new();
