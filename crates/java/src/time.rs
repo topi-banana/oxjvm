@@ -8073,7 +8073,7 @@ fn year_month_parse(vm: &mut Vm<'_>, text: &str) -> Result<Value, VmError> {
     object(year_month_new(vm, year, month)?)
 }
 
-const YEAR_MONTH_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
+const YEAR_MONTH_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
     method(
         "of",
         "(II)Ljava/time/YearMonth;",
@@ -8319,6 +8319,67 @@ const YEAR_MONTH_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
             )
         },
     ),
+    method(
+        "isSupported",
+        "(Ljava/time/temporal/TemporalField;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let ordinal = chrono_field_ordinal(vm, ref_arg(args, 1));
+            boolean(matches!(ordinal, Some(23..=27)))
+        },
+    ),
+    method(
+        "getLong",
+        "(Ljava/time/temporal/TemporalField;)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let ordinal =
+                chrono_field_ordinal(vm, ref_arg(args, 1)).ok_or_else(|| unsupported_field(vm))?;
+            let year = i64::from(read_int_field(vm, this, "year"));
+            let month = i64::from(read_int_field(vm, this, "month"));
+            let value = match ordinal {
+                23 => month,
+                24 => year * 12 + month - 1,
+                26 => year,
+                25 => {
+                    if year >= 1 {
+                        year
+                    } else {
+                        1 - year
+                    }
+                }
+                27 => i64::from(year >= 1),
+                _ => return Err(unsupported_field(vm)),
+            };
+            long(value)
+        },
+    ),
+    method(
+        "range",
+        "(Ljava/time/temporal/TemporalField;)Ljava/time/temporal/ValueRange;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let ordinal =
+                chrono_field_ordinal(vm, ref_arg(args, 1)).ok_or_else(|| unsupported_field(vm))?;
+            let (min_low, min_high, max_low, max_high) = match ordinal {
+                23 => (1, 1, 12, 12),
+                24 => (
+                    -11_999_999_988,
+                    -11_999_999_988,
+                    11_999_999_999,
+                    11_999_999_999,
+                ),
+                26 => (-999_999_999, -999_999_999, 999_999_999, 999_999_999),
+                25 => (1, 1, 999_999_999, 999_999_999),
+                27 => (0, 0, 1, 1),
+                _ => return Err(unsupported_field(vm)),
+            };
+            object(crate::temporal::value_range_new(
+                vm, min_low, min_high, max_low, max_high,
+            )?)
+        },
+    ),
 ];
 
 fn year_new(vm: &mut Vm<'_>, year: i32) -> Result<ObjectRef, VmError> {
@@ -8328,7 +8389,7 @@ fn year_new(vm: &mut Vm<'_>, year: i32) -> Result<ObjectRef, VmError> {
     Ok(instance)
 }
 
-const YEAR_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+const YEAR_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
     method(
         "of",
         "(I)Ljava/time/Year;",
@@ -8490,6 +8551,55 @@ const YEAR_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         |vm, _, args| {
             let year = read_int_field(vm, receiver(args), "value");
             int(year - read_int_field(vm, ref_arg(args, 1), "value"))
+        },
+    ),
+    method(
+        "isSupported",
+        "(Ljava/time/temporal/TemporalField;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let ordinal = chrono_field_ordinal(vm, ref_arg(args, 1));
+            boolean(matches!(ordinal, Some(25..=27)))
+        },
+    ),
+    method(
+        "getLong",
+        "(Ljava/time/temporal/TemporalField;)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let ordinal =
+                chrono_field_ordinal(vm, ref_arg(args, 1)).ok_or_else(|| unsupported_field(vm))?;
+            let year = i64::from(read_int_field(vm, this, "value"));
+            let value = match ordinal {
+                26 => year,
+                25 => {
+                    if year >= 1 {
+                        year
+                    } else {
+                        1 - year
+                    }
+                }
+                27 => i64::from(year >= 1),
+                _ => return Err(unsupported_field(vm)),
+            };
+            long(value)
+        },
+    ),
+    method(
+        "range",
+        "(Ljava/time/temporal/TemporalField;)Ljava/time/temporal/ValueRange;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let ordinal =
+                chrono_field_ordinal(vm, ref_arg(args, 1)).ok_or_else(|| unsupported_field(vm))?;
+            let (min, max) = match ordinal {
+                26 => (-999_999_999, 999_999_999),
+                25 => (1, 999_999_999),
+                27 => (0, 1),
+                _ => return Err(unsupported_field(vm)),
+            };
+            object(crate::temporal::value_range_new(vm, min, min, max, max)?)
         },
     ),
 ];
@@ -9224,7 +9334,7 @@ fn month_day_new(vm: &mut Vm<'_>, month: i32, day: i32) -> Result<ObjectRef, VmE
     Ok(instance)
 }
 
-const MONTH_DAY_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const MONTH_DAY_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method(
         "of",
         "(II)Ljava/time/MonthDay;",
@@ -9333,6 +9443,68 @@ const MONTH_DAY_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
                 vm,
                 int_arg(args, 1),
                 read_int_field(vm, this, "day"),
+            )?)
+        },
+    ),
+    method(
+        "now",
+        "()Ljava/time/MonthDay;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let millis = vm.host_time_millis();
+            let zone = system_default_zone(vm)?;
+            let offset = i64::from(zone_offset_seconds(vm, zone));
+            let (_, month, day) = civil_from_days((millis / 1000 + offset).div_euclid(86_400));
+            object(month_day_new(vm, month, day)?)
+        },
+    ),
+    method(
+        "isSupported",
+        "(Ljava/time/temporal/TemporalField;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let ordinal = chrono_field_ordinal(vm, ref_arg(args, 1));
+            boolean(matches!(ordinal, Some(18 | 23)))
+        },
+    ),
+    method(
+        "getLong",
+        "(Ljava/time/temporal/TemporalField;)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let ordinal =
+                chrono_field_ordinal(vm, ref_arg(args, 1)).ok_or_else(|| unsupported_field(vm))?;
+            let value = match ordinal {
+                23 => i64::from(read_int_field(vm, this, "month")),
+                18 => i64::from(read_int_field(vm, this, "day")),
+                _ => return Err(unsupported_field(vm)),
+            };
+            long(value)
+        },
+    ),
+    method(
+        "range",
+        "(Ljava/time/temporal/TemporalField;)Ljava/time/temporal/ValueRange;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let ordinal =
+                chrono_field_ordinal(vm, ref_arg(args, 1)).ok_or_else(|| unsupported_field(vm))?;
+            let (min_low, min_high, max_low, max_high) = match ordinal {
+                23 => (1, 1, 12, 12),
+                18 => {
+                    let month = read_int_field(vm, this, "month");
+                    match month {
+                        2 => (1, 1, 28, 29),
+                        4 | 6 | 9 | 11 => (1, 1, 30, 30),
+                        _ => (1, 1, 31, 31),
+                    }
+                }
+                _ => return Err(unsupported_field(vm)),
+            };
+            object(crate::temporal::value_range_new(
+                vm, min_low, min_high, max_low, max_high,
             )?)
         },
     ),
