@@ -218,7 +218,7 @@ pub(crate) const LIST_ITERATOR: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+const COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
     method(
         "size",
         "()I",
@@ -349,6 +349,12 @@ const COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
             )?;
             vm.invoke_method(class, method, vec![Value::Ref(this), array])
         },
+    ),
+    method(
+        "containsAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        collection_contains_all,
     ),
 ];
 
@@ -13683,6 +13689,30 @@ fn invoke_virtual_bool(
 }
 
 /// `Collection.removeAll`: remove every element the other collection contains.
+/// `Collection.containsAll`: true when this collection contains every element
+/// of the other collection.
+pub(crate) fn collection_contains_all(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let others = collection_elements(vm, ref_arg(args, 1))?;
+    for element in others {
+        let has = invoke_virtual_bool(
+            vm,
+            this,
+            "contains",
+            "(Ljava/lang/Object;)Z",
+            &[Value::Ref(element)],
+        )?;
+        if !has {
+            return boolean(false);
+        }
+    }
+    boolean(true)
+}
+
 pub(crate) fn collection_remove_all(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
