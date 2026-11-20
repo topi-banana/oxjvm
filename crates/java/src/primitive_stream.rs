@@ -198,7 +198,7 @@ fn optional_long(vm: &mut Vm<'_>, value: Option<i64>) -> Result<Value, VmError> 
     object(instance)
 }
 
-const DOUBLE_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
+const DOUBLE_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
     method(
         "of",
         "(D)Ljava/util/stream/DoubleStream;",
@@ -619,6 +619,22 @@ const DOUBLE_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
         |_, _, args| object(receiver(args)),
     ),
     method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "summaryStatistics",
+        "()Ljava/util/DoubleSummaryStatistics;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let values = double_elements(vm, receiver(args));
+            let count = values.len() as i64;
+            let sum: f64 = values.iter().sum();
+            let min = values.iter().copied().fold(f64::INFINITY, |a, b| a.min(b));
+            let max = values
+                .iter()
+                .copied()
+                .fold(f64::NEG_INFINITY, |a, b| a.max(b));
+            object(crate::stream::double_summary_new(vm, count, sum, min, max)?)
+        },
+    ),
 ];
 
 pub(crate) const DOUBLE_STREAM: oxjvm_vm::NativeClass = class(
@@ -648,7 +664,7 @@ pub(crate) const OJVM_DOUBLE_STREAM: oxjvm_vm::NativeClass = class(
 // LongStream
 // -------------------------------------------------------------------------------------------
 
-const LONG_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
+const LONG_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
     method(
         "of",
         "(J)Ljava/util/stream/LongStream;",
@@ -1026,6 +1042,19 @@ const LONG_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
         |_, _, args| object(receiver(args)),
     ),
     method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "summaryStatistics",
+        "()Ljava/util/LongSummaryStatistics;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let values = long_elements(vm, receiver(args));
+            let count = values.len() as i64;
+            let sum: i64 = values.iter().sum();
+            let min = values.iter().copied().min().unwrap_or(i64::MAX);
+            let max = values.iter().copied().max().unwrap_or(i64::MIN);
+            object(crate::stream::long_summary_new(vm, count, sum, min, max)?)
+        },
+    ),
 ];
 
 pub(crate) const LONG_STREAM: oxjvm_vm::NativeClass = class(

@@ -1526,6 +1526,260 @@ pub(crate) const INT_SUMMARY_STATISTICS: oxjvm_vm::NativeClass = class(
     None,
 );
 
+fn double_stat_set(vm: &mut Vm<'_>, this: ObjectRef, name: &str, value: f64) {
+    let class = vm.class_of(this);
+    if let Some((declaring, field)) = vm.find_field_opt(class, name, "D") {
+        vm.set_instance_double(this, declaring, field, value);
+    }
+}
+
+fn double_stat_read(vm: &Vm<'_>, this: ObjectRef, name: &str) -> f64 {
+    vm.read_instance_double_named(this, vm.class_of(this), name, "D")
+        .unwrap_or(0.0)
+}
+
+pub(crate) fn double_summary_new(
+    vm: &mut Vm<'_>,
+    count: i64,
+    sum: f64,
+    min: f64,
+    max: f64,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/DoubleSummaryStatistics")?;
+    let instance = vm.new_instance(class)?;
+    crate::lang::write_long_field(vm, instance, "count", count);
+    double_stat_set(vm, instance, "sum", sum);
+    double_stat_set(vm, instance, "min", min);
+    double_stat_set(vm, instance, "max", max);
+    Ok(instance)
+}
+
+pub(crate) fn long_summary_new(
+    vm: &mut Vm<'_>,
+    count: i64,
+    sum: i64,
+    min: i64,
+    max: i64,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/LongSummaryStatistics")?;
+    let instance = vm.new_instance(class)?;
+    crate::lang::write_long_field(vm, instance, "count", count);
+    crate::lang::write_long_field(vm, instance, "sum", sum);
+    crate::lang::write_long_field(vm, instance, "min", min);
+    crate::lang::write_long_field(vm, instance, "max", max);
+    Ok(instance)
+}
+
+const DOUBLE_SUMMARY_STATISTICS_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        crate::lang::write_long_field(vm, this, "count", 0);
+        double_stat_set(vm, this, "sum", 0.0);
+        double_stat_set(vm, this, "min", f64::INFINITY);
+        double_stat_set(vm, this, "max", f64::NEG_INFINITY);
+        void()
+    }),
+    method("getCount", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(crate::lang::read_long_field(vm, receiver(args), "count"))
+    }),
+    method("getSum", "()D", ACC_PUBLIC, |vm, _, args| {
+        crate::double(double_stat_read(vm, receiver(args), "sum"))
+    }),
+    method("getMin", "()D", ACC_PUBLIC, |vm, _, args| {
+        crate::double(double_stat_read(vm, receiver(args), "min"))
+    }),
+    method("getMax", "()D", ACC_PUBLIC, |vm, _, args| {
+        crate::double(double_stat_read(vm, receiver(args), "max"))
+    }),
+    method("getAverage", "()D", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let count = crate::lang::read_long_field(vm, this, "count");
+        let sum = double_stat_read(vm, this, "sum");
+        crate::double(if count == 0 { 0.0 } else { sum / count as f64 })
+    }),
+    method("accept", "(D)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let value = crate::double_arg(args, 1);
+        let count = crate::lang::read_long_field(vm, this, "count");
+        let sum = double_stat_read(vm, this, "sum");
+        let min = double_stat_read(vm, this, "min");
+        let max = double_stat_read(vm, this, "max");
+        crate::lang::write_long_field(vm, this, "count", count + 1);
+        double_stat_set(vm, this, "sum", sum + value);
+        double_stat_set(vm, this, "min", min.min(value));
+        double_stat_set(vm, this, "max", max.max(value));
+        void()
+    }),
+    method(
+        "combine",
+        "(Ljava/util/DoubleSummaryStatistics;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let count = crate::lang::read_long_field(vm, this, "count")
+                + crate::lang::read_long_field(vm, other, "count");
+            let sum = double_stat_read(vm, this, "sum") + double_stat_read(vm, other, "sum");
+            let min = double_stat_read(vm, this, "min").min(double_stat_read(vm, other, "min"));
+            let max = double_stat_read(vm, this, "max").max(double_stat_read(vm, other, "max"));
+            crate::lang::write_long_field(vm, this, "count", count);
+            double_stat_set(vm, this, "sum", sum);
+            double_stat_set(vm, this, "min", min);
+            double_stat_set(vm, this, "max", max);
+            void()
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let count = crate::lang::read_long_field(vm, this, "count");
+            let sum = double_stat_read(vm, this, "sum");
+            let min = double_stat_read(vm, this, "min");
+            let max = double_stat_read(vm, this, "max");
+            let average = if count == 0 { 0.0 } else { sum / count as f64 };
+            let text = alloc::format!(
+                "DoubleSummaryStatistics{{count={}, sum={:.6}, min={:.6}, average={:.6}, max={:.6}}}",
+                count,
+                sum,
+                min,
+                average,
+                max
+            );
+            object(vm.make_string(&text)?)
+        },
+    ),
+];
+
+pub(crate) const DOUBLE_SUMMARY_STATISTICS: oxjvm_vm::NativeClass = class(
+    "java/util/DoubleSummaryStatistics",
+    Some("java/lang/Object"),
+    &["java/util/function/DoubleConsumer"],
+    ACC_PUBLIC,
+    &[
+        field("count", "J", ACC_PRIVATE, None),
+        field("sum", "D", ACC_PRIVATE, None),
+        field("min", "D", ACC_PRIVATE, None),
+        field("max", "D", ACC_PRIVATE, None),
+    ],
+    &DOUBLE_SUMMARY_STATISTICS_METHODS,
+    None,
+);
+
+const LONG_SUMMARY_STATISTICS_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        crate::lang::write_long_field(vm, this, "count", 0);
+        crate::lang::write_long_field(vm, this, "sum", 0);
+        crate::lang::write_long_field(vm, this, "min", i64::MAX);
+        crate::lang::write_long_field(vm, this, "max", i64::MIN);
+        void()
+    }),
+    method("getCount", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(crate::lang::read_long_field(vm, receiver(args), "count"))
+    }),
+    method("getSum", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(crate::lang::read_long_field(vm, receiver(args), "sum"))
+    }),
+    method("getMin", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(crate::lang::read_long_field(vm, receiver(args), "min"))
+    }),
+    method("getMax", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(crate::lang::read_long_field(vm, receiver(args), "max"))
+    }),
+    method("getAverage", "()D", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let count = crate::lang::read_long_field(vm, this, "count");
+        let sum = crate::lang::read_long_field(vm, this, "sum");
+        crate::double(if count == 0 {
+            0.0
+        } else {
+            sum as f64 / count as f64
+        })
+    }),
+    method("accept", "(J)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let value = crate::long_arg(args, 1);
+        let count = crate::lang::read_long_field(vm, this, "count");
+        let sum = crate::lang::read_long_field(vm, this, "sum");
+        let min = crate::lang::read_long_field(vm, this, "min");
+        let max = crate::lang::read_long_field(vm, this, "max");
+        crate::lang::write_long_field(vm, this, "count", count + 1);
+        crate::lang::write_long_field(vm, this, "sum", sum + value);
+        crate::lang::write_long_field(vm, this, "min", min.min(value));
+        crate::lang::write_long_field(vm, this, "max", max.max(value));
+        void()
+    }),
+    method(
+        "combine",
+        "(Ljava/util/LongSummaryStatistics;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let count = crate::lang::read_long_field(vm, this, "count")
+                + crate::lang::read_long_field(vm, other, "count");
+            let sum = crate::lang::read_long_field(vm, this, "sum")
+                + crate::lang::read_long_field(vm, other, "sum");
+            let min = crate::lang::read_long_field(vm, this, "min")
+                .min(crate::lang::read_long_field(vm, other, "min"));
+            let max = crate::lang::read_long_field(vm, this, "max")
+                .max(crate::lang::read_long_field(vm, other, "max"));
+            crate::lang::write_long_field(vm, this, "count", count);
+            crate::lang::write_long_field(vm, this, "sum", sum);
+            crate::lang::write_long_field(vm, this, "min", min);
+            crate::lang::write_long_field(vm, this, "max", max);
+            void()
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let count = crate::lang::read_long_field(vm, this, "count");
+            let sum = crate::lang::read_long_field(vm, this, "sum");
+            let min = crate::lang::read_long_field(vm, this, "min");
+            let max = crate::lang::read_long_field(vm, this, "max");
+            let average = if count == 0 {
+                0.0
+            } else {
+                sum as f64 / count as f64
+            };
+            let text = alloc::format!(
+                "LongSummaryStatistics{{count={}, sum={}, min={}, average={:.6}, max={}}}",
+                count,
+                sum,
+                min,
+                average,
+                max
+            );
+            object(vm.make_string(&text)?)
+        },
+    ),
+];
+
+pub(crate) const LONG_SUMMARY_STATISTICS: oxjvm_vm::NativeClass = class(
+    "java/util/LongSummaryStatistics",
+    Some("java/lang/Object"),
+    &[
+        "java/util/function/LongConsumer",
+        "java/util/function/IntConsumer",
+    ],
+    ACC_PUBLIC,
+    &[
+        field("count", "J", ACC_PRIVATE, None),
+        field("sum", "J", ACC_PRIVATE, None),
+        field("min", "J", ACC_PRIVATE, None),
+        field("max", "J", ACC_PRIVATE, None),
+    ],
+    &LONG_SUMMARY_STATISTICS_METHODS,
+    None,
+);
+
 fn collector_new(vm: &mut Vm<'_>, kind: i32) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class(COLLECTOR_CLASS)?;
     let collector = vm.new_instance(class)?;
