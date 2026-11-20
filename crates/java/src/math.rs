@@ -2927,6 +2927,43 @@ fn big_decimal_binary(
     )
 }
 
+/// `BigDecimal.add`/`subtract` preserving the larger operand scale, using exact
+/// i128 arithmetic on the unscaled values when they fit (falling back to the
+/// floating-point path otherwise).
+fn big_decimal_add_sub(vm: &mut Vm<'_>, args: &[Value], subtract: bool) -> Result<Value, VmError> {
+    let a = big_text(vm, receiver(args));
+    let b = big_text(vm, ref_arg(args, 1));
+    let (neg_a, int_a, frac_a) = decimal_parts(&a);
+    let (neg_b, int_b, frac_b) = decimal_parts(&b);
+    let scale = frac_a.len().max(frac_b.len());
+    let mut fa = frac_a;
+    let mut fb = frac_b;
+    while fa.len() < scale {
+        fa.push('0');
+    }
+    while fb.len() < scale {
+        fb.push('0');
+    }
+    let ua = alloc::format!("{}{}", int_a, fa);
+    let ub = alloc::format!("{}{}", int_b, fb);
+    if let (Some(va), Some(vb)) = (parse_i128(&ua), parse_i128(&ub)) {
+        let va = if neg_a { -va } else { va };
+        let vb = if neg_b { -vb } else { vb };
+        let result = if subtract {
+            va.wrapping_sub(vb)
+        } else {
+            va.wrapping_add(vb)
+        };
+        if let Some(text) = format_scaled(result, scale) {
+            return create_big_number(vm, "java/math/BigDecimal", &text);
+        }
+    }
+    let fa64 = a.parse::<f64>().unwrap_or(f64::NAN);
+    let fb64 = b.parse::<f64>().unwrap_or(f64::NAN);
+    let result = if subtract { fa64 - fb64 } else { fa64 + fb64 };
+    create_big_number(vm, "java/math/BigDecimal", &alloc::format!("{}", result))
+}
+
 /// Split a decimal string into (negative, integer digits, fraction digits).
 fn decimal_parts(text: &str) -> (bool, String, String) {
     let (negative, digits) = if let Some(stripped) = text.strip_prefix('-') {
@@ -3120,13 +3157,13 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
         "add",
         "(Ljava/math/BigDecimal;)Ljava/math/BigDecimal;",
         ACC_PUBLIC,
-        |vm, _, args| big_decimal_binary(vm, args, |a, b| a + b),
+        |vm, _, args| big_decimal_add_sub(vm, args, false),
     ),
     method(
         "subtract",
         "(Ljava/math/BigDecimal;)Ljava/math/BigDecimal;",
         ACC_PUBLIC,
-        |vm, _, args| big_decimal_binary(vm, args, |a, b| a - b),
+        |vm, _, args| big_decimal_add_sub(vm, args, true),
     ),
     method(
         "multiply",
