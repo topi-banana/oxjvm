@@ -569,12 +569,53 @@ fn url_text(vm: &Vm<'_>, this: ObjectRef) -> String {
         .unwrap_or_default()
 }
 
-/// A protocol is present when a non-empty segment before `:` is free of `/`.
-fn url_has_protocol(text: &str) -> bool {
-    match text.find(':') {
-        Some(index) => index > 0 && !text[..index].contains('/'),
-        None => false,
+/// The protocol named at the start of `text`, following the JDK's syntax: a
+/// letter then letters/digits/`+`/`-`/`.` up to a `:`. Anything else (a `/`,
+/// `?`, `#`, or a digit first) means no protocol is present.
+fn url_protocol_prefix(text: &str) -> Option<&str> {
+    let mut chars = text.char_indices();
+    let (_, first) = chars.next()?;
+    if !first.is_ascii_alphabetic() {
+        return None;
     }
+    for (index, ch) in chars {
+        if ch == ':' {
+            return Some(&text[..index]);
+        }
+        if !(ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.')) {
+            return None;
+        }
+    }
+    None
+}
+
+/// The protocols with a built-in stream handler; others raise
+/// `MalformedURLException: unknown protocol`.
+fn url_known_protocol(protocol: &str) -> bool {
+    ["http", "https", "ftp", "file", "jar", "mailto", "jrt"]
+        .iter()
+        .any(|known| known.eq_ignore_ascii_case(protocol))
+}
+
+/// Validate an absolute URL spec and lowercase its protocol, as the JDK does.
+fn url_absolute_spec(vm: &mut Vm<'_>, text: &str) -> Result<String, VmError> {
+    let Some(protocol) = url_protocol_prefix(text) else {
+        return Err(vm.throw_new(
+            "java/net/MalformedURLException",
+            Some(&alloc::format!("no protocol: {text}")),
+        ));
+    };
+    if !url_known_protocol(protocol) {
+        return Err(vm.throw_new(
+            "java/net/MalformedURLException",
+            Some(&alloc::format!("unknown protocol: {protocol}")),
+        ));
+    }
+    Ok(alloc::format!(
+        "{}{}",
+        protocol.to_ascii_lowercase(),
+        &text[protocol.len()..]
+    ))
 }
 
 struct UrlParts<'a> {
@@ -586,36 +627,144 @@ struct UrlParts<'a> {
 }
 
 /// Resolve a possibly relative URL against a base URL (RFC 3986 style, simplified).
-fn resolve_url(base: &str, relative: &str) -> String {
-    if url_has_protocol(relative) {
-        return String::from(relative);
+/// Resolve `relative` against the base URL, following `URLStreamHandler.parseURL`:
+/// an empty spec keeps the base, a fragment-only spec keeps the base path and
+/// query, a query-only spec keeps the base directory, and a same-protocol spec
+/// is parsed relative to the base.
+fn resolve_url(vm: &mut Vm<'_>, base: ObjectRef, relative: &str) -> Result<String, VmError> {
+    let original = url_text(vm, base);
+    if relative.is_empty() {
+        return Ok(original);
     }
-    let parts = url_parts(base);
+    if relative.starts_with('#') {
+        let stem = match original.find('#') {
+            Some(index) => &original[..index],
+            None => &original[..],
+        };
+        return Ok(alloc::format!("{stem}{relative}"));
+    }
+    let base_protocol = String::from(url_parts(&original).protocol);
+    if let Some(protocol) = url_protocol_prefix(relative) {
+        if protocol.eq_ignore_ascii_case(&base_protocol) {
+            return resolve_url(vm, base, &relative[protocol.len() + 1..]);
+        }
+        if url_known_protocol(protocol) {
+            return Ok(alloc::format!(
+                "{}{}",
+                protocol.to_ascii_lowercase(),
+                &relative[protocol.len()..]
+            ));
+        }
+        return Err(vm.throw_new(
+            "java/net/MalformedURLException",
+            Some(&alloc::format!("unknown protocol: {protocol}")),
+        ));
+    }
+    // A parts-constructed base keeps its host and file apart; merge against a
+    // slash-prefixed file so the host is not swallowed into the path.
+    let merge_base = match vm.read_string_field(base, vm.class_of(base), "partsHost") {
+        Some(host) if !host.is_empty() => {
+            let port = crate::lang::read_int_field(vm, base, "partsPort");
+            let file = vm
+                .read_string_field(base, vm.class_of(base), "partsFile")
+                .unwrap_or_default();
+            let file = if file.starts_with('/') {
+                file
+            } else {
+                alloc::format!("/{file}")
+            };
+            url_from_parts(&base_protocol, &host, port, &file)
+        }
+        _ => original.clone(),
+    };
+    let parts = url_parts(&merge_base);
     if relative.starts_with("//") {
-        return alloc::format!("{}:{relative}", parts.protocol);
+        return Ok(alloc::format!("{}:{relative}", parts.protocol));
     }
     if relative.starts_with('/') {
-        return match parts.authority {
+        return Ok(match parts.authority {
             Some(authority) => alloc::format!("{}://{authority}{relative}", parts.protocol),
             None => alloc::format!("{}:{relative}", parts.protocol),
-        };
+        });
     }
-    let base_path = parts.path;
-    let directory = match base_path.rfind('/') {
-        Some(index) => &base_path[..=index],
-        None => "/",
+    let query_only = relative.starts_with('?');
+    let directory = match parts.path.rfind('/') {
+        Some(index) => &parts.path[..=index],
+        None if query_only || parts.authority.is_some() => "/",
+        None => "",
     };
     let (rel_path, suffix) = match relative.find(['?', '#']) {
         Some(index) => (&relative[..index], &relative[index..]),
         None => (relative, ""),
     };
-    let merged = crate::uri::normalize_uri_path(&alloc::format!("{directory}{rel_path}"));
-    match parts.authority {
-        Some(authority) => {
-            alloc::format!("{}://{authority}{merged}{suffix}", parts.protocol)
-        }
+    let merged = url_normalize_rel_path(&alloc::format!("{directory}{rel_path}"));
+    Ok(match parts.authority {
+        Some(authority) => alloc::format!("{}://{authority}{merged}{suffix}", parts.protocol),
         None => alloc::format!("{}:{merged}{suffix}", parts.protocol),
+    })
+}
+
+/// Normalize a merged relative path exactly as `URLStreamHandler.parseURL` does
+/// for relative paths: drop embedded `/./` and `/../` (keeping leading `/../`),
+/// then a trailing `/..` or `/.` — unlike RFC 3986, a trailing slash survives.
+fn url_normalize_rel_path(path: &str) -> String {
+    let mut path = String::from(path);
+    while let Some(index) = path.find("/./") {
+        path = alloc::format!("{}{}", &path[..index], &path[index + 2..]);
     }
+    let mut start = 0;
+    while let Some(found) = path[start..].find("/../") {
+        let index = start + found;
+        if index > 0 {
+            if let Some(limit) = path[..index].rfind('/') {
+                if path[limit..].find("/../") != Some(0) {
+                    path = alloc::format!("{}{}", &path[..limit], &path[index + 3..]);
+                    start = 0;
+                    continue;
+                }
+            }
+        }
+        start = index + 3;
+    }
+    while path.ends_with("/..") {
+        let Some(index) = path.find("/..") else { break };
+        if index == 0 {
+            break;
+        }
+        match path[..index].rfind('/') {
+            Some(limit) => path = alloc::format!("{}/", &path[..limit]),
+            None => break,
+        }
+    }
+    if path.ends_with("/.") {
+        path.pop();
+    }
+    path
+}
+
+/// Store a parts-constructed URL: the spec keeps the JDK's exact external form
+/// (a file without a leading `/` is not given one), while the host/port/file
+/// fields keep the components apart for getters and relative resolution.
+fn url_set_parts(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    protocol: &str,
+    host: &str,
+    port: i32,
+    file: &str,
+) -> Result<(), VmError> {
+    let protocol = protocol.to_ascii_lowercase();
+    let class = vm.class_of(this);
+    let spec = url_from_parts(&protocol, host, port, file);
+    vm.set_string_field(this, class, "spec", &spec)?;
+    let host_ref = vm.make_string(host)?;
+    let (declaring, field) = vm.find_field(class, "partsHost", "Ljava/lang/String;")?;
+    vm.set_instance_ref(this, declaring, field, host_ref);
+    crate::lang::write_int_field(vm, this, "partsPort", port);
+    let file_ref = vm.make_string(file)?;
+    let (declaring, field) = vm.find_field(class, "partsFile", "Ljava/lang/String;")?;
+    vm.set_instance_ref(this, declaring, field, file_ref);
+    Ok(())
 }
 
 fn url_parts(text: &str) -> UrlParts<'_> {
@@ -707,12 +856,7 @@ const URL_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let text = string_arg(vm, args[1])?;
-            if !url_has_protocol(&text) {
-                return Err(vm.throw_new(
-                    "java/net/MalformedURLException",
-                    Some(&alloc::format!("no protocol: {text}")),
-                ));
-            }
+            let text = url_absolute_spec(vm, &text)?;
             let this = receiver(args);
             vm.set_string_field(this, vm.class_of(this), "spec", &text)?;
             void()
@@ -723,9 +867,13 @@ const URL_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         "(Ljava/net/URL;Ljava/lang/String;)V",
         ACC_PUBLIC,
         |vm, _, args| {
-            let base = url_text(vm, ref_arg(args, 1));
+            let base = ref_arg(args, 1);
             let relative = string_arg(vm, args[2])?;
-            let text = resolve_url(&base, &relative);
+            let text = if base.is_null() {
+                url_absolute_spec(vm, &relative)?
+            } else {
+                resolve_url(vm, base, &relative)?
+            };
             let this = receiver(args);
             vm.set_string_field(this, vm.class_of(this), "spec", &text)?;
             void()
@@ -739,9 +887,7 @@ const URL_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
             let protocol = string_arg(vm, args[1])?;
             let host = string_arg(vm, args[2])?;
             let file = string_arg(vm, args[3])?;
-            let text = url_from_parts(&protocol, &host, -1, &file);
-            let this = receiver(args);
-            vm.set_string_field(this, vm.class_of(this), "spec", &text)?;
+            url_set_parts(vm, receiver(args), &protocol, &host, -1, &file)?;
             void()
         },
     ),
@@ -754,9 +900,7 @@ const URL_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
             let host = string_arg(vm, args[2])?;
             let port = int_arg(args, 3);
             let file = string_arg(vm, args[4])?;
-            let text = url_from_parts(&protocol, &host, port, &file);
-            let this = receiver(args);
-            vm.set_string_field(this, vm.class_of(this), "spec", &text)?;
+            url_set_parts(vm, receiver(args), &protocol, &host, port, &file)?;
             void()
         },
     ),
@@ -792,7 +936,20 @@ const URL_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let text = url_text(vm, receiver(args));
+            let this = receiver(args);
+            if let Some(host) = vm.read_string_field(this, vm.class_of(this), "partsHost") {
+                if host.is_empty() {
+                    return object(ObjectRef::NULL);
+                }
+                let port = crate::lang::read_int_field(vm, this, "partsPort");
+                let authority = if port >= 0 {
+                    alloc::format!("{host}:{port}")
+                } else {
+                    host
+                };
+                return object(vm.make_string(&authority)?);
+            }
+            let text = url_text(vm, this);
             match url_parts(&text).authority {
                 Some(authority) => object(vm.make_string(authority)?),
                 None => object(ObjectRef::NULL),
@@ -823,7 +980,11 @@ const URL_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let text = url_text(vm, receiver(args));
+            let this = receiver(args);
+            if let Some(host) = vm.read_string_field(this, vm.class_of(this), "partsHost") {
+                return object(vm.make_string(&host)?);
+            }
+            let text = url_text(vm, this);
             // The JDK returns an empty host (not null) when there is no authority.
             let host = match url_parts(&text).authority {
                 Some(authority) => String::from(url_host(authority)),
@@ -833,7 +994,14 @@ const URL_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         },
     ),
     method("getPort", "()I", ACC_PUBLIC, |vm, _, args| {
-        let text = url_text(vm, receiver(args));
+        let this = receiver(args);
+        if vm
+            .read_string_field(this, vm.class_of(this), "partsHost")
+            .is_some()
+        {
+            return int(crate::lang::read_int_field(vm, this, "partsPort"));
+        }
+        let text = url_text(vm, this);
         match url_parts(&text).authority {
             Some(authority) => int(url_port(authority)),
             None => int(-1),
@@ -854,7 +1022,12 @@ const URL_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let text = url_text(vm, receiver(args));
+            let this = receiver(args);
+            if let Some(file) = vm.read_string_field(this, vm.class_of(this), "partsFile") {
+                let path = file.split_once('?').map_or(file.as_str(), |(path, _)| path);
+                return object(vm.make_string(path)?);
+            }
+            let text = url_text(vm, this);
             object(vm.make_string(url_parts(&text).path)?)
         },
     ),
@@ -887,7 +1060,11 @@ const URL_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let text = url_text(vm, receiver(args));
+            let this = receiver(args);
+            if let Some(file) = vm.read_string_field(this, vm.class_of(this), "partsFile") {
+                return object(vm.make_string(&file)?);
+            }
+            let text = url_text(vm, this);
             let parts = url_parts(&text);
             let file = match parts.query {
                 Some(query) => alloc::format!("{}?{query}", parts.path),
@@ -997,7 +1174,12 @@ pub(crate) const URL: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &["java/io/Serializable"],
     ACC_PUBLIC | ACC_FINAL,
-    &[field("spec", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &[
+        field("spec", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("partsHost", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("partsPort", "I", ACC_PRIVATE, None),
+        field("partsFile", "Ljava/lang/String;", ACC_PRIVATE, None),
+    ],
     &URL_METHODS,
     None,
 );
