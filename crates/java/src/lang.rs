@@ -1538,7 +1538,7 @@ pub(crate) const CLASS: oxjvm_vm::NativeClass = class(
 // String
 // -------------------------------------------------------------------------------------------
 
-const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 72] = [
+const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 73] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "<init>",
@@ -1671,6 +1671,12 @@ const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 72] = [
     method(
         "substring",
         "(II)Ljava/lang/String;",
+        ACC_PUBLIC,
+        string_substring_range,
+    ),
+    method(
+        "subSequence",
+        "(II)Ljava/lang/CharSequence;",
         ACC_PUBLIC,
         string_substring_range,
     ),

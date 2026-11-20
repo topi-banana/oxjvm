@@ -2045,7 +2045,179 @@ fn boolean_get_boolean(
     ))
 }
 
-const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
+/// The Unicode general category of a code point (best effort beyond ASCII/Latin-1).
+fn char_general_category(unit: u32) -> i32 {
+    match unit {
+        0x00..=0x1F | 0x7F..=0x9F => 15,
+        0x20 => 12,
+        0x30..=0x39 => 9,
+        0x41..=0x5A => 1,
+        0x61..=0x7A => 2,
+        0x28 | 0x5B | 0x7B => 21,
+        0x29 | 0x5D | 0x7D => 22,
+        0x2D => 20,
+        0x5F => 23,
+        0x2B | 0x3C | 0x3D | 0x3E | 0x7C | 0x7E => 28,
+        0x24 => 26,
+        0x5E | 0x60 => 27,
+        0x21 | 0x22 | 0x23 | 0x25 | 0x26 | 0x27 | 0x2A | 0x2C | 0x2E | 0x2F | 0x3A | 0x3B
+        | 0x3F | 0x40 | 0x5C => 30,
+        _ => {
+            let Some(ch) = char::from_u32(unit) else {
+                return if (0xD800..=0xDFFF).contains(&unit) {
+                    19
+                } else {
+                    0
+                };
+            };
+            if ch.is_control() {
+                return 15;
+            }
+            if ch == '\u{2028}' {
+                return 13;
+            }
+            if ch == '\u{2029}' {
+                return 14;
+            }
+            if ch.is_whitespace() {
+                return 12;
+            }
+            if ch.is_alphabetic() {
+                if ch.is_uppercase() {
+                    return 1;
+                }
+                if ch.is_lowercase() {
+                    return 2;
+                }
+                if char_is_titlecase(unit) {
+                    return 3;
+                }
+                return 5;
+            }
+            if ch.is_numeric() {
+                let decimal = ch.to_digit(10);
+                if decimal.is_some() {
+                    return 9;
+                }
+                if (0x2160..=0x217F).contains(&unit) {
+                    return 10;
+                }
+                return 11;
+            }
+            match unit {
+                0xAB | 0x2039 | 0x2018 | 0x201A | 0x201C | 0x201E => 24,
+                0xBB | 0x203A | 0x2019 | 0x201D => 25,
+                0x2010..=0x2015 => 20,
+                0x203E | 0xFF3F => 23,
+                0xA2 | 0xA3 | 0xA5 | 0x20A0..=0x20BF => 26,
+                0xB1 | 0xD7 | 0xF7 | 0x2200..=0x22FF => 28,
+                0xA9 | 0xAE | 0xB0 | 0x2100..=0x214F => 29,
+                0xA1 | 0xBF | 0x2020..=0x2027 | 0x2030..=0x2038 | 0x2041..=0x2043 => 30,
+                _ => 0,
+            }
+        }
+    }
+}
+
+/// Whether a code point is a titlecase letter (Unicode `Lt`).
+fn char_is_titlecase(unit: u32) -> bool {
+    matches!(
+        unit,
+        0x01C5 | 0x01C8 | 0x01CB | 0x01F2 | 0x1FBC | 0x1FCC | 0x1FFC
+    )
+}
+
+/// Whether a code point has the Bidi_Mirrored property (common mirrored glyphs).
+fn char_is_mirrored(unit: u32) -> bool {
+    matches!(
+        unit,
+        0x28 | 0x29
+            | 0x5B
+            | 0x5D
+            | 0x7B
+            | 0x7D
+            | 0x3C
+            | 0x3E
+            | 0xAB
+            | 0xBB
+            | 0x2039
+            | 0x203A
+            | 0x2045
+            | 0x2046
+            | 0x207D
+            | 0x207E
+            | 0x208D
+            | 0x208E
+            | 0x2264
+            | 0x2265
+            | 0x2266
+            | 0x2267
+            | 0x226A
+            | 0x226B
+            | 0x2282
+            | 0x2283
+            | 0x2286
+            | 0x2287
+            | 0x2208
+            | 0x220B
+            | 0x2209
+            | 0x220C
+            | 0x2308
+            | 0x2309
+            | 0x230A
+            | 0x230B
+            | 0x27E6
+            | 0x27E7
+            | 0x27E8
+            | 0x27E9
+            | 0x27EA
+            | 0x27EB
+            | 0x2983
+            | 0x2984
+            | 0x2985
+            | 0x2986
+            | 0x2987
+            | 0x2988
+            | 0x2989
+            | 0x298A
+            | 0x29FC
+            | 0x29FD
+    )
+}
+
+/// The numeric value of a code point, or -1 when it has none.
+fn char_numeric_value(unit: u32) -> i32 {
+    let Some(ch) = char::from_u32(unit) else {
+        return -1;
+    };
+    if let Some(digit) = ch.to_digit(10) {
+        return digit as i32;
+    }
+    match unit {
+        0x41..=0x5A => (unit - 0x41 + 10) as i32,
+        0x61..=0x7A => (unit - 0x61 + 10) as i32,
+        0xFF21..=0xFF3A => (unit - 0xFF21 + 10) as i32,
+        0xFF41..=0xFF5A => (unit - 0xFF41 + 10) as i32,
+        0xB9 => 1,
+        0xB2 => 2,
+        0xB3 => 3,
+        0x2070 => 0,
+        0x2074..=0x2079 => (unit - 0x2074 + 4) as i32,
+        0x2080..=0x2089 => (unit - 0x2080) as i32,
+        0x24EA => 0,
+        0x2460..=0x2468 => (unit - 0x2460 + 1) as i32,
+        0x2469..=0x2473 => (unit - 0x2469 + 10) as i32,
+        0x2160..=0x216B => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12][(unit - 0x2160) as usize],
+        0x2170..=0x217B => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12][(unit - 0x2170) as usize],
+        0x216C | 0x217C => 50,
+        0x216D | 0x217D => 100,
+        0x216E | 0x217E => 500,
+        0x216F | 0x217F => 1000,
+        _ => -1,
+    }
+}
+
+const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
     method("<init>", "(C)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), int_arg(args, 1));
         void()
@@ -2576,6 +2748,48 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
             };
             object(vm.make_string_utf16(units)?)
         },
+    ),
+    method("getType", "(C)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        int(char_general_category(int_arg(args, 0) as u32 & 0xFFFF))
+    }),
+    method("getType", "(I)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        int(char_general_category(int_arg(args, 0) as u32))
+    }),
+    method(
+        "isTitleCase",
+        "(C)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| boolean(char_is_titlecase(int_arg(args, 0) as u32 & 0xFFFF)),
+    ),
+    method(
+        "isTitleCase",
+        "(I)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| boolean(char_is_titlecase(int_arg(args, 0) as u32)),
+    ),
+    method(
+        "isMirrored",
+        "(C)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| boolean(char_is_mirrored(int_arg(args, 0) as u32 & 0xFFFF)),
+    ),
+    method(
+        "isMirrored",
+        "(I)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| boolean(char_is_mirrored(int_arg(args, 0) as u32)),
+    ),
+    method(
+        "getNumericValue",
+        "(C)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| int(char_numeric_value(int_arg(args, 0) as u32 & 0xFFFF)),
+    ),
+    method(
+        "getNumericValue",
+        "(I)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| int(char_numeric_value(int_arg(args, 0) as u32)),
     ),
 ];
 
