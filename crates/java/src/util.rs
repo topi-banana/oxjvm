@@ -25438,7 +25438,8 @@ const SCANNER_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
             .unwrap_or_default();
         let position = crate::lang::read_int_field(vm, this, "position").max(0) as usize;
         let units: Vec<u16> = input.encode_utf16().collect();
-        boolean(scanner_next_token(&units, position).is_some())
+        let delim = scanner_delimiter(vm, this);
+        boolean(scanner_scan(&units, position, delim.as_deref()).is_some())
     }),
     method("next", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
@@ -25448,10 +25449,11 @@ const SCANNER_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
             .unwrap_or_default();
         let units: Vec<u16> = input.encode_utf16().collect();
         let position = crate::lang::read_int_field(vm, this, "position").max(0) as usize;
-        let Some((start, end)) = scanner_next_token(&units, position) else {
+        let delim = scanner_delimiter(vm, this);
+        let Some((start, end, next)) = scanner_scan(&units, position, delim.as_deref()) else {
             return Err(vm.throw_new("java/util/NoSuchElementException", None));
         };
-        crate::lang::write_int_field(vm, this, "position", end as i32);
+        crate::lang::write_int_field(vm, this, "position", next as i32);
         let token = String::from_utf16_lossy(&units[start..end]);
         object(vm.make_string(&token)?)
     }),
@@ -25510,6 +25512,56 @@ const SCANNER_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     }),
 ];
 
+/// The scanner's custom delimiter as utf16 units, or `None` for the default whitespace
+/// delimiter (also when the pattern uses regex metacharacters the literal reader cannot honor).
+fn scanner_delimiter(vm: &Vm<'_>, this: ObjectRef) -> Option<Vec<u16>> {
+    let class = vm.class_of(this);
+    let delim = vm.read_string_field(this, class, "delimiter")?;
+    if delim.is_empty() || delim.chars().any(|ch| "\\^.|$?*+()[]{}".contains(ch)) {
+        return None;
+    }
+    Some(delim.encode_utf16().collect())
+}
+
+/// The first offset of `needle` within `haystack`, or `None`.
+fn find_subseq(haystack: &[u16], needle: &[u16]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return None;
+    }
+    (0..=haystack.len() - needle.len()).find(|&i| &haystack[i..i + needle.len()] == needle)
+}
+
+/// The next token as (start, end, next_position), honoring a literal delimiter when given.
+fn scanner_scan(
+    units: &[u16],
+    position: usize,
+    delim: Option<&[u16]>,
+) -> Option<(usize, usize, usize)> {
+    let Some(delim) = delim.filter(|d| !d.is_empty()) else {
+        let (start, end) = scanner_next_token(units, position)?;
+        return Some((start, end, end));
+    };
+    let mut pos = position;
+    while pos <= units.len() {
+        match find_subseq(&units[pos..], delim) {
+            Some(offset) => {
+                let delim_start = pos + offset;
+                if delim_start > pos {
+                    return Some((pos, delim_start, delim_start + delim.len()));
+                }
+                pos = delim_start + delim.len();
+            }
+            None => {
+                if pos < units.len() {
+                    return Some((pos, units.len(), units.len()));
+                }
+                return None;
+            }
+        }
+    }
+    None
+}
+
 /// Take the next whitespace-delimited token, advancing the scan position.
 fn scanner_take_token(vm: &mut Vm<'_>, this: ObjectRef) -> Result<String, VmError> {
     let class = vm.class_of(this);
@@ -25518,10 +25570,11 @@ fn scanner_take_token(vm: &mut Vm<'_>, this: ObjectRef) -> Result<String, VmErro
         .unwrap_or_default();
     let units: Vec<u16> = input.encode_utf16().collect();
     let position = crate::lang::read_int_field(vm, this, "position").max(0) as usize;
-    let Some((start, end)) = scanner_next_token(&units, position) else {
+    let delim = scanner_delimiter(vm, this);
+    let Some((start, end, next)) = scanner_scan(&units, position, delim.as_deref()) else {
         return Err(vm.throw_new("java/util/NoSuchElementException", None));
     };
-    crate::lang::write_int_field(vm, this, "position", end as i32);
+    crate::lang::write_int_field(vm, this, "position", next as i32);
     Ok(String::from_utf16_lossy(&units[start..end]))
 }
 
@@ -25533,7 +25586,8 @@ fn scanner_peek_token(vm: &Vm<'_>, this: ObjectRef) -> Option<String> {
         .unwrap_or_default();
     let units: Vec<u16> = input.encode_utf16().collect();
     let position = crate::lang::read_int_field(vm, this, "position").max(0) as usize;
-    let (start, end) = scanner_next_token(&units, position)?;
+    let delim = scanner_delimiter(vm, this);
+    let (start, end, _next) = scanner_scan(&units, position, delim.as_deref())?;
     Some(String::from_utf16_lossy(&units[start..end]))
 }
 
