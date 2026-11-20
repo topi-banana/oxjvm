@@ -1814,7 +1814,7 @@ macro_rules! functional_interface {
 // Each interface carries the same shape; the dispatcher selects by descriptor, so a shared array
 // with one abstract method of each common descriptor is sufficient and lets a single class serve
 // every functional interface users link against.
-const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
+const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 55] = [
     method(
         "apply",
         "(Ljava/lang/Object;)Ljava/lang/Object;",
@@ -2163,6 +2163,22 @@ const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| binary_operator_by(vm, 1, ref_arg(args, 0)),
     ),
+    method(
+        "andThen",
+        "(Ljava/util/function/Consumer;)Ljava/util/function/Consumer;",
+        ACC_PUBLIC,
+        |vm, _, args| consumer_and_then(vm, receiver(args), ref_arg(args, 1)),
+    ),
+    method(
+        "identity",
+        "()Ljava/util/function/UnaryOperator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/util/function/OxjvmIdentity")?;
+            let instance = vm.new_instance(class)?;
+            object(instance)
+        },
+    ),
 ];
 
 fn int_predicate_combine(
@@ -2396,7 +2412,10 @@ pub(crate) const BINARY_OPERATOR_BY: oxjvm_vm::NativeClass = class(
 pub(crate) const OJVM_IDENTITY: oxjvm_vm::NativeClass = class(
     "java/util/function/OxjvmIdentity",
     Some("java/lang/Object"),
-    &["java/util/function/Function"],
+    &[
+        "java/util/function/Function",
+        "java/util/function/UnaryOperator",
+    ],
     ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
     &[],
     &IDENTITY_METHODS,
@@ -2467,6 +2486,61 @@ pub(crate) const OJVM_FUNCTION: oxjvm_vm::NativeClass = class(
         field("second", "Ljava/util/function/Function;", ACC_PRIVATE, None),
     ],
     &OJVM_FUNCTION_METHODS,
+    None,
+);
+
+fn consumer_and_then(
+    vm: &mut Vm<'_>,
+    receiver: ObjectRef,
+    argument: ObjectRef,
+) -> Result<Value, VmError> {
+    if argument.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let class = vm.resolve_class("java/util/function/OxjvmConsumer")?;
+    let instance = vm.new_instance(class)?;
+    for (name, value) in [("first", receiver), ("second", argument)] {
+        let (declaring, field) = vm.find_field(class, name, "Ljava/util/function/Consumer;")?;
+        vm.set_instance_ref(instance, declaring, field, value);
+    }
+    object(instance)
+}
+
+const OJVM_CONSUMER_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "accept",
+    "(Ljava/lang/Object;)V",
+    ACC_PUBLIC,
+    |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let value = ref_arg(args, 1);
+        for name in ["first", "second"] {
+            let consumer = vm
+                .read_ref_field(this, class, name, "Ljava/util/function/Consumer;")
+                .unwrap_or(ObjectRef::NULL);
+            let (consumer_class, consumer_method) =
+                vm.resolve_virtual_method(consumer, "accept", "(Ljava/lang/Object;)V")?;
+            vm.invoke_method(
+                consumer_class,
+                consumer_method,
+                alloc::vec![Value::Ref(consumer), Value::Ref(value)],
+            )?;
+        }
+        void()
+    },
+)];
+
+/// A composed `Consumer` returned by `Consumer.andThen`.
+pub(crate) const OJVM_CONSUMER: oxjvm_vm::NativeClass = class(
+    "java/util/function/OxjvmConsumer",
+    Some("java/lang/Object"),
+    &["java/util/function/Consumer"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[
+        field("first", "Ljava/util/function/Consumer;", ACC_PRIVATE, None),
+        field("second", "Ljava/util/function/Consumer;", ACC_PRIVATE, None),
+    ],
+    &OJVM_CONSUMER_METHODS,
     None,
 );
 

@@ -167,7 +167,7 @@ fn stream_get(vm: &mut Vm<'_>, this: ObjectRef) -> Vec<ObjectRef> {
     stream_elements(vm, this)
 }
 
-const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 43] = [
+const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
     method(
         "of",
         "([Ljava/lang/Object;)Ljava/util/stream/Stream;",
@@ -497,6 +497,31 @@ const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 43] = [
         ACC_PUBLIC | ACC_ABSTRACT,
         abstract_method_pub,
     ),
+    method(
+        "ofNullable",
+        "(Ljava/lang/Object;)Ljava/util/stream/Stream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let value = ref_arg(args, 0);
+            if value.is_null() {
+                object(stream_from(vm, Vec::new())?)
+            } else {
+                object(stream_from(vm, vec![value])?)
+            }
+        },
+    ),
+    method(
+        "min",
+        "(Ljava/util/Comparator;)Ljava/util/Optional;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "max",
+        "(Ljava/util/Comparator;)Ljava/util/Optional;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
 ];
 
 fn stream_builder_init(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
@@ -675,7 +700,7 @@ pub(crate) const STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const OXJVM_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
+const OXJVM_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
     method(
         "filter",
         "(Ljava/util/function/Predicate;)Ljava/util/stream/Stream;",
@@ -1230,6 +1255,18 @@ const OXJVM_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
             object(stream_from(vm, elements)?)
         },
     ),
+    method(
+        "min",
+        "(Ljava/util/Comparator;)Ljava/util/Optional;",
+        ACC_PUBLIC,
+        |vm, _, args| stream_min_max(vm, args, false),
+    ),
+    method(
+        "max",
+        "(Ljava/util/Comparator;)Ljava/util/Optional;",
+        ACC_PUBLIC,
+        |vm, _, args| stream_min_max(vm, args, true),
+    ),
 ];
 
 fn stream_for_each(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
@@ -1238,6 +1275,25 @@ fn stream_for_each(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
         call_accept(vm, consumer, element)?;
     }
     void()
+}
+
+/// `Stream.min`/`max(comparator)`: the extreme element, empty when the stream is empty.
+fn stream_min_max(vm: &mut Vm<'_>, args: &[Value], max: bool) -> Result<Value, VmError> {
+    let comparator = ref_arg(args, 1);
+    if comparator.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let mut elements = stream_get(vm, receiver(args)).into_iter();
+    let Some(mut best) = elements.next() else {
+        return crate::optional::optional_empty_value(vm);
+    };
+    for element in elements {
+        let cmp = call_compare(vm, comparator, element, best)?;
+        if (max && cmp > 0) || (!max && cmp < 0) {
+            best = element;
+        }
+    }
+    crate::optional::optional_new(vm, best)
 }
 
 fn stream_find(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {

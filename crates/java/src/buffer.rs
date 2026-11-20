@@ -587,7 +587,7 @@ fn byte_buffer_put_at(
     Ok(())
 }
 
-const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 60] = [
+const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 61] = [
     method(
         "allocate",
         "(I)Ljava/nio/ByteBuffer;",
@@ -1363,6 +1363,41 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 60] = [
                 buffer_capacity(vm, this)
             );
             object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "asIntBuffer",
+        "()Ljava/nio/IntBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            // The view reads the remaining bytes in groups of four, in this buffer's byte order.
+            let this = receiver(args);
+            let bytes = byte_buffer_bytes(vm, this);
+            let offset = byte_buffer_offset(vm, this);
+            let position = buffer_position(vm, this);
+            let limit = buffer_limit(vm, this);
+            let little = byte_order_little(vm, byte_buffer_order(vm, this));
+            let count = ((limit - position).max(0) / 4) as usize;
+            let ints = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Int, count)?;
+            for index in 0..count {
+                let base = offset + position + index as i32 * 4;
+                let mut value = 0u32;
+                for k in 0..4 {
+                    let b = vm.array_get(bytes, base + k)?.as_int() as u32 & 0xFF;
+                    let shift = if little { k * 8 } else { (3 - k) * 8 };
+                    value |= b << shift;
+                }
+                vm.array_set(ints, index as i32, Value::Int(value as i32), false)?;
+            }
+            object(new_int_buffer(
+                vm,
+                ints,
+                0,
+                count as i32,
+                0,
+                count as i32,
+                false,
+            )?)
         },
     ),
 ];
