@@ -1012,3 +1012,173 @@ fn locale_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     }
     Ok(())
 }
+
+/// `java.util.Locale$Builder`: builds a locale from its parts.
+pub(crate) const LOCALE_BUILDER: oxjvm_vm::NativeClass = class(
+    "java/util/Locale$Builder",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("language", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("country", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("variant", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("script", "Ljava/lang/String;", ACC_PRIVATE, None),
+    ],
+    &LOCALE_BUILDER_METHODS,
+    None,
+);
+
+fn locale_builder_part(vm: &Vm<'_>, this: ObjectRef, name: &str) -> String {
+    vm.read_string_field(this, vm.class_of(this), name)
+        .unwrap_or_default()
+}
+
+fn locale_builder_set(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+    value: ObjectRef,
+) -> Result<Value, VmError> {
+    let class = vm.class_of(this);
+    if let Some((declaring, field)) = vm.find_field_opt(class, name, "Ljava/lang/String;") {
+        vm.set_instance_ref(this, declaring, field, value);
+    }
+    object(this)
+}
+
+const LOCALE_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        for name in ["language", "country", "variant", "script"] {
+            let empty = vm.make_string("")?;
+            let (declaring, field) = vm.find_field(class, name, "Ljava/lang/String;")?;
+            vm.set_instance_ref(this, declaring, field, empty);
+        }
+        void()
+    }),
+    method(
+        "setLanguage",
+        "(Ljava/lang/String;)Ljava/util/Locale$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| locale_builder_set(vm, receiver(args), "language", ref_arg(args, 1)),
+    ),
+    method(
+        "setRegion",
+        "(Ljava/lang/String;)Ljava/util/Locale$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| locale_builder_set(vm, receiver(args), "country", ref_arg(args, 1)),
+    ),
+    method(
+        "setVariant",
+        "(Ljava/lang/String;)Ljava/util/Locale$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| locale_builder_set(vm, receiver(args), "variant", ref_arg(args, 1)),
+    ),
+    method(
+        "setScript",
+        "(Ljava/lang/String;)Ljava/util/Locale$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| locale_builder_set(vm, receiver(args), "script", ref_arg(args, 1)),
+    ),
+    method(
+        "setLanguageTag",
+        "(Ljava/lang/String;)Ljava/util/Locale$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let tag = vm.string_or_empty(ref_arg(args, 1));
+            let (_canonical, language, country, variant) = parse_language_tag(&tag);
+            let language = convert_old_language(&language);
+            let lang_ref = vm.make_string(&language)?;
+            locale_builder_set(vm, this, "language", lang_ref)?;
+            let country_ref = vm.make_string(&country)?;
+            locale_builder_set(vm, this, "country", country_ref)?;
+            let variant_ref = vm.make_string(&variant)?;
+            locale_builder_set(vm, this, "variant", variant_ref)?;
+            object(this)
+        },
+    ),
+    method(
+        "clear",
+        "()Ljava/util/Locale$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            for name in ["language", "country", "variant", "script"] {
+                let empty = vm.make_string("")?;
+                locale_builder_set(vm, this, name, empty)?;
+            }
+            object(this)
+        },
+    ),
+    method(
+        "clearExtensions",
+        "()Ljava/util/Locale$Builder;",
+        ACC_PUBLIC,
+        |_vm, _, args| object(receiver(args)),
+    ),
+    method(
+        "setExtension",
+        "(CLjava/lang/String;)Ljava/util/Locale$Builder;",
+        ACC_PUBLIC,
+        |_vm, _, args| object(receiver(args)),
+    ),
+    method(
+        "build",
+        "()Ljava/util/Locale;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let language = locale_builder_part(vm, this, "language");
+            let country = locale_builder_part(vm, this, "country");
+            let variant = locale_builder_part(vm, this, "variant");
+            let class = vm.resolve_class("java/util/Locale")?;
+            let instance = vm.new_instance(class)?;
+            let (declaring, ctor) = vm
+                .find_method(
+                    class,
+                    "<init>",
+                    "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
+                )
+                .ok_or_else(|| VmError::internal("Locale lacks its constructor"))?;
+            let language_ref = vm.make_string(&language)?;
+            let country_ref = vm.make_string(&country)?;
+            let variant_ref = vm.make_string(&variant)?;
+            vm.invoke_method(
+                declaring,
+                ctor,
+                vec![
+                    Value::Ref(instance),
+                    Value::Ref(language_ref),
+                    Value::Ref(country_ref),
+                    Value::Ref(variant_ref),
+                ],
+            )?;
+            object(instance)
+        },
+    ),
+    method(
+        "toLanguageTag",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let language = locale_builder_part(vm, this, "language");
+            let country = locale_builder_part(vm, this, "country");
+            let variant = locale_builder_part(vm, this, "variant");
+            let mut tag = language.clone();
+            if !country.is_empty() {
+                tag = alloc::format!("{tag}-{country}");
+            }
+            if !variant.is_empty() {
+                tag = alloc::format!("{tag}-{variant}");
+            }
+            if tag.is_empty() {
+                tag = String::from("und");
+            }
+            object(vm.make_string(&tag)?)
+        },
+    ),
+];

@@ -8,7 +8,7 @@ use oxjvm_classfile::flags::*;
 use oxjvm_vm::{ArrayComponent, ArrayData, ObjectData, ObjectRef, Value, Vm, VmError};
 
 use crate::{
-    boolean, class, field, int, int_arg, long, long_arg, method, object, receiver, ref_arg,
+    boolean, class, double, field, int, int_arg, long, long_arg, method, object, receiver, ref_arg,
     string_arg, void,
 };
 
@@ -4258,7 +4258,7 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 211] = [
                 ref_arg(args, 0),
                 int_arg(args, 1),
                 int_arg(args, 2),
-                crate::double(crate::double_arg(args, 3))?,
+                double(crate::double_arg(args, 3))?,
                 false,
             )
         },
@@ -25325,7 +25325,7 @@ pub(crate) const SIMPLE_TIME_ZONE: oxjvm_vm::NativeClass = class(
 // Scanner (string sources)
 // -------------------------------------------------------------------------------------------
 
-const SCANNER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const SCANNER_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -25472,7 +25472,70 @@ const SCANNER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
             object(this)
         },
     ),
+    method("nextInt", "()I", ACC_PUBLIC, |vm, _, args| {
+        let token = scanner_take_token(vm, receiver(args))?;
+        match token.trim().parse::<i32>() {
+            Ok(value) => int(value),
+            Err(_) => Err(vm.throw_new("java/util/InputMismatchException", None)),
+        }
+    }),
+    method("hasNextInt", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let ok = scanner_peek_token(vm, receiver(args))
+            .is_some_and(|token| token.trim().parse::<i32>().is_ok());
+        boolean(ok)
+    }),
+    method("nextLong", "()J", ACC_PUBLIC, |vm, _, args| {
+        let token = scanner_take_token(vm, receiver(args))?;
+        match token.trim().parse::<i64>() {
+            Ok(value) => long(value),
+            Err(_) => Err(vm.throw_new("java/util/InputMismatchException", None)),
+        }
+    }),
+    method("hasNextLong", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let ok = scanner_peek_token(vm, receiver(args))
+            .is_some_and(|token| token.trim().parse::<i64>().is_ok());
+        boolean(ok)
+    }),
+    method("nextDouble", "()D", ACC_PUBLIC, |vm, _, args| {
+        let token = scanner_take_token(vm, receiver(args))?;
+        match token.trim().parse::<f64>() {
+            Ok(value) => double(value),
+            Err(_) => Err(vm.throw_new("java/util/InputMismatchException", None)),
+        }
+    }),
+    method("hasNextDouble", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let ok = scanner_peek_token(vm, receiver(args))
+            .is_some_and(|token| token.trim().parse::<f64>().is_ok());
+        boolean(ok)
+    }),
 ];
+
+/// Take the next whitespace-delimited token, advancing the scan position.
+fn scanner_take_token(vm: &mut Vm<'_>, this: ObjectRef) -> Result<String, VmError> {
+    let class = vm.class_of(this);
+    let input = vm
+        .read_string_field(this, class, "input")
+        .unwrap_or_default();
+    let units: Vec<u16> = input.encode_utf16().collect();
+    let position = crate::lang::read_int_field(vm, this, "position").max(0) as usize;
+    let Some((start, end)) = scanner_next_token(&units, position) else {
+        return Err(vm.throw_new("java/util/NoSuchElementException", None));
+    };
+    crate::lang::write_int_field(vm, this, "position", end as i32);
+    Ok(String::from_utf16_lossy(&units[start..end]))
+}
+
+/// Peek at the next token without advancing the scan position.
+fn scanner_peek_token(vm: &Vm<'_>, this: ObjectRef) -> Option<String> {
+    let class = vm.class_of(this);
+    let input = vm
+        .read_string_field(this, class, "input")
+        .unwrap_or_default();
+    let units: Vec<u16> = input.encode_utf16().collect();
+    let position = crate::lang::read_int_field(vm, this, "position").max(0) as usize;
+    let (start, end) = scanner_next_token(&units, position)?;
+    Some(String::from_utf16_lossy(&units[start..end]))
+}
 
 /// The (start, end) utf16 offsets of the next whitespace-delimited token at or after
 /// `position`, or `None` when the input is exhausted.
@@ -28547,3 +28610,198 @@ pub(crate) const EVENT_LISTENER_PROXY: oxjvm_vm::NativeClass = class(
     &EVENT_LISTENER_PROXY_METHODS,
     None,
 );
+
+/// `java.util.InputMismatchException`, thrown when a scanner token does not match.
+pub(crate) const INPUT_MISMATCH_EXCEPTION: oxjvm_vm::NativeClass = {
+    const METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+        method(
+            "<init>",
+            "()V",
+            ACC_PUBLIC,
+            crate::throwable::exception_ctor,
+        ),
+        method(
+            "<init>",
+            "(Ljava/lang/String;)V",
+            ACC_PUBLIC,
+            crate::throwable::exception_ctor,
+        ),
+        method(
+            "<init>",
+            "(Ljava/lang/String;Ljava/lang/Throwable;)V",
+            ACC_PUBLIC,
+            crate::throwable::exception_ctor,
+        ),
+        method(
+            "<init>",
+            "(Ljava/lang/Throwable;)V",
+            ACC_PUBLIC,
+            crate::throwable::exception_ctor,
+        ),
+    ];
+    class(
+        "java/util/InputMismatchException",
+        Some("java/util/NoSuchElementException"),
+        &[],
+        ACC_PUBLIC,
+        &[],
+        &METHODS,
+        None,
+    )
+};
+
+/// `java.util.Observer`: the callback an `Observable` notifies.
+pub(crate) const OBSERVER: oxjvm_vm::NativeClass = class(
+    "java/util/Observer",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &OBSERVER_METHODS,
+    None,
+);
+
+const OBSERVER_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "update",
+    "(Ljava/util/Observable;Ljava/lang/Object;)V",
+    ACC_PUBLIC | ACC_ABSTRACT,
+    |_, _, _| void(),
+)];
+
+/// `java.util.Observable`: the legacy push-notification model.
+pub(crate) const OBSERVABLE: oxjvm_vm::NativeClass = class(
+    "java/util/Observable",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("changed", "I", ACC_PRIVATE, None),
+        field("observers", "Ljava/util/ArrayList;", ACC_PRIVATE, None),
+    ],
+    &OBSERVABLE_METHODS,
+    None,
+);
+
+fn observable_observers(vm: &mut Vm<'_>, this: ObjectRef) -> Result<ObjectRef, VmError> {
+    let class = vm.class_of(this);
+    Ok(vm
+        .read_ref_field(this, class, "observers", "Ljava/util/ArrayList;")
+        .unwrap_or(ObjectRef::NULL))
+}
+
+fn observable_notify(vm: &mut Vm<'_>, this: ObjectRef, arg: ObjectRef) -> Result<Value, VmError> {
+    if crate::lang::read_int_field(vm, this, "changed") == 0 {
+        return void();
+    }
+    let list = observable_observers(vm, this)?;
+    let (class, method) = vm.resolve_virtual_method(list, "toArray", "()[Ljava/lang/Object;")?;
+    let array = vm
+        .invoke_method(class, method, vec![Value::Ref(list)])?
+        .as_ref();
+    let length = vm.array_length(array).unwrap_or(0);
+    for index in 0..length {
+        let observer = vm.array_get(array, index as i32)?.as_ref();
+        if observer.is_null() {
+            continue;
+        }
+        let (class, method) = vm.resolve_virtual_method(
+            observer,
+            "update",
+            "(Ljava/util/Observable;Ljava/lang/Object;)V",
+        )?;
+        vm.invoke_method(
+            class,
+            method,
+            vec![Value::Ref(observer), Value::Ref(this), Value::Ref(arg)],
+        )?;
+    }
+    crate::lang::write_int_field(vm, this, "changed", 0);
+    void()
+}
+
+const OBSERVABLE_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let list = new_array_list(vm)?;
+        let class = vm.class_of(this);
+        let (declaring, field) = vm.find_field(class, "observers", "Ljava/util/ArrayList;")?;
+        vm.set_instance_ref(this, declaring, field, list);
+        void()
+    }),
+    method(
+        "addObserver",
+        "(Ljava/util/Observer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let observer = ref_arg(args, 1);
+            let list = observable_observers(vm, this)?;
+            let (class, method) =
+                vm.resolve_virtual_method(list, "contains", "(Ljava/lang/Object;)Z")?;
+            let present = vm
+                .invoke_method(class, method, vec![Value::Ref(list), Value::Ref(observer)])?
+                .as_int()
+                != 0;
+            if !present {
+                let (class, method) =
+                    vm.resolve_virtual_method(list, "add", "(Ljava/lang/Object;)Z")?;
+                vm.invoke_method(class, method, vec![Value::Ref(list), Value::Ref(observer)])?;
+            }
+            void()
+        },
+    ),
+    method(
+        "deleteObserver",
+        "(Ljava/util/Observer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let observer = ref_arg(args, 1);
+            let list = observable_observers(vm, this)?;
+            let (class, method) =
+                vm.resolve_virtual_method(list, "remove", "(Ljava/lang/Object;)Z")?;
+            vm.invoke_method(class, method, vec![Value::Ref(list), Value::Ref(observer)])?;
+            void()
+        },
+    ),
+    method("countObservers", "()I", ACC_PUBLIC, |vm, _, args| {
+        let list = observable_observers(vm, receiver(args))?;
+        let (class, method) = vm.resolve_virtual_method(list, "size", "()I")?;
+        vm.invoke_method(class, method, vec![Value::Ref(list)])
+    }),
+    method(
+        "setChanged",
+        "()V",
+        ACC_PUBLIC | ACC_PROTECTED,
+        |vm, _, args| {
+            crate::lang::write_int_field(vm, receiver(args), "changed", 1);
+            void()
+        },
+    ),
+    method(
+        "clearChanged",
+        "()V",
+        ACC_PUBLIC | ACC_PROTECTED,
+        |vm, _, args| {
+            crate::lang::write_int_field(vm, receiver(args), "changed", 0);
+            void()
+        },
+    ),
+    method("hasChanged", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "changed") != 0)
+    }),
+    method("notifyObservers", "()V", ACC_PUBLIC, |vm, _, args| {
+        observable_notify(vm, receiver(args), ObjectRef::NULL)
+    }),
+    method(
+        "notifyObservers",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| observable_notify(vm, receiver(args), ref_arg(args, 1)),
+    ),
+    method("deleteObservers", "()V", ACC_PUBLIC, |vm, _, args| {
+        let list = observable_observers(vm, receiver(args))?;
+        let (class, method) = vm.resolve_virtual_method(list, "clear", "()V")?;
+        vm.invoke_method(class, method, vec![Value::Ref(list)])
+    }),
+];

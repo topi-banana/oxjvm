@@ -48,11 +48,19 @@ fn attribute_key(vm: &mut Vm<'_>, key: ObjectRef) -> Result<ObjectRef, VmError> 
     Ok(name)
 }
 
+/// The text of an attribute key, which may be a `String` or an `Attributes$Name`.
+fn attribute_key_text(vm: &Vm<'_>, key: ObjectRef) -> String {
+    if let Some(text) = vm.string_value(key) {
+        return text;
+    }
+    vm.read_string_field_any(key, "name").unwrap_or_default()
+}
+
 fn attributes_text(vm: &Vm<'_>, attributes: ObjectRef) -> Vec<(String, String)> {
     let map = attributes_map(vm, attributes);
     let mut pairs = Vec::new();
     for (key, value) in crate::util::hash_map_pairs(vm, map) {
-        pairs.push((vm.string_or_empty(key), vm.string_or_empty(value)));
+        pairs.push((attribute_key_text(vm, key), vm.string_or_empty(value)));
     }
     pairs
 }
@@ -459,7 +467,7 @@ fn manifest_entries(vm: &Vm<'_>, manifest: ObjectRef) -> ObjectRef {
 
 fn manifest_text(vm: &mut Vm<'_>, manifest: ObjectRef) -> Result<String, VmError> {
     let mut text = String::new();
-    text.push_str("Manifest-Version: 1.0\r\n\r\n");
+    text.push_str("Manifest-Version: 1.0\r\n");
     for (key, value) in attributes_text(vm, manifest_main(vm, manifest)) {
         if key != "Manifest-Version" {
             text.push_str(&alloc::format!("{key}: {value}\r\n"));
@@ -498,6 +506,7 @@ const MANIFEST_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
             let source = ref_arg(args, 1);
             for (key, value) in attributes_text(vm, manifest_main(vm, source)) {
                 let key = vm.make_string(&key)?;
+                let key = attribute_key(vm, key)?;
                 let value = vm.make_string(&value)?;
                 attributes_put(vm, manifest_main(vm, receiver(args)), key, value)?;
             }
@@ -635,6 +644,7 @@ fn manifest_read(vm: &mut Vm<'_>, manifest: ObjectRef, input: ObjectRef) -> Resu
             section_name = Some(value.to_string());
         } else {
             let key = vm.make_string(key)?;
+            let key = attribute_key(vm, key)?;
             let value = vm.make_string(value)?;
             attributes_put(vm, current, key, value)?;
         }
