@@ -988,7 +988,7 @@ pub(crate) const POSIX_FILE_PERMISSIONS: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 64] = [
+const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 66] = [
     method(
         "getPosixFilePermissions",
         "(Ljava/nio/file/Path;[Ljava/nio/file/LinkOption;)Ljava/util/Set;",
@@ -1973,7 +1973,147 @@ const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 64] = [
             }
         },
     ),
+    method(
+        "readAttributes",
+        "(Ljava/nio/file/Path;Ljava/lang/String;[Ljava/nio/file/LinkOption;)Ljava/util/Map;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            let attribute = string_arg(vm, args[1])?;
+            let Some(metadata) = fs_metadata(vm, &path) else {
+                return Err(vm.throw_new("java/io/IOException", Some(&path)));
+            };
+            let (view, names) = match attribute.split_once(':') {
+                Some((view, names)) => (view, names),
+                None => ("basic", attribute.as_str()),
+            };
+            let keys: Vec<&str> = if names == "*" {
+                match view {
+                    "posix" | "unix" => vec![
+                        "lastModifiedTime",
+                        "lastAccessTime",
+                        "creationTime",
+                        "size",
+                        "isDirectory",
+                        "isRegularFile",
+                        "isSymbolicLink",
+                        "isOther",
+                        "fileKey",
+                        "permissions",
+                        "group",
+                        "owner",
+                    ],
+                    "dos" => vec![
+                        "lastModifiedTime",
+                        "lastAccessTime",
+                        "creationTime",
+                        "size",
+                        "isDirectory",
+                        "isRegularFile",
+                        "isSymbolicLink",
+                        "isOther",
+                        "fileKey",
+                        "readonly",
+                        "hidden",
+                        "system",
+                        "archive",
+                    ],
+                    "owner" => vec!["owner"],
+                    _ => vec![
+                        "lastModifiedTime",
+                        "lastAccessTime",
+                        "creationTime",
+                        "size",
+                        "isDirectory",
+                        "isRegularFile",
+                        "isSymbolicLink",
+                        "isOther",
+                        "fileKey",
+                    ],
+                }
+            } else {
+                names.split(',').collect()
+            };
+            let map = crate::util::linked_hash_map_new(vm)?;
+            for name in keys {
+                let key = vm.make_string(name)?;
+                let value = match name {
+                    "permissions" => crate::util::hash_set_from(vm, &[])?,
+                    "owner" | "group" | "fileKey" => ObjectRef::NULL,
+                    "readonly" | "hidden" | "system" | "archive" => {
+                        crate::boxed::box_value(vm, Value::Int(0), "Z")?.as_ref()
+                    }
+                    _ => basic_attribute_value(vm, &metadata, name)?.as_ref(),
+                };
+                crate::util::hash_map_insert(vm, map, key, value)?;
+            }
+            object(map)
+        },
+    ),
+    method(
+        "setAttribute",
+        "(Ljava/nio/file/Path;Ljava/lang/String;Ljava/lang/Object;[Ljava/nio/file/LinkOption;)Ljava/nio/file/Path;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            let attribute = string_arg(vm, args[1])?;
+            let value = ref_arg(args, 2);
+            let (view, name) = match attribute.split_once(':') {
+                Some((view, name)) => (view, name),
+                None => ("basic", attribute.as_str()),
+            };
+            if view == "basic"
+                && matches!(name, "lastModifiedTime" | "lastAccessTime" | "creationTime")
+            {
+                let millis = vm
+                    .read_instance_long_named(value, vm.class_of(value), "millis", "J")
+                    .unwrap_or(0);
+                if !vm
+                    .host
+                    .filesystem()
+                    .map(|fs| fs.set_modified(&path, millis))
+                    .unwrap_or(false)
+                {
+                    return Err(vm.throw_new("java/io/IOException", Some(&path)));
+                }
+                return object(ref_arg(args, 0));
+            }
+            Err(vm.throw_new("java/lang/UnsupportedOperationException", Some(&attribute)))
+        },
+    ),
 ];
+
+/// Boxed value of a single `basic` view attribute for `metadata`.
+fn basic_attribute_value(
+    vm: &mut Vm<'_>,
+    metadata: &oxjvm_platform::FileMetadata,
+    name: &str,
+) -> Result<Value, VmError> {
+    match name {
+        "size" => crate::boxed::box_value(vm, Value::Long(metadata.len as i64), "J"),
+        "isDirectory" => crate::boxed::box_value(
+            vm,
+            Value::Int(i32::from(metadata.kind == FileKind::Directory)),
+            "Z",
+        ),
+        "isRegularFile" => crate::boxed::box_value(
+            vm,
+            Value::Int(i32::from(metadata.kind == FileKind::File)),
+            "Z",
+        ),
+        "isSymbolicLink" => crate::boxed::box_value(vm, Value::Int(0), "Z"),
+        "isOther" => crate::boxed::box_value(
+            vm,
+            Value::Int(i32::from(metadata.kind == FileKind::Other)),
+            "Z",
+        ),
+        "lastModifiedTime" | "creationTime" | "lastAccessTime" => {
+            file_time_of(vm, metadata.modified_millis)
+        }
+        "fileKey" => Ok(Value::Ref(ObjectRef::NULL)),
+        _ => Err(vm.throw_new("java/lang/UnsupportedOperationException", Some(name))),
+    }
+}
 
 fn read_text_file(vm: &mut Vm<'_>, path: &str) -> Result<String, VmError> {
     let Some(bytes) = vm.host.filesystem().and_then(|fs| fs.read(path)) else {
