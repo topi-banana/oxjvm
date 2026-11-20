@@ -148,7 +148,7 @@ pub fn is_non_writable_property(key: &str) -> bool {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 1060] = [
+static REGISTRY: [NativeClass; 1065] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -412,6 +412,8 @@ static REGISTRY: [NativeClass; 1060] = [
     buffer::BYTE_ORDER,
     buffer::CHAR_BUFFER,
     buffer::OJVM_CHAR_BUFFER,
+    buffer::INT_BUFFER,
+    buffer::OJVM_INT_BUFFER,
     math::MATH,
     math::STRICT_MATH,
     math::BIG_INTEGER,
@@ -442,6 +444,8 @@ static REGISTRY: [NativeClass; 1060] = [
     io::FILE_DESCRIPTOR,
     io::INPUT_STREAM,
     io::BYTE_ARRAY_INPUT_STREAM,
+    io::PUSHBACK_INPUT_STREAM,
+    io::SEQUENCE_INPUT_STREAM,
     io::BYTE_ARRAY_OUTPUT_STREAM,
     io::READER,
     io::WRITER,
@@ -1172,6 +1176,7 @@ static REGISTRY: [NativeClass; 1060] = [
     atomic::DOUBLE_ADDER,
     atomic::DOUBLE_ACCUMULATOR,
     concurrent::TIME_UNIT,
+    concurrent::SEMAPHORE,
     executor::FUTURE,
     executor::RUNNABLE_FUTURE,
     executor::SCHEDULED_FUTURE,

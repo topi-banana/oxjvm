@@ -1115,6 +1115,431 @@ fn byte_array_input_init(
     void()
 }
 
+// -------------------------------------------------------------------------------------------
+// PushbackInputStream / SequenceInputStream
+// -------------------------------------------------------------------------------------------
+
+fn pushback_buffer(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "buf", "[B")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn pushback_pos(vm: &Vm<'_>, this: ObjectRef) -> i32 {
+    crate::lang::read_int_field(vm, this, "pos")
+}
+
+fn pushback_in(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "in", "Ljava/io/InputStream;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn stream_read_byte(vm: &mut Vm<'_>, stream: ObjectRef) -> Result<i32, VmError> {
+    if stream.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let (class, method) = vm.resolve_virtual_method(stream, "read", "()I")?;
+    Ok(vm
+        .invoke_method(class, method, vec![Value::Ref(stream)])?
+        .as_int())
+}
+
+const PUSHBACK_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+    method(
+        "<init>",
+        "(Ljava/io/InputStream;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "in", "Ljava/io/InputStream;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            let buf = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, 1)?;
+            let (declaring, field) = vm.find_field(vm.class_of(this), "buf", "[B")?;
+            vm.set_instance_ref(this, declaring, field, buf);
+            crate::lang::write_int_field(vm, this, "pos", 1);
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/InputStream;I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let size = int_arg(args, 2);
+            if size <= 0 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("size <= 0")));
+            }
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "in", "Ljava/io/InputStream;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            let buf = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, size as usize)?;
+            let (declaring, field) = vm.find_field(vm.class_of(this), "buf", "[B")?;
+            vm.set_instance_ref(this, declaring, field, buf);
+            crate::lang::write_int_field(vm, this, "pos", size);
+            void()
+        },
+    ),
+    method("read", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let buf = pushback_buffer(vm, this);
+        let pos = pushback_pos(vm, this);
+        let length = vm.array_length(buf)? as i32;
+        if pos < length {
+            let value = vm.array_get(buf, pos)?.as_int() & 0xff;
+            crate::lang::write_int_field(vm, this, "pos", pos + 1);
+            return int(value);
+        }
+        int(stream_read_byte(vm, pushback_in(vm, this))?)
+    }),
+    method("read", "([BII)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let dst = ref_arg(args, 1);
+        let mut offset = int_arg(args, 2);
+        let mut length = int_arg(args, 3);
+        if dst.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let total = vm.array_length(dst)? as i32;
+        if offset < 0 || length < 0 || length > total - offset {
+            return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+        }
+        if length == 0 {
+            return int(0);
+        }
+        let buf = pushback_buffer(vm, this);
+        let mut pos = pushback_pos(vm, this);
+        let buf_len = vm.array_length(buf)? as i32;
+        let mut count = 0;
+        while pos < buf_len && length > 0 {
+            let value = vm.array_get(buf, pos)?.as_int();
+            vm.array_set(dst, offset, Value::Int(value), true)?;
+            pos += 1;
+            offset += 1;
+            length -= 1;
+            count += 1;
+        }
+        crate::lang::write_int_field(vm, this, "pos", pos);
+        if length > 0 {
+            let stream = pushback_in(vm, this);
+            let (class, method) = vm.resolve_virtual_method(stream, "read", "([BII)I")?;
+            let read = vm
+                .invoke_method(
+                    class,
+                    method,
+                    vec![
+                        Value::Ref(stream),
+                        Value::Ref(dst),
+                        Value::Int(offset),
+                        Value::Int(length),
+                    ],
+                )?
+                .as_int();
+            if read > 0 {
+                count += read;
+            } else if count == 0 {
+                return int(read);
+            }
+        }
+        int(count)
+    }),
+    method("unread", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let pos = pushback_pos(vm, this);
+        if pos == 0 {
+            return Err(vm.throw_new("java/io/IOException", Some("Push back buffer is full")));
+        }
+        let buf = pushback_buffer(vm, this);
+        vm.array_set(buf, pos - 1, Value::Int(int_arg(args, 1)), true)?;
+        crate::lang::write_int_field(vm, this, "pos", pos - 1);
+        void()
+    }),
+    method("unread", "([B)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let src = ref_arg(args, 1);
+        let length = vm.array_length(src)? as i32;
+        let pos = pushback_pos(vm, this);
+        if length > pos {
+            return Err(vm.throw_new("java/io/IOException", Some("Push back buffer is full")));
+        }
+        let buf = pushback_buffer(vm, this);
+        for index in 0..length {
+            let value = vm.array_get(src, index)?.as_int();
+            vm.array_set(buf, pos - length + index, Value::Int(value), true)?;
+        }
+        crate::lang::write_int_field(vm, this, "pos", pos - length);
+        void()
+    }),
+    method("unread", "([BII)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let src = ref_arg(args, 1);
+        let offset = int_arg(args, 2);
+        let length = int_arg(args, 3);
+        let pos = pushback_pos(vm, this);
+        if length > pos {
+            return Err(vm.throw_new("java/io/IOException", Some("Push back buffer is full")));
+        }
+        let buf = pushback_buffer(vm, this);
+        for index in 0..length {
+            let value = vm.array_get(src, offset + index)?.as_int();
+            vm.array_set(buf, pos - length + index, Value::Int(value), true)?;
+        }
+        crate::lang::write_int_field(vm, this, "pos", pos - length);
+        void()
+    }),
+    method("available", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let buf = pushback_buffer(vm, this);
+        let pushed = vm.array_length(buf)? as i32 - pushback_pos(vm, this);
+        let stream = pushback_in(vm, this);
+        let (class, method) = vm.resolve_virtual_method(stream, "available", "()I")?;
+        let available = vm
+            .invoke_method(class, method, vec![Value::Ref(stream)])?
+            .as_int();
+        int(pushed.max(0) + available)
+    }),
+    method("markSupported", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let mut remaining = crate::long_arg(args, 1);
+        if remaining <= 0 {
+            return long(0);
+        }
+        let buf = pushback_buffer(vm, this);
+        let mut pos = pushback_pos(vm, this);
+        let buf_len = vm.array_length(buf)? as i32;
+        let mut skipped = 0i64;
+        while pos < buf_len && remaining > 0 {
+            pos += 1;
+            remaining -= 1;
+            skipped += 1;
+        }
+        crate::lang::write_int_field(vm, this, "pos", pos);
+        if remaining > 0 {
+            let stream = pushback_in(vm, this);
+            let (class, method) = vm.resolve_virtual_method(stream, "skip", "(J)J")?;
+            skipped += vm
+                .invoke_method(
+                    class,
+                    method,
+                    vec![Value::Ref(stream), Value::Long(remaining)],
+                )?
+                .as_long();
+        }
+        long(skipped)
+    }),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        let stream = pushback_in(vm, receiver(args));
+        if stream.is_null() {
+            return void();
+        }
+        let (class, method) = vm.resolve_virtual_method(stream, "close", "()V")?;
+        vm.invoke_method(class, method, vec![Value::Ref(stream)])?;
+        void()
+    }),
+];
+
+pub(crate) const PUSHBACK_INPUT_STREAM: oxjvm_vm::NativeClass = class(
+    "java/io/PushbackInputStream",
+    Some("java/io/FilterInputStream"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("buf", "[B", ACC_PROTECTED, None),
+        field("pos", "I", ACC_PROTECTED, None),
+    ],
+    &PUSHBACK_INPUT_METHODS,
+    None,
+);
+
+fn sequence_streams(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "streams", "Ljava/util/ArrayList;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn sequence_current(vm: &mut Vm<'_>, this: ObjectRef) -> Result<ObjectRef, VmError> {
+    let streams = sequence_streams(vm, this);
+    let index = crate::lang::read_int_field(vm, this, "index");
+    let (class, method) = vm.resolve_virtual_method(streams, "size", "()I")?;
+    let size = vm
+        .invoke_method(class, method, vec![Value::Ref(streams)])?
+        .as_int();
+    if index >= size {
+        return Ok(ObjectRef::NULL);
+    }
+    let (class, method) = vm.resolve_virtual_method(streams, "get", "(I)Ljava/lang/Object;")?;
+    Ok(vm
+        .invoke_method(class, method, vec![Value::Ref(streams), Value::Int(index)])?
+        .as_ref())
+}
+
+fn sequence_advance(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    let current = sequence_current(vm, this)?;
+    if !current.is_null() {
+        let (class, method) = vm.resolve_virtual_method(current, "close", "()V")?;
+        vm.invoke_method(class, method, vec![Value::Ref(current)])?;
+    }
+    crate::lang::write_int_field(
+        vm,
+        this,
+        "index",
+        crate::lang::read_int_field(vm, this, "index") + 1,
+    );
+    Ok(())
+}
+
+const SEQUENCE_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method(
+        "<init>",
+        "(Ljava/io/InputStream;Ljava/io/InputStream;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let first = ref_arg(args, 1);
+            let second = ref_arg(args, 2);
+            if first.is_null() || second.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let list = crate::util::array_list_from(vm, &[first, second])?;
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "streams", "Ljava/util/ArrayList;")?;
+            vm.set_instance_ref(this, declaring, field, list);
+            crate::lang::write_int_field(vm, this, "index", 0);
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/util/Enumeration;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let enumeration = ref_arg(args, 1);
+            if enumeration.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let list = crate::util::array_list_from(vm, &[])?;
+            loop {
+                let (class, method) =
+                    vm.resolve_virtual_method(enumeration, "hasMoreElements", "()Z")?;
+                let more = vm
+                    .invoke_method(class, method, vec![Value::Ref(enumeration)])?
+                    .as_int()
+                    != 0;
+                if !more {
+                    break;
+                }
+                let (class, method) =
+                    vm.resolve_virtual_method(enumeration, "nextElement", "()Ljava/lang/Object;")?;
+                let stream = vm
+                    .invoke_method(class, method, vec![Value::Ref(enumeration)])?
+                    .as_ref();
+                let (class, method) =
+                    vm.resolve_virtual_method(list, "add", "(Ljava/lang/Object;)Z")?;
+                vm.invoke_method(class, method, vec![Value::Ref(list), Value::Ref(stream)])?;
+            }
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "streams", "Ljava/util/ArrayList;")?;
+            vm.set_instance_ref(this, declaring, field, list);
+            crate::lang::write_int_field(vm, this, "index", 0);
+            void()
+        },
+    ),
+    method("read", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        loop {
+            let current = sequence_current(vm, this)?;
+            if current.is_null() {
+                return int(-1);
+            }
+            let value = stream_read_byte(vm, current)?;
+            if value >= 0 {
+                return int(value);
+            }
+            sequence_advance(vm, this)?;
+        }
+    }),
+    method("read", "([BII)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let dst = ref_arg(args, 1);
+        let offset = int_arg(args, 2);
+        let length = int_arg(args, 3);
+        if dst.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        if length == 0 {
+            return int(0);
+        }
+        loop {
+            let current = sequence_current(vm, this)?;
+            if current.is_null() {
+                return int(-1);
+            }
+            let (class, method) = vm.resolve_virtual_method(current, "read", "([BII)I")?;
+            let read = vm
+                .invoke_method(
+                    class,
+                    method,
+                    vec![
+                        Value::Ref(current),
+                        Value::Ref(dst),
+                        Value::Int(offset),
+                        Value::Int(length),
+                    ],
+                )?
+                .as_int();
+            if read >= 0 {
+                return int(read);
+            }
+            sequence_advance(vm, this)?;
+        }
+    }),
+    method("available", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let current = sequence_current(vm, this)?;
+        if current.is_null() {
+            return int(0);
+        }
+        let (class, method) = vm.resolve_virtual_method(current, "available", "()I")?;
+        vm.invoke_method(class, method, vec![Value::Ref(current)])
+    }),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let streams = sequence_streams(vm, this);
+        let (class, method) = vm.resolve_virtual_method(streams, "size", "()I")?;
+        let size = vm
+            .invoke_method(class, method, vec![Value::Ref(streams)])?
+            .as_int();
+        let start = crate::lang::read_int_field(vm, this, "index");
+        for index in start..size {
+            let (class, method) =
+                vm.resolve_virtual_method(streams, "get", "(I)Ljava/lang/Object;")?;
+            let stream = vm
+                .invoke_method(class, method, vec![Value::Ref(streams), Value::Int(index)])?
+                .as_ref();
+            if !stream.is_null() {
+                let (class, method) = vm.resolve_virtual_method(stream, "close", "()V")?;
+                vm.invoke_method(class, method, vec![Value::Ref(stream)])?;
+            }
+        }
+        crate::lang::write_int_field(vm, this, "index", size);
+        void()
+    }),
+];
+
+pub(crate) const SEQUENCE_INPUT_STREAM: oxjvm_vm::NativeClass = class(
+    "java/io/SequenceInputStream",
+    Some("java/io/InputStream"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("streams", "Ljava/util/ArrayList;", ACC_PRIVATE, None),
+        field("index", "I", ACC_PRIVATE, None),
+    ],
+    &SEQUENCE_INPUT_METHODS,
+    None,
+);
+
 pub(crate) const BYTE_ARRAY_INPUT_STREAM: oxjvm_vm::NativeClass = class(
     "java/io/ByteArrayInputStream",
     Some("java/io/InputStream"),

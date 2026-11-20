@@ -327,7 +327,10 @@ fn a_payload_replacement_that_fits_keeps_the_accounting_straight() {
         oxjvm_java::natives(),
         VmOptions::with_max_heap_bytes(limit),
     );
-    let class = vm.resolve_class("java/lang/String").expect("String");
+    // `Object` carries no instance fields, so the replacement frees only the header-sized
+    // payload and the delta is exactly the new string's bytes (a `String` instance would also
+    // drop its value/coder/hash/hashIsZero slots, coupling the accounting to its field layout).
+    let class = vm.resolve_class("java/lang/Object").expect("Object");
     let object = vm.new_instance(class).expect("instance");
     let before = vm.heap_used_bytes();
     vm.replace_payload(object, ObjectData::String(vec![0u16; 1024]))

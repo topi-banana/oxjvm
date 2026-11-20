@@ -4314,12 +4314,18 @@ pub(crate) const STRING: oxjvm_vm::NativeClass = {
             "java/lang/CharSequence",
         ],
         ACC_PUBLIC | ACC_FINAL,
-        &[field(
-            "CASE_INSENSITIVE_ORDER",
-            "Ljava/util/Comparator;",
-            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
-            None,
-        )],
+        &[
+            field("value", "[B", ACC_PRIVATE | ACC_FINAL, None),
+            field("coder", "B", ACC_PRIVATE | ACC_FINAL, None),
+            field("hash", "I", ACC_PRIVATE, None),
+            field("hashIsZero", "Z", ACC_PRIVATE, None),
+            field(
+                "CASE_INSENSITIVE_ORDER",
+                "Ljava/util/Comparator;",
+                ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+                None,
+            ),
+        ],
         &STRING_ALL_METHODS,
         Some(string_clinit),
     )

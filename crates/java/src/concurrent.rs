@@ -2043,8 +2043,159 @@ fn phaser_await_advance(
 }
 
 // -------------------------------------------------------------------------------------------
-// LinkedBlockingQueue / LinkedBlockingDeque
+// Semaphore
 // -------------------------------------------------------------------------------------------
+
+fn semaphore_permits(vm: &Vm<'_>, this: ObjectRef) -> i32 {
+    crate::lang::read_int_field(vm, this, "permits")
+}
+
+fn semaphore_acquire(vm: &mut Vm<'_>, this: ObjectRef, count: i32) -> Result<(), VmError> {
+    if count < 0 {
+        return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+    }
+    loop {
+        let permits = semaphore_permits(vm, this);
+        if permits >= count {
+            crate::lang::write_int_field(vm, this, "permits", permits - count);
+            return Ok(());
+        }
+        vm.park_until_notified(this, None)?;
+    }
+}
+
+fn semaphore_release(vm: &mut Vm<'_>, this: ObjectRef, count: i32) -> Result<(), VmError> {
+    if count < 0 {
+        return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+    }
+    let permits = semaphore_permits(vm, this);
+    crate::lang::write_int_field(vm, this, "permits", permits.saturating_add(count));
+    vm.monitor_notify(this, true);
+    Ok(())
+}
+
+const SEMAPHORE_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+    method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        crate::lang::write_int_field(vm, receiver(args), "permits", crate::int_arg(args, 1));
+        void()
+    }),
+    method("<init>", "(IZ)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        crate::lang::write_int_field(vm, this, "permits", crate::int_arg(args, 1));
+        crate::lang::write_int_field(vm, this, "fair", i32::from(crate::int_arg(args, 2) != 0));
+        void()
+    }),
+    method("acquire", "()V", ACC_PUBLIC, |vm, _, args| {
+        semaphore_acquire(vm, receiver(args), 1)?;
+        void()
+    }),
+    method("acquire", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        semaphore_acquire(vm, receiver(args), crate::int_arg(args, 1))?;
+        void()
+    }),
+    method(
+        "acquireUninterruptibly",
+        "()V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            semaphore_acquire(vm, receiver(args), 1)?;
+            void()
+        },
+    ),
+    method(
+        "acquireUninterruptibly",
+        "(I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            semaphore_acquire(vm, receiver(args), crate::int_arg(args, 1))?;
+            void()
+        },
+    ),
+    method("tryAcquire", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let permits = semaphore_permits(vm, this);
+        if permits >= 1 {
+            crate::lang::write_int_field(vm, this, "permits", permits - 1);
+            return boolean(true);
+        }
+        boolean(false)
+    }),
+    method("tryAcquire", "(I)Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let count = crate::int_arg(args, 1);
+        if count < 0 {
+            return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+        }
+        let permits = semaphore_permits(vm, this);
+        if permits >= count {
+            crate::lang::write_int_field(vm, this, "permits", permits - count);
+            return boolean(true);
+        }
+        boolean(false)
+    }),
+    method(
+        "tryAcquire",
+        "(JLjava/util/concurrent/TimeUnit;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let millis = time_unit_to_millis(vm, ref_arg(args, 2), crate::long_arg(args, 1))?;
+            let deadline = vm.virtual_time_millis().saturating_add(millis.max(0));
+            loop {
+                let permits = semaphore_permits(vm, this);
+                if permits >= 1 {
+                    crate::lang::write_int_field(vm, this, "permits", permits - 1);
+                    return boolean(true);
+                }
+                if vm.virtual_time_millis() >= deadline {
+                    return boolean(false);
+                }
+                vm.park_until_notified(this, None)?;
+            }
+        },
+    ),
+    method("release", "()V", ACC_PUBLIC, |vm, _, args| {
+        semaphore_release(vm, receiver(args), 1)?;
+        void()
+    }),
+    method("release", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        semaphore_release(vm, receiver(args), crate::int_arg(args, 1))?;
+        void()
+    }),
+    method("availablePermits", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(semaphore_permits(vm, receiver(args)))
+    }),
+    method("drainPermits", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let permits = semaphore_permits(vm, this);
+        crate::lang::write_int_field(vm, this, "permits", 0);
+        int(permits)
+    }),
+    method("isFair", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "fair") != 0)
+    }),
+    method("getQueueLength", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method("hasQueuedThreads", "()Z", ACC_PUBLIC, |_, _, _| {
+        boolean(false)
+    }),
+];
+
+pub(crate) const SEMAPHORE: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/Semaphore",
+    Some("java/lang/Object"),
+    &["java/io/Serializable"],
+    ACC_PUBLIC,
+    &[
+        field("permits", "I", ACC_PRIVATE, None),
+        field("fair", "I", ACC_PRIVATE, None),
+    ],
+    &SEMAPHORE_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// LinkedBlockingQueue / LinkedBlockingDeque
+// -------------------------------------------------------------------------------------------'''
 
 /// `LinkedBlockingQueue`: an optionally-bounded blocking queue backed by the `ArrayList`
 /// element array.  Blocking operations park on the queue monitor; mutations notify waiters.
@@ -2058,7 +2209,7 @@ pub(crate) const LINKED_BLOCKING_QUEUE: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const LINKED_BLOCKING_QUEUE_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
+const LINKED_BLOCKING_QUEUE_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method("<init>", "()V", ACC_PUBLIC, lbq_init),
     method("<init>", "(I)V", ACC_PUBLIC, lbq_init),
     method("<init>", "(Ljava/util/Collection;)V", ACC_PUBLIC, lbq_init),
@@ -2092,6 +2243,18 @@ const LINKED_BLOCKING_QUEUE_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
             }
             vm.park_until_notified(this, None)?;
         }
+    }),
+    method("poll", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if lbq_size(vm, this) > 0 {
+            return object(lbq_pop_head(vm, this)?);
+        }
+        object(ObjectRef::NULL)
+    }),
+    method("peek", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let elements = crate::util::array_list_elements(vm, this);
+        object(elements.first().copied().unwrap_or(ObjectRef::NULL))
     }),
     method(
         "poll",
