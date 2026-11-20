@@ -2247,10 +2247,7 @@ fn matcher_check_match(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> 
     let start = crate::lang::read_int_field(vm, this, "matchStart");
     let end = crate::lang::read_int_field(vm, this, "matchEnd");
     if start < 0 || end < 0 {
-        return Err(vm.throw_new(
-            "java/lang/IllegalStateException",
-            Some("No match available"),
-        ));
+        return Err(vm.throw_new("java/lang/IllegalStateException", Some("No match found")));
     }
     Ok(())
 }
@@ -2522,10 +2519,7 @@ fn matcher_append_replacement(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, 
     let start = crate::lang::read_int_field(vm, this, "matchStart");
     let end = crate::lang::read_int_field(vm, this, "matchEnd");
     if start < 0 || end < 0 {
-        return Err(vm.throw_new(
-            "java/lang/IllegalStateException",
-            Some("No match available"),
-        ));
+        return Err(vm.throw_new("java/lang/IllegalStateException", Some("No match found")));
     }
     let (start, end) = (start as usize, end as usize);
     let text = matcher_text(vm, this)?;

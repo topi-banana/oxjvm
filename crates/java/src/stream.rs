@@ -1422,7 +1422,7 @@ const COLLECT_FLAT_MAPPING: i32 = 22;
 const COLLECT_FILTERING: i32 = 23;
 const COLLECT_SUMMARIZING_INT: i32 = 24;
 
-fn int_summary_new(
+pub(crate) fn int_summary_new(
     vm: &mut Vm<'_>,
     count: i64,
     sum: i64,
@@ -1916,6 +1916,7 @@ fn collect_elements(
             }
             let map = crate::util::hash_map_new(vm)?;
             let boolean = vm.resolve_class("java/lang/Boolean")?;
+            vm.ensure_initialized(boolean)?;
             let true_key = vm
                 .read_static_ref_if_set(boolean, "TRUE", "Ljava/lang/Boolean;")
                 .unwrap_or(ObjectRef::NULL);

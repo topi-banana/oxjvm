@@ -67,7 +67,7 @@ fn call_int_consumer(vm: &mut Vm<'_>, consumer: ObjectRef, value: i32) -> Result
     Ok(())
 }
 
-const INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
+const INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
     method(
         "of",
         "(I)Ljava/util/stream/IntStream;",
@@ -366,6 +366,12 @@ const INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
             object(int_stream_from(vm, values)?)
         },
     ),
+    method(
+        "summaryStatistics",
+        "()Ljava/util/IntSummaryStatistics;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
 ];
 
 pub(crate) const INT_STREAM: oxjvm_vm::NativeClass = class(
@@ -378,7 +384,7 @@ pub(crate) const INT_STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const OJVM_INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
+const OJVM_INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
     method(
         "map",
         "(Ljava/util/function/IntUnaryOperator;)Ljava/util/stream/IntStream;",
@@ -633,6 +639,19 @@ const OJVM_INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
                     Some(values.iter().map(|v| f64::from(*v)).sum::<f64>() / values.len() as f64)
                 },
             )
+        },
+    ),
+    method(
+        "summaryStatistics",
+        "()Ljava/util/IntSummaryStatistics;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let values = int_elements(vm, receiver(args));
+            let count = values.len() as i64;
+            let sum: i64 = values.iter().map(|value| i64::from(*value)).sum();
+            let min = values.iter().copied().min().unwrap_or(i32::MAX);
+            let max = values.iter().copied().max().unwrap_or(i32::MIN);
+            object(crate::stream::int_summary_new(vm, count, sum, min, max)?)
         },
     ),
 ];
