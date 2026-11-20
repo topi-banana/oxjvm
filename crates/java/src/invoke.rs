@@ -539,6 +539,7 @@ const METHOD_HANDLE_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
                 Some(MethodHandleValue::Filtered { .. }) => "MethodHandle(filtered)",
                 Some(MethodHandleValue::Permuted { .. }) => "MethodHandle(permuted)",
                 Some(MethodHandleValue::Guarded { .. }) => "MethodHandle(guarded)",
+                Some(MethodHandleValue::CatchException { .. }) => "MethodHandle(catchException)",
                 Some(MethodHandleValue::Empty { .. }) => "MethodHandle(empty)",
                 Some(MethodHandleValue::ArrayElementGetter { .. }) => {
                     "MethodHandle(arrayElementGetter)"
@@ -611,7 +612,7 @@ pub(crate) const METHOD_HANDLE: oxjvm_vm::NativeClass = class(
 // MethodHandles + Lookup
 // -------------------------------------------------------------------------------------------
 
-const METHOD_HANDLES_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
+const METHOD_HANDLES_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
     method(
         "lookup",
         "()Ljava/lang/invoke/MethodHandles$Lookup;",
@@ -895,6 +896,26 @@ const METHOD_HANDLES_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
                 test: alloc::boxed::Box::new(test),
                 target: alloc::boxed::Box::new(target),
                 fallback: alloc::boxed::Box::new(fallback),
+            };
+            object(vm.make_method_handle(handle)?)
+        },
+    ),
+    method(
+        "catchException",
+        "(Ljava/lang/invoke/MethodHandle;Ljava/lang/Class;Ljava/lang/invoke/MethodHandle;)Ljava/lang/invoke/MethodHandle;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let target = vm
+                .method_handle_of(ref_arg(args, 0))
+                .ok_or_else(|| VmError::internal("not a handle"))?;
+            let ex_class = class_argument(vm, ref_arg(args, 1))?;
+            let handler = vm
+                .method_handle_of(ref_arg(args, 2))
+                .ok_or_else(|| VmError::internal("not a handle"))?;
+            let handle = MethodHandleValue::CatchException {
+                ex_class,
+                handler: alloc::boxed::Box::new(handler),
+                target: alloc::boxed::Box::new(target),
             };
             object(vm.make_method_handle(handle)?)
         },

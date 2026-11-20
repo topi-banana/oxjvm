@@ -562,6 +562,15 @@ pub enum MethodHandleValue {
         /// The handle invoked when the test is false.
         fallback: alloc::boxed::Box<MethodHandleValue>,
     },
+    /// A handle that catches a specific exception type (`catchException`).
+    CatchException {
+        /// The exception class to catch.
+        ex_class: ClassId,
+        /// The handler invoked when the exception is caught.
+        handler: alloc::boxed::Box<MethodHandleValue>,
+        /// The underlying target.
+        target: alloc::boxed::Box<MethodHandleValue>,
+    },
     /// A handle that always throws `UnsupportedOperationException` (`MethodHandles.empty`).
     Empty {
         /// The requested method type.
@@ -622,6 +631,13 @@ impl MethodHandleValue {
                     + test.payload_bytes()
                     + target.payload_bytes()
                     + fallback.payload_bytes()
+            }
+            Self::CatchException {
+                handler, target, ..
+            } => {
+                size_of::<MethodHandleValue>() as u64 * 2
+                    + handler.payload_bytes()
+                    + target.payload_bytes()
             }
             Self::Bound { target, .. } => {
                 size_of::<MethodHandleValue>() as u64 + target.payload_bytes()

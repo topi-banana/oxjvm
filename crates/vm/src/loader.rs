@@ -2316,6 +2316,28 @@ impl<'a> Vm<'a> {
                     self.invoke_handle(fallback, args)
                 }
             }
+            MethodHandleValue::CatchException {
+                ex_class,
+                handler,
+                target,
+            } => match self.invoke_handle(target, args) {
+                Err(VmError::Thrown(exception)) if self.is_instance(exception, *ex_class) => {
+                    let arity = handle_method_type(self, handler)
+                        .map(|(params, _)| params.len())
+                        .unwrap_or(1);
+                    let mut handler_args = Vec::with_capacity(arity);
+                    handler_args.push(Value::Ref(exception));
+                    for index in 1..arity {
+                        handler_args.push(
+                            args.get(index)
+                                .copied()
+                                .unwrap_or(Value::Ref(ObjectRef::NULL)),
+                        );
+                    }
+                    self.invoke_handle(handler, &handler_args)
+                }
+                result => result,
+            },
             MethodHandleValue::Empty { .. } => {
                 let returns = handle_method_type(self, handle).and_then(|(_, returns)| returns);
                 Ok(match returns {
