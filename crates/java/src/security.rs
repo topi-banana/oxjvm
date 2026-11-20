@@ -4198,7 +4198,7 @@ fn message_digest_instance(vm: &mut Vm<'_>, algorithm: &str) -> Result<ObjectRef
     Ok(instance)
 }
 
-const MESSAGE_DIGEST_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+const MESSAGE_DIGEST_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method(
         "getInstance",
         "(Ljava/lang/String;)Ljava/security/MessageDigest;",
@@ -4385,6 +4385,29 @@ const MESSAGE_DIGEST_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
         crate::lang::write_int_field(vm, this, "count", 0);
         int(len)
     }),
+    method(
+        "update",
+        "(Ljava/nio/ByteBuffer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let buffer = ref_arg(args, 1);
+            if buffer.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let bytes = crate::buffer::byte_buffer_remaining_bytes(vm, buffer)?;
+            message_digest_append(vm, receiver(args), &bytes)?;
+            let class = vm.class_of(buffer);
+            if let Some((declaring, field)) = vm.find_field_opt(class, "limit", "I") {
+                let limit = vm.read_instance_int(buffer, declaring, field).unwrap_or(0);
+                if let Some((position_class, position_field)) =
+                    vm.find_field_opt(class, "position", "I")
+                {
+                    vm.set_instance_int(buffer, position_class, position_field, limit);
+                }
+            }
+            void()
+        },
+    ),
 ];
 
 pub(crate) const MESSAGE_DIGEST: oxjvm_vm::NativeClass = class(

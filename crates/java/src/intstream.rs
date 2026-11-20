@@ -67,7 +67,7 @@ fn call_int_consumer(vm: &mut Vm<'_>, consumer: ObjectRef, value: i32) -> Result
     Ok(())
 }
 
-const INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
+const INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
     method(
         "of",
         "(I)Ljava/util/stream/IntStream;",
@@ -302,6 +302,16 @@ const INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
                 });
             }
             crate::primitive_stream::optional_int(vm, result)
+        },
+    ),
+    method(
+        "concat",
+        "(Ljava/util/stream/IntStream;Ljava/util/stream/IntStream;)Ljava/util/stream/IntStream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let mut values = int_elements(vm, ref_arg(args, 0));
+            values.extend(int_elements(vm, ref_arg(args, 1)));
+            object(int_stream_from(vm, values)?)
         },
     ),
 ];

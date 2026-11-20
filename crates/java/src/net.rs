@@ -1335,7 +1335,7 @@ pub(crate) const URL_DECODER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const URL_CONNECTION_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+const URL_CONNECTION_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
     method(
         "getInputStream",
         "()Ljava/io/InputStream;",
@@ -1493,6 +1493,143 @@ const URL_CONNECTION_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
         ACC_PUBLIC | ACC_STATIC,
         |_, _, _| object(ObjectRef::NULL),
     ),
+    method(
+        "setRequestProperty",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let key = ref_arg(args, 1);
+            if key.is_null() {
+                return Err(
+                    vm.throw_new("java/lang/NullPointerException", Some("key cannot be null"))
+                );
+            }
+            let this = receiver(args);
+            let (keys, values) = url_connection_request_lists(vm, this)?;
+            let key_text = vm.string_or_empty(key);
+            let key_elements = crate::util::array_list_elements(vm, keys);
+            let value_elements = crate::util::array_list_elements(vm, values);
+            let mut kept_keys = Vec::new();
+            let mut kept_values = Vec::new();
+            for (index, element) in key_elements.iter().enumerate() {
+                if vm.string_or_empty(*element) != key_text {
+                    kept_keys.push(*element);
+                    kept_values.push(value_elements[index]);
+                }
+            }
+            kept_keys.push(key);
+            kept_values.push(ref_arg(args, 2));
+            crate::util::array_list_store(vm, keys, &kept_keys)?;
+            crate::util::array_list_store(vm, values, &kept_values)?;
+            void()
+        },
+    ),
+    method(
+        "addRequestProperty",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let key = ref_arg(args, 1);
+            if key.is_null() {
+                return Err(
+                    vm.throw_new("java/lang/NullPointerException", Some("key cannot be null"))
+                );
+            }
+            let this = receiver(args);
+            let (keys, values) = url_connection_request_lists(vm, this)?;
+            let mut key_elements = crate::util::array_list_elements(vm, keys);
+            let mut value_elements = crate::util::array_list_elements(vm, values);
+            key_elements.push(key);
+            value_elements.push(ref_arg(args, 2));
+            crate::util::array_list_store(vm, keys, &key_elements)?;
+            crate::util::array_list_store(vm, values, &value_elements)?;
+            void()
+        },
+    ),
+    method(
+        "getRequestProperty",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            // FileURLConnection ignores request properties.
+            if url_connection_protocol(vm, this)?.eq_ignore_ascii_case("file") {
+                return object(ObjectRef::NULL);
+            }
+            let class = vm.class_of(this);
+            let keys = vm
+                .read_ref_field(this, class, "requestKeys", "Ljava/util/ArrayList;")
+                .unwrap_or(ObjectRef::NULL);
+            let values = vm
+                .read_ref_field(this, class, "requestValues", "Ljava/util/ArrayList;")
+                .unwrap_or(ObjectRef::NULL);
+            if keys.is_null() || values.is_null() {
+                return object(ObjectRef::NULL);
+            }
+            let key_text = vm.string_or_empty(ref_arg(args, 1));
+            let key_elements = crate::util::array_list_elements(vm, keys);
+            let value_elements = crate::util::array_list_elements(vm, values);
+            for index in (0..key_elements.len()).rev() {
+                if vm.string_or_empty(key_elements[index]) == key_text {
+                    return object(value_elements[index]);
+                }
+            }
+            object(ObjectRef::NULL)
+        },
+    ),
+    method(
+        "getRequestProperties",
+        "()Ljava/util/Map;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            // FileURLConnection ignores request properties.
+            if url_connection_protocol(vm, this)?.eq_ignore_ascii_case("file") {
+                return object(crate::util::new_hash_map(vm)?);
+            }
+            let class = vm.class_of(this);
+            let keys = vm
+                .read_ref_field(this, class, "requestKeys", "Ljava/util/ArrayList;")
+                .unwrap_or(ObjectRef::NULL);
+            let values = vm
+                .read_ref_field(this, class, "requestValues", "Ljava/util/ArrayList;")
+                .unwrap_or(ObjectRef::NULL);
+            let map_class = vm.resolve_class("java/util/LinkedHashMap")?;
+            let map = vm.new_instance(map_class)?;
+            if keys.is_null() || values.is_null() {
+                return object(map);
+            }
+            let key_elements = crate::util::array_list_elements(vm, keys);
+            let value_elements = crate::util::array_list_elements(vm, values);
+            let mut seen: Vec<String> = Vec::new();
+            for element in &key_elements {
+                let key_text = vm.string_or_empty(*element);
+                if seen.contains(&key_text) {
+                    continue;
+                }
+                seen.push(key_text.clone());
+                let list = crate::util::new_array_list(vm)?;
+                let mut group = Vec::new();
+                for (other, other_element) in key_elements.iter().enumerate() {
+                    if vm.string_or_empty(*other_element) == key_text {
+                        group.push(value_elements[other]);
+                    }
+                }
+                crate::util::array_list_store(vm, list, &group)?;
+                let (declaring, method) = vm.resolve_virtual_method(
+                    map,
+                    "put",
+                    "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                )?;
+                vm.invoke_method(
+                    declaring,
+                    method,
+                    vec![Value::Ref(map), Value::Ref(*element), Value::Ref(list)],
+                )?;
+            }
+            object(map)
+        },
+    ),
 ];
 
 /// The lazily-created per-protocol `defaultUseCaches` map on `URLConnection`.
@@ -1611,6 +1748,43 @@ fn url_connection_length(vm: &mut Vm<'_>, connection: ObjectRef) -> i64 {
 }
 
 /// `java.net.URLConnection`: file-backed metadata and streams for `file:` URLs.
+/// The protocol of a URLConnection's URL, or an empty string when unset.
+fn url_connection_protocol(vm: &mut Vm<'_>, this: ObjectRef) -> Result<String, VmError> {
+    let url = vm
+        .read_ref_field(this, vm.class_of(this), "url", "Ljava/net/URL;")
+        .unwrap_or(ObjectRef::NULL);
+    if url.is_null() {
+        return Ok(String::new());
+    }
+    let (class, method) = vm.resolve_virtual_method(url, "getProtocol", "()Ljava/lang/String;")?;
+    let value = vm.invoke_method(class, method, vec![Value::Ref(url)])?;
+    Ok(vm.string_or_empty(value.as_ref()))
+}
+
+/// The parallel key/value lists holding a URLConnection's request properties.
+fn url_connection_request_lists(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+) -> Result<(ObjectRef, ObjectRef), VmError> {
+    let class = vm.class_of(this);
+    let keys = vm
+        .read_ref_field(this, class, "requestKeys", "Ljava/util/ArrayList;")
+        .unwrap_or(ObjectRef::NULL);
+    let values = vm
+        .read_ref_field(this, class, "requestValues", "Ljava/util/ArrayList;")
+        .unwrap_or(ObjectRef::NULL);
+    if !keys.is_null() && !values.is_null() {
+        return Ok((keys, values));
+    }
+    let keys = crate::util::new_array_list(vm)?;
+    let values = crate::util::new_array_list(vm)?;
+    let (declaring, field) = vm.find_field(class, "requestKeys", "Ljava/util/ArrayList;")?;
+    vm.set_instance_ref(this, declaring, field, keys);
+    let (declaring, field) = vm.find_field(class, "requestValues", "Ljava/util/ArrayList;")?;
+    vm.set_instance_ref(this, declaring, field, values);
+    Ok((keys, values))
+}
+
 pub(crate) const URL_CONNECTION: oxjvm_vm::NativeClass = class(
     "java/net/URLConnection",
     Some("java/lang/Object"),
@@ -1618,6 +1792,8 @@ pub(crate) const URL_CONNECTION: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC | ACC_ABSTRACT,
     &[
         field("url", "Ljava/net/URL;", ACC_PRIVATE, None),
+        field("requestKeys", "Ljava/util/ArrayList;", ACC_PRIVATE, None),
+        field("requestValues", "Ljava/util/ArrayList;", ACC_PRIVATE, None),
         field(
             "defaultUseCaches",
             "Ljava/util/HashMap;",
@@ -2796,7 +2972,7 @@ fn new_url_class_loader_value(
     object(instance)
 }
 
-const URL_CLASS_LOADER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+const URL_CLASS_LOADER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method("<init>", "([Ljava/net/URL;)V", ACC_PUBLIC, |vm, _, args| {
         let parent = crate::lang::system_class_loader(vm)?;
         init_url_class_loader(vm, receiver(args), ref_arg(args, 1), parent)?;
@@ -2843,6 +3019,34 @@ const URL_CLASS_LOADER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         |vm, _, args| new_url_class_loader_value(vm, ref_arg(args, 0), ref_arg(args, 1)),
     ),
     method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "addURL",
+        "(Ljava/net/URL;)V",
+        ACC_PROTECTED,
+        |vm, _, args| {
+            let this = receiver(args);
+            let url = ref_arg(args, 1);
+            let class = vm.class_of(this);
+            let urls = vm
+                .read_ref_field(this, class, "urls", "[Ljava/net/URL;")
+                .unwrap_or(ObjectRef::NULL);
+            let length = if urls.is_null() {
+                0
+            } else {
+                vm.array_length(urls)?
+            };
+            let url_class = vm.resolve_class("java/net/URL")?;
+            let array = vm.allocate_object_array(url_class, length + 1)?;
+            for index in 0..length {
+                let element = vm.array_get(urls, index as i32)?.as_ref();
+                vm.array_set_ref(array, index, element)?;
+            }
+            vm.array_set_ref(array, length, url)?;
+            let (declaring, field) = vm.find_field(class, "urls", "[Ljava/net/URL;")?;
+            vm.set_instance_ref(this, declaring, field, array);
+            void()
+        },
+    ),
 ];
 
 pub(crate) const URL_CLASS_LOADER: oxjvm_vm::NativeClass = class(

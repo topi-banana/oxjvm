@@ -3613,7 +3613,8 @@ fn string_format(
     object(vm.make_string(&text)?)
 }
 
-/// A small `String.format` (no locale, `%s %d %f %x %b %c %n %%` plus width and `-`).
+/// A small `String.format` (no locale, `%s %d %f %x %o %b %c %n %%` plus flags,
+/// width, and precision).
 pub(crate) fn format_string(
     vm: &mut Vm<'_>,
     format: &str,
@@ -3628,11 +3629,31 @@ pub(crate) fn format_string(
             continue;
         }
         let mut left_align = false;
+        let mut zero_pad = false;
+        let mut alternate = false;
+        let mut plus_sign = false;
+        let mut space_sign = false;
         let mut width = 0usize;
         loop {
             match chars.peek() {
                 Some('-') => {
                     left_align = true;
+                    chars.next();
+                }
+                Some('0') => {
+                    zero_pad = true;
+                    chars.next();
+                }
+                Some('#') => {
+                    alternate = true;
+                    chars.next();
+                }
+                Some('+') => {
+                    plus_sign = true;
+                    chars.next();
+                }
+                Some(' ') => {
+                    space_sign = true;
                     chars.next();
                 }
                 Some(digit) if digit.is_ascii_digit() => {
@@ -3653,6 +3674,8 @@ pub(crate) fn format_string(
             precision = Some(value);
         }
         let Some(spec) = chars.next() else { break };
+        let mut prefix_len = 0usize;
+        let numeric = matches!(spec, 'd' | 'x' | 'X' | 'o' | 'f' | 'e' | 'E');
         let text = match spec {
             '%' => "%".to_string(),
             'n' => "\n".to_string(),
@@ -3676,19 +3699,38 @@ pub(crate) fn format_string(
                 let value = arguments.get(argument).copied().unwrap_or(ObjectRef::NULL);
                 argument += 1;
                 let number = object_to_long(vm, value);
-                oxjvm_vm::format::long_to_string(number)
+                let mut text = oxjvm_vm::format::long_to_string(number);
+                if number < 0 {
+                    prefix_len = 1;
+                } else if plus_sign || space_sign {
+                    let prefix = if plus_sign { "+" } else { " " };
+                    text = alloc::format!("{prefix}{text}");
+                    prefix_len = 1;
+                }
+                text
             }
-            'x' => {
+            'x' | 'X' | 'o' => {
                 let value = arguments.get(argument).copied().unwrap_or(ObjectRef::NULL);
                 argument += 1;
                 let number = object_to_long(vm, value);
-                oxjvm_vm::format::long_to_radix_string(number, 16)
-            }
-            'X' => {
-                let value = arguments.get(argument).copied().unwrap_or(ObjectRef::NULL);
-                argument += 1;
-                let number = object_to_long(vm, value);
-                oxjvm_vm::format::long_to_radix_string(number, 16).to_uppercase()
+                let magnitude = format_unsigned_magnitude(vm, value, number);
+                let (radix, upper) = match spec {
+                    'x' => (16u64, false),
+                    'X' => (16u64, true),
+                    _ => (8u64, false),
+                };
+                let digits = radix_string_unsigned(magnitude, radix, upper);
+                let prefix = if alternate {
+                    match spec {
+                        'x' => "0x",
+                        'X' => "0X",
+                        _ => "0",
+                    }
+                } else {
+                    ""
+                };
+                prefix_len = prefix.len();
+                alloc::format!("{prefix}{digits}")
             }
             'c' => {
                 let value = arguments.get(argument).copied().unwrap_or(ObjectRef::NULL);
@@ -3731,6 +3773,12 @@ pub(crate) fn format_string(
                 for _ in 0..padding {
                     out.push(' ');
                 }
+            } else if zero_pad && numeric {
+                out.push_str(&text[..prefix_len]);
+                for _ in 0..padding {
+                    out.push('0');
+                }
+                out.push_str(&text[prefix_len..]);
             } else {
                 for _ in 0..padding {
                     out.push(' ');
@@ -3742,6 +3790,41 @@ pub(crate) fn format_string(
         }
     }
     Ok(out)
+}
+
+/// The unsigned magnitude JDK printf uses for `%x`/`%o`: the value is masked to
+/// the width of its boxed type (byte 8 bits, short/char 16, int 32, long 64).
+fn format_unsigned_magnitude(vm: &Vm<'_>, value: ObjectRef, number: i64) -> u64 {
+    let bits = number as u64;
+    if value.is_null() {
+        return bits;
+    }
+    let class = vm.class_of(value);
+    match vm.classes.get(class).name.as_str() {
+        "java/lang/Byte" => bits & 0xFF,
+        "java/lang/Short" | "java/lang/Character" => bits & 0xFFFF,
+        "java/lang/Integer" => bits & 0xFFFF_FFFF,
+        _ => bits,
+    }
+}
+
+/// Unsigned radix rendering for printf `%x`/`%o` (no sign, unlike the VM helper).
+fn radix_string_unsigned(mut value: u64, radix: u64, upper: bool) -> String {
+    if value == 0 {
+        return String::from("0");
+    }
+    let digits = if upper {
+        "0123456789ABCDEF"
+    } else {
+        "0123456789abcdef"
+    };
+    let mut out = String::new();
+    while value > 0 {
+        let digit = (value % radix) as usize;
+        out.push(digits.as_bytes()[digit] as char);
+        value /= radix;
+    }
+    out.chars().rev().collect()
 }
 
 fn format_fixed(value: f64, digits: usize) -> String {

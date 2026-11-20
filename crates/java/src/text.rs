@@ -45,21 +45,98 @@ fn line_boundary(units: &[u16], index: usize) -> bool {
     previous.is_some_and(|ch| ch.is_whitespace()) && !current.is_some_and(|ch| ch.is_whitespace())
 }
 
-fn break_iterator_next_from(units: &[u16], from: i32) -> i32 {
+/// Whether `index` is a word boundary: letters/digits form one segment,
+/// whitespace runs and punctuation form separate segments (as in the JDK).
+fn word_boundary(units: &[u16], index: usize) -> bool {
+    let length = units.len();
+    if index == 0 || index > length {
+        return false;
+    }
+    if index == length {
+        return true;
+    }
+    word_class(units, index - 1) != word_class(units, index)
+}
+
+/// Letters and digits share a class; an apostrophe between letters stays in
+/// the word; everything else (whitespace, punctuation) is its own class.
+fn word_class(units: &[u16], index: usize) -> u8 {
+    let ch = char::from_u32(u32::from(units[index]));
+    if ch.is_some_and(|c| c.is_alphanumeric()) {
+        return 1;
+    }
+    if ch == Some('\'') {
+        let before = index
+            .checked_sub(1)
+            .and_then(|i| char::from_u32(u32::from(units[i])));
+        let after = char::from_u32(u32::from(units[index + 1]));
+        if before.is_some_and(|c| c.is_alphabetic()) && after.is_some_and(|c| c.is_alphabetic()) {
+            return 1;
+        }
+    }
+    0
+}
+
+/// Whether `index` is a character boundary: every code point, with surrogate
+/// pairs kept together.
+fn character_boundary(units: &[u16], index: usize) -> bool {
+    let length = units.len();
+    if index > length {
+        return false;
+    }
+    if index == length {
+        return true;
+    }
+    !(0xDC00..=0xDFFF).contains(&units[index])
+}
+
+/// Whether `index` is a sentence boundary: after `.`, `!` or `?` followed by
+/// whitespace or the end of text, and after hard line breaks.
+fn sentence_boundary(units: &[u16], index: usize) -> bool {
+    let length = units.len();
+    if index == 0 || index > length {
+        return false;
+    }
+    if index == length {
+        return true;
+    }
+    let previous = char::from_u32(u32::from(units[index - 1]));
+    let current = char::from_u32(u32::from(units[index]));
+    match previous {
+        Some('\n') | Some('\r') => true,
+        Some('.') | Some('!') | Some('?') => {
+            index == length || current.is_some_and(|ch| ch.is_whitespace())
+        }
+        _ => false,
+    }
+}
+
+/// Boundary predicate for the iterator kind (0 line, 1 word, 2 character,
+/// 3 sentence).
+fn boundary_at(kind: i32, units: &[u16], index: usize) -> bool {
+    match kind {
+        1 => word_boundary(units, index),
+        2 => character_boundary(units, index),
+        3 => sentence_boundary(units, index),
+        _ => line_boundary(units, index),
+    }
+}
+
+fn break_iterator_next_from(kind: i32, units: &[u16], from: i32) -> i32 {
     let length = units.len() as i32;
     let mut index = from + 1;
-    while index < length && !line_boundary(units, index as usize) {
+    while index < length && !boundary_at(kind, units, index as usize) {
         index += 1;
     }
     if index > length { DONE } else { index }
 }
 
-fn break_iterator_previous_from(units: &[u16], from: i32) -> i32 {
+fn break_iterator_previous_from(kind: i32, units: &[u16], from: i32) -> i32 {
     if from <= 0 {
         return DONE;
     }
     let mut index = from - 1;
-    while index > 0 && !line_boundary(units, index as usize) {
+    while index > 0 && !boundary_at(kind, units, index as usize) {
         index -= 1;
     }
     index
@@ -73,37 +150,38 @@ fn set_break_iterator_index(vm: &mut Vm<'_>, this: ObjectRef, index: i32) {
     write_int_field(vm, this, "index", index);
 }
 
-fn new_break_iterator(vm: &mut Vm<'_>) -> Result<Value, VmError> {
+fn new_break_iterator(vm: &mut Vm<'_>, kind: i32) -> Result<Value, VmError> {
     let class = vm.resolve_class("java/text/BreakIterator")?;
     let instance = vm.new_instance(class)?;
     set_break_iterator_index(vm, instance, 0);
+    write_int_field(vm, instance, "kind", kind);
     object(instance)
 }
 
-const BREAK_ITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+const BREAK_ITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method(
         "getLineInstance",
         "()Ljava/text/BreakIterator;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| new_break_iterator(vm),
+        |vm, _, _| new_break_iterator(vm, 0),
     ),
     method(
         "getWordInstance",
         "()Ljava/text/BreakIterator;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| new_break_iterator(vm),
+        |vm, _, _| new_break_iterator(vm, 1),
     ),
     method(
         "getCharacterInstance",
         "()Ljava/text/BreakIterator;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| new_break_iterator(vm),
+        |vm, _, _| new_break_iterator(vm, 2),
     ),
     method(
         "getSentenceInstance",
         "()Ljava/text/BreakIterator;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| new_break_iterator(vm),
+        |vm, _, _| new_break_iterator(vm, 3),
     ),
     method(
         "setText",
@@ -133,14 +211,16 @@ const BREAK_ITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method("next", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let units = break_iterator_units(vm, this);
-        let index = break_iterator_next_from(&units, break_iterator_index(vm, this));
+        let kind = read_int_field(vm, this, "kind");
+        let index = break_iterator_next_from(kind, &units, break_iterator_index(vm, this));
         set_break_iterator_index(vm, this, index.max(0));
         int(index)
     }),
     method("previous", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let units = break_iterator_units(vm, this);
-        let index = break_iterator_previous_from(&units, break_iterator_index(vm, this));
+        let kind = read_int_field(vm, this, "kind");
+        let index = break_iterator_previous_from(kind, &units, break_iterator_index(vm, this));
         set_break_iterator_index(vm, this, index.max(0));
         int(index)
     }),
@@ -148,19 +228,22 @@ const BREAK_ITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
         int(break_iterator_index(vm, receiver(args)))
     }),
     method("isBoundary", "(I)Z", ACC_PUBLIC, |vm, _, args| {
-        let units = break_iterator_units(vm, receiver(args));
+        let this = receiver(args);
+        let units = break_iterator_units(vm, this);
         let offset = int_arg(args, 1);
         if offset < 0 || offset as usize > units.len() {
             return crate::boolean(false);
         }
-        crate::boolean(offset == 0 || line_boundary(&units, offset as usize))
+        let kind = read_int_field(vm, this, "kind");
+        crate::boolean(offset == 0 || boundary_at(kind, &units, offset as usize))
     }),
     method("following", "(I)I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let units = break_iterator_units(vm, this);
         let offset = int_arg(args, 1);
+        let kind = read_int_field(vm, this, "kind");
         let mut index = offset + 1;
-        while index <= units.len() as i32 && !line_boundary(&units, index as usize) {
+        while index <= units.len() as i32 && !boundary_at(kind, &units, index as usize) {
             index += 1;
         }
         if index > units.len() as i32 {
@@ -174,7 +257,8 @@ const BREAK_ITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
         let this = receiver(args);
         let units = break_iterator_units(vm, this);
         let offset = int_arg(args, 1);
-        let index = break_iterator_previous_from(&units, offset);
+        let kind = read_int_field(vm, this, "kind");
+        let index = break_iterator_previous_from(kind, &units, offset);
         if index != DONE {
             set_break_iterator_index(vm, this, index);
         }
@@ -195,6 +279,50 @@ const BREAK_ITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
             void()
         },
     ),
+    method(
+        "getLineInstance",
+        "(Ljava/util/Locale;)Ljava/text/BreakIterator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            new_break_iterator(vm, 0)
+        },
+    ),
+    method(
+        "getWordInstance",
+        "(Ljava/util/Locale;)Ljava/text/BreakIterator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            new_break_iterator(vm, 1)
+        },
+    ),
+    method(
+        "getCharacterInstance",
+        "(Ljava/util/Locale;)Ljava/text/BreakIterator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            new_break_iterator(vm, 2)
+        },
+    ),
+    method(
+        "getSentenceInstance",
+        "(Ljava/util/Locale;)Ljava/text/BreakIterator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            new_break_iterator(vm, 3)
+        },
+    ),
 ];
 
 /// `java.text.BreakIterator`: a concrete iterator with `text` and `index` state.
@@ -212,6 +340,7 @@ pub(crate) const BREAK_ITERATOR: oxjvm_vm::NativeClass = class(
         ),
         field("text", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("index", "I", ACC_PRIVATE, None),
+        field("kind", "I", ACC_PRIVATE, None),
     ],
     &BREAK_ITERATOR_METHODS,
     None,
@@ -395,13 +524,18 @@ fn simple_date_format_millis(vm: &mut Vm<'_>, date: ObjectRef) -> Result<i64, Vm
     }
 }
 
-const SIMPLE_DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+const SIMPLE_DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let (declaring, field) =
             vm.find_field(vm.class_of(this), "pattern", "Ljava/lang/String;")?;
         let text = vm.make_string("yyyy-MM-dd HH:mm:ss")?;
         vm.set_instance_ref(this, declaring, field, text);
+        let millis = vm.host_time_millis();
+        let start = date_of_millis(vm, millis - 2_522_880_000_000)?;
+        let (declaring, field) =
+            vm.find_field(vm.class_of(this), "twoDigitYearStart", "Ljava/util/Date;")?;
+        vm.set_instance_ref(this, declaring, field, start);
         void()
     }),
     method(
@@ -519,12 +653,57 @@ const SIMPLE_DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method("isLenient", "()Z", ACC_PUBLIC, |_, _, _| {
         crate::boolean(true)
     }),
+    method(
+        "set2DigitYearStart",
+        "(Ljava/util/Date;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let start = ref_arg(args, 1);
+            if start.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let this = receiver(args);
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "twoDigitYearStart", "Ljava/util/Date;")?;
+            vm.set_instance_ref(this, declaring, field, start);
+            void()
+        },
+    ),
+    method(
+        "get2DigitYearStart",
+        "()Ljava/util/Date;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let start = vm
+                .read_ref_field(
+                    this,
+                    vm.class_of(this),
+                    "twoDigitYearStart",
+                    "Ljava/util/Date;",
+                )
+                .unwrap_or(ObjectRef::NULL);
+            object(start)
+        },
+    ),
 ];
+
+fn date_of_millis(vm: &mut Vm<'_>, millis: i64) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/Date")?;
+    let instance = vm.new_instance(class)?;
+    crate::lang::write_long_field(vm, instance, "time", millis);
+    Ok(instance)
+}
 
 fn simple_date_format_init(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
     let this = receiver(args);
     let (declaring, field) = vm.find_field(vm.class_of(this), "pattern", "Ljava/lang/String;")?;
     vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+    let millis = vm.host_time_millis();
+    let start = date_of_millis(vm, millis - 2_522_880_000_000)?;
+    let (declaring, field) =
+        vm.find_field(vm.class_of(this), "twoDigitYearStart", "Ljava/util/Date;")?;
+    vm.set_instance_ref(this, declaring, field, start);
     void()
 }
 
@@ -537,6 +716,7 @@ pub(crate) const SIMPLE_DATE_FORMAT: oxjvm_vm::NativeClass = class(
     &[
         field("pattern", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("timeZone", "Ljava/util/TimeZone;", ACC_PRIVATE, None),
+        field("twoDigitYearStart", "Ljava/util/Date;", ACC_PRIVATE, None),
     ],
     &SIMPLE_DATE_FORMAT_METHODS,
     None,

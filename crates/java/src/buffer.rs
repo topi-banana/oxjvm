@@ -1634,7 +1634,7 @@ pub(crate) fn char_buffer_from_text(vm: &mut Vm<'_>, text: &str) -> Result<Objec
     )
 }
 
-const CHAR_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
+const CHAR_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
     method(
         "allocate",
         "(I)Ljava/nio/CharBuffer;",
@@ -2024,6 +2024,22 @@ const CHAR_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
             .ok_or_else(|| VmError::internal("ByteOrder.nativeOrder missing"))?;
         vm.invoke_method(declaring, method, vec![])
     }),
+    method(
+        "mark",
+        "()Ljava/nio/CharBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            set_mark(vm, this, buffer_position(vm, this));
+            object(this)
+        },
+    ),
+    method(
+        "reset",
+        "()Ljava/nio/CharBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| buffer_reset(vm, receiver(args)),
+    ),
 ];
 
 pub(crate) const CHAR_BUFFER: oxjvm_vm::NativeClass = class(

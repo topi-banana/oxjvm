@@ -420,13 +420,40 @@ pub(crate) const EXECUTOR_SERVICE: oxjvm_vm::NativeClass = class(
     None,
 );
 
+const SCHEDULED_EXECUTOR_SERVICE_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "schedule",
+        "(Ljava/lang/Runnable;JLjava/util/concurrent/TimeUnit;)Ljava/util/concurrent/ScheduledFuture;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "schedule",
+        "(Ljava/util/concurrent/Callable;JLjava/util/concurrent/TimeUnit;)Ljava/util/concurrent/ScheduledFuture;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "scheduleAtFixedRate",
+        "(Ljava/lang/Runnable;JJLjava/util/concurrent/TimeUnit;)Ljava/util/concurrent/ScheduledFuture;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "scheduleWithFixedDelay",
+        "(Ljava/lang/Runnable;JJLjava/util/concurrent/TimeUnit;)Ljava/util/concurrent/ScheduledFuture;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
 pub(crate) const SCHEDULED_EXECUTOR_SERVICE: oxjvm_vm::NativeClass = class(
     "java/util/concurrent/ScheduledExecutorService",
     Some("java/lang/Object"),
     &["java/util/concurrent/ExecutorService"],
     ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
     &[],
-    &[],
+    &SCHEDULED_EXECUTOR_SERVICE_METHODS,
     None,
 );
 
@@ -443,7 +470,7 @@ fn executor_execute(
     object(task)
 }
 
-const OJVM_EXECUTOR_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const OJVM_EXECUTOR_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method(
         "execute",
         "(Ljava/lang/Runnable;)V",
@@ -595,6 +622,16 @@ const OJVM_EXECUTOR_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         crate::lang::write_int_field(vm, receiver(args), "shutdown", 1);
         void()
     }),
+    method(
+        "scheduleWithFixedDelay",
+        "(Ljava/lang/Runnable;JJLjava/util/concurrent/TimeUnit;)Ljava/util/concurrent/ScheduledFuture;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let task = future_task_new(vm, ObjectRef::NULL, ref_arg(args, 1), ObjectRef::NULL)?;
+            future_task_run(vm, task)?;
+            object(task)
+        },
+    ),
 ];
 
 pub(crate) const OJVM_EXECUTOR_SERVICE: oxjvm_vm::NativeClass = class(

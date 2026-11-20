@@ -962,7 +962,7 @@ pub(crate) const POSIX_FILE_PERMISSIONS: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 61] = [
+const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 63] = [
     method(
         "getPosixFilePermissions",
         "(Ljava/nio/file/Path;[Ljava/nio/file/LinkOption;)Ljava/util/Set;",
@@ -1873,6 +1873,34 @@ const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 61] = [
             let path = path_string(vm, ref_arg(args, 0));
             let name = path.rsplit('/').next().unwrap_or("");
             boolean(name.starts_with('.'))
+        },
+    ),
+    method(
+        "newBufferedReader",
+        "(Ljava/nio/file/Path;Ljava/nio/charset/Charset;)Ljava/io/BufferedReader;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            files_new_buffered_reader(vm, args)
+        },
+    ),
+    method(
+        "lines",
+        "(Ljava/nio/file/Path;Ljava/nio/charset/Charset;)Ljava/util/stream/Stream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let path = path_string(vm, ref_arg(args, 0));
+            let text = read_text_file(vm, &path)?;
+            let mut lines = Vec::new();
+            for line in text.lines() {
+                lines.push(vm.make_string(line)?);
+            }
+            object(crate::stream::stream_from(vm, lines)?)
         },
     ),
 ];
