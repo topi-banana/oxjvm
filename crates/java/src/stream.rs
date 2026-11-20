@@ -1890,14 +1890,13 @@ fn call_apply_as_double(
 ) -> Result<f64, VmError> {
     let (class, method) =
         vm.resolve_virtual_method(function, "applyAsDouble", "(Ljava/lang/Object;)D")?;
-    let bits = vm
+    Ok(vm
         .invoke_method(
             class,
             method,
             vec![Value::Ref(function), Value::Ref(argument)],
         )?
-        .as_long();
-    Ok(f64::from_bits(bits as u64))
+        .as_double())
 }
 
 /// `Object.toString()` of an element, resolving the actual class.
