@@ -8029,7 +8029,7 @@ const CLOCK_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
 pub(crate) const CLOCK: oxjvm_vm::NativeClass = class(
     "java/time/Clock",
     Some("java/lang/Object"),
-    &["java/io/Serializable"],
+    &["java/io/Serializable", "java/time/InstantSource"],
     ACC_PUBLIC,
     &[
         field("zone", "Ljava/time/ZoneId;", ACC_PRIVATE, None),
@@ -8043,6 +8043,59 @@ pub(crate) const CLOCK: oxjvm_vm::NativeClass = class(
         field("tickNanos", "J", ACC_PRIVATE, None),
     ],
     &CLOCK_METHODS,
+    None,
+);
+
+const INSTANT_SOURCE_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method(
+        "system",
+        "()Ljava/time/InstantSource;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/time/Clock")?;
+            let (declaring, method) = vm
+                .find_method(class, "systemUTC", "()Ljava/time/Clock;")
+                .ok_or_else(|| VmError::internal("Clock.systemUTC missing"))?;
+            vm.invoke_method(declaring, method, vec![])
+        },
+    ),
+    method(
+        "fixed",
+        "(Ljava/time/Instant;)Ljava/time/InstantSource;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let instant = ref_arg(args, 0);
+            let utc = zone_offset_from_seconds(vm, 0)?;
+            let class = vm.resolve_class("java/time/Clock")?;
+            let (declaring, method) = vm
+                .find_method(
+                    class,
+                    "fixed",
+                    "(Ljava/time/Instant;Ljava/time/ZoneId;)Ljava/time/Clock;",
+                )
+                .ok_or_else(|| VmError::internal("Clock.fixed missing"))?;
+            vm.invoke_method(
+                declaring,
+                method,
+                vec![Value::Ref(instant), Value::Ref(utc)],
+            )
+        },
+    ),
+    method(
+        "instant",
+        "()Ljava/time/Instant;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
+pub(crate) const INSTANT_SOURCE: oxjvm_vm::NativeClass = class(
+    "java/time/InstantSource",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &INSTANT_SOURCE_METHODS,
     None,
 );
 
