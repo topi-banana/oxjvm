@@ -1156,13 +1156,21 @@ const PATTERN_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let text = string_arg(vm, args[0])?;
-            let mut quoted = String::new();
-            for ch in text.chars() {
-                if !ch.is_ascii_alphanumeric() && ch != '_' {
-                    quoted.push('\\');
+            let quoted = if text.contains("\\E") {
+                let mut sb = String::from("\\Q");
+                let mut current = 0;
+                while let Some(idx) = text[current..].find("\\E") {
+                    let abs = current + idx;
+                    sb.push_str(&text[current..abs]);
+                    sb.push_str("\\E\\\\E\\Q");
+                    current = abs + 2;
                 }
-                quoted.push(ch);
-            }
+                sb.push_str(&text[current..]);
+                sb.push_str("\\E");
+                sb
+            } else {
+                format!("\\Q{}\\E", text)
+            };
             object(vm.make_string(&quoted)?)
         },
     ),
@@ -1470,7 +1478,7 @@ fn pattern_regex(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(Regex, usize), VmE
 // Matcher
 // -------------------------------------------------------------------------------------------
 
-const MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
+const MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
     method("matches", "()Z", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let (regex, _) = pattern_regex_for(vm, this)?;
@@ -1615,6 +1623,29 @@ const MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
             let this = receiver(args);
             crate::lang::write_int_field(vm, this, "cursor", 0);
             crate::lang::write_int_field(vm, this, "appendPos", 0);
+            crate::lang::write_int_field(vm, this, "regionStart", 0);
+            crate::lang::write_int_field(vm, this, "regionEnd", -1);
+            matcher_clear(vm, this);
+            object(this)
+        },
+    ),
+    method(
+        "region",
+        "(II)Ljava/util/regex/Matcher;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let start = crate::int_arg(args, 1);
+            let end = crate::int_arg(args, 2);
+            let text = matcher_text(vm, this)?;
+            let len = text.len() as i32;
+            if start < 0 || start > len || end < start || end > len {
+                return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+            }
+            crate::lang::write_int_field(vm, this, "regionStart", start);
+            crate::lang::write_int_field(vm, this, "regionEnd", end);
+            crate::lang::write_int_field(vm, this, "cursor", start);
+            crate::lang::write_int_field(vm, this, "appendPos", start);
             matcher_clear(vm, this);
             object(this)
         },
@@ -1749,6 +1780,8 @@ pub(crate) const MATCHER: oxjvm_vm::NativeClass = class(
         field("matchStart", "I", ACC_PRIVATE, None),
         field("matchEnd", "I", ACC_PRIVATE, None),
         field("groups", "[I", ACC_PRIVATE, None),
+        field("regionStart", "I", ACC_PRIVATE, None),
+        field("regionEnd", "I", ACC_PRIVATE, None),
     ],
     &MATCHER_METHODS,
     None,
@@ -2065,6 +2098,8 @@ fn matcher_new(vm: &mut Vm<'_>, pattern: ObjectRef, input: ObjectRef) -> Result<
     vm.set_instance_ref(instance, declaring, field, text);
     matcher_clear(vm, instance);
     crate::lang::write_int_field(vm, instance, "appendPos", 0);
+    crate::lang::write_int_field(vm, instance, "regionStart", 0);
+    crate::lang::write_int_field(vm, instance, "regionEnd", -1);
     object(instance)
 }
 
@@ -2132,23 +2167,39 @@ fn matcher_store(vm: &mut Vm<'_>, this: ObjectRef, matched: &RegexMatch) -> Resu
 }
 
 fn matcher_find(vm: &mut Vm<'_>, this: ObjectRef, from: i32) -> Result<Value, VmError> {
-    let from = from.max(0) as usize;
     let (regex, _) = pattern_regex_for(vm, this)?;
     let text = matcher_text(vm, this)?;
-    match find_from(&regex, &text, from) {
-        Some(matched) => {
-            let next = if matched.end > matched.start {
-                matched.end
-            } else {
-                matched.end + 1
-            };
-            matcher_store(vm, this, &matched)?;
-            crate::lang::write_int_field(vm, this, "cursor", next as i32);
-            boolean(true)
-        }
-        None => {
+    let region_start = crate::lang::read_int_field(vm, this, "regionStart").max(0);
+    let region_end_raw = crate::lang::read_int_field(vm, this, "regionEnd");
+    let region_end = if region_end_raw <= 0 {
+        text.len() as i32
+    } else {
+        region_end_raw.min(text.len() as i32)
+    };
+    let mut from = from.max(0).max(region_start);
+    loop {
+        if from >= region_end {
             matcher_clear(vm, this);
-            boolean(false)
+            return boolean(false);
+        }
+        match find_from(&regex, &text, from as usize) {
+            Some(matched) if (matched.end as i32) <= region_end => {
+                let next = if matched.end > matched.start {
+                    matched.end
+                } else {
+                    matched.end + 1
+                };
+                matcher_store(vm, this, &matched)?;
+                crate::lang::write_int_field(vm, this, "cursor", next as i32);
+                return boolean(true);
+            }
+            Some(matched) => {
+                from = matched.start as i32 + 1;
+            }
+            None => {
+                matcher_clear(vm, this);
+                return boolean(false);
+            }
         }
     }
 }

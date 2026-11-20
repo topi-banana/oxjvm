@@ -712,6 +712,148 @@ const CRC32_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     }),
 ];
 
+fn checked_input_ctor(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    input: ObjectRef,
+    checksum: ObjectRef,
+) -> Result<(), VmError> {
+    let (declaring, field) = vm.find_field(vm.class_of(this), "in", "Ljava/io/InputStream;")?;
+    vm.set_instance_ref(this, declaring, field, input);
+    let (declaring, field) =
+        vm.find_field(vm.class_of(this), "checksum", "Ljava/util/zip/Checksum;")?;
+    vm.set_instance_ref(this, declaring, field, checksum);
+    Ok(())
+}
+
+fn checked_input_stream(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    read_ref_field(vm, this, "in", "Ljava/io/InputStream;").unwrap_or(ObjectRef::NULL)
+}
+
+fn checked_input_checksum(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    read_ref_field(vm, this, "checksum", "Ljava/util/zip/Checksum;").unwrap_or(ObjectRef::NULL)
+}
+
+const CHECKED_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+    method(
+        "<init>",
+        "(Ljava/io/InputStream;Ljava/util/zip/Checksum;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            checked_input_ctor(vm, receiver(args), ref_arg(args, 1), ref_arg(args, 2))?;
+            void()
+        },
+    ),
+    method("read", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let input = checked_input_stream(vm, this);
+        let (class, method) = vm.resolve_virtual_method(input, "read", "()I")?;
+        let byte = vm
+            .invoke_method(class, method, vec![Value::Ref(input)])?
+            .as_int();
+        if byte >= 0 {
+            let checksum = checked_input_checksum(vm, this);
+            if !checksum.is_null() {
+                let (class, method) = vm.resolve_virtual_method(checksum, "update", "(I)V")?;
+                vm.invoke_method(class, method, vec![Value::Ref(checksum), Value::Int(byte)])?;
+            }
+        }
+        int(byte)
+    }),
+    method("read", "([BII)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let input = checked_input_stream(vm, this);
+        let buffer = ref_arg(args, 1);
+        let offset = crate::int_arg(args, 2);
+        let length = crate::int_arg(args, 3);
+        let (class, method) = vm.resolve_virtual_method(input, "read", "([BII)I")?;
+        let count = vm
+            .invoke_method(
+                class,
+                method,
+                vec![
+                    Value::Ref(input),
+                    Value::Ref(buffer),
+                    Value::Int(offset),
+                    Value::Int(length),
+                ],
+            )?
+            .as_int();
+        if count > 0 {
+            let checksum = checked_input_checksum(vm, this);
+            if !checksum.is_null() {
+                let (class, method) = vm.resolve_virtual_method(checksum, "update", "([BII)V")?;
+                vm.invoke_method(
+                    class,
+                    method,
+                    vec![
+                        Value::Ref(checksum),
+                        Value::Ref(buffer),
+                        Value::Int(offset),
+                        Value::Int(count),
+                    ],
+                )?;
+            }
+        }
+        int(count)
+    }),
+    method(
+        "getChecksum",
+        "()Ljava/util/zip/Checksum;",
+        ACC_PUBLIC,
+        |vm, _, args| object(checked_input_checksum(vm, receiver(args))),
+    ),
+    method("available", "()I", ACC_PUBLIC, |vm, _, args| {
+        let input = checked_input_stream(vm, receiver(args));
+        let (class, method) = vm.resolve_virtual_method(input, "available", "()I")?;
+        vm.invoke_method(class, method, vec![Value::Ref(input)])
+    }),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        let input = checked_input_stream(vm, receiver(args));
+        let (class, method) = vm.resolve_virtual_method(input, "close", "()V")?;
+        vm.invoke_method(class, method, vec![Value::Ref(input)])?;
+        void()
+    }),
+    method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
+        let input = checked_input_stream(vm, receiver(args));
+        let count = crate::long_arg(args, 1);
+        let (class, method) = vm.resolve_virtual_method(input, "skip", "(J)J")?;
+        vm.invoke_method(class, method, vec![Value::Ref(input), Value::Long(count)])
+    }),
+    method("mark", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let input = checked_input_stream(vm, receiver(args));
+        let limit = crate::int_arg(args, 1);
+        let (class, method) = vm.resolve_virtual_method(input, "mark", "(I)V")?;
+        vm.invoke_method(class, method, vec![Value::Ref(input), Value::Int(limit)])?;
+        void()
+    }),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
+        let input = checked_input_stream(vm, receiver(args));
+        let (class, method) = vm.resolve_virtual_method(input, "reset", "()V")?;
+        vm.invoke_method(class, method, vec![Value::Ref(input)])?;
+        void()
+    }),
+    method("markSupported", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let input = checked_input_stream(vm, receiver(args));
+        let (class, method) = vm.resolve_virtual_method(input, "markSupported", "()Z")?;
+        vm.invoke_method(class, method, vec![Value::Ref(input)])
+    }),
+];
+
+/// `java.util.zip.CheckedInputStream`: an InputStream that updates a Checksum as it reads.
+pub(crate) const CHECKED_INPUT_STREAM: oxjvm_vm::NativeClass = class(
+    "java/util/zip/CheckedInputStream",
+    Some("java/io/InputStream"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("in", "Ljava/io/InputStream;", ACC_PRIVATE, None),
+        field("checksum", "Ljava/util/zip/Checksum;", ACC_PRIVATE, None),
+    ],
+    &CHECKED_INPUT_STREAM_METHODS,
+    None,
+);
+
 pub(crate) const CRC32: oxjvm_vm::NativeClass = class(
     "java/util/zip/CRC32",
     Some("java/lang/Object"),

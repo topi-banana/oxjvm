@@ -11,6 +11,80 @@ use oxjvm_classfile::flags::*;
 use crate::{boolean, class, field, int, method, object, receiver, ref_arg, string_arg, void};
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
+/// RFC 3986 remove_dot_segments applied to a URI path.
+fn remove_dot_segments(path: &str) -> String {
+    let mut input = String::from(path);
+    let mut output = String::new();
+    while !input.is_empty() {
+        if input.starts_with("../") {
+            input = input[3..].into();
+        } else if input.starts_with("./") || input.starts_with("/./") {
+            input = input[2..].into();
+        } else if input == "/." {
+            input = "/".into();
+        } else if input.starts_with("/../") {
+            input = input[3..].into();
+            pop_uri_segment(&mut output);
+        } else if input == "/.." {
+            input = "/".into();
+            pop_uri_segment(&mut output);
+        } else if input == "." || input == ".." {
+            input.clear();
+        } else {
+            let start = usize::from(input.starts_with('/'));
+            let end = match input[start..].find('/') {
+                Some(i) => start + i,
+                None => input.len(),
+            };
+            output.push_str(&input[..end]);
+            input = input[end..].into();
+        }
+    }
+    output
+}
+
+fn pop_uri_segment(output: &mut String) {
+    match output.rfind('/') {
+        Some(i) => output.truncate(i),
+        None => output.clear(),
+    }
+}
+
+/// Normalize a URI string by removing dot segments from its path.
+fn uri_normalize(text: &str) -> String {
+    let (rest, fragment) = match text.find('#') {
+        Some(i) => (&text[..i], Some(&text[i..])),
+        None => (text, None),
+    };
+    let (rest, query) = match rest.find('?') {
+        Some(i) => (&rest[..i], Some(&rest[i..])),
+        None => (rest, None),
+    };
+    let (scheme, after_scheme) = match rest.find(':') {
+        Some(i) => (&rest[..i + 1], &rest[i + 1..]),
+        None => ("", rest),
+    };
+    let (authority, path) = if let Some(body) = after_scheme.strip_prefix("//") {
+        match body.find('/') {
+            Some(i) => (alloc::format!("//{}", &body[..i]), String::from(&body[i..])),
+            None => (String::from(after_scheme), String::new()),
+        }
+    } else {
+        (String::new(), String::from(after_scheme))
+    };
+    let mut out = String::new();
+    out.push_str(scheme);
+    out.push_str(&authority);
+    out.push_str(&remove_dot_segments(&path));
+    if let Some(q) = query {
+        out.push_str(q);
+    }
+    if let Some(f) = fragment {
+        out.push_str(f);
+    }
+    out
+}
+
 fn uri_text(vm: &Vm<'_>, this: ObjectRef) -> String {
     vm.read_string_field(this, vm.class_of(this), "string")
         .unwrap_or_default()
@@ -633,9 +707,20 @@ const URI_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
             object(vm.intern(rest)?)
         },
     ),
-    method("normalize", "()Ljava/net/URI;", ACC_PUBLIC, |_, _, args| {
-        object(receiver(args))
-    }),
+    method(
+        "normalize",
+        "()Ljava/net/URI;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = uri_text(vm, this);
+            let normalized = uri_normalize(&text);
+            if normalized == text {
+                return object(this);
+            }
+            new_uri(vm, &normalized)
+        },
+    ),
     method("isOpaque", "()Z", ACC_PUBLIC, |vm, _, args| {
         let text = uri_text(vm, receiver(args));
         let opaque = match text.find(':') {
