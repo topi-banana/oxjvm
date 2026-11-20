@@ -4063,7 +4063,7 @@ pub(crate) const LOCAL_DATE: oxjvm_vm::NativeClass = class(
     Some(local_date_clinit),
 );
 
-const LOCAL_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
+const LOCAL_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
     method(
         "of",
         "(II)Ljava/time/LocalTime;",
@@ -4509,6 +4509,28 @@ const LOCAL_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
                 nano_of_day / nanos * nanos
             };
             object(local_time_new(vm, truncated)?)
+        },
+    ),
+    method(
+        "isBefore",
+        "(Ljava/time/LocalTime;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            boolean(
+                read_long_field(vm, receiver(args), "nanoOfDay")
+                    < read_long_field(vm, ref_arg(args, 1), "nanoOfDay"),
+            )
+        },
+    ),
+    method(
+        "isAfter",
+        "(Ljava/time/LocalTime;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            boolean(
+                read_long_field(vm, receiver(args), "nanoOfDay")
+                    > read_long_field(vm, ref_arg(args, 1), "nanoOfDay"),
+            )
         },
     ),
 ];
