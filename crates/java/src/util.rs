@@ -14750,7 +14750,7 @@ fn bitset_check_range(vm: &mut Vm<'_>, from: i32, to: i32) -> Result<(usize, usi
     Ok((from as usize, to as usize))
 }
 
-const BITSET_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
+const BITSET_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         bitset_store(vm, receiver(args), &[], 0)?;
         void()
@@ -15140,6 +15140,24 @@ const BITSET_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
             let (declaring, field) = vm.find_field(class, "words", "[J")?;
             vm.set_instance_ref(clone, declaring, field, array);
             object(clone)
+        },
+    ),
+    method(
+        "stream",
+        "()Ljava/util/stream/IntStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let words = bitset_words(vm, receiver(args));
+            let mut values = Vec::new();
+            for (word_index, word) in words.iter().enumerate() {
+                let mut remaining = *word;
+                while remaining != 0 {
+                    let bit = remaining.trailing_zeros() as usize;
+                    values.push((word_index * 64 + bit) as i32);
+                    remaining &= remaining - 1;
+                }
+            }
+            crate::intstream::int_stream_of(vm, values)
         },
     ),
 ];
