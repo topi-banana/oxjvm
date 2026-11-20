@@ -25621,7 +25621,7 @@ fn available_currencies(vm: &mut Vm<'_>) -> Result<Vec<ObjectRef>, VmError> {
         .collect()
 }
 
-const CURRENCY_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+const CURRENCY_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method(
         "getInstance",
         "(Ljava/lang/String;)Ljava/util/Currency;",
@@ -25694,6 +25694,21 @@ const CURRENCY_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
+            let code = currency_code(vm, receiver(args));
+            let name = currency_display_name(&code);
+            let text = if name.is_empty() { code.as_str() } else { name };
+            object(vm.make_string(text)?)
+        },
+    ),
+    method(
+        "getDisplayName",
+        "(Ljava/util/Locale;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let locale = ref_arg(args, 1);
+            if locale.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let code = currency_code(vm, receiver(args));
             let name = currency_display_name(&code);
             let text = if name.is_empty() { code.as_str() } else { name };
