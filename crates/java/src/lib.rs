@@ -90,6 +90,25 @@ pub(crate) const fn method(
         descriptor,
         access_flags,
         native,
+        exceptions: &[],
+    }
+}
+
+/// Build a [`NativeMethodDef`] with declared checked exceptions.
+#[must_use]
+pub(crate) const fn method_throws(
+    name: &'static str,
+    descriptor: &'static str,
+    access_flags: u16,
+    native: NativeFn,
+    exceptions: &'static [&'static str],
+) -> NativeMethodDef {
+    NativeMethodDef {
+        name,
+        descriptor,
+        access_flags,
+        native,
+        exceptions,
     }
 }
 
@@ -148,7 +167,7 @@ pub fn is_non_writable_property(key: &str) -> bool {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 1088] = [
+static REGISTRY: [NativeClass; 1090] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -214,6 +233,8 @@ static REGISTRY: [NativeClass; 1088] = [
     temporal::WEEK_FIELDS_COMPUTED_DAY_OF_FIELD,
     temporal::TEMPORAL_ADJUSTERS,
     temporal::TEMPORAL_ADJUSTERS_IMPL,
+    temporal::TEMPORAL_QUERIES,
+    temporal::TEMPORAL_QUERIES_IMPL,
     module::MODULE_DESCRIPTOR,
     module::BUILDER,
     http::HTTP_CLIENT,

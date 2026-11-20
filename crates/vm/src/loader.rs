@@ -781,7 +781,11 @@ impl<'a> Vm<'a> {
                 owner: ClassId(0),
                 code: None,
                 native: Some(method.native),
-                exceptions: Vec::new(),
+                exceptions: method
+                    .exceptions
+                    .iter()
+                    .filter_map(|name| self.resolve_class_lenient(name))
+                    .collect(),
                 parameter_names: Vec::new(),
                 signature: None,
                 annotations: Vec::new(),

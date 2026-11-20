@@ -2297,3 +2297,178 @@ pub(crate) const TEMPORAL_ADJUSTERS: oxjvm_vm::NativeClass = class(
     &TEMPORAL_ADJUSTERS_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// TemporalQueries
+// -------------------------------------------------------------------------------------------
+
+const QUERY_ZONE_ID: i32 = 0;
+const QUERY_ZONE: i32 = 1;
+const QUERY_CHRONOLOGY: i32 = 2;
+const QUERY_PRECISION: i32 = 3;
+const QUERY_OFFSET: i32 = 4;
+const QUERY_LOCAL_DATE: i32 = 5;
+const QUERY_LOCAL_TIME: i32 = 6;
+
+fn temporal_query_new(vm: &mut Vm<'_>, kind: i32) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/time/temporal/TemporalQueries$Impl")?;
+    let instance = vm.new_instance(class)?;
+    write_int_field(vm, instance, "kind", kind);
+    Ok(instance)
+}
+
+/// Applies a `TemporalQuery`: the built-in queries are answered natively, while
+/// user-defined queries dispatch through their `queryFrom` implementation.
+pub(crate) fn temporal_query_from(
+    vm: &mut Vm<'_>,
+    query: ObjectRef,
+    temporal: ObjectRef,
+) -> Result<Value, VmError> {
+    if temporal.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let query_name = alloc::string::String::from(vm.class_name(vm.class_of(query)));
+    if query_name != "java/time/temporal/TemporalQueries$Impl" {
+        let (class, method) = vm.resolve_virtual_method(
+            query,
+            "queryFrom",
+            "(Ljava/time/temporal/TemporalAccessor;)Ljava/lang/Object;",
+        )?;
+        return vm.invoke_method(class, method, alloc::vec![Value::Ref(temporal)]);
+    }
+    let kind = read_int_field(vm, query, "kind");
+    let name = alloc::string::String::from(vm.class_name(vm.class_of(temporal)));
+    match kind {
+        QUERY_LOCAL_DATE => match name.as_str() {
+            "java/time/LocalDate" => object(temporal),
+            "java/time/LocalDateTime" | "java/time/OffsetDateTime" | "java/time/ZonedDateTime" => {
+                let (class, method) =
+                    vm.resolve_virtual_method(temporal, "toLocalDate", "()Ljava/time/LocalDate;")?;
+                vm.invoke_method(class, method, alloc::vec![Value::Ref(temporal)])
+            }
+            _ => object(ObjectRef::NULL),
+        },
+        QUERY_LOCAL_TIME => match name.as_str() {
+            "java/time/LocalTime" => object(temporal),
+            "java/time/LocalDateTime" | "java/time/ZonedDateTime" => {
+                let (class, method) =
+                    vm.resolve_virtual_method(temporal, "toLocalTime", "()Ljava/time/LocalTime;")?;
+                vm.invoke_method(class, method, alloc::vec![Value::Ref(temporal)])
+            }
+            "java/time/OffsetDateTime" => object(crate::time::local_time_new(
+                vm,
+                read_long_field(vm, temporal, "nanoOfDay"),
+            )?),
+            _ => object(ObjectRef::NULL),
+        },
+        QUERY_PRECISION => {
+            let unit = match name.as_str() {
+                "java/time/LocalDate" => Some("DAYS"),
+                "java/time/LocalTime"
+                | "java/time/LocalDateTime"
+                | "java/time/OffsetDateTime"
+                | "java/time/ZonedDateTime"
+                | "java/time/Instant" => Some("NANOS"),
+                _ => None,
+            };
+            match unit {
+                Some(unit) => object(crate::time::chrono_unit_named(vm, unit)?),
+                None => object(ObjectRef::NULL),
+            }
+        }
+        QUERY_ZONE_ID | QUERY_ZONE => {
+            let zone = match name.as_str() {
+                "java/time/ZonedDateTime" => vm.read_ref_field_any(temporal, "zone"),
+                "java/time/OffsetDateTime" => vm.read_ref_field_any(temporal, "offset"),
+                _ => None,
+            };
+            object(zone.unwrap_or(ObjectRef::NULL))
+        }
+        QUERY_OFFSET => match name.as_str() {
+            "java/time/OffsetDateTime" => object(
+                vm.read_ref_field_any(temporal, "offset")
+                    .unwrap_or(ObjectRef::NULL),
+            ),
+            "java/time/ZonedDateTime" => {
+                let (class, method) =
+                    vm.resolve_virtual_method(temporal, "getOffset", "()Ljava/time/ZoneOffset;")?;
+                vm.invoke_method(class, method, alloc::vec![Value::Ref(temporal)])
+            }
+            _ => object(ObjectRef::NULL),
+        },
+        // QUERY_CHRONOLOGY: IsoChronology is not modeled yet.
+        _ => object(ObjectRef::NULL),
+    }
+}
+
+const TEMPORAL_QUERIES_IMPL_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "queryFrom",
+    "(Ljava/time/temporal/TemporalAccessor;)Ljava/lang/Object;",
+    ACC_PUBLIC,
+    |vm, _, args| temporal_query_from(vm, receiver(args), ref_arg(args, 1)),
+)];
+
+pub(crate) const TEMPORAL_QUERIES_IMPL: oxjvm_vm::NativeClass = class(
+    "java/time/temporal/TemporalQueries$Impl",
+    Some("java/lang/Object"),
+    &["java/time/temporal/TemporalQuery"],
+    ACC_PUBLIC | ACC_FINAL,
+    &[field("kind", "I", ACC_PRIVATE | ACC_FINAL, None)],
+    &TEMPORAL_QUERIES_IMPL_METHODS,
+    None,
+);
+
+const TEMPORAL_QUERIES_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method(
+        "zoneId",
+        "()Ljava/time/temporal/TemporalQuery;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(temporal_query_new(vm, QUERY_ZONE_ID)?),
+    ),
+    method(
+        "zone",
+        "()Ljava/time/temporal/TemporalQuery;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(temporal_query_new(vm, QUERY_ZONE)?),
+    ),
+    method(
+        "chronology",
+        "()Ljava/time/temporal/TemporalQuery;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(temporal_query_new(vm, QUERY_CHRONOLOGY)?),
+    ),
+    method(
+        "precision",
+        "()Ljava/time/temporal/TemporalQuery;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(temporal_query_new(vm, QUERY_PRECISION)?),
+    ),
+    method(
+        "offset",
+        "()Ljava/time/temporal/TemporalQuery;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(temporal_query_new(vm, QUERY_OFFSET)?),
+    ),
+    method(
+        "localDate",
+        "()Ljava/time/temporal/TemporalQuery;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(temporal_query_new(vm, QUERY_LOCAL_DATE)?),
+    ),
+    method(
+        "localTime",
+        "()Ljava/time/temporal/TemporalQuery;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(temporal_query_new(vm, QUERY_LOCAL_TIME)?),
+    ),
+];
+
+pub(crate) const TEMPORAL_QUERIES: oxjvm_vm::NativeClass = class(
+    "java/time/temporal/TemporalQueries",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[],
+    &TEMPORAL_QUERIES_METHODS,
+    None,
+);

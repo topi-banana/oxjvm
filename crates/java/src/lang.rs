@@ -9,7 +9,7 @@ use oxjvm_vm::{ClassId, ObjectRef, Value, Vm, VmError};
 
 use crate::{
     bool_arg, boolean, class, double_arg, field, float_arg, int, int_arg, long, long_arg, method,
-    object, receiver, ref_arg, string_arg, void,
+    method_throws, object, receiver, ref_arg, string_arg, void,
 };
 
 // -------------------------------------------------------------------------------------------
@@ -1979,13 +1979,13 @@ const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 24] = [
     method(
         "format",
         "(Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String;",
-        ACC_PUBLIC | ACC_STATIC,
+        ACC_PUBLIC | ACC_STATIC | ACC_VARARGS,
         string_format,
     ),
     method(
         "format",
         "(Ljava/util/Locale;Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String;",
-        ACC_PUBLIC | ACC_STATIC,
+        ACC_PUBLIC | ACC_STATIC | ACC_VARARGS,
         |vm, _, args| {
             let format = string_arg(vm, args[1])?;
             let mut arguments = Vec::new();
@@ -2065,11 +2065,12 @@ const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 24] = [
         ACC_PUBLIC,
         string_init_bytes_range_charset,
     ),
-    method(
+    method_throws(
         "getBytes",
         "(Ljava/lang/String;)[B",
         ACC_PUBLIC,
         string_get_bytes_charset,
+        &["java/io/UnsupportedEncodingException"],
     ),
     method(
         "getBytes",
@@ -3948,13 +3949,13 @@ const FORMATTER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method(
         "format",
         "(Ljava/lang/String;[Ljava/lang/Object;)Ljava/util/Formatter;",
-        ACC_PUBLIC,
+        ACC_PUBLIC | ACC_VARARGS,
         |vm, _, args| formatter_format(vm, receiver(args), ref_arg(args, 1), ref_arg(args, 2)),
     ),
     method(
         "format",
         "(Ljava/util/Locale;Ljava/lang/String;[Ljava/lang/Object;)Ljava/util/Formatter;",
-        ACC_PUBLIC,
+        ACC_PUBLIC | ACC_VARARGS,
         |vm, _, args| formatter_format(vm, receiver(args), ref_arg(args, 2), ref_arg(args, 3)),
     ),
     method(

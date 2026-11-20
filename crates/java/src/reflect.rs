@@ -183,7 +183,7 @@ fn set_instance_value(
 // Method
 // -------------------------------------------------------------------------------------------
 
-const METHOD_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
+const METHOD_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -246,6 +246,24 @@ const METHOD_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
             };
             let class_id = field_type_class(vm, &returns)?;
             object(vm.class_object(class_id)?)
+        },
+    ),
+    method(
+        "getExceptionTypes",
+        "()[Ljava/lang/Class;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (class, slot) = method_parts(vm, receiver(args));
+            let exceptions = vm.classes.get(class).methods[slot as usize]
+                .exceptions
+                .clone();
+            let class_class = vm.resolve_class("java/lang/Class")?;
+            let array = vm.allocate_object_array(class_class, exceptions.len())?;
+            for (index, exception) in exceptions.iter().enumerate() {
+                let object = vm.class_object(*exception)?;
+                vm.array_set_ref(array, index, object)?;
+            }
+            object(array)
         },
     ),
     method(

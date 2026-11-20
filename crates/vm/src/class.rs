@@ -218,6 +218,8 @@ pub struct NativeMethodDef {
     pub access_flags: u16,
     /// Implementation.
     pub native: NativeFn,
+    /// Declared checked exceptions, as internal class names.
+    pub exceptions: &'static [&'static str],
 }
 
 /// A complete native class definition.

@@ -635,7 +635,7 @@ pub(crate) const DURATION: oxjvm_vm::NativeClass = class(
     Some(duration_clinit),
 );
 
-const INSTANT_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
+const INSTANT_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
     method(
         "now",
         "()Ljava/time/Instant;",
@@ -1042,6 +1042,18 @@ const INSTANT_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
             let seconds = read_long_field(vm, this, "epochSecond");
             let nano = read_int_field(vm, this, "nano");
             zoned_date_time_new(vm, seconds * 1000 + i64::from(nano) / 1_000_000, nano, zone)
+        },
+    ),
+    method(
+        "query",
+        "(Ljava/time/temporal/TemporalQuery;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let query = ref_arg(args, 1);
+            if query.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            crate::temporal::temporal_query_from(vm, query, receiver(args))
         },
     ),
 ];
@@ -1579,7 +1591,7 @@ fn zdt_local_parts(vm: &Vm<'_>, this: ObjectRef) -> (i64, i64) {
     (epoch_day, nano_of_day)
 }
 
-const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
+const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
     method(
         "now",
         "()Ljava/time/ZonedDateTime;",
@@ -1993,6 +2005,18 @@ const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
                 vm,
                 zone_offset_seconds(vm, zone),
             )?)
+        },
+    ),
+    method(
+        "query",
+        "(Ljava/time/temporal/TemporalQuery;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let query = ref_arg(args, 1);
+            if query.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            crate::temporal::temporal_query_from(vm, query, receiver(args))
         },
     ),
 ];
@@ -2504,7 +2528,7 @@ fn time_unit_nanos(ordinal: i32) -> Option<i64> {
     })
 }
 
-fn local_time_new(vm: &mut Vm<'_>, nano_of_day: i64) -> Result<ObjectRef, VmError> {
+pub(crate) fn local_time_new(vm: &mut Vm<'_>, nano_of_day: i64) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class("java/time/LocalTime")?;
     // Exact-hour times share the cached `HOURS` singletons, matching the JDK's
     // identity semantics for the common constants.
@@ -3019,7 +3043,7 @@ fn local_date_dates_until(
     object(crate::stream::stream_from(vm, elements)?)
 }
 
-const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 57] = [
+const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 58] = [
     method(
         "of",
         "(III)Ljava/time/LocalDate;",
@@ -3789,6 +3813,18 @@ const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 57] = [
             object(local_date_new(vm, days_from_civil(year, month, day))?)
         },
     ),
+    method(
+        "query",
+        "(Ljava/time/temporal/TemporalQuery;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let query = ref_arg(args, 1);
+            if query.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            crate::temporal::temporal_query_from(vm, query, receiver(args))
+        },
+    ),
 ];
 
 pub(crate) const LOCAL_DATE: oxjvm_vm::NativeClass = class(
@@ -3820,7 +3856,7 @@ pub(crate) const LOCAL_DATE: oxjvm_vm::NativeClass = class(
     Some(local_date_clinit),
 );
 
-const LOCAL_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
+const LOCAL_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
     method(
         "of",
         "(II)Ljava/time/LocalTime;",
@@ -4226,6 +4262,18 @@ const LOCAL_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
             object(vm.make_string(&crate::text::format_pattern(&pattern, millis))?)
         },
     ),
+    method(
+        "query",
+        "(Ljava/time/temporal/TemporalQuery;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let query = ref_arg(args, 1);
+            if query.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            crate::temporal::temporal_query_from(vm, query, receiver(args))
+        },
+    ),
 ];
 
 pub(crate) const LOCAL_TIME: oxjvm_vm::NativeClass = class(
@@ -4276,7 +4324,7 @@ pub(crate) const LOCAL_TIME: oxjvm_vm::NativeClass = class(
     Some(local_time_clinit),
 );
 
-const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 65] = [
+const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 66] = [
     method(
         "of",
         "(IIIII)Ljava/time/LocalDateTime;",
@@ -4967,6 +5015,18 @@ const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 65] = [
                 .unwrap_or_default();
             let millis = temporal_local_millis(vm, this)?;
             object(vm.make_string(&crate::text::format_pattern(&pattern, millis))?)
+        },
+    ),
+    method(
+        "query",
+        "(Ljava/time/temporal/TemporalQuery;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let query = ref_arg(args, 1);
+            if query.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            crate::temporal::temporal_query_from(vm, query, receiver(args))
         },
     ),
 ];
@@ -6247,7 +6307,7 @@ fn offset_date_time_epoch_second(vm: &Vm<'_>, this: ObjectRef) -> i64 {
     epoch_day * 86_400 + nano_of_day / 1_000_000_000 - i64::from(offset)
 }
 
-const OFFSET_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
+const OFFSET_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
     method(
         "of",
         "(IIIIIIILjava/time/ZoneOffset;)Ljava/time/OffsetDateTime;",
@@ -6702,6 +6762,18 @@ const OFFSET_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
                     )
                 }
             }
+        },
+    ),
+    method(
+        "query",
+        "(Ljava/time/temporal/TemporalQuery;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let query = ref_arg(args, 1);
+            if query.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            crate::temporal::temporal_query_from(vm, query, receiver(args))
         },
     ),
 ];
