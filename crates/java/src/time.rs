@@ -1594,7 +1594,7 @@ pub(crate) const FORMAT_STYLE: oxjvm_vm::NativeClass = class(
     "java/time/format/FormatStyle",
     Some("java/lang/Object"),
     &[],
-    ACC_PUBLIC | ACC_FINAL,
+    ACC_PUBLIC | ACC_FINAL | ACC_ENUM,
     &[
         field("ordinal", "I", ACC_PRIVATE | ACC_FINAL, None),
         field(
@@ -4474,7 +4474,7 @@ pub(crate) const DAY_OF_WEEK: oxjvm_vm::NativeClass = class(
     "java/time/DayOfWeek",
     Some("java/lang/Object"),
     &[],
-    ACC_PUBLIC | ACC_FINAL,
+    ACC_PUBLIC | ACC_FINAL | ACC_ENUM,
     &[
         field("value", "I", ACC_PRIVATE, None),
         field(
@@ -4742,7 +4742,7 @@ pub(crate) const MONTH: oxjvm_vm::NativeClass = class(
         "java/time/temporal/TemporalAccessor",
         "java/time/temporal/TemporalAdjuster",
     ],
-    ACC_PUBLIC | ACC_FINAL,
+    ACC_PUBLIC | ACC_FINAL | ACC_ENUM,
     &[
         field("value", "I", ACC_PRIVATE | ACC_FINAL, None),
         field(

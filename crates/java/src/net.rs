@@ -533,7 +533,7 @@ pub(crate) const STANDARD_PROTOCOL_FAMILY: oxjvm_vm::NativeClass = class(
     "java/net/StandardProtocolFamily",
     Some("java/lang/Object"),
     &[],
-    ACC_PUBLIC | ACC_FINAL,
+    ACC_PUBLIC | ACC_FINAL | ACC_ENUM,
     &[
         field("ordinal", "I", ACC_PRIVATE | ACC_FINAL, None),
         field("name", "Ljava/lang/String;", ACC_PRIVATE | ACC_FINAL, None),

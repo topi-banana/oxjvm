@@ -2402,6 +2402,9 @@ const OJVM_SPLITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     ),
     method("estimateSize", "()J", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        if crate::lang::read_int_field(vm, this, "unknownSize") != 0 {
+            return long(i64::MAX);
+        }
         let elements = stream_elements(vm, this);
         let cursor = crate::lang::read_int_field(vm, this, "cursor").max(0) as usize;
         long((elements.len() - cursor.min(elements.len())) as i64)
@@ -2618,6 +2621,7 @@ pub(crate) const OJVM_SPLITERATOR: oxjvm_vm::NativeClass = class(
         field("elements", "[Ljava/lang/Object;", ACC_PRIVATE, None),
         field("cursor", "I", ACC_PRIVATE, None),
         field("chars", "I", ACC_PRIVATE, None),
+        field("unknownSize", "I", ACC_PRIVATE, None),
     ],
     &OJVM_SPLITERATOR_METHODS,
     None,
@@ -2726,8 +2730,12 @@ const SPLITERATORS_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
             if iterator.is_null() {
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
+            let characteristics = crate::int_arg(args, 1);
             let elements = drain_iterator(vm, iterator)?;
-            object(spliterator_from(vm, &elements)?)
+            let spliterator = spliterator_from(vm, &elements)?;
+            crate::lang::write_int_field(vm, spliterator, "unknownSize", 1);
+            crate::lang::write_int_field(vm, spliterator, "chars", characteristics);
+            object(spliterator)
         },
     ),
     method(

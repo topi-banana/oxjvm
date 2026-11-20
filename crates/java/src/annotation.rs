@@ -158,7 +158,7 @@ macro_rules! annotation_enum_class {
             $name,
             Some("java/lang/Object"),
             &[],
-            ACC_PUBLIC | ACC_FINAL,
+            ACC_PUBLIC | ACC_FINAL | ACC_ENUM,
             &[
                 field("ordinal", "I", ACC_PRIVATE | ACC_FINAL, None),
                 $(field($field, concat!("L", $name, ";"), ACC_PUBLIC | ACC_STATIC | ACC_FINAL, None),)*

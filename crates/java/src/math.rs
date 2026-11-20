@@ -1826,7 +1826,7 @@ pub(crate) const ROUNDING_MODE: oxjvm_vm::NativeClass = class(
     "java/math/RoundingMode",
     Some("java/lang/Object"),
     &[],
-    ACC_PUBLIC | ACC_FINAL,
+    ACC_PUBLIC | ACC_FINAL | ACC_ENUM,
     &[
         field("ordinal", "I", ACC_PRIVATE | ACC_FINAL, None),
         field(

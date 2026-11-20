@@ -2581,7 +2581,7 @@ pub(crate) const ACCESS_MODE: oxjvm_vm::NativeClass = class(
     "java/lang/invoke/VarHandle$AccessMode",
     Some("java/lang/Object"),
     &[],
-    ACC_PUBLIC | ACC_FINAL,
+    ACC_PUBLIC | ACC_FINAL | ACC_ENUM,
     &[
         field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("ordinal", "I", ACC_PRIVATE, None),

@@ -830,7 +830,7 @@ pub(crate) const POSIX_FILE_PERMISSION: oxjvm_vm::NativeClass = class(
     "java/nio/file/attribute/PosixFilePermission",
     Some("java/lang/Object"),
     &[],
-    ACC_PUBLIC | ACC_FINAL,
+    ACC_PUBLIC | ACC_FINAL | ACC_ENUM,
     &[
         field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("ordinal", "I", ACC_PRIVATE, None),
@@ -2909,7 +2909,7 @@ pub(crate) const FILE_VISIT_RESULT: oxjvm_vm::NativeClass = class(
     "java/nio/file/FileVisitResult",
     Some("java/lang/Object"),
     &[],
-    ACC_PUBLIC | ACC_FINAL,
+    ACC_PUBLIC | ACC_FINAL | ACC_ENUM,
     &[
         field(
             "CONTINUE",

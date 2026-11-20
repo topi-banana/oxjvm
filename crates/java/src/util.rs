@@ -25077,6 +25077,76 @@ fn currency_code(vm: &Vm<'_>, this: ObjectRef) -> String {
         .unwrap_or_default()
 }
 
+/// Locale-neutral currency symbols for the common ISO codes (US-locale forms).
+fn currency_symbol(code: &str) -> &str {
+    match code {
+        "USD" => "$",
+        "EUR" => "\u{20ac}",
+        "GBP" => "\u{a3}",
+        "JPY" => "JP\u{a5}",
+        "CNY" => "CN\u{a5}",
+        "KRW" => "\u{20a9}",
+        "INR" => "\u{20b9}",
+        "RUB" => "\u{20bd}",
+        "TRY" => "\u{20ba}",
+        "ILS" => "\u{20aa}",
+        "PHP" => "\u{20b1}",
+        "THB" => "\u{e3f}",
+        "VND" => "\u{20ab}",
+        "PLN" => "z\u{142}",
+        "CAD" => "CA$",
+        "AUD" => "A$",
+        "NZD" => "NZ$",
+        "SGD" => "S$",
+        "HKD" => "HK$",
+        "MXN" => "MX$",
+        "BRL" => "R$",
+        "ZAR" => "R",
+        "SEK" | "NOK" | "DKK" | "ISK" | "CZK" => "kr",
+        "CHF" => "CHF",
+        "MYR" => "RM",
+        "IDR" => "Rp",
+        _ => "",
+    }
+}
+
+/// English display names for the common ISO codes.
+fn currency_display_name(code: &str) -> &str {
+    match code {
+        "USD" => "US Dollar",
+        "EUR" => "Euro",
+        "GBP" => "British Pound",
+        "JPY" => "Japanese Yen",
+        "CNY" => "Chinese Yuan",
+        "KRW" => "South Korean Won",
+        "INR" => "Indian Rupee",
+        "RUB" => "Russian Ruble",
+        "TRY" => "Turkish Lira",
+        "ILS" => "Israeli New Shekel",
+        "PHP" => "Philippine Peso",
+        "THB" => "Thai Baht",
+        "VND" => "Vietnamese Dong",
+        "PLN" => "Polish Zloty",
+        "CAD" => "Canadian Dollar",
+        "AUD" => "Australian Dollar",
+        "NZD" => "New Zealand Dollar",
+        "SGD" => "Singapore Dollar",
+        "HKD" => "Hong Kong Dollar",
+        "MXN" => "Mexican Peso",
+        "BRL" => "Brazilian Real",
+        "ZAR" => "South African Rand",
+        "SEK" => "Swedish Krona",
+        "NOK" => "Norwegian Krone",
+        "DKK" => "Danish Krone",
+        "ISK" => "Icelandic Krona",
+        "CZK" => "Czech Koruna",
+        "CHF" => "Swiss Franc",
+        "MYR" => "Malaysian Ringgit",
+        "IDR" => "Indonesian Rupiah",
+        _ => "",
+    }
+}
+
 /// The ISO currency for a two-letter country, restricted to the common cases.
 fn currency_for_country(country: &str) -> &'static str {
     match country {
@@ -25497,7 +25567,13 @@ const CURRENCY_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let code = currency_code(vm, receiver(args));
-            object(vm.make_string(&code)?)
+            let symbol = currency_symbol(&code);
+            let text = if symbol.is_empty() {
+                code.as_str()
+            } else {
+                symbol
+            };
+            object(vm.make_string(text)?)
         },
     ),
     method(
@@ -25505,8 +25581,18 @@ const CURRENCY_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
         "(Ljava/util/Locale;)Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
+            let locale = ref_arg(args, 1);
+            if locale.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let code = currency_code(vm, receiver(args));
-            object(vm.make_string(&code)?)
+            let symbol = currency_symbol(&code);
+            let text = if symbol.is_empty() {
+                code.as_str()
+            } else {
+                symbol
+            };
+            object(vm.make_string(text)?)
         },
     ),
     method(
@@ -25515,7 +25601,9 @@ const CURRENCY_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let code = currency_code(vm, receiver(args));
-            object(vm.make_string(&code)?)
+            let name = currency_display_name(&code);
+            let text = if name.is_empty() { code.as_str() } else { name };
+            object(vm.make_string(text)?)
         },
     ),
     method(

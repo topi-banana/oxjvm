@@ -79,7 +79,37 @@ pub(crate) const NUMBER: oxjvm_vm::NativeClass = class(
 // Integer
 // -------------------------------------------------------------------------------------------
 
-const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 50] = [
+/// `Integer.compress`/`Long.compress`: pack the mask-selected bits downward.
+fn compress_bits(value: u64, mask: u64) -> u64 {
+    let mut out = 0u64;
+    let mut bit = 0u32;
+    for index in 0..64 {
+        if mask & (1u64 << index) != 0 {
+            if value & (1u64 << index) != 0 {
+                out |= 1u64 << bit;
+            }
+            bit += 1;
+        }
+    }
+    out
+}
+
+/// `Integer.expand`/`Long.expand`: spread the low bits into the mask positions.
+fn expand_bits(value: u64, mask: u64) -> u64 {
+    let mut out = 0u64;
+    let mut bit = 0u32;
+    for index in 0..64 {
+        if mask & (1u64 << index) != 0 {
+            if value & (1u64 << bit) != 0 {
+                out |= 1u64 << index;
+            }
+            bit += 1;
+        }
+    }
+    out
+}
+
+const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 52] = [
     method("<init>", "(I)V", ACC_PUBLIC, boxed_int_init),
     method("intValue", "()I", ACC_PUBLIC, |vm, _, args| {
         int(read_value_int(vm, receiver(args)))
@@ -440,6 +470,21 @@ const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 50] = [
             int(((int_arg(args, 0) as u32) % divisor) as i32)
         },
     ),
+    method(
+        "compress",
+        "(II)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let value = int_arg(args, 0) as u32;
+            let mask = int_arg(args, 1) as u32;
+            int(compress_bits(u64::from(value), u64::from(mask)) as i32)
+        },
+    ),
+    method("expand", "(II)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        let value = int_arg(args, 0) as u32;
+        let mask = int_arg(args, 1) as u32;
+        int(expand_bits(u64::from(value), u64::from(mask)) as i32)
+    }),
 ];
 
 /// `Integer.getInteger`: the system property parsed as an int, or the default.
@@ -1032,7 +1077,7 @@ fn unsigned_radix_string(mut value: u64, radix: i32) -> String {
     digits.iter().rev().collect()
 }
 
-const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 48] = [
+const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 50] = [
     method("<init>", "(J)V", ACC_PUBLIC, |vm, _, args| {
         write_value_long(vm, receiver(args), long_arg(args, 1));
         void()
@@ -1407,6 +1452,21 @@ const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 48] = [
     method("hashCode", "(J)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
         let value = long_arg(args, 0);
         int((value ^ (value >> 32)) as i32)
+    }),
+    method(
+        "compress",
+        "(JJ)J",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let value = long_arg(args, 0) as u64;
+            let mask = long_arg(args, 1) as u64;
+            long(compress_bits(value, mask) as i64)
+        },
+    ),
+    method("expand", "(JJ)J", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        let value = long_arg(args, 0) as u64;
+        let mask = long_arg(args, 1) as u64;
+        long(expand_bits(value, mask) as i64)
     }),
 ];
 

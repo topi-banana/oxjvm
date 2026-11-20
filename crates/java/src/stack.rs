@@ -128,7 +128,7 @@ pub(crate) const STACK_WALKER_OPTION: oxjvm_vm::NativeClass = class(
     "java/lang/StackWalker$Option",
     Some("java/lang/Object"),
     &[],
-    ACC_PUBLIC | ACC_FINAL,
+    ACC_PUBLIC | ACC_FINAL | ACC_ENUM,
     &[
         field("ordinal", "I", ACC_PRIVATE | ACC_FINAL, None),
         field(

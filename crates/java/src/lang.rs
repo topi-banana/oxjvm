@@ -1149,14 +1149,34 @@ fn class_get_enum_constants(
         .iter()
         .find(|field| field.name == "$VALUES")
         .map(|field| field.descriptor.clone());
-    let Some(descriptor) = descriptor else {
+    if let Some(descriptor) = descriptor {
+        if let Some(values) = vm.read_static_ref_if_set(class, "$VALUES", &descriptor) {
+            let clone = vm.clone_object(values)?;
+            return object(clone);
+        }
+    }
+    // Native enums declare their constants as plain static fields; collect
+    // them in declaration order.
+    let class_name = vm.classes.get(class).name.clone();
+    let descriptor = alloc::format!("L{class_name};");
+    let names: Vec<String> = vm
+        .classes
+        .get(class)
+        .fields
+        .iter()
+        .filter(|field| field.access_flags & ACC_STATIC != 0 && field.descriptor == descriptor)
+        .map(|field| field.name.clone())
+        .collect();
+    if names.is_empty() {
         return object(ObjectRef::NULL);
-    };
-    let Some(values) = vm.read_static_ref_if_set(class, "$VALUES", &descriptor) else {
-        return object(ObjectRef::NULL);
-    };
-    let clone = vm.clone_object(values)?;
-    object(clone)
+    }
+    let array = vm.allocate_object_array(class, names.len())?;
+    for (index, name) in names.iter().enumerate() {
+        if let Some(value) = vm.read_static_ref_if_set(class, name, &descriptor) {
+            vm.array_set_ref(array, index, value)?;
+        }
+    }
+    object(array)
 }
 
 /// The internal package name of a class, following arrays to their component.
@@ -7473,7 +7493,7 @@ pub(crate) const REDIRECT_TYPE: oxjvm_vm::NativeClass = class(
     "java/lang/ProcessBuilder$Redirect$Type",
     Some("java/lang/Object"),
     &[],
-    ACC_PUBLIC | ACC_FINAL,
+    ACC_PUBLIC | ACC_FINAL | ACC_ENUM,
     &[
         field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("ordinal", "I", ACC_PRIVATE, None),
@@ -8965,7 +8985,7 @@ pub(crate) const THREAD_STATE: oxjvm_vm::NativeClass = class(
     "java/lang/Thread$State",
     Some("java/lang/Object"),
     &[],
-    ACC_PUBLIC | ACC_FINAL,
+    ACC_PUBLIC | ACC_FINAL | ACC_ENUM,
     &[
         field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("ordinal", "I", ACC_PRIVATE, None),

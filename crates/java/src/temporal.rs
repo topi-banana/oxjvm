@@ -757,7 +757,7 @@ pub(crate) const CHRONO_UNIT: oxjvm_vm::NativeClass = class(
     "java/time/temporal/ChronoUnit",
     Some("java/lang/Object"),
     &["java/time/temporal/TemporalUnit", "java/lang/Comparable"],
-    ACC_PUBLIC | ACC_FINAL,
+    ACC_PUBLIC | ACC_FINAL | ACC_ENUM,
     &[
         field("ordinal", "I", ACC_PRIVATE | ACC_FINAL, None),
         field(
@@ -1173,7 +1173,7 @@ pub(crate) const CHRONO_FIELD: oxjvm_vm::NativeClass = class(
     "java/time/temporal/ChronoField",
     Some("java/lang/Object"),
     &["java/time/temporal/TemporalField", "java/lang/Comparable"],
-    ACC_PUBLIC | ACC_FINAL,
+    ACC_PUBLIC | ACC_FINAL | ACC_ENUM,
     &[
         field("ordinal", "I", ACC_PRIVATE | ACC_FINAL, None),
         field(
@@ -1529,7 +1529,7 @@ pub(crate) const ISO_FIELDS_UNIT: oxjvm_vm::NativeClass = class(
     "java/time/temporal/IsoFields$Unit",
     Some("java/lang/Object"),
     &["java/time/temporal/TemporalUnit"],
-    ACC_PUBLIC | ACC_FINAL,
+    ACC_PUBLIC | ACC_FINAL | ACC_ENUM,
     &[field("ordinal", "I", ACC_PRIVATE | ACC_FINAL, None)],
     &ISO_FIELDS_UNIT_METHODS,
     None,
@@ -1575,7 +1575,7 @@ pub(crate) const ISO_FIELDS_FIELD: oxjvm_vm::NativeClass = class(
     "java/time/temporal/IsoFields$Field",
     Some("java/lang/Object"),
     &["java/time/temporal/TemporalField"],
-    ACC_PUBLIC | ACC_FINAL,
+    ACC_PUBLIC | ACC_FINAL | ACC_ENUM,
     &[field("ordinal", "I", ACC_PRIVATE | ACC_FINAL, None)],
     &ISO_FIELDS_FIELD_METHODS,
     None,

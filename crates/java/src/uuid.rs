@@ -7,7 +7,7 @@ use oxjvm_vm::{ObjectData, ObjectRef, Value, Vm, VmError};
 
 use crate::{boolean, class, field, int, long, method, object, receiver, string_arg, void};
 
-const UUID_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const UUID_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method("<init>", "(JJ)V", ACC_PUBLIC, |vm, _, args| {
         write_bits(
             vm,
@@ -95,6 +95,37 @@ const UUID_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
                 core::cmp::Ordering::Equal => 0,
                 core::cmp::Ordering::Greater => 1,
             })
+        },
+    ),
+    method(
+        "nameUUIDFromBytes",
+        "([B)Ljava/util/UUID;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = crate::ref_arg(args, 0);
+            if array.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let length = vm.array_length(array)?;
+            let mut bytes = Vec::with_capacity(length);
+            for index in 0..length {
+                bytes.push(vm.array_get(array, index as i32)?.as_int() as u8);
+            }
+            let mut digest = crate::security::md5(&bytes);
+            digest[6] = (digest[6] & 0x0f) | 0x30; // version 3 (name-based MD5)
+            digest[8] = (digest[8] & 0x3f) | 0x80; // IETF variant
+            let mut most = 0i64;
+            let mut least = 0i64;
+            for byte in &digest[..8] {
+                most = (most << 8) | i64::from(*byte);
+            }
+            for byte in &digest[8..] {
+                least = (least << 8) | i64::from(*byte);
+            }
+            let class = vm.resolve_class("java/util/UUID")?;
+            let instance = vm.new_instance(class)?;
+            write_bits(vm, instance, most, least);
+            object(instance)
         },
     ),
 ];
