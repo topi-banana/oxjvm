@@ -1557,6 +1557,35 @@ impl<'a> Vm<'a> {
         }
     }
 
+    /// Write a reference field by name (any reference descriptor), walking supertypes.
+    pub fn write_ref_field_any(&mut self, object: ObjectRef, name: &str, value: ObjectRef) {
+        if object.is_null() {
+            return;
+        }
+        let mut class = self.class_of(object);
+        loop {
+            let mut found = None;
+            for field in &self.classes.get(class).fields {
+                if field.name == name && field.descriptor.starts_with('L') {
+                    found = Some(field.slot as usize);
+                    break;
+                }
+            }
+            if let Some(slot) = found {
+                if let Some(ObjectData::Instance(fields)) =
+                    self.heap.get_mut(object).map(|object| &mut object.data)
+                {
+                    fields[slot] = Value::Ref(value);
+                }
+                return;
+            }
+            match self.classes.get(class).super_class {
+                Some(next) => class = next,
+                None => return,
+            }
+        }
+    }
+
     /// Read a static reference field on an initialized class.
     #[must_use]
     pub fn read_static_ref(

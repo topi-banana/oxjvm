@@ -2009,3 +2009,115 @@ pub(crate) const ATOMIC_LONG_FIELD_UPDATER: oxjvm_vm::NativeClass = class(
     &ATOMIC_LONG_FIELD_UPDATER_METHODS,
     None,
 );
+
+const ATOMIC_REFERENCE_FIELD_UPDATER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method(
+        "newUpdater",
+        "(Ljava/lang/Class;Ljava/lang/Class;Ljava/lang/String;)Ljava/util/concurrent/atomic/AtomicReferenceFieldUpdater;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            object(field_updater_new(
+                vm,
+                "java/util/concurrent/atomic/AtomicReferenceFieldUpdater",
+                ref_arg(args, 2),
+            )?)
+        },
+    ),
+    method(
+        "get",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = updater_field_name(vm, receiver(args));
+            object(
+                vm.read_ref_field_any(ref_arg(args, 1), &name)
+                    .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method(
+        "set",
+        "(Ljava/lang/Object;Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = updater_field_name(vm, receiver(args));
+            vm.write_ref_field_any(ref_arg(args, 1), &name, ref_arg(args, 2));
+            void()
+        },
+    ),
+    method(
+        "lazySet",
+        "(Ljava/lang/Object;Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = updater_field_name(vm, receiver(args));
+            vm.write_ref_field_any(ref_arg(args, 1), &name, ref_arg(args, 2));
+            void()
+        },
+    ),
+    method(
+        "getAndSet",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = updater_field_name(vm, receiver(args));
+            let target = ref_arg(args, 1);
+            let old = vm
+                .read_ref_field_any(target, &name)
+                .unwrap_or(ObjectRef::NULL);
+            vm.write_ref_field_any(target, &name, ref_arg(args, 2));
+            object(old)
+        },
+    ),
+    method(
+        "compareAndSet",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = updater_field_name(vm, receiver(args));
+            let target = ref_arg(args, 1);
+            let expect = ref_arg(args, 2);
+            let update = ref_arg(args, 3);
+            let current = vm
+                .read_ref_field_any(target, &name)
+                .unwrap_or(ObjectRef::NULL);
+            if current == expect {
+                vm.write_ref_field_any(target, &name, update);
+                boolean(true)
+            } else {
+                boolean(false)
+            }
+        },
+    ),
+    method(
+        "weakCompareAndSet",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = updater_field_name(vm, receiver(args));
+            let target = ref_arg(args, 1);
+            let expect = ref_arg(args, 2);
+            let update = ref_arg(args, 3);
+            let current = vm
+                .read_ref_field_any(target, &name)
+                .unwrap_or(ObjectRef::NULL);
+            if current == expect {
+                vm.write_ref_field_any(target, &name, update);
+                boolean(true)
+            } else {
+                boolean(false)
+            }
+        },
+    ),
+];
+
+/// `AtomicReferenceFieldUpdater`: reflective atomic updates of a named volatile reference field.
+pub(crate) const ATOMIC_REFERENCE_FIELD_UPDATER: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/atomic/AtomicReferenceFieldUpdater",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[field("fieldName", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &ATOMIC_REFERENCE_FIELD_UPDATER_METHODS,
+    None,
+);
