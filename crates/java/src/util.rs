@@ -26950,19 +26950,44 @@ fn calendar_week_start(vm: &Vm<'_>, this: ObjectRef, time: i64) -> i64 {
     (days - (dow - first).rem_euclid(7)) * MILLIS_PER_DAY
 }
 
-/// The week-year a time belongs to: the year holding day `minimalDays` of its week.
+/// The week-year a time belongs to: the year whose week-1 span contains the week.
 fn calendar_week_year(vm: &Vm<'_>, this: ObjectRef, time: i64) -> i64 {
     let week_start = calendar_week_start(vm, this, time);
-    let minimal = calendar_minimal_days(vm, this);
-    let anchor = week_start + (minimal - 1) * MILLIS_PER_DAY;
-    civil_from_days(anchor.div_euclid(MILLIS_PER_DAY)).0
+    let year = civil_from_days(time.div_euclid(MILLIS_PER_DAY)).0;
+    if week_start < calendar_week_one_start(vm, this, year) {
+        year - 1
+    } else if week_start >= calendar_week_one_start(vm, this, year + 1) {
+        year + 1
+    } else {
+        year
+    }
 }
 
-/// Midnight of the first day of week 1 of the given week-year.
+/// Midnight of the first day of week 1 of the given week-year: the first week
+/// holding at least `minimalDaysInFirstWeek` days of that year.
 fn calendar_week_one_start(vm: &Vm<'_>, this: ObjectRef, week_year: i64) -> i64 {
-    let jan1 = days_from_civil(week_year, 1, 1) * MILLIS_PER_DAY;
-    let mut start = calendar_week_start(vm, this, jan1);
-    if calendar_week_year(vm, this, start) < week_year {
+    let jan1 = days_from_civil(week_year, 1, 1);
+    let dow = ((jan1 + 4).rem_euclid(7)) + 1;
+    let first = calendar_first_day_of_week(vm, this);
+    let offset = (dow - first).rem_euclid(7);
+    let minimal = calendar_minimal_days(vm, this);
+    let mut start = (jan1 - offset) * MILLIS_PER_DAY;
+    if 7 - offset < minimal {
+        start += 7 * MILLIS_PER_DAY;
+    }
+    start
+}
+
+/// Midnight of the first day of week 1 of the given calendar month: the first
+/// week holding at least `minimalDaysInFirstWeek` days of that month.
+fn calendar_month_week_one_start(vm: &Vm<'_>, this: ObjectRef, year: i64, month: i64) -> i64 {
+    let first_day = days_from_civil(year, month, 1);
+    let dow = ((first_day + 4).rem_euclid(7)) + 1;
+    let first = calendar_first_day_of_week(vm, this);
+    let offset = (dow - first).rem_euclid(7);
+    let minimal = calendar_minimal_days(vm, this);
+    let mut start = (first_day - offset) * MILLIS_PER_DAY;
+    if 7 - offset < minimal {
         start += 7 * MILLIS_PER_DAY;
     }
     start
@@ -26975,7 +27000,12 @@ fn calendar_get(vm: &Vm<'_>, this: ObjectRef, field: i32) -> i32 {
         0 => i32::from(fields.year > 0),
         1 => fields.year as i32,
         2 => fields.month as i32 - 1,
-        3 => ((calendar_day_of_year(time) - 1) / 7 + 1) as i32,
+        3 => {
+            let week_year = calendar_week_year(vm, this, time);
+            let start = calendar_week_one_start(vm, this, week_year);
+            let week_start = calendar_week_start(vm, this, time);
+            ((week_start - start) / (7 * MILLIS_PER_DAY) + 1) as i32
+        }
         4 => ((fields.day - 1) / 7 + 1) as i32,
         5 => fields.day as i32,
         6 => calendar_day_of_year(time) as i32,
@@ -27441,7 +27471,8 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
     method("getActualMaximum", "(I)I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let field = int_arg(args, 1);
-        let fields = calendar_fields_from_millis(calendar_time(vm, this));
+        let time = calendar_time(vm, this);
+        let fields = calendar_fields_from_millis(time);
         let value = match field {
             5 => calendar_days_in_month(fields.year, fields.month),
             6 => {
@@ -27453,6 +27484,23 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
             }
             2 => 11,
             1 => 292_278_993,
+            3 => {
+                let week_year = calendar_week_year(vm, this, time);
+                let start = calendar_week_one_start(vm, this, week_year);
+                let next = calendar_week_one_start(vm, this, week_year + 1);
+                (next - start) / (7 * MILLIS_PER_DAY)
+            }
+            4 => {
+                let last_day = days_from_civil(
+                    fields.year,
+                    fields.month,
+                    calendar_days_in_month(fields.year, fields.month),
+                ) * MILLIS_PER_DAY;
+                let week_start = calendar_week_start(vm, this, last_day);
+                let month_start =
+                    calendar_month_week_one_start(vm, this, fields.year, fields.month);
+                (week_start - month_start) / (7 * MILLIS_PER_DAY) + 1
+            }
             _ => 0,
         };
         int(if value == 0 {
@@ -27471,10 +27519,34 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
         int(calendar_maximum(int_arg(args, 1)))
     }),
     method("getGreatestMinimum", "(I)I", ACC_PUBLIC, |_vm, _, args| {
-        int(calendar_minimum(int_arg(args, 1)))
+        let field = int_arg(args, 1);
+        int(if field == 4 {
+            0
+        } else {
+            calendar_minimum(field)
+        })
     }),
-    method("getLeastMaximum", "(I)I", ACC_PUBLIC, |_vm, _, args| {
-        int(calendar_maximum(int_arg(args, 1)))
+    method("getLeastMaximum", "(I)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let field = int_arg(args, 1);
+        let value = match field {
+            3 => {
+                let first = calendar_first_day_of_week(vm, this);
+                let minimal = calendar_minimal_days(vm, this);
+                let d = (minimal - first).rem_euclid(7);
+                if d == 0 || d == 6 { 50 } else { 51 }
+            }
+            4 => {
+                let first = calendar_first_day_of_week(vm, this) as usize;
+                let minimal = calendar_minimal_days(vm, this) as usize;
+                WEEK_OF_MONTH_LEAST[first - 1][minimal - 1]
+            }
+            5 => 28,
+            6 => 355,
+            8 => 3,
+            _ => calendar_maximum(field),
+        };
+        int(value)
     }),
     method(
         "toString",
@@ -27574,6 +27646,19 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
             object(vm.allocate_object_array(class, 0)?)
         },
     ),
+];
+
+/// Least maximum of `WEEK_OF_MONTH` indexed by `[firstDayOfWeek-1][minimalDays-1]`.
+/// The value depends only on the week configuration (not the date), matching the
+/// JDK's GregorianCalendar bounds for every first-day/minimal-days combination.
+const WEEK_OF_MONTH_LEAST: [[i32; 7]; 7] = [
+    [3, 3, 3, 3, 3, 3, 2],
+    [3, 3, 3, 3, 3, 3, 3],
+    [4, 3, 3, 3, 3, 3, 3],
+    [4, 4, 3, 3, 3, 3, 3],
+    [4, 4, 4, 3, 3, 3, 3],
+    [4, 4, 4, 4, 3, 3, 3],
+    [3, 3, 3, 3, 3, 2, 2],
 ];
 
 fn calendar_minimum(field: i32) -> i32 {
