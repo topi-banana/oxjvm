@@ -2194,6 +2194,25 @@ pub(crate) const SEMAPHORE: oxjvm_vm::NativeClass = class(
 );
 
 // -------------------------------------------------------------------------------------------
+// Exchanger
+// -------------------------------------------------------------------------------------------
+
+const EXCHANGER_METHODS: [oxjvm_vm::NativeMethodDef; 1] =
+    [method("<init>", "()V", ACC_PUBLIC, |_, _, _| void())];
+
+/// `java.util.concurrent.Exchanger`: construction is supported; the two-party
+/// `exchange` rendezvous requires real threads and is not implemented.
+pub(crate) const EXCHANGER: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/Exchanger",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &EXCHANGER_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
 // LinkedBlockingQueue / LinkedBlockingDeque
 // -------------------------------------------------------------------------------------------'''
 

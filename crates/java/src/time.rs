@@ -1258,7 +1258,31 @@ pub(crate) const INSTANT: oxjvm_vm::NativeClass = class(
 // DateTimeFormatter (pattern only) + ZonedDateTime
 // -------------------------------------------------------------------------------------------
 
-const DATE_TIME_FORMATTER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+/// Local epoch-milliseconds of a temporal accessor, for pattern formatting.
+fn temporal_local_millis(vm: &mut Vm<'_>, obj: ObjectRef) -> Result<i64, VmError> {
+    let name = vm.class_name(vm.class_of(obj)).to_string();
+    match name.as_str() {
+        "java/time/LocalDate" => Ok(read_long_field(vm, obj, "epochDay") * 86_400_000),
+        "java/time/LocalTime" => Ok(read_long_field(vm, obj, "nanoOfDay") / 1_000_000),
+        "java/time/LocalDateTime" | "java/time/OffsetDateTime" => {
+            Ok(read_long_field(vm, obj, "epochDay") * 86_400_000
+                + read_long_field(vm, obj, "nanoOfDay") / 1_000_000)
+        }
+        "java/time/OffsetTime" => Ok(read_long_field(vm, obj, "nanoOfDay") / 1_000_000),
+        "java/time/ZonedDateTime" => {
+            let (day, nano) = zdt_local_parts(vm, obj);
+            Ok(day * 86_400_000 + nano / 1_000_000)
+        }
+        "java/time/Instant" => Ok(read_long_field(vm, obj, "epochSecond") * 1000
+            + i64::from(read_int_field(vm, obj, "nano")) / 1_000_000),
+        _ => Err(vm.throw_new(
+            "java/time/DateTimeException",
+            Some("Unsupported temporal type for formatting"),
+        )),
+    }
+}
+
+const DATE_TIME_FORMATTER_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
     method(
         "ofPattern",
         "(Ljava/lang/String;)Ljava/time/format/DateTimeFormatter;",
@@ -1282,6 +1306,23 @@ const DATE_TIME_FORMATTER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
             object(vm.make_string(&text)?)
         },
     ),
+    method(
+        "format",
+        "(Ljava/time/temporal/TemporalAccessor;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let temporal = ref_arg(args, 1);
+            if temporal.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let pattern = vm
+                .read_string_field(this, vm.class_of(this), "pattern")
+                .unwrap_or_default();
+            let millis = temporal_local_millis(vm, temporal)?;
+            object(vm.make_string(&crate::text::format_pattern(&pattern, millis))?)
+        },
+    ),
 ];
 
 fn date_time_formatter_new(vm: &mut Vm<'_>, pattern: ObjectRef) -> Result<Value, VmError> {
@@ -1295,15 +1336,102 @@ fn date_time_formatter_new(vm: &mut Vm<'_>, pattern: ObjectRef) -> Result<Value,
     object(instance)
 }
 
+/// The ISO pattern constants, initialized once.
+fn date_time_formatter_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/time/format/DateTimeFormatter")?;
+    const ISO: [(&str, &str); 9] = [
+        ("ISO_LOCAL_DATE", "yyyy-MM-dd"),
+        ("ISO_DATE", "yyyy-MM-dd"),
+        ("ISO_LOCAL_TIME", "HH:mm:ss"),
+        ("ISO_TIME", "HH:mm:ss"),
+        ("ISO_LOCAL_DATE_TIME", "yyyy-MM-dd'T'HH:mm:ss"),
+        ("ISO_DATE_TIME", "yyyy-MM-dd'T'HH:mm:ss"),
+        ("BASIC_ISO_DATE", "yyyyMMdd"),
+        ("ISO_INSTANT", "yyyy-MM-dd'T'HH:mm:ss'Z'"),
+        ("ISO_OFFSET_DATE_TIME", "yyyy-MM-dd'T'HH:mm:ss"),
+    ];
+    for (name, pattern) in ISO {
+        let string = vm.make_string(pattern)?;
+        let instance = vm.new_instance(class)?;
+        if let Some((declaring, field)) = vm.find_field_opt(class, "pattern", "Ljava/lang/String;")
+        {
+            vm.set_instance_ref(instance, declaring, field, string);
+        }
+        vm.set_static_value(
+            class,
+            name,
+            "Ljava/time/format/DateTimeFormatter;",
+            Value::Ref(instance),
+        );
+    }
+    Ok(())
+}
+
 /// `java.time.format.DateTimeFormatter`, carrying only the pattern.
 pub(crate) const DATE_TIME_FORMATTER: oxjvm_vm::NativeClass = class(
     "java/time/format/DateTimeFormatter",
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_FINAL,
-    &[field("pattern", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &[
+        field("pattern", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field(
+            "ISO_LOCAL_DATE",
+            "Ljava/time/format/DateTimeFormatter;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "ISO_DATE",
+            "Ljava/time/format/DateTimeFormatter;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "ISO_LOCAL_TIME",
+            "Ljava/time/format/DateTimeFormatter;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "ISO_TIME",
+            "Ljava/time/format/DateTimeFormatter;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "ISO_LOCAL_DATE_TIME",
+            "Ljava/time/format/DateTimeFormatter;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "ISO_DATE_TIME",
+            "Ljava/time/format/DateTimeFormatter;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "BASIC_ISO_DATE",
+            "Ljava/time/format/DateTimeFormatter;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "ISO_INSTANT",
+            "Ljava/time/format/DateTimeFormatter;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "ISO_OFFSET_DATE_TIME",
+            "Ljava/time/format/DateTimeFormatter;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+    ],
     &DATE_TIME_FORMATTER_METHODS,
-    None,
+    Some(date_time_formatter_clinit),
 );
 
 /// The local epoch-day and nano-of-day of a `ZonedDateTime` in its own zone.
@@ -2761,7 +2889,7 @@ fn local_date_dates_until(
     object(crate::stream::stream_from(vm, elements)?)
 }
 
-const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
+const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 55] = [
     method(
         "of",
         "(III)Ljava/time/LocalDate;",
@@ -3463,6 +3591,23 @@ const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
             int(value as i32)
         },
     ),
+    method(
+        "format",
+        "(Ljava/time/format/DateTimeFormatter;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let formatter = ref_arg(args, 1);
+            if formatter.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let pattern = vm
+                .read_string_field(formatter, vm.class_of(formatter), "pattern")
+                .unwrap_or_default();
+            let millis = temporal_local_millis(vm, this)?;
+            object(vm.make_string(&crate::text::format_pattern(&pattern, millis))?)
+        },
+    ),
 ];
 
 pub(crate) const LOCAL_DATE: oxjvm_vm::NativeClass = class(
@@ -3494,7 +3639,7 @@ pub(crate) const LOCAL_DATE: oxjvm_vm::NativeClass = class(
     Some(local_date_clinit),
 );
 
-const LOCAL_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
+const LOCAL_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
     method(
         "of",
         "(II)Ljava/time/LocalTime;",
@@ -3883,6 +4028,23 @@ const LOCAL_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
             )?)
         },
     ),
+    method(
+        "format",
+        "(Ljava/time/format/DateTimeFormatter;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let formatter = ref_arg(args, 1);
+            if formatter.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let pattern = vm
+                .read_string_field(formatter, vm.class_of(formatter), "pattern")
+                .unwrap_or_default();
+            let millis = temporal_local_millis(vm, this)?;
+            object(vm.make_string(&crate::text::format_pattern(&pattern, millis))?)
+        },
+    ),
 ];
 
 pub(crate) const LOCAL_TIME: oxjvm_vm::NativeClass = class(
@@ -3933,7 +4095,7 @@ pub(crate) const LOCAL_TIME: oxjvm_vm::NativeClass = class(
     Some(local_time_clinit),
 );
 
-const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 64] = [
+const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 65] = [
     method(
         "of",
         "(IIIII)Ljava/time/LocalDateTime;",
@@ -4607,6 +4769,23 @@ const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 64] = [
             let epoch_day = read_long_field(vm, receiver(args), "epochDay");
             let value = ((epoch_day + 3).rem_euclid(7) + 1) as i32;
             object(day_of_week_of(vm, value)?)
+        },
+    ),
+    method(
+        "format",
+        "(Ljava/time/format/DateTimeFormatter;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let formatter = ref_arg(args, 1);
+            if formatter.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let pattern = vm
+                .read_string_field(formatter, vm.class_of(formatter), "pattern")
+                .unwrap_or_default();
+            let millis = temporal_local_millis(vm, this)?;
+            object(vm.make_string(&crate::text::format_pattern(&pattern, millis))?)
         },
     ),
 ];
