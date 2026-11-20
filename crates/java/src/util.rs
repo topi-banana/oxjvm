@@ -26874,7 +26874,7 @@ pub(crate) const CALENDAR: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const GREGORIAN_CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const GREGORIAN_CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let now = vm.host_time_millis();
         calendar_init(vm, receiver(args), now)?;
@@ -26995,6 +26995,15 @@ const GREGORIAN_CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
             object(instance)
         },
     ),
+    method("isLeapYear", "(I)Z", ACC_PUBLIC, |_, _, args| {
+        let year = int_arg(args, 1);
+        let leap = if year > 1582 {
+            (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+        } else {
+            year % 4 == 0
+        };
+        boolean(leap)
+    }),
 ];
 
 pub(crate) const GREGORIAN_CALENDAR: oxjvm_vm::NativeClass = class(

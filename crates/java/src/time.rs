@@ -4324,7 +4324,7 @@ pub(crate) const LOCAL_TIME: oxjvm_vm::NativeClass = class(
     Some(local_time_clinit),
 );
 
-const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 66] = [
+const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 67] = [
     method(
         "of",
         "(IIIII)Ljava/time/LocalDateTime;",
@@ -5027,6 +5027,57 @@ const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 66] = [
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
             crate::temporal::temporal_query_from(vm, query, receiver(args))
+        },
+    ),
+    method(
+        "parse",
+        "(Ljava/lang/CharSequence;)Ljava/time/LocalDateTime;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = vm.string_or_empty(ref_arg(args, 0));
+            let error = |vm: &mut Vm<'_>| {
+                vm.throw_new("java/time/format/DateTimeParseException", Some(&text))
+            };
+            let (date_text, time_text) = text.split_once('T').ok_or_else(|| error(vm))?;
+            let date_parts: Vec<&str> = date_text.split('-').collect();
+            if date_parts.len() != 3 {
+                return Err(error(vm));
+            }
+            let year: i32 = date_parts[0].parse().map_err(|_| error(vm))?;
+            let month: i32 = date_parts[1].parse().map_err(|_| error(vm))?;
+            let day: i32 = date_parts[2].parse().map_err(|_| error(vm))?;
+            let epoch_day = days_from_civil(year, month, day);
+            let time_parts: Vec<&str> = time_text.split(':').collect();
+            if time_parts.len() < 2 || time_parts.len() > 3 {
+                return Err(error(vm));
+            }
+            let hour: i64 = time_parts[0].parse().map_err(|_| error(vm))?;
+            let minute: i64 = time_parts[1].parse().map_err(|_| error(vm))?;
+            let (second, nano) = if time_parts.len() == 3 {
+                let mut split = time_parts[2].splitn(2, '.');
+                let sec: i64 = split.next().unwrap_or("0").parse().map_err(|_| error(vm))?;
+                let frac = split.next().unwrap_or("");
+                let nano = if frac.is_empty() {
+                    0
+                } else {
+                    if frac.len() > 9 || !frac.bytes().all(|b| b.is_ascii_digit()) {
+                        return Err(error(vm));
+                    }
+                    let mut padded = String::from(frac);
+                    while padded.len() < 9 {
+                        padded.push('0');
+                    }
+                    padded.parse::<i64>().map_err(|_| error(vm))?
+                };
+                (sec, nano)
+            } else {
+                (0, 0)
+            };
+            if hour > 23 || minute > 59 || second > 59 {
+                return Err(error(vm));
+            }
+            let nano_of_day = ((hour * 60 + minute) * 60 + second) * 1_000_000_000 + nano;
+            object(local_date_time_new(vm, epoch_day, nano_of_day)?)
         },
     ),
 ];
