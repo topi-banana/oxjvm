@@ -6143,7 +6143,7 @@ fn random_double_range(vm: &mut Vm<'_>, origin: f64, bound: f64) -> Result<(f64,
     Ok((origin, bound))
 }
 
-fn next_random_int(
+pub(crate) fn next_random_int(
     vm: &mut Vm<'_>,
     this: ObjectRef,
     bits: i32,

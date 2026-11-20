@@ -2893,7 +2893,7 @@ fn mul_mod(mut a: i128, mut b: i128, m: i128) -> i128 {
     result
 }
 
-const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 51] = [
+const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 52] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -3480,6 +3480,41 @@ const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 51] = [
             create_big_number(vm, "java/math/BigInteger", &a.min(b).to_string())
         },
     ),
+    method(
+        "probablePrime",
+        "(ILjava/util/Random;)Ljava/math/BigInteger;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let bit_length = int_arg(args, 0);
+            let rnd = ref_arg(args, 1);
+            if rnd.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            if !(2..=127).contains(&bit_length) {
+                return Err(vm.throw_new(
+                    "java/lang/ArithmeticException",
+                    Some("bitLength must be in [2, 127]"),
+                ));
+            }
+            for _ in 0..4096 {
+                let mut candidate = 0i128;
+                let mut remaining = bit_length;
+                while remaining > 0 {
+                    let take = remaining.min(31);
+                    let bits =
+                        i128::from(crate::util::next_random_int(vm, rnd, take, &[])?.as_int());
+                    candidate = (candidate << take) | (bits & ((1i128 << take) - 1));
+                    remaining -= take;
+                }
+                candidate |= 1i128 << (bit_length - 1);
+                candidate |= 1;
+                if is_probable_prime(candidate) {
+                    return create_big_number(vm, "java/math/BigInteger", &candidate.to_string());
+                }
+            }
+            Err(vm.throw_new("java/lang/ArithmeticException", Some("no prime found")))
+        },
+    ),
 ];
 
 fn big_integer_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
@@ -3838,7 +3873,7 @@ fn big_decimal_set_scale(
     create_big_number(vm, "java/math/BigDecimal", &result)
 }
 
-const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
+const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -4288,6 +4323,43 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
                 None => {
                     Err(vm.throw_new("java/lang/ArithmeticException", Some("Rounding necessary")))
                 }
+            }
+        },
+    ),
+    method(
+        "min",
+        "(Ljava/math/BigDecimal;)Ljava/math/BigDecimal;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let a = big_text(vm, this).parse::<f64>().unwrap_or(f64::NAN);
+            let b = big_text(vm, other).parse::<f64>().unwrap_or(f64::NAN);
+            object(if a <= b { this } else { other })
+        },
+    ),
+    method(
+        "max",
+        "(Ljava/math/BigDecimal;)Ljava/math/BigDecimal;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let a = big_text(vm, this).parse::<f64>().unwrap_or(f64::NAN);
+            let b = big_text(vm, other).parse::<f64>().unwrap_or(f64::NAN);
+            object(if a >= b { this } else { other })
+        },
+    ),
+    method(
+        "ulp",
+        "()Ljava/math/BigDecimal;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = big_text(vm, receiver(args));
+            let (_, _, frac) = decimal_parts(&text);
+            match format_scaled(1, frac.len()) {
+                Some(value) => create_big_number(vm, "java/math/BigDecimal", &value),
+                None => Err(vm.throw_new("java/lang/ArithmeticException", None)),
             }
         },
     ),

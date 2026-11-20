@@ -6081,7 +6081,7 @@ fn parse_period_text(text: &str) -> Option<(i32, i32, i32)> {
     Some((sign * years, sign * months, sign * days))
 }
 
-const PERIOD_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
+const PERIOD_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
     method(
         "of",
         "(III)Ljava/time/Period;",
@@ -6411,6 +6411,29 @@ const PERIOD_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
                 + i64::from(read_int_field(vm, this, "months")),
         )
     }),
+    method(
+        "plus",
+        "(Ljava/time/temporal/TemporalAmount;)Ljava/time/Period;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let amount = ref_arg(args, 1);
+            if amount.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let name = String::from(vm.class_name(vm.class_of(amount)));
+            if name != "java/time/Period" {
+                return Err(vm.throw_new(
+                    "java/time/DateTimeException",
+                    Some("Unable to add amount to Period"),
+                ));
+            }
+            let years = read_int_field(vm, this, "years") + read_int_field(vm, amount, "years");
+            let months = read_int_field(vm, this, "months") + read_int_field(vm, amount, "months");
+            let days = read_int_field(vm, this, "days") + read_int_field(vm, amount, "days");
+            object(period_new(vm, years, months, days)?)
+        },
+    ),
 ];
 
 pub(crate) const PERIOD: oxjvm_vm::NativeClass = class(
