@@ -239,7 +239,7 @@ pub(crate) const OBJECT: oxjvm_vm::NativeClass = class(
 // Class
 // -------------------------------------------------------------------------------------------
 
-const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 69] = [
+const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 70] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -778,9 +778,38 @@ const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 69] = [
         "getRecordComponents",
         "()[Ljava/lang/reflect/RecordComponent;",
         ACC_PUBLIC,
-        |vm, _, _| {
-            let class = vm.resolve_class("java/lang/reflect/RecordComponent")?;
-            object(vm.allocate_object_array(class, 0)?)
+        |vm, _, args| {
+            let class = class_argument(vm, receiver(args))?;
+            let mut current = Some(class);
+            let mut is_record = false;
+            while let Some(candidate) = current {
+                if vm.classes.get(candidate).name == "java/lang/Record" {
+                    is_record = true;
+                    break;
+                }
+                current = vm.classes.get(candidate).super_class;
+            }
+            if !is_record {
+                return object(ObjectRef::NULL);
+            }
+            let component_class = vm.resolve_class("java/lang/reflect/RecordComponent")?;
+            object(vm.allocate_object_array(component_class, 0)?)
+        },
+    ),
+    method(
+        "arrayType",
+        "()Ljava/lang/Class;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = class_argument(vm, receiver(args))?;
+            if vm.classes.get(class).name == "void" {
+                return Err(vm.throw_new(
+                    "java/lang/UnsupportedOperationException",
+                    Some("void array type"),
+                ));
+            }
+            let array_class = vm.array_class_for(class)?;
+            object(vm.class_object(array_class)?)
         },
     ),
 ];

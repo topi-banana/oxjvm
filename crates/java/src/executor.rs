@@ -1150,6 +1150,259 @@ pub(crate) const THREAD_LOCAL_RANDOM: oxjvm_vm::NativeClass = class(
 );
 
 // -------------------------------------------------------------------------------------------
+// SplittableRandom (SplitMix64)
+// -------------------------------------------------------------------------------------------
+
+const GOLDEN_GAMMA: i64 = 0x9e37_79b9_7f4a_7c15u64 as i64;
+
+/// Stafford variant 13 of the 64-bit mix function (`SplittableRandom.mix64`).
+fn splitmix64_mix64(z: i64) -> i64 {
+    let mut z = z as u64;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    (z ^ (z >> 31)) as i64
+}
+
+/// Stafford variant 4 mix, high 32 bits (`SplittableRandom.mix32`).
+fn splitmix64_mix32(z: i64) -> i32 {
+    let mut z = z as u64;
+    z = (z ^ (z >> 33)).wrapping_mul(0x62a9_d9ed_7997_05f5);
+    (((z ^ (z >> 28)).wrapping_mul(0xcb24_d0a5_c88c_35b3)) >> 32) as i32
+}
+
+/// The gamma for a split generator (`SplittableRandom.mixGamma`).
+fn splitmix64_mix_gamma(z: i64) -> i64 {
+    let mut z = z as u64;
+    z = (z ^ (z >> 33)).wrapping_mul(0xff51_afd7_ed55_8ccd);
+    z = (z ^ (z >> 33)).wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+    z = (z ^ (z >> 33)) | 1;
+    let n = (z ^ (z >> 1)).count_ones();
+    if n < 24 {
+        (z ^ 0xaaaa_aaaa_aaaa_aaaa) as i64
+    } else {
+        z as i64
+    }
+}
+
+/// `nextSeed`: advance the seed by the gamma and return it.
+fn splittable_next_seed(vm: &mut Vm<'_>, this: ObjectRef) -> i64 {
+    let seed = crate::lang::read_long_field(vm, this, "seed")
+        .wrapping_add(crate::lang::read_long_field(vm, this, "gamma"));
+    crate::lang::write_long_field(vm, this, "seed", seed);
+    seed
+}
+
+fn splittable_next_long(vm: &mut Vm<'_>, this: ObjectRef) -> i64 {
+    splitmix64_mix64(splittable_next_seed(vm, this))
+}
+
+fn splittable_next_int(vm: &mut Vm<'_>, this: ObjectRef) -> i32 {
+    splitmix64_mix32(splittable_next_seed(vm, this))
+}
+
+/// Uniform int in `[0, bound)` with the JDK's rejection sampling.
+fn splittable_int_bounded(vm: &mut Vm<'_>, this: ObjectRef, bound: i32) -> Result<i32, VmError> {
+    if bound <= 0 {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("bound must be positive"),
+        ));
+    }
+    let mut r = splittable_next_int(vm, this);
+    let m = bound - 1;
+    if bound & m == 0 {
+        r &= m;
+    } else {
+        let mut u = (r as u32 >> 1) as i32;
+        loop {
+            r = u % bound;
+            if u.wrapping_add(m).wrapping_sub(r) >= 0 {
+                break;
+            }
+            u = (splittable_next_int(vm, this) as u32 >> 1) as i32;
+        }
+    }
+    Ok(r)
+}
+
+/// Uniform long in `[0, bound)` with the JDK's rejection sampling.
+fn splittable_long_bounded(vm: &mut Vm<'_>, this: ObjectRef, bound: i64) -> Result<i64, VmError> {
+    if bound <= 0 {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("bound must be positive"),
+        ));
+    }
+    let mut r = splittable_next_long(vm, this);
+    let m = bound - 1;
+    if bound & m == 0 {
+        r &= m;
+    } else {
+        let mut u = (r as u64 >> 1) as i64;
+        loop {
+            r = u % bound;
+            if u.wrapping_add(m).wrapping_sub(r) >= 0 {
+                break;
+            }
+            u = (splittable_next_long(vm, this) as u64 >> 1) as i64;
+        }
+    }
+    Ok(r)
+}
+
+fn splittable_next_double(vm: &mut Vm<'_>, this: ObjectRef) -> f64 {
+    ((splittable_next_long(vm, this) as u64) >> 11) as f64 * (1.0 / ((1u64 << 53) as f64))
+}
+
+fn splittable_random_new(vm: &mut Vm<'_>, seed: i64, gamma: i64) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/SplittableRandom")?;
+    let instance = vm.new_instance(class)?;
+    crate::lang::write_long_field(vm, instance, "seed", seed);
+    crate::lang::write_long_field(vm, instance, "gamma", gamma);
+    Ok(instance)
+}
+
+const SPLITTABLE_RANDOM_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        crate::lang::write_long_field(
+            vm,
+            this,
+            "seed",
+            splitmix64_mix64(0x0123_4567_89ab_cdefu64 as i64),
+        );
+        crate::lang::write_long_field(vm, this, "gamma", GOLDEN_GAMMA);
+        void()
+    }),
+    method("<init>", "(J)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        crate::lang::write_long_field(vm, this, "seed", crate::long_arg(args, 1));
+        crate::lang::write_long_field(vm, this, "gamma", GOLDEN_GAMMA);
+        void()
+    }),
+    method("nextInt", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(splittable_next_int(vm, receiver(args)))
+    }),
+    method("nextInt", "(I)I", ACC_PUBLIC, |vm, _, args| {
+        int(splittable_int_bounded(
+            vm,
+            receiver(args),
+            crate::int_arg(args, 1),
+        )?)
+    }),
+    method("nextInt", "(II)I", ACC_PUBLIC, |vm, _, args| {
+        let origin = crate::int_arg(args, 1);
+        let bound = crate::int_arg(args, 2);
+        if origin >= bound {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("origin must be less than bound"),
+            ));
+        }
+        let n = bound.wrapping_sub(origin);
+        let value = if n > 0 {
+            origin.wrapping_add(splittable_int_bounded(vm, receiver(args), n)?)
+        } else {
+            loop {
+                let r = splittable_next_int(vm, receiver(args));
+                if r >= origin && r < bound {
+                    break r;
+                }
+            }
+        };
+        int(value)
+    }),
+    method("nextLong", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(splittable_next_long(vm, receiver(args)))
+    }),
+    method("nextLong", "(J)J", ACC_PUBLIC, |vm, _, args| {
+        long(splittable_long_bounded(
+            vm,
+            receiver(args),
+            crate::long_arg(args, 1),
+        )?)
+    }),
+    method("nextLong", "(JJ)J", ACC_PUBLIC, |vm, _, args| {
+        let origin = crate::long_arg(args, 1);
+        let bound = crate::long_arg(args, 2);
+        if origin >= bound {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("origin must be less than bound"),
+            ));
+        }
+        let n = bound.wrapping_sub(origin);
+        let value = if n > 0 {
+            origin.wrapping_add(splittable_long_bounded(vm, receiver(args), n)?)
+        } else {
+            loop {
+                let r = splittable_next_long(vm, receiver(args));
+                if r >= origin && r < bound {
+                    break r;
+                }
+            }
+        };
+        long(value)
+    }),
+    method("nextDouble", "()D", ACC_PUBLIC, |vm, _, args| {
+        crate::double(splittable_next_double(vm, receiver(args)))
+    }),
+    method("nextDouble", "(DD)D", ACC_PUBLIC, |vm, _, args| {
+        let origin = crate::double_arg(args, 1);
+        let bound = crate::double_arg(args, 2);
+        if !matches!(origin.partial_cmp(&bound), Some(core::cmp::Ordering::Less)) {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("origin must be less than bound"),
+            ));
+        }
+        let n = bound - origin;
+        let value = if n.is_finite() && n > 0.0 {
+            let mut r = origin + splittable_next_double(vm, receiver(args)) * n;
+            if r >= bound {
+                r = f64::from_bits(bound.to_bits() - 1);
+            }
+            r
+        } else {
+            loop {
+                let r = origin + splittable_next_double(vm, receiver(args)) * n;
+                if r >= origin && r < bound {
+                    break r;
+                }
+            }
+        };
+        crate::double(value)
+    }),
+    method("nextBoolean", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(splittable_next_int(vm, receiver(args)) < 0)
+    }),
+    method(
+        "split",
+        "()Ljava/util/SplittableRandom;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let seed = splittable_next_long(vm, this);
+            let gamma = splitmix64_mix_gamma(splittable_next_seed(vm, this));
+            object(splittable_random_new(vm, seed, gamma)?)
+        },
+    ),
+];
+
+pub(crate) const SPLITTABLE_RANDOM: oxjvm_vm::NativeClass = class(
+    "java/util/SplittableRandom",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("seed", "J", ACC_PRIVATE, None),
+        field("gamma", "J", ACC_PRIVATE, None),
+    ],
+    &SPLITTABLE_RANDOM_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
 // CompletionService / ExecutorCompletionService
 // -------------------------------------------------------------------------------------------
 

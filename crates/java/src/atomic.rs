@@ -7,7 +7,7 @@ use alloc::string::ToString;
 use alloc::vec;
 
 use oxjvm_classfile::flags::*;
-use oxjvm_vm::{ObjectRef, Value, format};
+use oxjvm_vm::{ObjectRef, Value, Vm, VmError, format};
 
 use crate::boxed::{read_value_int, read_value_long, write_value_int, write_value_long};
 use crate::{
@@ -15,11 +15,86 @@ use crate::{
     void,
 };
 
+/// Apply an int operator to the current value, store the result, return (old, new).
+fn atomic_int_apply(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    op: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    extra: Option<i32>,
+) -> Result<(i32, i32), VmError> {
+    if op.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let old = read_value_int(vm, this);
+    let (class, method) = vm.resolve_virtual_method(op, name, descriptor)?;
+    let mut args = vec![Value::Ref(op), Value::Int(old)];
+    if let Some(value) = extra {
+        args.push(Value::Int(value));
+    }
+    let new = vm.invoke_method(class, method, args)?.as_int();
+    write_value_int(vm, this, new);
+    Ok((old, new))
+}
+
+/// Apply a long operator to the current value, store the result, return (old, new).
+fn atomic_long_apply(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    op: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    extra: Option<i64>,
+) -> Result<(i64, i64), VmError> {
+    if op.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let old = read_value_long(vm, this);
+    let (class, method) = vm.resolve_virtual_method(op, name, descriptor)?;
+    let mut args = vec![Value::Ref(op), Value::Long(old)];
+    if let Some(value) = extra {
+        args.push(Value::Long(value));
+    }
+    let new = vm.invoke_method(class, method, args)?.as_long();
+    write_value_long(vm, this, new);
+    Ok((old, new))
+}
+
+/// Apply a reference operator to the current value, store the result, return (old, new).
+fn atomic_reference_apply(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    op: ObjectRef,
+    extra: Option<ObjectRef>,
+) -> Result<(ObjectRef, ObjectRef), VmError> {
+    if op.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let old = atomic_reference_value(vm, this);
+    let (name, descriptor) = if extra.is_some() {
+        (
+            "apply",
+            "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        )
+    } else {
+        ("apply", "(Ljava/lang/Object;)Ljava/lang/Object;")
+    };
+    let (class, method) = vm.resolve_virtual_method(op, name, descriptor)?;
+    let mut args = vec![Value::Ref(op), Value::Ref(old)];
+    if let Some(value) = extra {
+        args.push(Value::Ref(value));
+    }
+    let new = vm.invoke_method(class, method, args)?.as_ref();
+    atomic_reference_set(vm, this, new);
+    Ok((old, new))
+}
+
 // -------------------------------------------------------------------------------------------
 // AtomicInteger
 // -------------------------------------------------------------------------------------------
 
-const ATOMIC_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+const ATOMIC_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), 0);
         void()
@@ -175,6 +250,70 @@ const ATOMIC_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
             object(vm.make_string(&text)?)
         },
     ),
+    method(
+        "getAndUpdate",
+        "(Ljava/util/function/IntUnaryOperator;)I",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            let (old, _) = atomic_int_apply(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                "applyAsInt",
+                "(I)I",
+                None,
+            )?;
+            int(old)
+        },
+    ),
+    method(
+        "updateAndGet",
+        "(Ljava/util/function/IntUnaryOperator;)I",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            let (_, new) = atomic_int_apply(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                "applyAsInt",
+                "(I)I",
+                None,
+            )?;
+            int(new)
+        },
+    ),
+    method(
+        "getAndAccumulate",
+        "(ILjava/util/function/IntBinaryOperator;)I",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            let (old, _) = atomic_int_apply(
+                vm,
+                receiver(args),
+                ref_arg(args, 2),
+                "applyAsInt",
+                "(II)I",
+                Some(crate::int_arg(args, 1)),
+            )?;
+            int(old)
+        },
+    ),
+    method(
+        "accumulateAndGet",
+        "(ILjava/util/function/IntBinaryOperator;)I",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            let (_, new) = atomic_int_apply(
+                vm,
+                receiver(args),
+                ref_arg(args, 2),
+                "applyAsInt",
+                "(II)I",
+                Some(crate::int_arg(args, 1)),
+            )?;
+            int(new)
+        },
+    ),
 ];
 
 pub(crate) const ATOMIC_INTEGER: oxjvm_vm::NativeClass = class(
@@ -191,7 +330,7 @@ pub(crate) const ATOMIC_INTEGER: oxjvm_vm::NativeClass = class(
 // AtomicLong
 // -------------------------------------------------------------------------------------------
 
-const ATOMIC_LONG_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const ATOMIC_LONG_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         write_value_long(vm, receiver(args), 0);
         void()
@@ -330,6 +469,70 @@ const ATOMIC_LONG_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
             object(vm.make_string(&text)?)
         },
     ),
+    method(
+        "getAndUpdate",
+        "(Ljava/util/function/LongUnaryOperator;)J",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            let (old, _) = atomic_long_apply(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                "applyAsLong",
+                "(J)J",
+                None,
+            )?;
+            long(old)
+        },
+    ),
+    method(
+        "updateAndGet",
+        "(Ljava/util/function/LongUnaryOperator;)J",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            let (_, new) = atomic_long_apply(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                "applyAsLong",
+                "(J)J",
+                None,
+            )?;
+            long(new)
+        },
+    ),
+    method(
+        "getAndAccumulate",
+        "(JLjava/util/function/LongBinaryOperator;)J",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            let (old, _) = atomic_long_apply(
+                vm,
+                receiver(args),
+                ref_arg(args, 2),
+                "applyAsLong",
+                "(JJ)J",
+                Some(crate::long_arg(args, 1)),
+            )?;
+            long(old)
+        },
+    ),
+    method(
+        "accumulateAndGet",
+        "(JLjava/util/function/LongBinaryOperator;)J",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            let (_, new) = atomic_long_apply(
+                vm,
+                receiver(args),
+                ref_arg(args, 2),
+                "applyAsLong",
+                "(JJ)J",
+                Some(crate::long_arg(args, 1)),
+            )?;
+            long(new)
+        },
+    ),
 ];
 
 pub(crate) const ATOMIC_LONG: oxjvm_vm::NativeClass = class(
@@ -429,19 +632,19 @@ pub(crate) const ATOMIC_BOOLEAN: oxjvm_vm::NativeClass = class(
 // AtomicReference
 // -------------------------------------------------------------------------------------------
 
-fn atomic_reference_value(vm: &oxjvm_vm::Vm<'_>, this: ObjectRef) -> ObjectRef {
+fn atomic_reference_value(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
     vm.read_ref_field(this, vm.class_of(this), "value", "Ljava/lang/Object;")
         .unwrap_or(ObjectRef::NULL)
 }
 
-fn atomic_reference_set(vm: &mut oxjvm_vm::Vm<'_>, this: ObjectRef, value: ObjectRef) {
+fn atomic_reference_set(vm: &mut Vm<'_>, this: ObjectRef, value: ObjectRef) {
     if let Ok((declaring, field)) = vm.find_field(vm.class_of(this), "value", "Ljava/lang/Object;")
     {
         vm.set_instance_ref(this, declaring, field, value);
     }
 }
 
-const ATOMIC_REFERENCE_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const ATOMIC_REFERENCE_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         atomic_reference_set(vm, receiver(args), ObjectRef::NULL);
         void()
@@ -533,6 +736,52 @@ const ATOMIC_REFERENCE_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
                 Value::Ref(value),
             )?;
             object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "getAndUpdate",
+        "(Ljava/util/function/UnaryOperator;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            let (old, _) = atomic_reference_apply(vm, receiver(args), ref_arg(args, 1), None)?;
+            object(old)
+        },
+    ),
+    method(
+        "updateAndGet",
+        "(Ljava/util/function/UnaryOperator;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            let (_, new) = atomic_reference_apply(vm, receiver(args), ref_arg(args, 1), None)?;
+            object(new)
+        },
+    ),
+    method(
+        "getAndAccumulate",
+        "(Ljava/lang/Object;Ljava/util/function/BinaryOperator;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            let (old, _) = atomic_reference_apply(
+                vm,
+                receiver(args),
+                ref_arg(args, 2),
+                Some(ref_arg(args, 1)),
+            )?;
+            object(old)
+        },
+    ),
+    method(
+        "accumulateAndGet",
+        "(Ljava/lang/Object;Ljava/util/function/BinaryOperator;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            let (_, new) = atomic_reference_apply(
+                vm,
+                receiver(args),
+                ref_arg(args, 2),
+                Some(ref_arg(args, 1)),
+            )?;
+            object(new)
         },
     ),
 ];

@@ -19,6 +19,6 @@ public class P1Annotated {
                 + ":" + method.getTypeParameters().length
                 + ":" + ((Class<?>) P1Annotated.class.getAnnotatedSuperclass().getType()).getName()
                 + ":" + ((Class<?>) field.getAnnotatedType().getType()).getName()
-                + ":" + P1Annotated.class.getRecordComponents().length;
+                + ":" + (P1Annotated.class.getRecordComponents() == null ? "null" : "components");
     }
 }

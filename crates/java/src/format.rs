@@ -1234,8 +1234,11 @@ const FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         "(J)Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let text = oxjvm_vm::format::long_to_string(args[1].as_long());
-            object(vm.make_string(&text)?)
+            let this = receiver(args);
+            let value = args[1].as_long() as f64;
+            let (class, method) =
+                vm.resolve_virtual_method(this, "format", "(D)Ljava/lang/String;")?;
+            vm.invoke_method(class, method, vec![Value::Ref(this), Value::Double(value)])
         },
     ),
     method(
@@ -1543,8 +1546,11 @@ const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
         "(J)Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let text = format_number_required(vm, receiver(args), args[1].as_long() as f64)?;
-            object(vm.make_string(&text)?)
+            let this = receiver(args);
+            let value = args[1].as_long() as f64;
+            let (class, method) =
+                vm.resolve_virtual_method(this, "format", "(D)Ljava/lang/String;")?;
+            vm.invoke_method(class, method, vec![Value::Ref(this), Value::Double(value)])
         },
     ),
     method(
@@ -1561,8 +1567,23 @@ const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
         "(JLjava/lang/StringBuffer;Ljava/text/FieldPosition;)Ljava/lang/StringBuffer;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let text = format_number_required(vm, receiver(args), args[1].as_long() as f64)?;
-            append_format_text(vm, ref_arg(args, 2), &text)
+            let this = receiver(args);
+            let value = args[1].as_long() as f64;
+            let (class, method) = vm.resolve_virtual_method(
+                this,
+                "format",
+                "(DLjava/lang/StringBuffer;Ljava/text/FieldPosition;)Ljava/lang/StringBuffer;",
+            )?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![
+                    Value::Ref(this),
+                    Value::Double(value),
+                    Value::Ref(ref_arg(args, 2)),
+                    Value::Ref(ref_arg(args, 3)),
+                ],
+            )
         },
     ),
     method(

@@ -1763,7 +1763,7 @@ fn p1_annotated_types_and_records() {
     };
     assert_eq!(
         vm.string_value(value.as_ref()).as_deref(),
-        Some("void:1:0:java.lang.Object:java.lang.String:0")
+        Some("void:1:0:java.lang.Object:java.lang.String:null")
     );
 }
 
