@@ -1815,6 +1815,111 @@ fn offset_time_with_field(
     )?)
 }
 
+/// Read the zone of a `ZonedDateTime`.
+fn zdt_zone_ref(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "zone", "Ljava/time/ZoneId;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+/// Rebuild a `ZonedDateTime` from local date-time parts, preserving its zone.
+fn zdt_from_local(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    epoch_day: i64,
+    nano_of_day: i64,
+) -> Result<Value, VmError> {
+    let zone = zdt_zone_ref(vm, this);
+    let offset = i64::from(zone_offset_seconds(vm, zone));
+    let nano = (nano_of_day % 1_000_000_000) as i32;
+    let local_second = epoch_day * 86_400 + nano_of_day / 1_000_000_000;
+    let epoch_second = local_second - offset;
+    zoned_date_time_new(
+        vm,
+        epoch_second * 1000 + i64::from(nano) / 1_000_000,
+        nano,
+        zone,
+    )
+}
+
+/// Shift a `ZonedDateTime` by a nanosecond delta on its local time-line.
+fn zdt_shift_nanos(vm: &mut Vm<'_>, this: ObjectRef, delta: i64) -> Result<Value, VmError> {
+    if delta == 0 {
+        return object(this);
+    }
+    let (epoch_day, nano) = zdt_local_parts(vm, this);
+    let total = nano + delta;
+    let new_epoch = epoch_day + total.div_euclid(NANOS_PER_DAY);
+    let new_nano = total.rem_euclid(NANOS_PER_DAY);
+    if new_epoch == epoch_day && new_nano == nano {
+        return object(this);
+    }
+    zdt_from_local(vm, this, new_epoch, new_nano)
+}
+
+/// Shift a `ZonedDateTime`'s local date part by a date-based `ChronoUnit` amount.
+fn zdt_shift_date(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    amount: i64,
+    ordinal: i32,
+) -> Result<Value, VmError> {
+    if amount == 0 {
+        return object(this);
+    }
+    let (epoch_day, nano) = zdt_local_parts(vm, this);
+    let new_epoch = date_plus(epoch_day, amount, ordinal).ok_or_else(|| unsupported_unit(vm))?;
+    if new_epoch == epoch_day {
+        return object(this);
+    }
+    zdt_from_local(vm, this, new_epoch, nano)
+}
+
+/// Replace a time-based field of a `ZonedDateTime`.
+fn zdt_with_time_field(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    ordinal: i32,
+    value: i64,
+) -> Result<Value, VmError> {
+    let nano = zdt_local_parts(vm, this).1;
+    let current = time_field_long(nano, ordinal).ok_or_else(|| unsupported_field(vm))?;
+    if value == current {
+        return object(this);
+    }
+    let unit = time_field_unit_nanos(ordinal).ok_or_else(|| unsupported_field(vm))?;
+    zdt_shift_nanos(vm, this, (value - current) * unit)
+}
+
+/// Replace a date-based field of a `ZonedDateTime`.
+fn zdt_with_date_field(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    ordinal: i32,
+    value: i64,
+) -> Result<Value, VmError> {
+    let (epoch_day, nano) = zdt_local_parts(vm, this);
+    let (year, month, day) = civil_from_days(epoch_day);
+    let new_epoch = match ordinal {
+        18 => days_from_civil(year, month, value as i32),
+        19 => days_from_civil(year, 1, 1) + value - 1,
+        23 => {
+            let new_month = value as i32;
+            let new_day = day.min(length_of_month(year, new_month));
+            days_from_civil(year, new_month, new_day)
+        }
+        26 => {
+            let new_year = value as i32;
+            let new_day = day.min(length_of_month(new_year, month));
+            days_from_civil(new_year, month, new_day)
+        }
+        _ => return Err(unsupported_field(vm)),
+    };
+    if new_epoch == epoch_day {
+        return object(this);
+    }
+    zdt_from_local(vm, this, new_epoch, nano)
+}
+
 fn zdt_local_parts(vm: &Vm<'_>, this: ObjectRef) -> (i64, i64) {
     let millis = read_long_field(vm, this, "millis");
     let nano = i64::from(read_int_field(vm, this, "nano"));
@@ -1829,7 +1934,7 @@ fn zdt_local_parts(vm: &Vm<'_>, this: ObjectRef) -> (i64, i64) {
     (epoch_day, nano_of_day)
 }
 
-const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
+const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 60] = [
     method(
         "now",
         "()Ljava/time/ZonedDateTime;",
@@ -1891,12 +1996,20 @@ const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            let millis = read_long_field(vm, this, "millis");
             let formatter = ref_arg(args, 1);
+            if formatter.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let pattern = vm
                 .read_string_field(formatter, vm.class_of(formatter), "pattern")
                 .unwrap_or_default();
-            object(vm.make_string(&crate::text::format_pattern(&pattern, millis))?)
+            let millis = temporal_local_millis(vm, this)?;
+            let mut text = crate::text::format_pattern(&pattern, millis);
+            text.push_str(&crate::lang::zone_offset_id(zone_offset_seconds(
+                vm,
+                zdt_zone_ref(vm, this),
+            )));
+            object(vm.make_string(&text)?)
         },
     ),
     method(
@@ -2421,6 +2534,265 @@ const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
             ^ zone_offset_seconds(vm, zone)
             ^ ((zhash as u32).rotate_left(3) as i32))
     }),
+    method(
+        "minusDays",
+        "(J)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| zdt_shift_date(vm, receiver(args), -crate::long_arg(args, 1), 7),
+    ),
+    method(
+        "minusHours",
+        "(J)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            zdt_shift_nanos(
+                vm,
+                receiver(args),
+                -crate::long_arg(args, 1) * 3_600_000_000_000,
+            )
+        },
+    ),
+    method(
+        "plusMinutes",
+        "(J)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            zdt_shift_nanos(
+                vm,
+                receiver(args),
+                crate::long_arg(args, 1) * 60_000_000_000,
+            )
+        },
+    ),
+    method(
+        "minusMinutes",
+        "(J)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            zdt_shift_nanos(
+                vm,
+                receiver(args),
+                -crate::long_arg(args, 1) * 60_000_000_000,
+            )
+        },
+    ),
+    method(
+        "plusSeconds",
+        "(J)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| zdt_shift_nanos(vm, receiver(args), crate::long_arg(args, 1) * 1_000_000_000),
+    ),
+    method(
+        "minusSeconds",
+        "(J)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            zdt_shift_nanos(
+                vm,
+                receiver(args),
+                -crate::long_arg(args, 1) * 1_000_000_000,
+            )
+        },
+    ),
+    method(
+        "plusWeeks",
+        "(J)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| zdt_shift_date(vm, receiver(args), crate::long_arg(args, 1), 8),
+    ),
+    method(
+        "minusWeeks",
+        "(J)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| zdt_shift_date(vm, receiver(args), -crate::long_arg(args, 1), 8),
+    ),
+    method(
+        "plusMonths",
+        "(J)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| zdt_shift_date(vm, receiver(args), crate::long_arg(args, 1), 9),
+    ),
+    method(
+        "minusMonths",
+        "(J)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| zdt_shift_date(vm, receiver(args), -crate::long_arg(args, 1), 9),
+    ),
+    method(
+        "plusYears",
+        "(J)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| zdt_shift_date(vm, receiver(args), crate::long_arg(args, 1), 10),
+    ),
+    method(
+        "minusYears",
+        "(J)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| zdt_shift_date(vm, receiver(args), -crate::long_arg(args, 1), 10),
+    ),
+    method(
+        "withSecond",
+        "(I)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| zdt_with_time_field(vm, receiver(args), 6, i64::from(int_arg(args, 1))),
+    ),
+    method(
+        "withMinute",
+        "(I)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| zdt_with_time_field(vm, receiver(args), 8, i64::from(int_arg(args, 1))),
+    ),
+    method(
+        "withHour",
+        "(I)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| zdt_with_time_field(vm, receiver(args), 12, i64::from(int_arg(args, 1))),
+    ),
+    method(
+        "withDayOfMonth",
+        "(I)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| zdt_with_date_field(vm, receiver(args), 18, i64::from(int_arg(args, 1))),
+    ),
+    method(
+        "withDayOfYear",
+        "(I)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| zdt_with_date_field(vm, receiver(args), 19, i64::from(int_arg(args, 1))),
+    ),
+    method(
+        "withMonth",
+        "(I)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| zdt_with_date_field(vm, receiver(args), 23, i64::from(int_arg(args, 1))),
+    ),
+    method(
+        "withYear",
+        "(I)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| zdt_with_date_field(vm, receiver(args), 26, i64::from(int_arg(args, 1))),
+    ),
+    method(
+        "getDayOfWeek",
+        "()Ljava/time/DayOfWeek;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let epoch_day = zdt_local_parts(vm, receiver(args)).0;
+            object(day_of_week_of(
+                vm,
+                ((epoch_day + 3).rem_euclid(7) + 1) as i32,
+            )?)
+        },
+    ),
+    method("getDayOfYear", "()I", ACC_PUBLIC, |vm, _, args| {
+        let epoch_day = zdt_local_parts(vm, receiver(args)).0;
+        let (year, _, _) = civil_from_days(epoch_day);
+        int((epoch_day - days_from_civil(year, 1, 1) + 1) as i32)
+    }),
+    method(
+        "getMonth",
+        "()Ljava/time/Month;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (_, month, _) = civil_from_days(zdt_local_parts(vm, receiver(args)).0);
+            object(month_of(vm, month)?)
+        },
+    ),
+    method(
+        "isAfter",
+        "(Ljava/time/chrono/ChronoZonedDateTime;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let am = read_long_field(vm, this, "millis");
+            let bm = read_long_field(vm, other, "millis");
+            boolean(
+                am > bm
+                    || (am == bm
+                        && read_int_field(vm, this, "nano") > read_int_field(vm, other, "nano")),
+            )
+        },
+    ),
+    method(
+        "isBefore",
+        "(Ljava/time/chrono/ChronoZonedDateTime;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let am = read_long_field(vm, this, "millis");
+            let bm = read_long_field(vm, other, "millis");
+            boolean(
+                am < bm
+                    || (am == bm
+                        && read_int_field(vm, this, "nano") < read_int_field(vm, other, "nano")),
+            )
+        },
+    ),
+    method(
+        "isEqual",
+        "(Ljava/time/chrono/ChronoZonedDateTime;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            boolean(
+                read_long_field(vm, this, "millis") == read_long_field(vm, other, "millis")
+                    && read_int_field(vm, this, "nano") == read_int_field(vm, other, "nano"),
+            )
+        },
+    ),
+    method(
+        "compareTo",
+        "(Ljava/time/chrono/ChronoZonedDateTime;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let am = read_long_field(vm, this, "millis");
+            let bm = read_long_field(vm, other, "millis");
+            let an = read_int_field(vm, this, "nano");
+            let bn = read_int_field(vm, other, "nano");
+            int(if am < bm || (am == bm && an < bn) {
+                -1
+            } else if am > bm || (am == bm && an > bn) {
+                1
+            } else {
+                0
+            })
+        },
+    ),
+    method(
+        "truncatedTo",
+        "(Ljava/time/temporal/TemporalUnit;)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let unit = ref_arg(args, 1);
+            if unit.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let nanos = crate::temporal::chrono_unit_nanos(vm, unit);
+            let (epoch_day, nano_of_day) = zdt_local_parts(vm, this);
+            let truncated = if nanos == NANOS_PER_DAY {
+                0
+            } else if nanos <= 0 || nanos > NANOS_PER_DAY {
+                return Err(vm.throw_new(
+                    "java/time/temporal/UnsupportedTemporalTypeException",
+                    Some("Unit is too large to be used for truncation"),
+                ));
+            } else if NANOS_PER_DAY % nanos != 0 {
+                return Err(vm.throw_new(
+                    "java/time/temporal/UnsupportedTemporalTypeException",
+                    Some("Unit must divide into a standard day without remainder"),
+                ));
+            } else {
+                nano_of_day / nanos * nanos
+            };
+            zdt_from_local(vm, this, epoch_day, truncated)
+        },
+    ),
 ];
 
 // -------------------------------------------------------------------------------------------
