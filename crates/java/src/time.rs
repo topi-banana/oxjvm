@@ -289,7 +289,9 @@ const DURATION_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
     ),
     method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
         let nanos = read_long_field(vm, receiver(args), "nanos");
-        int((nanos ^ (nanos >> 32)) as i32)
+        let seconds = nanos.div_euclid(1_000_000_000);
+        let nano = nanos.rem_euclid(1_000_000_000) as i32;
+        int(instant_hash(seconds, nano))
     }),
     method(
         "toString",
@@ -918,9 +920,7 @@ const INSTANT_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
     method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let seconds = read_long_field(vm, this, "epochSecond");
-        int(((seconds ^ (seconds >> 32)) as i32)
-            .wrapping_mul(31)
-            .wrapping_add(read_int_field(vm, this, "nano")))
+        int(instant_hash(seconds, read_int_field(vm, this, "nano")))
     }),
     method(
         "isSupported",
@@ -1679,6 +1679,24 @@ pub(crate) const DATE_TIME_FORMATTER: oxjvm_vm::NativeClass = class(
 );
 
 /// The local epoch-day and nano-of-day of a `ZonedDateTime` in its own zone.
+/// JDK `LocalDate.hashCode`: `(year & 0xFFFFF800) ^ ((year << 11) + (month << 6) + day)`.
+fn local_date_hash(epoch_day: i64) -> i32 {
+    let (year, month, day) = civil_from_days(epoch_day);
+    (year & -2048) ^ (year << 11).wrapping_add(month << 6).wrapping_add(day)
+}
+
+/// JDK `LocalTime.hashCode`: `(int)(nano ^ (nano >>> 32))`.
+fn local_time_hash(nano_of_day: i64) -> i32 {
+    let nano = nano_of_day as u64;
+    (nano ^ (nano >> 32)) as i32
+}
+
+/// JDK `Instant.hashCode`: `(int)(seconds ^ (seconds >>> 32)) + 51 * nanos`.
+fn instant_hash(seconds: i64, nano: i32) -> i32 {
+    let secs = seconds as u64;
+    ((secs ^ (secs >> 32)) as i32).wrapping_add(51i32.wrapping_mul(nano))
+}
+
 fn zdt_local_parts(vm: &Vm<'_>, this: ObjectRef) -> (i64, i64) {
     let millis = read_long_field(vm, this, "millis");
     let nano = i64::from(read_int_field(vm, this, "nano"));
@@ -1693,7 +1711,7 @@ fn zdt_local_parts(vm: &Vm<'_>, this: ObjectRef) -> (i64, i64) {
     (epoch_day, nano_of_day)
 }
 
-const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
+const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
     method(
         "now",
         "()Ljava/time/ZonedDateTime;",
@@ -2270,6 +2288,21 @@ const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
             object(local_date_time_new(vm, epoch_day, nano_of_day)?)
         },
     ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let (epoch_day, nano_of_day) = zdt_local_parts(vm, this);
+        let zone = vm
+            .read_ref_field(this, vm.class_of(this), "zone", "Ljava/time/ZoneId;")
+            .unwrap_or(ObjectRef::NULL);
+        let (class, method) = vm.resolve_virtual_method(zone, "hashCode", "()I")?;
+        let zhash = vm
+            .invoke_method(class, method, vec![Value::Ref(zone)])?
+            .as_int();
+        int(local_date_hash(epoch_day)
+            ^ local_time_hash(nano_of_day)
+            ^ zone_offset_seconds(vm, zone)
+            ^ ((zhash as u32).rotate_left(3) as i32))
+    }),
 ];
 
 // -------------------------------------------------------------------------------------------
@@ -3759,8 +3792,11 @@ const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 59] = [
         },
     ),
     method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
-        let epoch_day = read_long_field(vm, receiver(args), "epochDay");
-        int((epoch_day ^ (epoch_day >> 32)) as i32)
+        int(local_date_hash(read_long_field(
+            vm,
+            receiver(args),
+            "epochDay",
+        )))
     }),
     method(
         "isSupported",
@@ -4313,8 +4349,11 @@ const LOCAL_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
         },
     ),
     method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
-        let nano = read_long_field(vm, receiver(args), "nanoOfDay");
-        int((nano ^ (nano >> 32)) as i32)
+        int(local_time_hash(read_long_field(
+            vm,
+            receiver(args),
+            "nanoOfDay",
+        )))
     }),
     method(
         "isSupported",
@@ -5133,11 +5172,8 @@ const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 67] = [
     ),
     method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let epoch_day = read_long_field(vm, this, "epochDay");
-        let nano = read_long_field(vm, this, "nanoOfDay");
-        int(((epoch_day ^ (epoch_day >> 32)) as i32)
-            .wrapping_mul(31)
-            .wrapping_add((nano ^ (nano >> 32)) as i32))
+        int(local_date_hash(read_long_field(vm, this, "epochDay"))
+            ^ local_time_hash(read_long_field(vm, this, "nanoOfDay")))
     }),
     method(
         "isSupported",
@@ -7335,7 +7371,7 @@ fn offset_date_time_epoch_second(vm: &Vm<'_>, this: ObjectRef) -> i64 {
     epoch_day * 86_400 + nano_of_day / 1_000_000_000 - i64::from(offset)
 }
 
-const OFFSET_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
+const OFFSET_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
     method(
         "of",
         "(IIIIIIILjava/time/ZoneOffset;)Ljava/time/OffsetDateTime;",
@@ -7892,6 +7928,15 @@ const OFFSET_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
             )
         },
     ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let offset = vm
+            .read_ref_field(this, vm.class_of(this), "offset", "Ljava/time/ZoneOffset;")
+            .unwrap_or(ObjectRef::NULL);
+        int(local_date_hash(read_long_field(vm, this, "epochDay"))
+            ^ local_time_hash(read_long_field(vm, this, "nanoOfDay"))
+            ^ zone_offset_seconds(vm, offset))
+    }),
 ];
 
 /// `java.time.OffsetDateTime`: a local date-time plus a fixed zone offset.
@@ -8461,7 +8506,7 @@ fn year_month_parse(vm: &mut Vm<'_>, text: &str) -> Result<Value, VmError> {
     object(year_month_new(vm, year, month)?)
 }
 
-const YEAR_MONTH_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
+const YEAR_MONTH_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
     method(
         "of",
         "(II)Ljava/time/YearMonth;",
@@ -8768,6 +8813,10 @@ const YEAR_MONTH_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
             )?)
         },
     ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        int(read_int_field(vm, this, "year") ^ (read_int_field(vm, this, "month") << 27))
+    }),
 ];
 
 fn year_new(vm: &mut Vm<'_>, year: i32) -> Result<ObjectRef, VmError> {
@@ -9805,7 +9854,7 @@ const MONTH_DAY_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     ),
     method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        int(read_int_field(vm, this, "month") * 31 + read_int_field(vm, this, "day"))
+        int((read_int_field(vm, this, "month") << 6) ^ read_int_field(vm, this, "day"))
     }),
     method(
         "toString",

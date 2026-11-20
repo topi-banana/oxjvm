@@ -11611,7 +11611,7 @@ pub(crate) fn zone_offset_parse(text: &str) -> Option<i32> {
     Some(sign * (hours * 3600 + minutes * 60 + seconds))
 }
 
-const ZONE_OFFSET_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const ZONE_OFFSET_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method("<init>", "(I)V", ACC_PRIVATE, |vm, _, args| {
         let this = receiver(args);
         write_int_field(vm, this, "totalSeconds", int_arg(args, 1));
@@ -11697,6 +11697,9 @@ const ZONE_OFFSET_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
             ))
         },
     ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_int_field(vm, receiver(args), "totalSeconds"))
+    }),
 ];
 
 fn zone_offset_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
