@@ -535,7 +535,7 @@ fn stream_builder_init(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> 
     Ok(())
 }
 
-const STREAM_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+const STREAM_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
     method(
         "accept",
         "(Ljava/lang/Object;)V",
@@ -545,6 +545,12 @@ const STREAM_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
     method(
         "build",
         "()Ljava/util/stream/Stream;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "add",
+        "(Ljava/lang/Object;)Ljava/util/stream/Stream$Builder;",
         ACC_PUBLIC | ACC_ABSTRACT,
         abstract_method_pub,
     ),
@@ -561,7 +567,7 @@ pub(crate) const STREAM_BUILDER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const OJVM_STREAM_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+const OJVM_STREAM_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         stream_builder_init(vm, receiver(args))?;
         void()
@@ -613,6 +619,22 @@ const OJVM_STREAM_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
                 vm.resolve_virtual_method(list, "toArray", "()[Ljava/lang/Object;")?;
             let array = vm.invoke_method(list_class, method, vec![Value::Ref(list)])?;
             stream_of_array(vm, array.as_ref())
+        },
+    ),
+    method(
+        "add",
+        "(Ljava/lang/Object;)Ljava/util/stream/Stream$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (class, method) =
+                vm.resolve_virtual_method(this, "accept", "(Ljava/lang/Object;)V")?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![Value::Ref(this), Value::Ref(ref_arg(args, 1))],
+            )?;
+            object(this)
         },
     ),
 ];
