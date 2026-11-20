@@ -109,6 +109,14 @@ fn expand_bits(value: u64, mask: u64) -> u64 {
     out
 }
 
+/// Java `Character.isSpaceChar`: only Unicode Zs/Zl/Zp categories (not tab/newline).
+fn is_space_char_code(code_point: u32) -> bool {
+    matches!(
+        code_point,
+        0x20 | 0xA0 | 0x1680 | 0x2000..=0x200A | 0x2028 | 0x2029 | 0x202F | 0x205F | 0x3000
+    )
+}
+
 const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 52] = [
     method("<init>", "(I)V", ACC_PUBLIC, boxed_int_init),
     method("intValue", "()I", ACC_PUBLIC, |vm, _, args| {
@@ -2585,7 +2593,7 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
         ACC_PUBLIC | ACC_STATIC,
         |_, _, args| {
             let unit = int_arg(args, 0) as u32 & 0xFFFF;
-            boolean(char::from_u32(unit).is_some_and(|ch| ch.is_whitespace() || ch == '\u{a0}'))
+            boolean(is_space_char_code(unit))
         },
     ),
     method(
@@ -2705,9 +2713,7 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
         ACC_PUBLIC | ACC_STATIC,
         |_, _, args| {
             let code_point = int_arg(args, 0) as u32;
-            boolean(
-                char::from_u32(code_point).is_some_and(|ch| ch.is_whitespace() || ch == '\u{a0}'),
-            )
+            boolean(is_space_char_code(code_point))
         },
     ),
     method(
