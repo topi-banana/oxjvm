@@ -2275,7 +2275,22 @@ fn big_integer_binary(
     }
 }
 
-const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
+/// Multiply modulo `m` without overflowing i128 (Russian-peasant doubling).
+fn mul_mod(mut a: i128, mut b: i128, m: i128) -> i128 {
+    let mut result = 0i128;
+    a %= m;
+    b %= m;
+    while b > 0 {
+        if b & 1 == 1 {
+            result = (result + a) % m;
+        }
+        a = (a + a) % m;
+        b >>= 1;
+    }
+    result
+}
+
+const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -2594,6 +2609,65 @@ const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
         let value = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
         boolean(is_probable_prime(value))
     }),
+    method(
+        "gcd",
+        "(Ljava/math/BigInteger;)Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let a = parse_i128(&big_text(vm, receiver(args)));
+            let b = parse_i128(&big_text(vm, ref_arg(args, 1)));
+            match (a, b) {
+                (Some(mut a), Some(mut b)) => {
+                    a = a.abs();
+                    b = b.abs();
+                    while b != 0 {
+                        let t = a % b;
+                        a = b;
+                        b = t;
+                    }
+                    create_big_number(vm, "java/math/BigInteger", &a.to_string())
+                }
+                _ => Err(vm.throw_new("java/lang/ArithmeticException", None)),
+            }
+        },
+    ),
+    method(
+        "modPow",
+        "(Ljava/math/BigInteger;Ljava/math/BigInteger;)Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let base = parse_i128(&big_text(vm, receiver(args)));
+            let exponent = parse_i128(&big_text(vm, ref_arg(args, 1)));
+            let modulus = parse_i128(&big_text(vm, ref_arg(args, 2)));
+            match (base, exponent, modulus) {
+                (Some(base), Some(mut exponent), Some(modulus)) => {
+                    if modulus <= 0 {
+                        return Err(vm.throw_new(
+                            "java/lang/ArithmeticException",
+                            Some("modulus not positive"),
+                        ));
+                    }
+                    if exponent < 0 {
+                        return Err(vm.throw_new(
+                            "java/lang/ArithmeticException",
+                            Some("negative exponent"),
+                        ));
+                    }
+                    let mut result = 1i128 % modulus;
+                    let mut b = base.rem_euclid(modulus);
+                    while exponent > 0 {
+                        if exponent & 1 == 1 {
+                            result = mul_mod(result, b, modulus);
+                        }
+                        b = mul_mod(b, b, modulus);
+                        exponent >>= 1;
+                    }
+                    create_big_number(vm, "java/math/BigInteger", &result.to_string())
+                }
+                _ => Err(vm.throw_new("java/lang/ArithmeticException", None)),
+            }
+        },
+    ),
 ];
 
 fn big_integer_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
@@ -2688,7 +2762,123 @@ fn big_decimal_binary(
     )
 }
 
-const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
+/// Split a decimal string into (negative, integer digits, fraction digits).
+fn decimal_parts(text: &str) -> (bool, String, String) {
+    let (negative, digits) = if let Some(stripped) = text.strip_prefix('-') {
+        (true, stripped)
+    } else {
+        (false, text.strip_prefix('+').unwrap_or(text))
+    };
+    let (int_part, frac_part) = match digits.split_once('.') {
+        Some((i, f)) => (i, f),
+        None => (digits, ""),
+    };
+    (negative, int_part.to_string(), frac_part.to_string())
+}
+
+/// `BigDecimal.setScale`: rescale the decimal string, rounding dropped digits.
+fn big_decimal_set_scale(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    new_scale: i32,
+    mode: i32,
+) -> Result<Value, VmError> {
+    if new_scale < 0 {
+        return Err(vm.throw_new("java/lang/ArithmeticException", Some("Negative scale")));
+    }
+    let text = big_text(vm, this);
+    let (negative, int_part, frac_part) = decimal_parts(&text);
+    let new_scale = new_scale as usize;
+    let mut int_digits = int_part;
+    let mut frac_digits = frac_part;
+    if new_scale >= frac_digits.len() {
+        while frac_digits.len() < new_scale {
+            frac_digits.push('0');
+        }
+    } else {
+        let dropped = &frac_digits[new_scale..];
+        let kept = frac_digits[..new_scale].to_string();
+        let nonzero = dropped.bytes().any(|b| b != b'0');
+        let round_up = match mode {
+            0 => nonzero,
+            1 => false,
+            2 => !negative && nonzero,
+            3 => negative && nonzero,
+            4..=6 => {
+                let first = dropped.as_bytes()[0];
+                if first > b'5' {
+                    true
+                } else if first < b'5' {
+                    false
+                } else {
+                    let rest_nonzero = dropped[1..].bytes().any(|b| b != b'0');
+                    match mode {
+                        4 => true,
+                        5 => rest_nonzero,
+                        _ => {
+                            let last_kept = kept.bytes().last().unwrap_or(b'0');
+                            rest_nonzero || last_kept % 2 == 1
+                        }
+                    }
+                }
+            }
+            _ => {
+                if nonzero {
+                    return Err(
+                        vm.throw_new("java/lang/ArithmeticException", Some("Rounding necessary"))
+                    );
+                }
+                false
+            }
+        };
+        frac_digits = kept;
+        if round_up {
+            let mut carry = true;
+            let mut frac: Vec<u8> = frac_digits.into_bytes();
+            for index in (0..frac.len()).rev() {
+                if carry {
+                    if frac[index] == b'9' {
+                        frac[index] = b'0';
+                    } else {
+                        frac[index] += 1;
+                        carry = false;
+                    }
+                }
+            }
+            frac_digits = String::from_utf8(frac).unwrap_or_default();
+            if carry {
+                let mut int_bytes: Vec<u8> = int_digits.into_bytes();
+                for index in (0..int_bytes.len()).rev() {
+                    if carry {
+                        if int_bytes[index] == b'9' {
+                            int_bytes[index] = b'0';
+                        } else {
+                            int_bytes[index] += 1;
+                            carry = false;
+                        }
+                    }
+                }
+                if carry {
+                    int_bytes.insert(0, b'1');
+                }
+                int_digits = String::from_utf8(int_bytes).unwrap_or_default();
+            }
+        }
+    }
+    let mut result = String::new();
+    if negative && (int_digits.bytes().any(|b| b != b'0') || frac_digits.bytes().any(|b| b != b'0'))
+    {
+        result.push('-');
+    }
+    result.push_str(&int_digits);
+    if new_scale > 0 {
+        result.push('.');
+        result.push_str(&frac_digits);
+    }
+    create_big_number(vm, "java/math/BigDecimal", &result)
+}
+
+const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -2896,6 +3086,66 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
                 return Err(vm.throw_new("java/lang/ArithmeticException", Some("/ by zero")));
             }
             create_big_number(vm, "java/math/BigDecimal", &alloc::format!("{}", a / b))
+        },
+    ),
+    method(
+        "setScale",
+        "(I)Ljava/math/BigDecimal;",
+        ACC_PUBLIC,
+        |vm, _, args| big_decimal_set_scale(vm, receiver(args), int_arg(args, 1), 7),
+    ),
+    method(
+        "setScale",
+        "(ILjava/math/RoundingMode;)Ljava/math/BigDecimal;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let mode = ref_arg(args, 2);
+            if mode.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            big_decimal_set_scale(
+                vm,
+                receiver(args),
+                int_arg(args, 1),
+                rounding_mode_ordinal(vm, mode),
+            )
+        },
+    ),
+    method(
+        "stripTrailingZeros",
+        "()Ljava/math/BigDecimal;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = big_text(vm, this);
+            let (negative, int_part, frac_part) = decimal_parts(&text);
+            let all_zero =
+                int_part.bytes().all(|b| b == b'0') && frac_part.bytes().all(|b| b == b'0');
+            if all_zero {
+                return create_big_number(vm, "java/math/BigDecimal", "0");
+            }
+            let mut result = String::new();
+            if negative {
+                result.push('-');
+            }
+            if frac_part.is_empty() {
+                let trimmed = int_part.trim_end_matches('0');
+                let zeros = int_part.len() - trimmed.len();
+                if zeros > 0 {
+                    result.push_str(if trimmed.is_empty() { "0" } else { trimmed });
+                    result.push_str(&alloc::format!("E+{zeros}"));
+                } else {
+                    result.push_str(&int_part);
+                }
+            } else {
+                let trimmed = frac_part.trim_end_matches('0');
+                result.push_str(&int_part);
+                if !trimmed.is_empty() {
+                    result.push('.');
+                    result.push_str(trimmed);
+                }
+            }
+            create_big_number(vm, "java/math/BigDecimal", &result)
         },
     ),
 ];

@@ -1814,7 +1814,7 @@ macro_rules! functional_interface {
 // Each interface carries the same shape; the dispatcher selects by descriptor, so a shared array
 // with one abstract method of each common descriptor is sufficient and lets a single class serve
 // every functional interface users link against.
-const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 48] = [
+const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
     method(
         "apply",
         "(Ljava/lang/Object;)Ljava/lang/Object;",
@@ -2133,7 +2133,82 @@ const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 48] = [
             object(instance)
         },
     ),
+    method(
+        "and",
+        "(Ljava/util/function/IntPredicate;)Ljava/util/function/IntPredicate;",
+        ACC_PUBLIC,
+        |vm, _, args| int_predicate_combine(vm, 0, receiver(args), ref_arg(args, 1)),
+    ),
+    method(
+        "or",
+        "(Ljava/util/function/IntPredicate;)Ljava/util/function/IntPredicate;",
+        ACC_PUBLIC,
+        |vm, _, args| int_predicate_combine(vm, 1, receiver(args), ref_arg(args, 1)),
+    ),
+    method(
+        "negate",
+        "()Ljava/util/function/IntPredicate;",
+        ACC_PUBLIC,
+        |vm, _, args| int_predicate_combine(vm, 2, receiver(args), ObjectRef::NULL),
+    ),
+    method(
+        "maxBy",
+        "(Ljava/util/Comparator;)Ljava/util/function/BinaryOperator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| binary_operator_by(vm, 0, ref_arg(args, 0)),
+    ),
+    method(
+        "minBy",
+        "(Ljava/util/Comparator;)Ljava/util/function/BinaryOperator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| binary_operator_by(vm, 1, ref_arg(args, 0)),
+    ),
 ];
+
+fn int_predicate_combine(
+    vm: &mut Vm<'_>,
+    op: i32,
+    left: ObjectRef,
+    right: ObjectRef,
+) -> Result<Value, VmError> {
+    if left.is_null() || (op != 2 && right.is_null()) {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let class = vm.resolve_class("java/util/function/OxjvmIntPredicate")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "op", "I")?;
+    vm.set_instance_int(instance, declaring, field, op);
+    let (declaring, field) = vm.find_field(class, "left", "Ljava/util/function/IntPredicate;")?;
+    vm.set_instance_ref(instance, declaring, field, left);
+    let (declaring, field) = vm.find_field(class, "right", "Ljava/util/function/IntPredicate;")?;
+    vm.set_instance_ref(instance, declaring, field, right);
+    object(instance)
+}
+
+fn int_predicate_test(vm: &mut Vm<'_>, predicate: ObjectRef, value: i32) -> Result<bool, VmError> {
+    let (class, method) = vm.resolve_virtual_method(predicate, "test", "(I)Z")?;
+    Ok(vm
+        .invoke_method(
+            class,
+            method,
+            alloc::vec![Value::Ref(predicate), Value::Int(value)],
+        )?
+        .as_int()
+        != 0)
+}
+
+fn binary_operator_by(vm: &mut Vm<'_>, op: i32, comparator: ObjectRef) -> Result<Value, VmError> {
+    if comparator.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let class = vm.resolve_class("java/util/function/OxjvmBinaryOperator")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "op", "I")?;
+    vm.set_instance_int(instance, declaring, field, op);
+    let (declaring, field) = vm.find_field(class, "comparator", "Ljava/util/Comparator;")?;
+    vm.set_instance_ref(instance, declaring, field, comparator);
+    object(instance)
+}
 
 fn predicate_combine(
     vm: &mut Vm<'_>,
@@ -2224,6 +2299,98 @@ const IDENTITY_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
     ACC_PUBLIC,
     |_, _, args| object(ref_arg(args, 1)),
 )];
+
+const INT_PREDICATE_COMBINER_METHODS: [oxjvm_vm::NativeMethodDef; 1] =
+    [method("test", "(I)Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let op = crate::lang::read_int_field(vm, this, "op");
+        let left = vm
+            .read_ref_field(this, class, "left", "Ljava/util/function/IntPredicate;")
+            .unwrap_or(ObjectRef::NULL);
+        let right = vm
+            .read_ref_field(this, class, "right", "Ljava/util/function/IntPredicate;")
+            .unwrap_or(ObjectRef::NULL);
+        let value = crate::int_arg(args, 1);
+        let result = match op {
+            0 => int_predicate_test(vm, left, value)? && int_predicate_test(vm, right, value)?,
+            1 => int_predicate_test(vm, left, value)? || int_predicate_test(vm, right, value)?,
+            _ => !int_predicate_test(vm, left, value)?,
+        };
+        boolean(result)
+    })];
+
+/// A composite `IntPredicate` from `and`, `or`, and `negate`.
+pub(crate) const INT_PREDICATE_COMBINER: oxjvm_vm::NativeClass = class(
+    "java/util/function/OxjvmIntPredicate",
+    Some("java/lang/Object"),
+    &["java/util/function/IntPredicate"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[
+        field("op", "I", ACC_PRIVATE, None),
+        field(
+            "left",
+            "Ljava/util/function/IntPredicate;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field(
+            "right",
+            "Ljava/util/function/IntPredicate;",
+            ACC_PRIVATE,
+            None,
+        ),
+    ],
+    &INT_PREDICATE_COMBINER_METHODS,
+    None,
+);
+
+const BINARY_OPERATOR_BY_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "apply",
+    "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+    ACC_PUBLIC,
+    |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let op = crate::lang::read_int_field(vm, this, "op");
+        let comparator = vm
+            .read_ref_field(this, class, "comparator", "Ljava/util/Comparator;")
+            .unwrap_or(ObjectRef::NULL);
+        let a = ref_arg(args, 1);
+        let b = ref_arg(args, 2);
+        let (cls, m) = vm.resolve_virtual_method(
+            comparator,
+            "compare",
+            "(Ljava/lang/Object;Ljava/lang/Object;)I",
+        )?;
+        let cmp = vm
+            .invoke_method(
+                cls,
+                m,
+                alloc::vec![Value::Ref(comparator), Value::Ref(a), Value::Ref(b)],
+            )?
+            .as_int();
+        if op == 0 {
+            object(if cmp >= 0 { a } else { b })
+        } else {
+            object(if cmp <= 0 { a } else { b })
+        }
+    },
+)];
+
+/// `BinaryOperator.maxBy` / `minBy`: pick by a comparator.
+pub(crate) const BINARY_OPERATOR_BY: oxjvm_vm::NativeClass = class(
+    "java/util/function/OxjvmBinaryOperator",
+    Some("java/lang/Object"),
+    &["java/util/function/BinaryOperator"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[
+        field("op", "I", ACC_PRIVATE, None),
+        field("comparator", "Ljava/util/Comparator;", ACC_PRIVATE, None),
+    ],
+    &BINARY_OPERATOR_BY_METHODS,
+    None,
+);
 
 /// The receiver `Function.identity()` returns: stateless, returning its argument unchanged.
 pub(crate) const OJVM_IDENTITY: oxjvm_vm::NativeClass = class(
