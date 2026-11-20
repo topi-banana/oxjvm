@@ -1697,6 +1697,124 @@ fn instant_hash(seconds: i64, nano: i32) -> i32 {
     ((secs ^ (secs >> 32)) as i32).wrapping_add(51i32.wrapping_mul(nano))
 }
 
+/// Shift an `OffsetDateTime` by a nanosecond delta, preserving its offset.
+fn odt_shift_nanos(vm: &mut Vm<'_>, this: ObjectRef, delta: i64) -> Result<Value, VmError> {
+    if delta == 0 {
+        return object(this);
+    }
+    let epoch_day = read_long_field(vm, this, "epochDay");
+    let nano = read_long_field(vm, this, "nanoOfDay");
+    let total = nano + delta;
+    let new_epoch = epoch_day + total.div_euclid(NANOS_PER_DAY);
+    let new_nano = total.rem_euclid(NANOS_PER_DAY);
+    if new_epoch == epoch_day && new_nano == nano {
+        return object(this);
+    }
+    object(offset_date_time_new(
+        vm,
+        new_epoch,
+        new_nano,
+        offset_date_time_offset(vm, this),
+    )?)
+}
+
+/// Shift an `OffsetDateTime`'s date part by a date-based `ChronoUnit` amount.
+fn odt_shift_date(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    amount: i64,
+    ordinal: i32,
+) -> Result<Value, VmError> {
+    if amount == 0 {
+        return object(this);
+    }
+    let epoch_day = read_long_field(vm, this, "epochDay");
+    let nano = read_long_field(vm, this, "nanoOfDay");
+    let new_epoch = date_plus(epoch_day, amount, ordinal).ok_or_else(|| unsupported_unit(vm))?;
+    if new_epoch == epoch_day {
+        return object(this);
+    }
+    object(offset_date_time_new(
+        vm,
+        new_epoch,
+        nano,
+        offset_date_time_offset(vm, this),
+    )?)
+}
+
+/// Replace a time-based field of an `OffsetDateTime`.
+fn odt_with_time_field(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    ordinal: i32,
+    value: i64,
+) -> Result<Value, VmError> {
+    let nano = read_long_field(vm, this, "nanoOfDay");
+    let current = time_field_long(nano, ordinal).ok_or_else(|| unsupported_field(vm))?;
+    if value == current {
+        return object(this);
+    }
+    let unit = time_field_unit_nanos(ordinal).ok_or_else(|| unsupported_field(vm))?;
+    odt_shift_nanos(vm, this, (value - current) * unit)
+}
+
+/// Replace a date-based field of an `OffsetDateTime`.
+fn odt_with_date_field(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    ordinal: i32,
+    value: i64,
+) -> Result<Value, VmError> {
+    let epoch_day = read_long_field(vm, this, "epochDay");
+    let nano = read_long_field(vm, this, "nanoOfDay");
+    let (year, month, day) = civil_from_days(epoch_day);
+    let new_epoch = match ordinal {
+        18 => days_from_civil(year, month, value as i32),
+        19 => days_from_civil(year, 1, 1) + value - 1,
+        23 => {
+            let new_month = value as i32;
+            let new_day = day.min(length_of_month(year, new_month));
+            days_from_civil(year, new_month, new_day)
+        }
+        26 => {
+            let new_year = value as i32;
+            let new_day = day.min(length_of_month(new_year, month));
+            days_from_civil(new_year, month, new_day)
+        }
+        _ => return Err(unsupported_field(vm)),
+    };
+    if new_epoch == epoch_day {
+        return object(this);
+    }
+    object(offset_date_time_new(
+        vm,
+        new_epoch,
+        nano,
+        offset_date_time_offset(vm, this),
+    )?)
+}
+
+/// Replace a time-based field of an `OffsetTime` (wraps within the day).
+fn offset_time_with_field(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    ordinal: i32,
+    value: i64,
+) -> Result<Value, VmError> {
+    let nano = read_long_field(vm, this, "nanoOfDay");
+    let current = time_field_long(nano, ordinal).ok_or_else(|| unsupported_field(vm))?;
+    if value == current {
+        return object(this);
+    }
+    let unit = time_field_unit_nanos(ordinal).ok_or_else(|| unsupported_field(vm))?;
+    let new_nano = (nano + (value - current) * unit).rem_euclid(NANOS_PER_DAY);
+    object(offset_time_new(
+        vm,
+        new_nano,
+        offset_date_time_offset(vm, this),
+    )?)
+}
+
 fn zdt_local_parts(vm: &Vm<'_>, this: ObjectRef) -> (i64, i64) {
     let millis = read_long_field(vm, this, "millis");
     let nano = i64::from(read_int_field(vm, this, "nano"));
@@ -7371,7 +7489,7 @@ fn offset_date_time_epoch_second(vm: &Vm<'_>, this: ObjectRef) -> i64 {
     epoch_day * 86_400 + nano_of_day / 1_000_000_000 - i64::from(offset)
 }
 
-const OFFSET_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
+const OFFSET_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 64] = [
     method(
         "of",
         "(IIIIIIILjava/time/ZoneOffset;)Ljava/time/OffsetDateTime;",
@@ -7937,6 +8055,323 @@ const OFFSET_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
             ^ local_time_hash(read_long_field(vm, this, "nanoOfDay"))
             ^ zone_offset_seconds(vm, offset))
     }),
+    method(
+        "plusHours",
+        "(J)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            odt_shift_nanos(
+                vm,
+                receiver(args),
+                crate::long_arg(args, 1) * 3_600_000_000_000,
+            )
+        },
+    ),
+    method(
+        "minusHours",
+        "(J)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            odt_shift_nanos(
+                vm,
+                receiver(args),
+                -crate::long_arg(args, 1) * 3_600_000_000_000,
+            )
+        },
+    ),
+    method(
+        "plusMinutes",
+        "(J)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            odt_shift_nanos(
+                vm,
+                receiver(args),
+                crate::long_arg(args, 1) * 60_000_000_000,
+            )
+        },
+    ),
+    method(
+        "minusMinutes",
+        "(J)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            odt_shift_nanos(
+                vm,
+                receiver(args),
+                -crate::long_arg(args, 1) * 60_000_000_000,
+            )
+        },
+    ),
+    method(
+        "minusSeconds",
+        "(J)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            odt_shift_nanos(
+                vm,
+                receiver(args),
+                -crate::long_arg(args, 1) * 1_000_000_000,
+            )
+        },
+    ),
+    method(
+        "minusDays",
+        "(J)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| odt_shift_date(vm, receiver(args), -crate::long_arg(args, 1), 7),
+    ),
+    method(
+        "plusWeeks",
+        "(J)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| odt_shift_date(vm, receiver(args), crate::long_arg(args, 1), 8),
+    ),
+    method(
+        "minusWeeks",
+        "(J)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| odt_shift_date(vm, receiver(args), -crate::long_arg(args, 1), 8),
+    ),
+    method(
+        "plusMonths",
+        "(J)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| odt_shift_date(vm, receiver(args), crate::long_arg(args, 1), 9),
+    ),
+    method(
+        "minusMonths",
+        "(J)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| odt_shift_date(vm, receiver(args), -crate::long_arg(args, 1), 9),
+    ),
+    method(
+        "plusYears",
+        "(J)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| odt_shift_date(vm, receiver(args), crate::long_arg(args, 1), 10),
+    ),
+    method(
+        "minusYears",
+        "(J)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| odt_shift_date(vm, receiver(args), -crate::long_arg(args, 1), 10),
+    ),
+    method(
+        "withNano",
+        "(I)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| odt_with_time_field(vm, receiver(args), 0, i64::from(int_arg(args, 1))),
+    ),
+    method(
+        "withSecond",
+        "(I)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| odt_with_time_field(vm, receiver(args), 6, i64::from(int_arg(args, 1))),
+    ),
+    method(
+        "withMinute",
+        "(I)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| odt_with_time_field(vm, receiver(args), 8, i64::from(int_arg(args, 1))),
+    ),
+    method(
+        "withHour",
+        "(I)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| odt_with_time_field(vm, receiver(args), 12, i64::from(int_arg(args, 1))),
+    ),
+    method(
+        "withDayOfMonth",
+        "(I)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| odt_with_date_field(vm, receiver(args), 18, i64::from(int_arg(args, 1))),
+    ),
+    method(
+        "withDayOfYear",
+        "(I)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| odt_with_date_field(vm, receiver(args), 19, i64::from(int_arg(args, 1))),
+    ),
+    method(
+        "withMonth",
+        "(I)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| odt_with_date_field(vm, receiver(args), 23, i64::from(int_arg(args, 1))),
+    ),
+    method(
+        "withYear",
+        "(I)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| odt_with_date_field(vm, receiver(args), 26, i64::from(int_arg(args, 1))),
+    ),
+    method(
+        "toLocalTime",
+        "()Ljava/time/LocalTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(local_time_new(
+                vm,
+                read_long_field(vm, receiver(args), "nanoOfDay"),
+            )?)
+        },
+    ),
+    method(
+        "toOffsetTime",
+        "()Ljava/time/OffsetTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(offset_time_new(
+                vm,
+                read_long_field(vm, this, "nanoOfDay"),
+                offset_date_time_offset(vm, this),
+            )?)
+        },
+    ),
+    method(
+        "getDayOfWeek",
+        "()Ljava/time/DayOfWeek;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let epoch_day = read_long_field(vm, receiver(args), "epochDay");
+            object(day_of_week_of(
+                vm,
+                ((epoch_day + 3).rem_euclid(7) + 1) as i32,
+            )?)
+        },
+    ),
+    method(
+        "isAfter",
+        "(Ljava/time/OffsetDateTime;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let a = offset_date_time_epoch_second(vm, this);
+            let b = offset_date_time_epoch_second(vm, other);
+            boolean(
+                a > b
+                    || (a == b
+                        && read_long_field(vm, this, "nanoOfDay")
+                            > read_long_field(vm, other, "nanoOfDay")),
+            )
+        },
+    ),
+    method(
+        "isBefore",
+        "(Ljava/time/OffsetDateTime;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let a = offset_date_time_epoch_second(vm, this);
+            let b = offset_date_time_epoch_second(vm, other);
+            boolean(
+                a < b
+                    || (a == b
+                        && read_long_field(vm, this, "nanoOfDay")
+                            < read_long_field(vm, other, "nanoOfDay")),
+            )
+        },
+    ),
+    method(
+        "isEqual",
+        "(Ljava/time/OffsetDateTime;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            boolean(
+                offset_date_time_epoch_second(vm, this) == offset_date_time_epoch_second(vm, other)
+                    && read_long_field(vm, this, "nanoOfDay")
+                        == read_long_field(vm, other, "nanoOfDay"),
+            )
+        },
+    ),
+    method(
+        "format",
+        "(Ljava/time/format/DateTimeFormatter;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let formatter = ref_arg(args, 1);
+            if formatter.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let pattern = vm
+                .read_string_field(formatter, vm.class_of(formatter), "pattern")
+                .unwrap_or_default();
+            let millis = temporal_local_millis(vm, this)?;
+            let mut text = crate::text::format_pattern(&pattern, millis);
+            text.push_str(&crate::lang::zone_offset_id(zone_offset_seconds(
+                vm,
+                offset_date_time_offset(vm, this),
+            )));
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "now",
+        "()Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let zone = system_default_zone(vm)?;
+            let seconds = zone_offset_seconds(vm, zone);
+            let offset = zone_offset_from_seconds(vm, seconds)?;
+            let local_millis = vm.host_time_millis() + i64::from(seconds) * 1000;
+            object(offset_date_time_new(
+                vm,
+                local_millis.div_euclid(86_400_000),
+                local_millis.rem_euclid(86_400_000) * 1_000_000,
+                offset,
+            )?)
+        },
+    ),
+    method(
+        "now",
+        "(Ljava/time/ZoneId;)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let zone = ref_arg(args, 0);
+            if zone.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let seconds = zone_offset_seconds(vm, zone);
+            let offset = zone_offset_from_seconds(vm, seconds)?;
+            let local_millis = vm.host_time_millis() + i64::from(seconds) * 1000;
+            object(offset_date_time_new(
+                vm,
+                local_millis.div_euclid(86_400_000),
+                local_millis.rem_euclid(86_400_000) * 1_000_000,
+                offset,
+            )?)
+        },
+    ),
+    method(
+        "atZoneSimilarLocal",
+        "(Ljava/time/ZoneId;)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let zone = ref_arg(args, 1);
+            if zone.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let epoch_day = read_long_field(vm, this, "epochDay");
+            let nano_of_day = read_long_field(vm, this, "nanoOfDay");
+            let nano = (nano_of_day % 1_000_000_000) as i32;
+            let local_second = epoch_day * 86_400 + nano_of_day / 1_000_000_000;
+            let offset = i64::from(zone_offset_seconds(vm, zone));
+            let epoch_second = local_second - offset;
+            zoned_date_time_new(
+                vm,
+                epoch_second * 1000 + i64::from(nano) / 1_000_000,
+                nano,
+                zone,
+            )
+        },
+    ),
 ];
 
 /// `java.time.OffsetDateTime`: a local date-time plus a fixed zone offset.
@@ -9095,7 +9530,7 @@ fn offset_time_plus_nanos(vm: &mut Vm<'_>, this: ObjectRef, nanos: i64) -> Resul
     )?)
 }
 
-const OFFSET_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
+const OFFSET_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
     method(
         "of",
         "(IIIILjava/time/ZoneOffset;)Ljava/time/OffsetTime;",
@@ -9251,14 +9686,18 @@ const OFFSET_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
                     None => (parts[2], ""),
                 };
                 let second: i64 = sec_text.parse().map_err(|_| error(vm))?;
-                if frac.is_empty() || frac.len() > 9 || !frac.bytes().all(|b| b.is_ascii_digit()) {
-                    return Err(error(vm));
-                }
-                let mut padded = String::from(frac);
-                while padded.len() < 9 {
-                    padded.push('0');
-                }
-                let nano: i64 = padded.parse().map_err(|_| error(vm))?;
+                let nano: i64 = if frac.is_empty() {
+                    0
+                } else {
+                    if frac.len() > 9 || !frac.bytes().all(|b| b.is_ascii_digit()) {
+                        return Err(error(vm));
+                    }
+                    let mut padded = String::from(frac);
+                    while padded.len() < 9 {
+                        padded.push('0');
+                    }
+                    padded.parse().map_err(|_| error(vm))?
+                };
                 (second, nano)
             } else {
                 (0, 0)
@@ -9708,6 +10147,30 @@ const OFFSET_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
                 ],
             )
         },
+    ),
+    method(
+        "withHour",
+        "(I)Ljava/time/OffsetTime;",
+        ACC_PUBLIC,
+        |vm, _, args| offset_time_with_field(vm, receiver(args), 12, i64::from(int_arg(args, 1))),
+    ),
+    method(
+        "withMinute",
+        "(I)Ljava/time/OffsetTime;",
+        ACC_PUBLIC,
+        |vm, _, args| offset_time_with_field(vm, receiver(args), 8, i64::from(int_arg(args, 1))),
+    ),
+    method(
+        "withSecond",
+        "(I)Ljava/time/OffsetTime;",
+        ACC_PUBLIC,
+        |vm, _, args| offset_time_with_field(vm, receiver(args), 6, i64::from(int_arg(args, 1))),
+    ),
+    method(
+        "withNano",
+        "(I)Ljava/time/OffsetTime;",
+        ACC_PUBLIC,
+        |vm, _, args| offset_time_with_field(vm, receiver(args), 0, i64::from(int_arg(args, 1))),
     ),
 ];
 
