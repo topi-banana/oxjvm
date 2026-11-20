@@ -648,6 +648,253 @@ pub(crate) const OJVM_EXECUTOR_SERVICE: oxjvm_vm::NativeClass = class(
     None,
 );
 
+/// `AbstractExecutorService`: eager single-threaded execution of submitted tasks.
+pub(crate) const ABSTRACT_EXECUTOR_SERVICE: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/AbstractExecutorService",
+    Some("java/lang/Object"),
+    &["java/util/concurrent/ExecutorService"],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[field("shutdown", "I", ACC_PRIVATE, None)],
+    &OJVM_EXECUTOR_METHODS,
+    None,
+);
+
+fn thread_pool_executor_init(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    core: i32,
+    max: i32,
+    keep_alive: i64,
+    queue: ObjectRef,
+) -> Result<Value, VmError> {
+    if core < 0 || max <= 0 || max < core || keep_alive < 0 {
+        return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+    }
+    if queue.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    crate::lang::write_int_field(vm, this, "corePoolSize", core);
+    crate::lang::write_int_field(vm, this, "maximumPoolSize", max);
+    crate::lang::write_long_field(vm, this, "keepAliveTime", keep_alive);
+    let class = vm.class_of(this);
+    let (declaring, field) =
+        vm.find_field(class, "queue", "Ljava/util/concurrent/BlockingQueue;")?;
+    vm.set_instance_ref(this, declaring, field, queue);
+    void()
+}
+
+const THREAD_POOL_EXECUTOR_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
+    method(
+        "<init>",
+        "(IIJLjava/util/concurrent/TimeUnit;Ljava/util/concurrent/BlockingQueue;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            thread_pool_executor_init(
+                vm,
+                receiver(args),
+                crate::int_arg(args, 1),
+                crate::int_arg(args, 2),
+                crate::long_arg(args, 3),
+                ref_arg(args, 5),
+            )
+        },
+    ),
+    method(
+        "<init>",
+        "(IIJLjava/util/concurrent/TimeUnit;Ljava/util/concurrent/BlockingQueue;Ljava/util/concurrent/ThreadFactory;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            thread_pool_executor_init(
+                vm,
+                receiver(args),
+                crate::int_arg(args, 1),
+                crate::int_arg(args, 2),
+                crate::long_arg(args, 3),
+                ref_arg(args, 5),
+            )
+        },
+    ),
+    method(
+        "<init>",
+        "(IIJLjava/util/concurrent/TimeUnit;Ljava/util/concurrent/BlockingQueue;Ljava/util/concurrent/RejectedExecutionHandler;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            thread_pool_executor_init(
+                vm,
+                receiver(args),
+                crate::int_arg(args, 1),
+                crate::int_arg(args, 2),
+                crate::long_arg(args, 3),
+                ref_arg(args, 5),
+            )
+        },
+    ),
+    method(
+        "<init>",
+        "(IIJLjava/util/concurrent/TimeUnit;Ljava/util/concurrent/BlockingQueue;Ljava/util/concurrent/ThreadFactory;Ljava/util/concurrent/RejectedExecutionHandler;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            thread_pool_executor_init(
+                vm,
+                receiver(args),
+                crate::int_arg(args, 1),
+                crate::int_arg(args, 2),
+                crate::long_arg(args, 3),
+                ref_arg(args, 5),
+            )
+        },
+    ),
+    method("getCorePoolSize", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(
+            vm,
+            receiver(args),
+            "corePoolSize",
+        ))
+    }),
+    method("getMaximumPoolSize", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(
+            vm,
+            receiver(args),
+            "maximumPoolSize",
+        ))
+    }),
+    method("getPoolSize", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(
+            vm,
+            receiver(args),
+            "corePoolSize",
+        ))
+    }),
+    method("getActiveCount", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method("getLargestPoolSize", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(
+            vm,
+            receiver(args),
+            "corePoolSize",
+        ))
+    }),
+    method("getTaskCount", "()J", ACC_PUBLIC, |_, _, _| long(0)),
+    method("getCompletedTaskCount", "()J", ACC_PUBLIC, |_, _, _| {
+        long(0)
+    }),
+    method(
+        "getQueue",
+        "()Ljava/util/concurrent/BlockingQueue;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            object(
+                vm.read_ref_field(this, class, "queue", "Ljava/util/concurrent/BlockingQueue;")
+                    .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method(
+        "getKeepAliveTime",
+        "(Ljava/util/concurrent/TimeUnit;)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            long(crate::lang::read_long_field(
+                vm,
+                receiver(args),
+                "keepAliveTime",
+            ))
+        },
+    ),
+    method("setCorePoolSize", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let core = crate::int_arg(args, 1);
+        if core < 0 {
+            return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+        }
+        crate::lang::write_int_field(vm, receiver(args), "corePoolSize", core);
+        void()
+    }),
+    method("setMaximumPoolSize", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let max = crate::int_arg(args, 1);
+        let this = receiver(args);
+        if max <= 0 || max < crate::lang::read_int_field(vm, this, "corePoolSize") {
+            return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+        }
+        crate::lang::write_int_field(vm, this, "maximumPoolSize", max);
+        void()
+    }),
+    method(
+        "setKeepAliveTime",
+        "(JLjava/util/concurrent/TimeUnit;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            crate::lang::write_long_field(
+                vm,
+                receiver(args),
+                "keepAliveTime",
+                crate::long_arg(args, 1),
+            );
+            void()
+        },
+    ),
+    method(
+        "allowCoreThreadTimeOut",
+        "(Z)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let value = crate::int_arg(args, 1) != 0;
+            let this = receiver(args);
+            if value && crate::lang::read_long_field(vm, this, "keepAliveTime") <= 0 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            crate::lang::write_int_field(vm, this, "allowCoreThreadTimeOut", i32::from(value));
+            void()
+        },
+    ),
+    method(
+        "allowsCoreThreadTimeOut",
+        "()Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            boolean(crate::lang::read_int_field(vm, receiver(args), "allowCoreThreadTimeOut") != 0)
+        },
+    ),
+    method("prestartCoreThread", "()Z", ACC_PUBLIC, |_, _, _| {
+        boolean(true)
+    }),
+    method(
+        "prestartAllCoreThreads",
+        "()I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            int(crate::lang::read_int_field(
+                vm,
+                receiver(args),
+                "corePoolSize",
+            ))
+        },
+    ),
+    method("purge", "()V", ACC_PUBLIC, |_, _, _| void()),
+];
+
+/// `ThreadPoolExecutor`: eager execution with pool-size bookkeeping.
+pub(crate) const THREAD_POOL_EXECUTOR: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/ThreadPoolExecutor",
+    Some("java/util/concurrent/AbstractExecutorService"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("corePoolSize", "I", ACC_PRIVATE, None),
+        field("maximumPoolSize", "I", ACC_PRIVATE, None),
+        field("keepAliveTime", "J", ACC_PRIVATE, None),
+        field("allowCoreThreadTimeOut", "I", ACC_PRIVATE, None),
+        field(
+            "queue",
+            "Ljava/util/concurrent/BlockingQueue;",
+            ACC_PRIVATE,
+            None,
+        ),
+    ],
+    &THREAD_POOL_EXECUTOR_METHODS,
+    None,
+);
+
 /// Create a `ForkJoinTask` carrying a callable or runnable, run eagerly like `FutureTask`.
 fn fork_join_task_new(
     vm: &mut Vm<'_>,
