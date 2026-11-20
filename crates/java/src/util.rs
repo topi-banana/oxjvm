@@ -5875,6 +5875,10 @@ fn write_random_seed(vm: &mut Vm<'_>, this: ObjectRef, seed: i64) {
 
 /// A uniformly distributed value in `[0, bound)` (the JDK rejection loop).
 fn next_random_bounded(vm: &mut Vm<'_>, this: ObjectRef, bound: i32) -> Result<i32, VmError> {
+    if bound & (bound - 1) == 0 {
+        let bits = next_random_int(vm, this, 31, &[])?.as_int();
+        return Ok(((i64::from(bound) * i64::from(bits)) >> 31) as i32);
+    }
     loop {
         let bits = next_random_int(vm, this, 31, &[])?.as_int();
         let value = bits.rem_euclid(bound);
@@ -6969,6 +6973,7 @@ pub(crate) const ARRAY_LIST: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &[
         "java/util/List",
+        "java/util/RandomAccess",
         "java/lang/Cloneable",
         "java/io/Serializable",
     ],

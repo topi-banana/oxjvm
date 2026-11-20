@@ -1907,6 +1907,224 @@ fn rounding_mode_ordinal(vm: &Vm<'_>, instance: ObjectRef) -> i32 {
     crate::lang::read_int_field(vm, instance, "ordinal")
 }
 
+const MATH_CONTEXT_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+    method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let precision = int_arg(args, 1);
+        if precision < 0 {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("Precision must be non-negative"),
+            ));
+        }
+        let mode = rounding_mode_constant(vm, "HALF_UP")?;
+        math_context_init(vm, this, precision, mode)
+    }),
+    method(
+        "<init>",
+        "(ILjava/math/RoundingMode;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let precision = int_arg(args, 1);
+            let mode = ref_arg(args, 2);
+            if mode.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            if precision < 0 {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("Precision must be non-negative"),
+                ));
+            }
+            math_context_init(vm, this, precision, mode)
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = vm.string_or_empty(ref_arg(args, 1));
+            let mut precision = 0i32;
+            let mut mode_name = String::from("HALF_UP");
+            for part in text.split_whitespace() {
+                if let Some(value) = part.strip_prefix("precision=") {
+                    precision = value.parse().unwrap_or(0);
+                } else if let Some(value) = part.strip_prefix("roundingMode=") {
+                    mode_name = String::from(value);
+                }
+            }
+            let mode = rounding_mode_constant(vm, &mode_name)?;
+            math_context_init(vm, this, precision, mode)
+        },
+    ),
+    method("getPrecision", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "precision"))
+    }),
+    method(
+        "getRoundingMode",
+        "()Ljava/math/RoundingMode;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let mode = vm
+                .read_ref_field(
+                    this,
+                    vm.class_of(this),
+                    "roundingMode",
+                    "Ljava/math/RoundingMode;",
+                )
+                .unwrap_or(ObjectRef::NULL);
+            object(mode)
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let precision = crate::lang::read_int_field(vm, this, "precision");
+            let mode = vm
+                .read_ref_field(
+                    this,
+                    vm.class_of(this),
+                    "roundingMode",
+                    "Ljava/math/RoundingMode;",
+                )
+                .unwrap_or(ObjectRef::NULL);
+            let ordinal = rounding_mode_ordinal(vm, mode).clamp(0, 7) as usize;
+            let name = ROUNDING_MODE_NAMES[ordinal];
+            object(vm.make_string(&alloc::format!("precision={precision} roundingMode={name}"))?)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if this == other {
+                return boolean(true);
+            }
+            if vm.class_name(vm.class_of(other)) != "java/math/MathContext" {
+                return boolean(false);
+            }
+            let p1 = crate::lang::read_int_field(vm, this, "precision");
+            let p2 = crate::lang::read_int_field(vm, other, "precision");
+            let m1 = vm
+                .read_ref_field(
+                    this,
+                    vm.class_of(this),
+                    "roundingMode",
+                    "Ljava/math/RoundingMode;",
+                )
+                .unwrap_or(ObjectRef::NULL);
+            let m2 = vm
+                .read_ref_field(
+                    other,
+                    vm.class_of(other),
+                    "roundingMode",
+                    "Ljava/math/RoundingMode;",
+                )
+                .unwrap_or(ObjectRef::NULL);
+            boolean(p1 == p2 && rounding_mode_ordinal(vm, m1) == rounding_mode_ordinal(vm, m2))
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let precision = crate::lang::read_int_field(vm, this, "precision");
+        let mode = vm
+            .read_ref_field(
+                this,
+                vm.class_of(this),
+                "roundingMode",
+                "Ljava/math/RoundingMode;",
+            )
+            .unwrap_or(ObjectRef::NULL);
+        int(precision
+            .wrapping_mul(31)
+            .wrapping_add(rounding_mode_ordinal(vm, mode)))
+    }),
+];
+
+fn math_context_init(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    precision: i32,
+    mode: ObjectRef,
+) -> Result<Value, VmError> {
+    crate::lang::write_int_field(vm, this, "precision", precision);
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, "roundingMode", "Ljava/math/RoundingMode;")?;
+    vm.set_instance_ref(this, declaring, field, mode);
+    void()
+}
+
+fn math_context_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/math/MathContext")?;
+    for (name, precision, mode_name) in [
+        ("DECIMAL32", 7, "HALF_EVEN"),
+        ("DECIMAL64", 16, "HALF_EVEN"),
+        ("DECIMAL128", 34, "HALF_EVEN"),
+        ("UNLIMITED", 0, "UNNECESSARY"),
+    ] {
+        let mode = rounding_mode_constant(vm, mode_name)?;
+        let instance = vm.new_instance(class)?;
+        crate::lang::write_int_field(vm, instance, "precision", precision);
+        let (declaring, field) =
+            vm.find_field(class, "roundingMode", "Ljava/math/RoundingMode;")?;
+        vm.set_instance_ref(instance, declaring, field, mode);
+        vm.set_static_value(class, name, "Ljava/math/MathContext;", Value::Ref(instance));
+    }
+    Ok(())
+}
+
+pub(crate) const MATH_CONTEXT: oxjvm_vm::NativeClass = class(
+    "java/math/MathContext",
+    Some("java/lang/Object"),
+    &["java/io/Serializable"],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("precision", "I", ACC_PRIVATE | ACC_FINAL, None),
+        field(
+            "roundingMode",
+            "Ljava/math/RoundingMode;",
+            ACC_PRIVATE | ACC_FINAL,
+            None,
+        ),
+        field(
+            "DECIMAL32",
+            "Ljava/math/MathContext;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "DECIMAL64",
+            "Ljava/math/MathContext;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "DECIMAL128",
+            "Ljava/math/MathContext;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "UNLIMITED",
+            "Ljava/math/MathContext;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+    ],
+    &MATH_CONTEXT_METHODS,
+    Some(math_context_clinit),
+);
+
 const ROUNDING_MODE_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     method("ordinal", "()I", ACC_PUBLIC, |vm, _, args| {
         int(rounding_mode_ordinal(vm, receiver(args)))
@@ -3339,26 +3557,137 @@ fn big_decimal_init(
     void()
 }
 
-fn big_decimal_binary(
-    vm: &mut Vm<'_>,
-    args: &[Value],
-    operation: fn(f64, f64) -> f64,
-) -> Result<Value, VmError> {
-    let this = receiver(args);
-    let a = big_text(vm, this).parse::<f64>().unwrap_or(f64::NAN);
-    let b = big_text(vm, ref_arg(args, 1))
-        .parse::<f64>()
-        .unwrap_or(f64::NAN);
-    create_big_number(
-        vm,
-        "java/math/BigDecimal",
-        &alloc::format!("{}", operation(a, b)),
-    )
-}
-
 /// `BigDecimal.add`/`subtract` preserving the larger operand scale, using exact
 /// i128 arithmetic on the unscaled values when they fit (falling back to the
 /// floating-point path otherwise).
+/// `BigDecimal.multiply` preserving the sum of operand scales, using exact i128
+/// arithmetic on the unscaled values when they fit.
+fn big_decimal_multiply(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let a = big_text(vm, receiver(args));
+    let b = big_text(vm, ref_arg(args, 1));
+    let (neg_a, int_a, frac_a) = decimal_parts(&a);
+    let (neg_b, int_b, frac_b) = decimal_parts(&b);
+    let scale = frac_a.len() + frac_b.len();
+    let ua = parse_i128(&alloc::format!("{}{}", int_a, frac_a));
+    let ub = parse_i128(&alloc::format!("{}{}", int_b, frac_b));
+    if let (Some(va), Some(vb)) = (ua, ub) {
+        let va = if neg_a { -va } else { va };
+        let vb = if neg_b { -vb } else { vb };
+        if let Some(product) = va.checked_mul(vb) {
+            if let Some(text) = format_scaled(product, scale) {
+                return create_big_number(vm, "java/math/BigDecimal", &text);
+            }
+        }
+    }
+    let fa = a.parse::<f64>().unwrap_or(f64::NAN);
+    let fb = b.parse::<f64>().unwrap_or(f64::NAN);
+    create_big_number(vm, "java/math/BigDecimal", &alloc::format!("{}", fa * fb))
+}
+
+/// Round a decimal string to `precision` significant digits using `mode` (RoundingMode ordinal).
+fn round_to_precision(text: &str, precision: i32, mode: i32) -> Option<String> {
+    if precision <= 0 {
+        return Some(String::from(text));
+    }
+    let (negative, int_part, frac_part) = decimal_parts(text);
+    let digits = alloc::format!("{}{}", int_part, frac_part);
+    let scale = frac_part.len() as i32;
+    let sig_start = digits
+        .bytes()
+        .position(|b| b != b'0')
+        .unwrap_or(digits.len());
+    let current_sig = (digits.len() - sig_start) as i32;
+    if current_sig <= precision {
+        return Some(String::from(text));
+    }
+    let drop = (current_sig - precision) as u32;
+    let unscaled = parse_i128(&digits)?;
+    let unscaled = if negative { -unscaled } else { unscaled };
+    let divisor = 10i128.checked_pow(drop)?;
+    let quotient = unscaled / divisor;
+    let remainder = (unscaled % divisor).abs();
+    let half = divisor / 2;
+    let round_up = match mode {
+        0 => remainder != 0,
+        1 => false,
+        2 => !negative && remainder != 0,
+        3 => negative && remainder != 0,
+        4 => remainder >= half,
+        5 => remainder > half,
+        6 => {
+            if remainder > half {
+                true
+            } else if remainder < half {
+                false
+            } else {
+                quotient % 2 != 0
+            }
+        }
+        _ => {
+            if remainder != 0 {
+                return None;
+            }
+            false
+        }
+    };
+    let mut result = quotient;
+    if round_up {
+        result += if negative { -1 } else { 1 };
+    }
+    let new_scale = scale - drop as i32;
+    if new_scale >= 0 {
+        format_scaled(result, new_scale as usize)
+    } else {
+        let factor = 10i128.checked_pow((-new_scale) as u32)?;
+        format_scaled(result.checked_mul(factor)?, 0)
+    }
+}
+
+/// Divide two decimal strings to `precision` significant digits via i128 long division.
+fn divide_to_precision(a: &str, b: &str, precision: i32, mode: i32) -> Option<String> {
+    let (neg_a, int_a, frac_a) = decimal_parts(a);
+    let (neg_b, int_b, frac_b) = decimal_parts(b);
+    let num = parse_i128(&alloc::format!("{}{}", int_a, frac_a))?;
+    let den = parse_i128(&alloc::format!("{}{}", int_b, frac_b))?;
+    if den == 0 {
+        return None;
+    }
+    let negative = neg_a != neg_b;
+    let num = num.abs();
+    let den = den.abs();
+    let sa = frac_a.len() as i32;
+    let sb = frac_b.len() as i32;
+    let int_q = num / den;
+    let mut rem = num % den;
+    let mut frac = String::new();
+    let limit = (precision + 20).max(20) as usize;
+    while frac.len() < limit && rem != 0 {
+        rem = rem.checked_mul(10)?;
+        let digit = rem / den;
+        frac.push(char::from(b'0' + digit as u8));
+        rem %= den;
+    }
+    let mut raw = alloc::format!("{}", int_q);
+    if !frac.is_empty() {
+        raw.push('.');
+        raw.push_str(&frac);
+    }
+    let nonzero = int_q != 0 || frac.bytes().any(|b| b != b'0');
+    if negative && nonzero {
+        raw = alloc::format!("-{raw}");
+    }
+    let shifted = scale_decimal(&raw, sb - sa);
+    round_to_precision(&shifted, precision, mode)
+}
+
+/// A cached `RoundingMode` enum constant by name.
+fn rounding_mode_constant(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/math/RoundingMode")?;
+    vm.ensure_initialized(class)?;
+    vm.read_static_ref_if_set(class, name, "Ljava/math/RoundingMode;")
+        .ok_or_else(|| VmError::internal("RoundingMode constant missing"))
+}
+
 fn big_decimal_add_sub(vm: &mut Vm<'_>, args: &[Value], subtract: bool) -> Result<Value, VmError> {
     let a = big_text(vm, receiver(args));
     let b = big_text(vm, ref_arg(args, 1));
@@ -3509,7 +3838,7 @@ fn big_decimal_set_scale(
     create_big_number(vm, "java/math/BigDecimal", &result)
 }
 
-const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
+const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -3598,7 +3927,7 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
         "multiply",
         "(Ljava/math/BigDecimal;)Ljava/math/BigDecimal;",
         ACC_PUBLIC,
-        |vm, _, args| big_decimal_binary(vm, args, |a, b| a * b),
+        |vm, _, args| big_decimal_multiply(vm, args),
     ),
     method(
         "valueOf",
@@ -3886,6 +4215,81 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
         "(Ljava/math/BigDecimal;)Ljava/math/BigDecimal;",
         ACC_PUBLIC,
         |vm, _, args| big_decimal_div_rem(vm, args, false),
+    ),
+    method(
+        "round",
+        "(Ljava/math/MathContext;)Ljava/math/BigDecimal;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let mc = ref_arg(args, 1);
+            if mc.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let precision = crate::lang::read_int_field(vm, mc, "precision");
+            let mode_ref = vm
+                .read_ref_field(
+                    mc,
+                    vm.class_of(mc),
+                    "roundingMode",
+                    "Ljava/math/RoundingMode;",
+                )
+                .unwrap_or(ObjectRef::NULL);
+            let mode = rounding_mode_ordinal(vm, mode_ref);
+            if precision == 0 {
+                return object(this);
+            }
+            let text = big_text(vm, this);
+            match round_to_precision(&text, precision, mode) {
+                Some(rounded) => create_big_number(vm, "java/math/BigDecimal", &rounded),
+                None => {
+                    Err(vm.throw_new("java/lang/ArithmeticException", Some("Rounding necessary")))
+                }
+            }
+        },
+    ),
+    method(
+        "divide",
+        "(Ljava/math/BigDecimal;Ljava/math/MathContext;)Ljava/math/BigDecimal;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let divisor = ref_arg(args, 1);
+            let mc = ref_arg(args, 2);
+            if mc.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let precision = crate::lang::read_int_field(vm, mc, "precision");
+            let mode_ref = vm
+                .read_ref_field(
+                    mc,
+                    vm.class_of(mc),
+                    "roundingMode",
+                    "Ljava/math/RoundingMode;",
+                )
+                .unwrap_or(ObjectRef::NULL);
+            let mode = rounding_mode_ordinal(vm, mode_ref);
+            let a = big_text(vm, this);
+            let b = big_text(vm, divisor);
+            let bval = b.parse::<f64>().unwrap_or(0.0);
+            if bval == 0.0 {
+                return Err(vm.throw_new("java/lang/ArithmeticException", Some("/ by zero")));
+            }
+            if precision == 0 {
+                let av = a.parse::<f64>().unwrap_or(f64::NAN);
+                return create_big_number(
+                    vm,
+                    "java/math/BigDecimal",
+                    &alloc::format!("{}", av / bval),
+                );
+            }
+            match divide_to_precision(&a, &b, precision, mode) {
+                Some(result) => create_big_number(vm, "java/math/BigDecimal", &result),
+                None => {
+                    Err(vm.throw_new("java/lang/ArithmeticException", Some("Rounding necessary")))
+                }
+            }
+        },
     ),
 ];
 

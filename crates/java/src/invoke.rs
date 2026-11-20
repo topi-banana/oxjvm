@@ -1814,7 +1814,7 @@ macro_rules! functional_interface {
 // Each interface carries the same shape; the dispatcher selects by descriptor, so a shared array
 // with one abstract method of each common descriptor is sufficient and lets a single class serve
 // every functional interface users link against.
-const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 59] = [
+const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 60] = [
     method(
         "apply",
         "(Ljava/lang/Object;)Ljava/lang/Object;",
@@ -2202,6 +2202,12 @@ const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 59] = [
         "()Ljava/util/function/BiPredicate;",
         ACC_PUBLIC,
         |vm, _, args| bi_predicate_combine(vm, 2, receiver(args), ObjectRef::NULL),
+    ),
+    method(
+        "accept",
+        "(Ljava/lang/Object;I)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
     ),
 ];
 
@@ -2802,6 +2808,7 @@ functional_interface!(
     "java/util/function/BiFunction"
 );
 functional_interface!(INT_CONSUMER, "java/util/function/IntConsumer");
+functional_interface!(OBJ_INT_CONSUMER, "java/util/function/ObjIntConsumer");
 functional_interface!(INT_PREDICATE, "java/util/function/IntPredicate");
 functional_interface!(INT_UNARY_OPERATOR, "java/util/function/IntUnaryOperator");
 functional_interface!(INT_BINARY_OPERATOR, "java/util/function/IntBinaryOperator");

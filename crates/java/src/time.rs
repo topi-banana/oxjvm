@@ -1350,7 +1350,7 @@ fn temporal_local_millis(vm: &mut Vm<'_>, obj: ObjectRef) -> Result<i64, VmError
     }
 }
 
-const DATE_TIME_FORMATTER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const DATE_TIME_FORMATTER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method(
         "ofPattern",
         "(Ljava/lang/String;)Ljava/time/format/DateTimeFormatter;",
@@ -1468,6 +1468,60 @@ const DATE_TIME_FORMATTER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
                 .read_string_field(this, vm.class_of(this), "pattern")
                 .unwrap_or_default();
             date_time_formatter_with_pattern(vm, &pattern)
+        },
+    ),
+    method(
+        "parse",
+        "(Ljava/lang/CharSequence;Ljava/time/temporal/TemporalQuery;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = crate::string_arg(vm, args[1])?;
+            let query = ref_arg(args, 2);
+            if query.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let pattern = vm
+                .read_string_field(this, vm.class_of(this), "pattern")
+                .unwrap_or_default();
+            let (date_text, time_text) = match text.split_once(['T', ' ']) {
+                Some((d, t)) => (d, Some(t)),
+                None => (text.as_str(), None),
+            };
+            let parts: Vec<&str> = date_text.split(['-', '/', '.']).collect();
+            if parts.len() != 3 {
+                return Err(vm.throw_new("java/time/format/DateTimeParseException", Some(&text)));
+            }
+            let (y, m, d) = if pattern.starts_with("dd") {
+                (parts[2], parts[1], parts[0])
+            } else {
+                (parts[0], parts[1], parts[2])
+            };
+            let parsed = (
+                y.parse::<i32>().ok(),
+                m.parse::<i32>().ok(),
+                d.parse::<i32>().ok(),
+            );
+            let (year, month, day) = match parsed {
+                (Some(y), Some(m), Some(d)) => (y, m, d),
+                _ => {
+                    return Err(
+                        vm.throw_new("java/time/format/DateTimeParseException", Some(&text))
+                    );
+                }
+            };
+            let epoch_day = days_from_civil(year, month, day);
+            let parsed = if let Some(t) = time_text {
+                let tp: Vec<&str> = t.split(':').collect();
+                let hour = tp.first().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+                let minute = tp.get(1).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+                let second = tp.get(2).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+                let nano_of_day = ((hour * 60 + minute) * 60 + second) * 1_000_000_000;
+                Value::Ref(local_date_time_new(vm, epoch_day, nano_of_day)?)
+            } else {
+                Value::Ref(local_date_new(vm, epoch_day)?)
+            };
+            crate::temporal::temporal_query_from(vm, query, parsed.as_ref())
         },
     ),
 ];
@@ -3156,7 +3210,7 @@ fn local_date_dates_until(
     object(crate::stream::stream_from(vm, elements)?)
 }
 
-const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 58] = [
+const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 59] = [
     method(
         "of",
         "(III)Ljava/time/LocalDate;",
@@ -3936,6 +3990,46 @@ const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 58] = [
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
             crate::temporal::temporal_query_from(vm, query, receiver(args))
+        },
+    ),
+    method(
+        "from",
+        "(Ljava/time/temporal/TemporalAccessor;)Ljava/time/LocalDate;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let temporal = ref_arg(args, 0);
+            if temporal.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let name = String::from(vm.class_name(vm.class_of(temporal)));
+            match name.as_str() {
+                "java/time/LocalDate" => object(temporal),
+                "java/time/LocalDateTime"
+                | "java/time/OffsetDateTime"
+                | "java/time/ZonedDateTime" => {
+                    let (class, method) = vm.resolve_virtual_method(
+                        temporal,
+                        "toLocalDate",
+                        "()Ljava/time/LocalDate;",
+                    )?;
+                    vm.invoke_method(class, method, alloc::vec![Value::Ref(temporal)])
+                }
+                _ => {
+                    let epoch_day = vm.read_instance_long_named(
+                        temporal,
+                        vm.class_of(temporal),
+                        "epochDay",
+                        "J",
+                    );
+                    match epoch_day {
+                        Some(days) => object(local_date_new(vm, days)?),
+                        None => Err(vm.throw_new(
+                            "java/time/DateTimeException",
+                            Some("Unable to obtain LocalDate from TemporalAccessor"),
+                        )),
+                    }
+                }
+            }
         },
     ),
 ];

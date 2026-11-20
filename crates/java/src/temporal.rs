@@ -2343,7 +2343,11 @@ pub(crate) fn temporal_query_from(
             "queryFrom",
             "(Ljava/time/temporal/TemporalAccessor;)Ljava/lang/Object;",
         )?;
-        return vm.invoke_method(class, method, alloc::vec![Value::Ref(temporal)]);
+        return vm.invoke_method(
+            class,
+            method,
+            alloc::vec![Value::Ref(query), Value::Ref(temporal)],
+        );
     }
     let kind = read_int_field(vm, query, "kind");
     let name = alloc::string::String::from(vm.class_name(vm.class_of(temporal)));
