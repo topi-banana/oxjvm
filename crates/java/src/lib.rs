@@ -1310,14 +1310,6 @@ pub(crate) fn object(reference: ObjectRef) -> Result<Value, VmError> {
     Ok(Value::Ref(reference))
 }
 
-/// Throw `UnsupportedOperationException` with a method name.
-pub(crate) fn unsupported(vm: &mut Vm<'_>, what: &str) -> VmError {
-    vm.throw_new(
-        "java/lang/UnsupportedOperationException",
-        Some(&alloc::format!("oxjvm does not implement {what}")),
-    )
-}
-
 /// The dotted binary name of a class.
 pub(crate) fn binary_name(vm: &Vm<'_>, class: oxjvm_vm::ClassId) -> String {
     vm.class_name(class).replace('/', ".")

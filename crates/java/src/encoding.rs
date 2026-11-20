@@ -12,28 +12,70 @@ use crate::{class, field, method, object, receiver, ref_arg};
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const URL_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-fn base64_encode_bytes(bytes: &[u8]) -> Vec<u8> {
+fn base64_encode_with(bytes: &[u8], alphabet: &[u8; 64]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
         let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
         let triple = (b0 << 16) | (b1 << 8) | b2;
-        out.push(ALPHABET[(triple >> 18) as usize & 63]);
-        out.push(ALPHABET[(triple >> 12) as usize & 63]);
+        out.push(alphabet[(triple >> 18) as usize & 63]);
+        out.push(alphabet[(triple >> 12) as usize & 63]);
         out.push(if chunk.len() > 1 {
-            ALPHABET[(triple >> 6) as usize & 63]
+            alphabet[(triple >> 6) as usize & 63]
         } else {
             b'='
         });
         out.push(if chunk.len() > 2 {
-            ALPHABET[triple as usize & 63]
+            alphabet[triple as usize & 63]
         } else {
             b'='
         });
     }
     out
+}
+
+/// The final encoder output: alphabet selection, optional padding removal, MIME wrapping.
+fn base64_encoder_output(vm: &Vm<'_>, encoder: ObjectRef, bytes: &[u8]) -> Vec<u8> {
+    let alphabet = if read_int_field(vm, encoder, "url") != 0 {
+        URL_ALPHABET
+    } else {
+        ALPHABET
+    };
+    let mut encoded = base64_encode_with(bytes, alphabet);
+    if read_int_field(vm, encoder, "noPadding") != 0 {
+        while encoded.last() == Some(&b'=') {
+            encoded.pop();
+        }
+    }
+    let (line_length, separator) = base64_mime_parts(vm, encoder);
+    base64_encode_mime(&encoded, line_length, &separator)
+}
+
+/// `Encoder.withoutPadding`: a copy of the encoder that omits trailing `=`.
+fn base64_without_padding(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/util/Base64$Encoder")?;
+    let instance = vm.new_instance(class)?;
+    write_int_field(vm, instance, "mime", read_int_field(vm, this, "mime"));
+    write_int_field(
+        vm,
+        instance,
+        "lineLength",
+        read_int_field(vm, this, "lineLength"),
+    );
+    write_int_field(vm, instance, "url", read_int_field(vm, this, "url"));
+    write_int_field(vm, instance, "noPadding", 1);
+    if let Some(separator) =
+        vm.read_ref_field(this, vm.class_of(this), "lineSep", "Ljava/lang/String;")
+    {
+        if let Some((declaring, field)) = vm.find_field_opt(class, "lineSep", "Ljava/lang/String;")
+        {
+            vm.set_instance_ref(instance, declaring, field, separator);
+        }
+    }
+    object(instance)
 }
 
 /// Wrap MIME base64 output into lines of `line_length` characters.
@@ -96,8 +138,8 @@ fn base64_decode_text(text: &str) -> Vec<u8> {
             b'A'..=b'Z' => byte - b'A',
             b'a'..=b'z' => byte - b'a' + 26,
             b'0'..=b'9' => byte - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
+            b'+' | b'-' => 62,
+            b'/' | b'_' => 63,
             _ => continue,
         } as u32;
         buffer = (buffer << 6) | value;
@@ -156,7 +198,9 @@ const BASE64_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _| {
             let class = vm.resolve_class("java/util/Base64$Encoder")?;
-            object(vm.new_instance(class)?)
+            let instance = vm.new_instance(class)?;
+            write_int_field(vm, instance, "url", 1);
+            object(instance)
         },
     ),
     method(
@@ -221,9 +265,7 @@ pub(crate) const BASE64: oxjvm_vm::NativeClass = class(
 const BASE64_ENCODER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
     method("encode", "([B)[B", ACC_PUBLIC, |vm, _, args| {
         let bytes = byte_array_of(vm, ref_arg(args, 1))?;
-        let encoded = base64_encode_bytes(&bytes);
-        let (line_length, separator) = base64_mime_parts(vm, receiver(args));
-        let wrapped = base64_encode_mime(&encoded, line_length, &separator);
+        let wrapped = base64_encoder_output(vm, receiver(args), &bytes);
         object(bytes_array(vm, &wrapped)?)
     }),
     method(
@@ -232,9 +274,7 @@ const BASE64_ENCODER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let bytes = byte_array_of(vm, ref_arg(args, 1))?;
-            let encoded = base64_encode_bytes(&bytes);
-            let (line_length, separator) = base64_mime_parts(vm, receiver(args));
-            let wrapped = base64_encode_mime(&encoded, line_length, &separator);
+            let wrapped = base64_encoder_output(vm, receiver(args), &bytes);
             let text = String::from_utf8_lossy(&wrapped).into_owned();
             object(vm.make_string(&text)?)
         },
@@ -243,7 +283,7 @@ const BASE64_ENCODER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
         "withoutPadding",
         "()Ljava/util/Base64$Encoder;",
         ACC_PUBLIC,
-        |_, _, args| object(receiver(args)),
+        |vm, _, args| base64_without_padding(vm, receiver(args)),
     ),
 ];
 
@@ -256,6 +296,8 @@ pub(crate) const BASE64_ENCODER: oxjvm_vm::NativeClass = class(
         field("mime", "I", ACC_PRIVATE, None),
         field("lineLength", "I", ACC_PRIVATE, None),
         field("lineSep", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("url", "I", ACC_PRIVATE, None),
+        field("noPadding", "I", ACC_PRIVATE, None),
     ],
     &BASE64_ENCODER_METHODS,
     None,

@@ -67,7 +67,7 @@ fn call_int_consumer(vm: &mut Vm<'_>, consumer: ObjectRef, value: i32) -> Result
     Ok(())
 }
 
-const INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
+const INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
     method(
         "of",
         "(I)Ljava/util/stream/IntStream;",
@@ -170,6 +170,12 @@ const INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
     method(
         "max",
         "()Ljava/util/OptionalInt;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "average",
+        "()Ljava/util/OptionalDouble;",
         ACC_PUBLIC | ACC_ABSTRACT,
         abstract_method_pub,
     ),
@@ -338,7 +344,7 @@ pub(crate) const INT_STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const OJVM_INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
+const OJVM_INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
     method(
         "map",
         "(Ljava/util/function/IntUnaryOperator;)Ljava/util/stream/IntStream;",
@@ -397,13 +403,19 @@ const OJVM_INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
         "min",
         "()Ljava/util/OptionalInt;",
         ACC_PUBLIC,
-        |vm, _, _| Err(crate::unsupported(vm, "IntStream.min")),
+        |vm, _, args| {
+            let values = int_elements(vm, receiver(args));
+            crate::primitive_stream::optional_int(vm, values.iter().copied().min())
+        },
     ),
     method(
         "max",
         "()Ljava/util/OptionalInt;",
         ACC_PUBLIC,
-        |vm, _, _| Err(crate::unsupported(vm, "IntStream.max")),
+        |vm, _, args| {
+            let values = int_elements(vm, receiver(args));
+            crate::primitive_stream::optional_int(vm, values.iter().copied().max())
+        },
     ),
     method(
         "boxed",
@@ -571,6 +583,22 @@ const OJVM_INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
                 );
             }
             object(crate::primitive_stream::long_stream_from(vm, mapped)?)
+        },
+    ),
+    method(
+        "average",
+        "()Ljava/util/OptionalDouble;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let values = int_elements(vm, receiver(args));
+            crate::primitive_stream::optional_double(
+                vm,
+                if values.is_empty() {
+                    None
+                } else {
+                    Some(values.iter().map(|v| f64::from(*v)).sum::<f64>() / values.len() as f64)
+                },
+            )
         },
     ),
 ];

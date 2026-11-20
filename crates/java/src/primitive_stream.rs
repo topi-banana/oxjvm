@@ -170,7 +170,7 @@ fn call_long_binary(
         .as_long())
 }
 
-fn optional_double(vm: &mut Vm<'_>, value: Option<f64>) -> Result<Value, VmError> {
+pub(crate) fn optional_double(vm: &mut Vm<'_>, value: Option<f64>) -> Result<Value, VmError> {
     let class = vm.resolve_class("java/util/OptionalDouble")?;
     let instance = vm.new_instance(class)?;
     match value {
