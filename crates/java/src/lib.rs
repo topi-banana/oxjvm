@@ -148,7 +148,7 @@ pub fn is_non_writable_property(key: &str) -> bool {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 1084] = [
+static REGISTRY: [NativeClass; 1086] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -1189,6 +1189,8 @@ static REGISTRY: [NativeClass; 1084] = [
     atomic::ATOMIC_INTEGER_ARRAY,
     atomic::ATOMIC_LONG_ARRAY,
     atomic::ATOMIC_REFERENCE_ARRAY,
+    atomic::ATOMIC_INTEGER_FIELD_UPDATER,
+    atomic::ATOMIC_LONG_FIELD_UPDATER,
     concurrent::TIME_UNIT,
     concurrent::SEMAPHORE,
     concurrent::EXCHANGER,

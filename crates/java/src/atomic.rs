@@ -1678,3 +1678,334 @@ pub(crate) const ATOMIC_REFERENCE_ARRAY: oxjvm_vm::NativeClass = class(
     &ATOMIC_REFERENCE_ARRAY_METHODS,
     None,
 );
+
+fn field_updater_new(
+    vm: &mut Vm<'_>,
+    class_name: &str,
+    name: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class(class_name)?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "fieldName", "Ljava/lang/String;")?;
+    vm.set_instance_ref(instance, declaring, field, name);
+    Ok(instance)
+}
+
+fn updater_field_name(vm: &Vm<'_>, this: ObjectRef) -> String {
+    vm.read_string_field_any(this, "fieldName")
+        .unwrap_or_default()
+}
+
+const ATOMIC_INTEGER_FIELD_UPDATER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+    method(
+        "newUpdater",
+        "(Ljava/lang/Class;Ljava/lang/String;)Ljava/util/concurrent/atomic/AtomicIntegerFieldUpdater;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            object(field_updater_new(
+                vm,
+                "java/util/concurrent/atomic/AtomicIntegerFieldUpdater",
+                ref_arg(args, 1),
+            )?)
+        },
+    ),
+    method("get", "(Ljava/lang/Object;)I", ACC_PUBLIC, |vm, _, args| {
+        let name = updater_field_name(vm, receiver(args));
+        int(crate::lang::read_int_field(vm, ref_arg(args, 1), &name))
+    }),
+    method(
+        "set",
+        "(Ljava/lang/Object;I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = updater_field_name(vm, receiver(args));
+            crate::lang::write_int_field(vm, ref_arg(args, 1), &name, crate::int_arg(args, 2));
+            void()
+        },
+    ),
+    method(
+        "lazySet",
+        "(Ljava/lang/Object;I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = updater_field_name(vm, receiver(args));
+            crate::lang::write_int_field(vm, ref_arg(args, 1), &name, crate::int_arg(args, 2));
+            void()
+        },
+    ),
+    method(
+        "getAndSet",
+        "(Ljava/lang/Object;I)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = updater_field_name(vm, receiver(args));
+            let target = ref_arg(args, 1);
+            let old = crate::lang::read_int_field(vm, target, &name);
+            crate::lang::write_int_field(vm, target, &name, crate::int_arg(args, 2));
+            int(old)
+        },
+    ),
+    method(
+        "incrementAndGet",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = updater_field_name(vm, receiver(args));
+            let target = ref_arg(args, 1);
+            let new = crate::lang::read_int_field(vm, target, &name).wrapping_add(1);
+            crate::lang::write_int_field(vm, target, &name, new);
+            int(new)
+        },
+    ),
+    method(
+        "getAndIncrement",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = updater_field_name(vm, receiver(args));
+            let target = ref_arg(args, 1);
+            let old = crate::lang::read_int_field(vm, target, &name);
+            crate::lang::write_int_field(vm, target, &name, old.wrapping_add(1));
+            int(old)
+        },
+    ),
+    method(
+        "decrementAndGet",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = updater_field_name(vm, receiver(args));
+            let target = ref_arg(args, 1);
+            let new = crate::lang::read_int_field(vm, target, &name).wrapping_sub(1);
+            crate::lang::write_int_field(vm, target, &name, new);
+            int(new)
+        },
+    ),
+    method(
+        "getAndDecrement",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = updater_field_name(vm, receiver(args));
+            let target = ref_arg(args, 1);
+            let old = crate::lang::read_int_field(vm, target, &name);
+            crate::lang::write_int_field(vm, target, &name, old.wrapping_sub(1));
+            int(old)
+        },
+    ),
+    method(
+        "addAndGet",
+        "(Ljava/lang/Object;I)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = updater_field_name(vm, receiver(args));
+            let target = ref_arg(args, 1);
+            let new = crate::lang::read_int_field(vm, target, &name)
+                .wrapping_add(crate::int_arg(args, 2));
+            crate::lang::write_int_field(vm, target, &name, new);
+            int(new)
+        },
+    ),
+    method(
+        "getAndAdd",
+        "(Ljava/lang/Object;I)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = updater_field_name(vm, receiver(args));
+            let target = ref_arg(args, 1);
+            let old = crate::lang::read_int_field(vm, target, &name);
+            crate::lang::write_int_field(
+                vm,
+                target,
+                &name,
+                old.wrapping_add(crate::int_arg(args, 2)),
+            );
+            int(old)
+        },
+    ),
+    method(
+        "compareAndSet",
+        "(Ljava/lang/Object;II)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = updater_field_name(vm, receiver(args));
+            let target = ref_arg(args, 1);
+            let expect = crate::int_arg(args, 2);
+            let update = crate::int_arg(args, 3);
+            if crate::lang::read_int_field(vm, target, &name) == expect {
+                crate::lang::write_int_field(vm, target, &name, update);
+                boolean(true)
+            } else {
+                boolean(false)
+            }
+        },
+    ),
+];
+
+/// `AtomicIntegerFieldUpdater`: reflective atomic updates of a named volatile int field.
+pub(crate) const ATOMIC_INTEGER_FIELD_UPDATER: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/atomic/AtomicIntegerFieldUpdater",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[field("fieldName", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &ATOMIC_INTEGER_FIELD_UPDATER_METHODS,
+    None,
+);
+
+const ATOMIC_LONG_FIELD_UPDATER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+    method(
+        "newUpdater",
+        "(Ljava/lang/Class;Ljava/lang/String;)Ljava/util/concurrent/atomic/AtomicLongFieldUpdater;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            object(field_updater_new(
+                vm,
+                "java/util/concurrent/atomic/AtomicLongFieldUpdater",
+                ref_arg(args, 1),
+            )?)
+        },
+    ),
+    method("get", "(Ljava/lang/Object;)J", ACC_PUBLIC, |vm, _, args| {
+        let name = updater_field_name(vm, receiver(args));
+        long(crate::lang::read_long_field(vm, ref_arg(args, 1), &name))
+    }),
+    method(
+        "set",
+        "(Ljava/lang/Object;J)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = updater_field_name(vm, receiver(args));
+            crate::lang::write_long_field(vm, ref_arg(args, 1), &name, crate::long_arg(args, 2));
+            void()
+        },
+    ),
+    method(
+        "lazySet",
+        "(Ljava/lang/Object;J)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = updater_field_name(vm, receiver(args));
+            crate::lang::write_long_field(vm, ref_arg(args, 1), &name, crate::long_arg(args, 2));
+            void()
+        },
+    ),
+    method(
+        "getAndSet",
+        "(Ljava/lang/Object;J)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = updater_field_name(vm, receiver(args));
+            let target = ref_arg(args, 1);
+            let old = crate::lang::read_long_field(vm, target, &name);
+            crate::lang::write_long_field(vm, target, &name, crate::long_arg(args, 2));
+            long(old)
+        },
+    ),
+    method(
+        "incrementAndGet",
+        "(Ljava/lang/Object;)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = updater_field_name(vm, receiver(args));
+            let target = ref_arg(args, 1);
+            let new = crate::lang::read_long_field(vm, target, &name).wrapping_add(1);
+            crate::lang::write_long_field(vm, target, &name, new);
+            long(new)
+        },
+    ),
+    method(
+        "getAndIncrement",
+        "(Ljava/lang/Object;)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = updater_field_name(vm, receiver(args));
+            let target = ref_arg(args, 1);
+            let old = crate::lang::read_long_field(vm, target, &name);
+            crate::lang::write_long_field(vm, target, &name, old.wrapping_add(1));
+            long(old)
+        },
+    ),
+    method(
+        "decrementAndGet",
+        "(Ljava/lang/Object;)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = updater_field_name(vm, receiver(args));
+            let target = ref_arg(args, 1);
+            let new = crate::lang::read_long_field(vm, target, &name).wrapping_sub(1);
+            crate::lang::write_long_field(vm, target, &name, new);
+            long(new)
+        },
+    ),
+    method(
+        "getAndDecrement",
+        "(Ljava/lang/Object;)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = updater_field_name(vm, receiver(args));
+            let target = ref_arg(args, 1);
+            let old = crate::lang::read_long_field(vm, target, &name);
+            crate::lang::write_long_field(vm, target, &name, old.wrapping_sub(1));
+            long(old)
+        },
+    ),
+    method(
+        "addAndGet",
+        "(Ljava/lang/Object;J)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = updater_field_name(vm, receiver(args));
+            let target = ref_arg(args, 1);
+            let new = crate::lang::read_long_field(vm, target, &name)
+                .wrapping_add(crate::long_arg(args, 2));
+            crate::lang::write_long_field(vm, target, &name, new);
+            long(new)
+        },
+    ),
+    method(
+        "getAndAdd",
+        "(Ljava/lang/Object;J)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = updater_field_name(vm, receiver(args));
+            let target = ref_arg(args, 1);
+            let old = crate::lang::read_long_field(vm, target, &name);
+            crate::lang::write_long_field(
+                vm,
+                target,
+                &name,
+                old.wrapping_add(crate::long_arg(args, 2)),
+            );
+            long(old)
+        },
+    ),
+    method(
+        "compareAndSet",
+        "(Ljava/lang/Object;JJ)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = updater_field_name(vm, receiver(args));
+            let target = ref_arg(args, 1);
+            let expect = crate::long_arg(args, 2);
+            let update = crate::long_arg(args, 3);
+            if crate::lang::read_long_field(vm, target, &name) == expect {
+                crate::lang::write_long_field(vm, target, &name, update);
+                boolean(true)
+            } else {
+                boolean(false)
+            }
+        },
+    ),
+];
+
+/// `AtomicLongFieldUpdater`: reflective atomic updates of a named volatile long field.
+pub(crate) const ATOMIC_LONG_FIELD_UPDATER: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/atomic/AtomicLongFieldUpdater",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[field("fieldName", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &ATOMIC_LONG_FIELD_UPDATER_METHODS,
+    None,
+);
