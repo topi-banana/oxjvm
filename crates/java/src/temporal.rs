@@ -594,6 +594,15 @@ fn chrono_unit_new(vm: &mut Vm<'_>, ordinal: i32) -> Result<ObjectRef, VmError> 
     Ok(instance)
 }
 
+/// Nanosecond length of a `ChronoUnit` (estimated for date-based units).
+pub(crate) fn chrono_unit_nanos(vm: &Vm<'_>, unit: ObjectRef) -> i64 {
+    let ordinal = read_int_field(vm, unit, "ordinal");
+    CHRONO_UNITS
+        .get(ordinal as usize)
+        .map(|(_, nanos, ..)| *nanos)
+        .unwrap_or(i64::MAX)
+}
+
 fn chrono_unit_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     let class = vm.resolve_class("java/time/temporal/ChronoUnit")?;
     for (index, (name, ..)) in CHRONO_UNITS.iter().enumerate() {

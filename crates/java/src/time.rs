@@ -635,7 +635,7 @@ pub(crate) const DURATION: oxjvm_vm::NativeClass = class(
     Some(duration_clinit),
 );
 
-const INSTANT_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
+const INSTANT_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
     method(
         "now",
         "()Ljava/time/Instant;",
@@ -1054,6 +1054,34 @@ const INSTANT_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
             crate::temporal::temporal_query_from(vm, query, receiver(args))
+        },
+    ),
+    method(
+        "truncatedTo",
+        "(Ljava/time/temporal/TemporalUnit;)Ljava/time/Instant;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let unit = ref_arg(args, 1);
+            if unit.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let nanos = crate::temporal::chrono_unit_nanos(vm, unit);
+            let day_nanos = 86_400_000_000_000i64;
+            if nanos <= 0 || nanos > day_nanos || day_nanos % nanos != 0 {
+                return Err(vm.throw_new(
+                    "java/time/temporal/UnsupportedTemporalTypeException",
+                    Some("Unit is too large to be used for truncation"),
+                ));
+            }
+            let total = read_long_field(vm, this, "epochSecond") * 1_000_000_000
+                + i64::from(read_int_field(vm, this, "nano"));
+            let truncated = total.div_euclid(nanos) * nanos;
+            instant_new(
+                vm,
+                truncated.div_euclid(1_000_000_000),
+                truncated.rem_euclid(1_000_000_000) as i32,
+            )
         },
     ),
 ];
@@ -1591,7 +1619,7 @@ fn zdt_local_parts(vm: &Vm<'_>, this: ObjectRef) -> (i64, i64) {
     (epoch_day, nano_of_day)
 }
 
-const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
+const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
     method(
         "now",
         "()Ljava/time/ZonedDateTime;",
@@ -2017,6 +2045,91 @@ const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
             crate::temporal::temporal_query_from(vm, query, receiver(args))
+        },
+    ),
+    method(
+        "withZoneSameInstant",
+        "(Ljava/time/ZoneId;)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let zone = ref_arg(args, 1);
+            if zone.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            zoned_date_time_new(
+                vm,
+                read_long_field(vm, this, "millis"),
+                read_int_field(vm, this, "nano"),
+                zone,
+            )
+        },
+    ),
+    method(
+        "withZoneSameLocal",
+        "(Ljava/time/ZoneId;)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let zone = ref_arg(args, 1);
+            if zone.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let old_zone = vm
+                .read_ref_field(this, vm.class_of(this), "zone", "Ljava/time/ZoneId;")
+                .unwrap_or(ObjectRef::NULL);
+            let shift =
+                i64::from(zone_offset_seconds(vm, old_zone) - zone_offset_seconds(vm, zone));
+            zoned_date_time_new(
+                vm,
+                read_long_field(vm, this, "millis") + shift * 1000,
+                read_int_field(vm, this, "nano"),
+                zone,
+            )
+        },
+    ),
+    method(
+        "plusHours",
+        "(J)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let zone = vm
+                .read_ref_field(this, vm.class_of(this), "zone", "Ljava/time/ZoneId;")
+                .unwrap_or(ObjectRef::NULL);
+            zoned_date_time_new(
+                vm,
+                read_long_field(vm, this, "millis")
+                    + crate::long_arg(args, 1).saturating_mul(3_600_000),
+                read_int_field(vm, this, "nano"),
+                zone,
+            )
+        },
+    ),
+    method(
+        "toOffsetDateTime",
+        "()Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let zone = vm
+                .read_ref_field(this, vm.class_of(this), "zone", "Ljava/time/ZoneId;")
+                .unwrap_or(ObjectRef::NULL);
+            let offset_seconds = zone_offset_seconds(vm, zone);
+            let nano = read_int_field(vm, this, "nano");
+            let local_millis =
+                read_long_field(vm, this, "millis") + i64::from(offset_seconds) * 1000;
+            let epoch_day = local_millis.div_euclid(86_400_000);
+            let nano_of_day =
+                local_millis.rem_euclid(86_400_000) * 1_000_000 + i64::from(nano % 1_000_000);
+            let offset_class = vm.resolve_class("java/time/ZoneOffset")?;
+            let (declaring, of_total) = vm
+                .find_method(offset_class, "ofTotalSeconds", "(I)Ljava/time/ZoneOffset;")
+                .ok_or_else(|| VmError::internal("ZoneOffset.ofTotalSeconds missing"))?;
+            let offset = vm
+                .invoke_method(declaring, of_total, vec![int(offset_seconds)?])?
+                .as_ref();
+            object(offset_date_time_new(vm, epoch_day, nano_of_day, offset)?)
         },
     ),
 ];
@@ -3856,7 +3969,7 @@ pub(crate) const LOCAL_DATE: oxjvm_vm::NativeClass = class(
     Some(local_date_clinit),
 );
 
-const LOCAL_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
+const LOCAL_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
     method(
         "of",
         "(II)Ljava/time/LocalTime;",
@@ -4272,6 +4385,36 @@ const LOCAL_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
             crate::temporal::temporal_query_from(vm, query, receiver(args))
+        },
+    ),
+    method(
+        "truncatedTo",
+        "(Ljava/time/temporal/TemporalUnit;)Ljava/time/LocalTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let unit = ref_arg(args, 1);
+            if unit.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let nanos = crate::temporal::chrono_unit_nanos(vm, unit);
+            let day_nanos = 86_400_000_000_000i64;
+            let nano_of_day = read_long_field(vm, receiver(args), "nanoOfDay");
+            let truncated = if nanos == day_nanos {
+                0
+            } else if nanos <= 0 || nanos > day_nanos {
+                return Err(vm.throw_new(
+                    "java/time/temporal/UnsupportedTemporalTypeException",
+                    Some("Unit is too large to be used for truncation"),
+                ));
+            } else if day_nanos % nanos != 0 {
+                return Err(vm.throw_new(
+                    "java/time/temporal/UnsupportedTemporalTypeException",
+                    Some("Unit must divide into a standard day without remainder"),
+                ));
+            } else {
+                nano_of_day / nanos * nanos
+            };
+            object(local_time_new(vm, truncated)?)
         },
     ),
 ];
@@ -6602,7 +6745,7 @@ fn offset_date_time_epoch_second(vm: &Vm<'_>, this: ObjectRef) -> i64 {
     epoch_day * 86_400 + nano_of_day / 1_000_000_000 - i64::from(offset)
 }
 
-const OFFSET_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
+const OFFSET_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
     method(
         "of",
         "(IIIIIIILjava/time/ZoneOffset;)Ljava/time/OffsetDateTime;",
@@ -7069,6 +7212,73 @@ const OFFSET_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
             crate::temporal::temporal_query_from(vm, query, receiver(args))
+        },
+    ),
+    method(
+        "withOffsetSameInstant",
+        "(Ljava/time/ZoneOffset;)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let new_offset = ref_arg(args, 1);
+            if new_offset.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let old_offset = vm
+                .read_ref_field(this, vm.class_of(this), "offset", "Ljava/time/ZoneOffset;")
+                .unwrap_or(ObjectRef::NULL);
+            let shift = i64::from(
+                zone_offset_seconds(vm, new_offset) - zone_offset_seconds(vm, old_offset),
+            );
+            let total = read_long_field(vm, this, "epochDay") * 86_400_000_000_000
+                + read_long_field(vm, this, "nanoOfDay")
+                + shift * 1_000_000_000;
+            object(offset_date_time_new(
+                vm,
+                total.div_euclid(86_400_000_000_000),
+                total.rem_euclid(86_400_000_000_000),
+                new_offset,
+            )?)
+        },
+    ),
+    method(
+        "withOffsetSameLocal",
+        "(Ljava/time/ZoneOffset;)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let new_offset = ref_arg(args, 1);
+            if new_offset.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(offset_date_time_new(
+                vm,
+                read_long_field(vm, this, "epochDay"),
+                read_long_field(vm, this, "nanoOfDay"),
+                new_offset,
+            )?)
+        },
+    ),
+    method(
+        "toZonedDateTime",
+        "()Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let offset = vm
+                .read_ref_field(this, vm.class_of(this), "offset", "Ljava/time/ZoneOffset;")
+                .unwrap_or(ObjectRef::NULL);
+            let offset_seconds = zone_offset_seconds(vm, offset);
+            let nano_of_day = read_long_field(vm, this, "nanoOfDay");
+            let local_second =
+                read_long_field(vm, this, "epochDay") * 86_400 + nano_of_day / 1_000_000_000;
+            let nano = (nano_of_day % 1_000_000_000) as i32;
+            zoned_date_time_new(
+                vm,
+                (local_second - i64::from(offset_seconds)) * 1000 + i64::from(nano) / 1_000_000,
+                nano,
+                offset,
+            )
         },
     ),
 ];
@@ -7587,7 +7797,7 @@ fn year_month_parse(vm: &mut Vm<'_>, text: &str) -> Result<Value, VmError> {
     object(year_month_new(vm, year, month)?)
 }
 
-const YEAR_MONTH_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
+const YEAR_MONTH_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
     method(
         "of",
         "(II)Ljava/time/YearMonth;",
@@ -7795,6 +8005,42 @@ const YEAR_MONTH_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
                 read_int_field(vm, this, "month")
             );
             object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "isBefore",
+        "(Ljava/time/YearMonth;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            boolean(
+                (
+                    read_int_field(vm, this, "year"),
+                    read_int_field(vm, this, "month"),
+                ) < (
+                    read_int_field(vm, other, "year"),
+                    read_int_field(vm, other, "month"),
+                ),
+            )
+        },
+    ),
+    method(
+        "isAfter",
+        "(Ljava/time/YearMonth;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            boolean(
+                (
+                    read_int_field(vm, this, "year"),
+                    read_int_field(vm, this, "month"),
+                ) > (
+                    read_int_field(vm, other, "year"),
+                    read_int_field(vm, other, "month"),
+                ),
+            )
         },
     ),
 ];

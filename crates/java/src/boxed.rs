@@ -1749,7 +1749,7 @@ pub(crate) const SHORT: oxjvm_vm::NativeClass = class(
     Some(short_clinit),
 );
 
-const BYTE_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+const BYTE_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method("<init>", "(B)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), int_arg(args, 1));
         void()
@@ -1835,6 +1835,21 @@ const BYTE_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method("hashCode", "(B)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
         int(i32::from(int_arg(args, 0) as i8))
     }),
+    method(
+        "parseByte",
+        "(Ljava/lang/String;)B",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = string_arg(vm, args[0])?;
+            match format::parse_int(&text) {
+                Some(value) if (-128..=127).contains(&value) => int(value),
+                _ => Err(vm.throw_new(
+                    "java/lang/NumberFormatException",
+                    Some(&alloc::format!("For input string: \"{text}\"")),
+                )),
+            }
+        },
+    ),
 ];
 
 pub(crate) const BYTE: oxjvm_vm::NativeClass = class(

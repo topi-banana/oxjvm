@@ -1229,7 +1229,7 @@ pub(crate) const REENTRANT_READ_WRITE_LOCK: oxjvm_vm::NativeClass = class(
 // CompletableFuture (completed futures only)
 // -------------------------------------------------------------------------------------------
 
-const COMPLETABLE_FUTURE_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
+const COMPLETABLE_FUTURE_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "completedFuture",
@@ -1462,6 +1462,18 @@ const COMPLETABLE_FUTURE_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
         ACC_PUBLIC,
         |vm, _, _| object(vm.make_string("CompletableFuture")?),
     ),
+    method(
+        "thenCombine",
+        "(Ljava/util/concurrent/CompletionStage;Ljava/util/function/BiFunction;)Ljava/util/concurrent/CompletableFuture;",
+        ACC_PUBLIC,
+        |vm, _, args| cf_then_combine(vm, receiver(args), ref_arg(args, 1), ref_arg(args, 2)),
+    ),
+    method(
+        "thenCombineAsync",
+        "(Ljava/util/concurrent/CompletionStage;Ljava/util/function/BiFunction;)Ljava/util/concurrent/CompletableFuture;",
+        ACC_PUBLIC,
+        |vm, _, args| cf_then_combine(vm, receiver(args), ref_arg(args, 1), ref_arg(args, 2)),
+    ),
 ];
 
 fn future_result(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
@@ -1525,6 +1537,30 @@ fn cf_then_compose(
 }
 
 /// `thenAccept`: feed the result to a consumer, yielding a void future.
+/// `thenCombine`: combine the results of two completed futures.
+fn cf_then_combine(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    other: ObjectRef,
+    function: ObjectRef,
+) -> Result<Value, VmError> {
+    let a = completable_result(vm, this);
+    let b = completable_result(vm, other);
+    let (declaring, method) = vm.resolve_virtual_method(
+        function,
+        "apply",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+    )?;
+    let mapped = vm
+        .invoke_method(
+            declaring,
+            method,
+            vec![Value::Ref(function), Value::Ref(a), Value::Ref(b)],
+        )?
+        .as_ref();
+    completable_completed(vm, mapped)
+}
+
 fn cf_then_accept(vm: &mut Vm<'_>, this: ObjectRef, consumer: ObjectRef) -> Result<Value, VmError> {
     let result = completable_result(vm, this);
     let (declaring, method) =

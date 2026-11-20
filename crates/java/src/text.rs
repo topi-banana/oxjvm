@@ -431,6 +431,29 @@ pub(crate) fn format_pattern(pattern: &str, millis: i64) -> String {
             'S' => push_number(&mut out, milli, run),
             'a' => out.push_str(if hour < 12 { "AM" } else { "PM" }),
             'E' => out.push_str(day_name(millis, run >= 4)),
+            'D' => {
+                let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+                const CUMULATIVE: [i64; 12] =
+                    [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+                let day_of_year =
+                    CUMULATIVE[(month - 1) as usize] + day + i64::from(leap && month > 2);
+                push_number(&mut out, day_of_year, run);
+            }
+            'Q' => {
+                let quarter = (month - 1) / 3 + 1;
+                if run >= 4 {
+                    out.push_str(match quarter {
+                        1 => "1st quarter",
+                        2 => "2nd quarter",
+                        3 => "3rd quarter",
+                        _ => "4th quarter",
+                    });
+                } else if run == 3 {
+                    out.push_str(&alloc::format!("Q{quarter}"));
+                } else {
+                    push_number(&mut out, quarter, run);
+                }
+            }
             'z' => out.push_str("UTC"),
             'Z' => out.push_str("UTC"),
             _ => {
