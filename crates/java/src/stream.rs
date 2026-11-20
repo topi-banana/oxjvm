@@ -1421,6 +1421,9 @@ const COLLECT_TEEING: i32 = 21;
 const COLLECT_FLAT_MAPPING: i32 = 22;
 const COLLECT_FILTERING: i32 = 23;
 const COLLECT_SUMMARIZING_INT: i32 = 24;
+const COLLECT_MAX_BY: i32 = 25;
+const COLLECT_MIN_BY: i32 = 26;
+const COLLECT_GROUPING_CONCURRENT: i32 = 27;
 
 pub(crate) fn int_summary_new(
     vm: &mut Vm<'_>,
@@ -2179,52 +2182,33 @@ fn collect_elements(
                 .unwrap_or(ObjectRef::NULL);
             let yes_list = crate::util::array_list_from(vm, &yes)?;
             let no_list = crate::util::array_list_from(vm, &no)?;
-            crate::util::hash_map_insert(vm, map, true_key, yes_list)?;
             crate::util::hash_map_insert(vm, map, false_key, no_list)?;
+            crate::util::hash_map_insert(vm, map, true_key, yes_list)?;
             object(map)
         }
-        COLLECT_GROUPING => {
-            let classifier = collector_get(vm, collector, "f1");
-            let factory = collector_get(vm, collector, "f2");
-            let downstream = collector_get(vm, collector, "f3");
-            // Every key gets its own group; the group's value is either a list or whatever the
-            // downstream collector produces.  The keys are compared by value, the way a map
-            // compares them, so two equal keys share one group.
-            let map = if factory.is_null() {
-                crate::util::hash_map_new(vm)?
-            } else {
-                call_supplier(vm, factory)?
-            };
-            let mut groups: Vec<(ObjectRef, Vec<ObjectRef>)> = Vec::new();
+        COLLECT_GROUPING => grouping_collect(vm, collector, elements, false),
+        COLLECT_GROUPING_CONCURRENT => grouping_collect(vm, collector, elements, true),
+        COLLECT_MAX_BY | COLLECT_MIN_BY => {
+            let comparator = collector_get(vm, collector, "f1");
+            let mut best: Option<ObjectRef> = None;
             for element in &elements {
-                let key = call_apply1(vm, classifier, *element)?;
-                let known = groups
-                    .iter()
-                    .find(|(candidate, _)| {
-                        crate::util::keys_equal(vm, *candidate, key).unwrap_or(*candidate == key)
-                    })
-                    .map(|(candidate, _)| *candidate);
-                match known {
-                    Some(candidate) => {
-                        let group = groups
-                            .iter_mut()
-                            .find(|(other, _)| *other == candidate)
-                            .map(|(_, group)| group)
-                            .expect("group");
-                        group.push(*element);
+                best = Some(match best {
+                    None => *element,
+                    Some(current) => {
+                        let cmp = call_compare(vm, comparator, *element, current)?;
+                        let take = if kind == COLLECT_MAX_BY {
+                            cmp >= 0
+                        } else {
+                            cmp <= 0
+                        };
+                        if take { *element } else { current }
                     }
-                    None => groups.push((key, vec![*element])),
-                }
+                });
             }
-            for (key, group) in groups {
-                let value = if downstream.is_null() {
-                    crate::util::array_list_from(vm, &group)?
-                } else {
-                    collect_elements(vm, downstream, group)?.as_ref()
-                };
-                crate::util::hash_map_insert(vm, map, key, value)?;
+            match best {
+                Some(value) => crate::optional::optional_new(vm, value),
+                None => crate::optional::optional_empty_value(vm),
             }
-            object(map)
         }
         COLLECT_COLLECTING_AND_THEN => {
             let downstream = collector_get(vm, collector, "f4");
@@ -2238,6 +2222,61 @@ fn collect_elements(
 }
 
 /// The generic `Collector` protocol: `supplier`, then `accumulator` per element, then `finisher`.
+/// Shared `groupingBy`/`groupingByConcurrent` accumulation.
+fn grouping_collect(
+    vm: &mut Vm<'_>,
+    collector: ObjectRef,
+    elements: Vec<ObjectRef>,
+    concurrent: bool,
+) -> Result<Value, VmError> {
+    let classifier = collector_get(vm, collector, "f1");
+    let factory = collector_get(vm, collector, "f2");
+    let downstream = collector_get(vm, collector, "f3");
+    let map = if !factory.is_null() {
+        call_supplier(vm, factory)?
+    } else if concurrent {
+        let class = vm.resolve_class("java/util/concurrent/ConcurrentHashMap")?;
+        let instance = vm.new_instance(class)?;
+        let (declaring, ctor) = vm
+            .find_method(class, "<init>", "()V")
+            .ok_or_else(|| VmError::internal("ConcurrentHashMap() missing"))?;
+        vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
+        instance
+    } else {
+        crate::util::hash_map_new(vm)?
+    };
+    let mut groups: Vec<(ObjectRef, Vec<ObjectRef>)> = Vec::new();
+    for element in &elements {
+        let key = call_apply1(vm, classifier, *element)?;
+        let known = groups
+            .iter()
+            .find(|(candidate, _)| {
+                crate::util::keys_equal(vm, *candidate, key).unwrap_or(*candidate == key)
+            })
+            .map(|(candidate, _)| *candidate);
+        match known {
+            Some(candidate) => {
+                let group = groups
+                    .iter_mut()
+                    .find(|(other, _)| *other == candidate)
+                    .map(|(_, group)| group)
+                    .expect("group");
+                group.push(*element);
+            }
+            None => groups.push((key, vec![*element])),
+        }
+    }
+    for (key, group) in groups {
+        let value = if downstream.is_null() {
+            crate::util::array_list_from(vm, &group)?
+        } else {
+            collect_elements(vm, downstream, group)?.as_ref()
+        };
+        crate::util::hash_map_insert(vm, map, key, value)?;
+    }
+    object(map)
+}
+
 fn generic_collect(
     vm: &mut Vm<'_>,
     collector: ObjectRef,
@@ -2371,7 +2410,7 @@ pub(crate) const COLLECTOR: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const COLLECTORS_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
+const COLLECTORS_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
     method(
         "toList",
         "()Ljava/util/stream/Collector;",
@@ -2677,6 +2716,59 @@ const COLLECTORS_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
         |vm, _, args| {
             let collector = collector_new(vm, COLLECT_SUMMARIZING_INT)?;
             collector_set(vm, collector, "f1", ref_arg(args, 0));
+            object(collector)
+        },
+    ),
+    method(
+        "maxBy",
+        "(Ljava/util/Comparator;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_MAX_BY)?;
+            collector_set(vm, collector, "f1", ref_arg(args, 0));
+            object(collector)
+        },
+    ),
+    method(
+        "minBy",
+        "(Ljava/util/Comparator;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_MIN_BY)?;
+            collector_set(vm, collector, "f1", ref_arg(args, 0));
+            object(collector)
+        },
+    ),
+    method(
+        "groupingByConcurrent",
+        "(Ljava/util/function/Function;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_GROUPING_CONCURRENT)?;
+            collector_set(vm, collector, "f1", ref_arg(args, 0));
+            object(collector)
+        },
+    ),
+    method(
+        "groupingByConcurrent",
+        "(Ljava/util/function/Function;Ljava/util/stream/Collector;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_GROUPING_CONCURRENT)?;
+            collector_set(vm, collector, "f1", ref_arg(args, 0));
+            collector_set(vm, collector, "f3", ref_arg(args, 1));
+            object(collector)
+        },
+    ),
+    method(
+        "groupingByConcurrent",
+        "(Ljava/util/function/Function;Ljava/util/function/Supplier;Ljava/util/stream/Collector;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_GROUPING_CONCURRENT)?;
+            collector_set(vm, collector, "f1", ref_arg(args, 0));
+            collector_set(vm, collector, "f2", ref_arg(args, 1));
+            collector_set(vm, collector, "f3", ref_arg(args, 2));
             object(collector)
         },
     ),

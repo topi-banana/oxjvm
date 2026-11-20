@@ -3873,7 +3873,7 @@ fn big_decimal_set_scale(
     create_big_number(vm, "java/math/BigDecimal", &result)
 }
 
-const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
+const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -4361,6 +4361,26 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
                 Some(value) => create_big_number(vm, "java/math/BigDecimal", &value),
                 None => Err(vm.throw_new("java/lang/ArithmeticException", None)),
             }
+        },
+    ),
+    method(
+        "plus",
+        "()Ljava/math/BigDecimal;",
+        ACC_PUBLIC,
+        |_, _, args| object(receiver(args)),
+    ),
+    method(
+        "divideAndRemainder",
+        "(Ljava/math/BigDecimal;)[Ljava/math/BigDecimal;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let quotient = big_decimal_div_rem(vm, args, true)?;
+            let remainder = big_decimal_div_rem(vm, args, false)?;
+            let class = vm.resolve_class("java/math/BigDecimal")?;
+            let array = vm.allocate_object_array(class, 2)?;
+            vm.array_set_ref(array, 0, quotient.as_ref())?;
+            vm.array_set_ref(array, 1, remainder.as_ref())?;
+            object(array)
         },
     ),
 ];

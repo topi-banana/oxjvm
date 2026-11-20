@@ -49,6 +49,13 @@ fn call_int_unary(vm: &mut Vm<'_>, operator: ObjectRef, value: i32) -> Result<i3
         .as_int())
 }
 
+fn call_int_supplier(vm: &mut Vm<'_>, supplier: ObjectRef) -> Result<i32, VmError> {
+    let (class, method) = vm.resolve_virtual_method(supplier, "getAsInt", "()I")?;
+    Ok(vm
+        .invoke_method(class, method, vec![Value::Ref(supplier)])?
+        .as_int())
+}
+
 fn call_int_predicate(vm: &mut Vm<'_>, predicate: ObjectRef, value: i32) -> Result<bool, VmError> {
     let (class, method) = vm.resolve_virtual_method(predicate, "test", "(I)Z")?;
     Ok(vm
@@ -67,7 +74,7 @@ fn call_int_consumer(vm: &mut Vm<'_>, consumer: ObjectRef, value: i32) -> Result
     Ok(())
 }
 
-const INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
+const INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
     method(
         "of",
         "(I)Ljava/util/stream/IntStream;",
@@ -371,6 +378,19 @@ const INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
         "()Ljava/util/IntSummaryStatistics;",
         ACC_PUBLIC | ACC_ABSTRACT,
         abstract_method_pub,
+    ),
+    method(
+        "generate",
+        "(Ljava/util/function/IntSupplier;)Ljava/util/stream/IntStream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let supplier = ref_arg(args, 0);
+            let mut values = Vec::new();
+            for _ in 0..1024 {
+                values.push(call_int_supplier(vm, supplier)?);
+            }
+            object(int_stream_from(vm, values)?)
+        },
     ),
 ];
 
