@@ -2482,7 +2482,11 @@ const OBJECTS_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let reference = ref_arg(args, 0);
-            let name = vm.class_name(vm.class_of(reference));
+            if reference.is_null() {
+                let text = vm.make_string("null")?;
+                return object(text);
+            }
+            let name = vm.class_name(vm.class_of(reference)).replace('/', ".");
             let hash = vm.heap.get(reference).map_or(0, |object| object.hash);
             let text = alloc::format!("{name}@{:x}", hash as u32);
             object(vm.make_string(&text)?)
@@ -2792,7 +2796,7 @@ fn arrays_set_all(
     void()
 }
 
-const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 185] = [
+const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 196] = [
     method(
         "setAll",
         "([ILjava/util/function/IntUnaryOperator;)V",
@@ -4101,6 +4105,96 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 185] = [
                 int_arg(args, 2),
                 ref_arg(args, 3),
             )
+        },
+    ),
+    method(
+        "parallelSort",
+        "([I)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_sort_int(vm, ref_arg(args, 0)),
+    ),
+    method(
+        "parallelSort",
+        "([J)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_sort_long(vm, ref_arg(args, 0)),
+    ),
+    method(
+        "parallelSort",
+        "([S)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_sort_short(vm, ref_arg(args, 0)),
+    ),
+    method(
+        "parallelSort",
+        "([C)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_sort_char(vm, ref_arg(args, 0)),
+    ),
+    method(
+        "parallelSort",
+        "([B)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_sort_byte(vm, ref_arg(args, 0)),
+    ),
+    method(
+        "parallelSort",
+        "([F)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_sort_float(vm, ref_arg(args, 0)),
+    ),
+    method(
+        "parallelSort",
+        "([D)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_sort_double(vm, ref_arg(args, 0)),
+    ),
+    method(
+        "parallelSort",
+        "([Ljava/lang/Object;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_sort_objects(vm, args, false),
+    ),
+    method(
+        "parallelSort",
+        "([Ljava/lang/Object;Ljava/util/Comparator;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_sort_objects(vm, args, true),
+    ),
+    method(
+        "parallelSort",
+        "([Ljava/lang/Object;II)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            if array.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let from = int_arg(args, 1);
+            let to = int_arg(args, 2);
+            let length = vm.array_length(array)?;
+            arrays_range_check(vm, from, to, length)?;
+            arrays_sort_objects_range(vm, array, from as usize, to as usize, None)
+        },
+    ),
+    method(
+        "parallelSort",
+        "([Ljava/lang/Object;IILjava/util/Comparator;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            if array.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let from = int_arg(args, 1);
+            let to = int_arg(args, 2);
+            let comparator = ref_arg(args, 3);
+            if comparator.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let length = vm.array_length(array)?;
+            arrays_range_check(vm, from, to, length)?;
+            arrays_sort_objects_range(vm, array, from as usize, to as usize, Some(comparator))
         },
     ),
 ];

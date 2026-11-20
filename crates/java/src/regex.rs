@@ -1111,7 +1111,7 @@ pub(crate) fn split_with_delimiters_spans(
 // java.util.regex natives
 // -------------------------------------------------------------------------------------------
 
-const PATTERN_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
+const PATTERN_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method(
         "compile",
         "(Ljava/lang/String;)Ljava/util/regex/Pattern;",
@@ -1214,6 +1214,28 @@ const PATTERN_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
                 vm.find_field(class, "pattern", "Ljava/util/regex/Pattern;")?;
             vm.set_instance_ref(instance, declaring, field, receiver(args));
             object(instance)
+        },
+    ),
+    method(
+        "asMatchPredicate",
+        "()Ljava/util/function/Predicate;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = vm.resolve_class("java/util/regex/OxjvmPatternMatchPredicate")?;
+            let instance = vm.new_instance(class)?;
+            let (declaring, field) =
+                vm.find_field(class, "pattern", "Ljava/util/regex/Pattern;")?;
+            vm.set_instance_ref(instance, declaring, field, receiver(args));
+            object(instance)
+        },
+    ),
+    method(
+        "splitAsStream",
+        "(Ljava/lang/CharSequence;)Ljava/util/stream/Stream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let array = pattern_split(vm, args, 0)?;
+            crate::stream::stream_of_array(vm, array.as_ref())
         },
     ),
 ];
@@ -1448,7 +1470,7 @@ fn pattern_regex(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(Regex, usize), VmE
 // Matcher
 // -------------------------------------------------------------------------------------------
 
-const MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
+const MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
     method("matches", "()Z", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let (regex, _) = pattern_regex_for(vm, this)?;
@@ -1645,6 +1667,18 @@ const MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
         "(Ljava/lang/String;)Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| matcher_replace(vm, args, false),
+    ),
+    method(
+        "replaceAll",
+        "(Ljava/util/function/Function;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| matcher_replace_function(vm, args, true),
+    ),
+    method(
+        "replaceFirst",
+        "(Ljava/util/function/Function;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| matcher_replace_function(vm, args, false),
     ),
     method(
         "appendReplacement",
@@ -2326,6 +2360,56 @@ fn matcher_replace(vm: &mut Vm<'_>, args: &[Value], all: bool) -> Result<Value, 
     object(vm.make_string_utf16(result)?)
 }
 
+/// `Matcher.replaceAll(Function)` / `replaceFirst(Function)`: the function sees the
+/// matcher positioned on each match, and its result is used literally.
+fn matcher_replace_function(vm: &mut Vm<'_>, args: &[Value], all: bool) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let function = ref_arg(args, 1);
+    if function.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let text = matcher_text(vm, this)?;
+    crate::lang::write_int_field(vm, this, "cursor", 0);
+    crate::lang::write_int_field(vm, this, "appendPos", 0);
+    matcher_clear(vm, this);
+    let mut result: Vec<u16> = Vec::new();
+    let mut append_pos = 0usize;
+    loop {
+        let (class, method) = vm.resolve_virtual_method(this, "find", "()Z")?;
+        let found = vm
+            .invoke_method(class, method, vec![Value::Ref(this)])?
+            .as_int()
+            != 0;
+        if !found {
+            break;
+        }
+        let start = crate::lang::read_int_field(vm, this, "matchStart").max(0) as usize;
+        let end = crate::lang::read_int_field(vm, this, "matchEnd").max(0) as usize;
+        result.extend_from_slice(&text[append_pos..start.min(text.len())]);
+        let (fclass, fmethod) =
+            vm.resolve_virtual_method(function, "apply", "(Ljava/lang/Object;)Ljava/lang/Object;")?;
+        let replacement = vm
+            .invoke_method(
+                fclass,
+                fmethod,
+                vec![Value::Ref(function), Value::Ref(this)],
+            )?
+            .as_ref();
+        if replacement.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let replacement_text = vm.string_value(replacement).unwrap_or_default();
+        result.extend(replacement_text.encode_utf16());
+        append_pos = end.min(text.len());
+        crate::lang::write_int_field(vm, this, "appendPos", append_pos as i32);
+        if !all {
+            break;
+        }
+    }
+    result.extend_from_slice(&text[append_pos..]);
+    object(vm.make_string_utf16(result)?)
+}
+
 /// The match currently recorded on the matcher, rebuilt from the stored spans.
 fn matcher_current_match(
     vm: &mut Vm<'_>,
@@ -2462,6 +2546,53 @@ pub(crate) const PATTERN_PREDICATE: oxjvm_vm::NativeClass = class(
         None,
     )],
     &PATTERN_PREDICATE_METHODS,
+    None,
+);
+
+/// `Pattern.asMatchPredicate()`: a `Predicate` matching with `Matcher.matches`.
+const PATTERN_MATCH_PREDICATE_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "test",
+    "(Ljava/lang/Object;)Z",
+    ACC_PUBLIC,
+    |vm, _, args| {
+        let this = receiver(args);
+        let pattern = vm
+            .read_ref_field(
+                this,
+                vm.class_of(this),
+                "pattern",
+                "Ljava/util/regex/Pattern;",
+            )
+            .unwrap_or(ObjectRef::NULL);
+        if pattern.is_null() {
+            return boolean(false);
+        }
+        let input = ref_arg(args, 1);
+        let (class, method) = vm.resolve_virtual_method(
+            pattern,
+            "matcher",
+            "(Ljava/lang/CharSequence;)Ljava/util/regex/Matcher;",
+        )?;
+        let matcher =
+            vm.invoke_method(class, method, vec![Value::Ref(pattern), Value::Ref(input)])?;
+        let (matcher_class, matches) =
+            vm.resolve_virtual_method(matcher.as_ref(), "matches", "()Z")?;
+        vm.invoke_method(matcher_class, matches, vec![matcher])
+    },
+)];
+
+pub(crate) const PATTERN_MATCH_PREDICATE: oxjvm_vm::NativeClass = class(
+    "java/util/regex/OxjvmPatternMatchPredicate",
+    Some("java/lang/Object"),
+    &["java/util/function/Predicate"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[field(
+        "pattern",
+        "Ljava/util/regex/Pattern;",
+        ACC_PRIVATE,
+        None,
+    )],
+    &PATTERN_MATCH_PREDICATE_METHODS,
     None,
 );
 

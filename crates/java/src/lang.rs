@@ -1538,7 +1538,7 @@ pub(crate) const CLASS: oxjvm_vm::NativeClass = class(
 // String
 // -------------------------------------------------------------------------------------------
 
-const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 71] = [
+const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 72] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "<init>",
@@ -1822,6 +1822,12 @@ const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 71] = [
         string_strip_trailing,
     ),
     method("isBlank", "()Z", ACC_PUBLIC, string_is_blank),
+    method(
+        "describeConstable",
+        "()Ljava/util/Optional;",
+        ACC_PUBLIC,
+        |vm, _, args| crate::optional::optional_new(vm, receiver(args)),
+    ),
     method("repeat", "(I)Ljava/lang/String;", ACC_PUBLIC, string_repeat),
     method("indent", "(I)Ljava/lang/String;", ACC_PUBLIC, string_indent),
     method(

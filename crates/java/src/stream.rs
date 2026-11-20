@@ -167,7 +167,7 @@ fn stream_get(vm: &mut Vm<'_>, this: ObjectRef) -> Vec<ObjectRef> {
     stream_elements(vm, this)
 }
 
-const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
+const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 43] = [
     method(
         "of",
         "([Ljava/lang/Object;)Ljava/util/stream/Stream;",
@@ -403,6 +403,36 @@ const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
             let operator = ref_arg(args, 1);
             let mut elements = Vec::new();
             for _ in 0..1024 {
+                elements.push(current);
+                let (class, method) = vm.resolve_virtual_method(
+                    operator,
+                    "apply",
+                    "(Ljava/lang/Object;)Ljava/lang/Object;",
+                )?;
+                current = vm
+                    .invoke_method(
+                        class,
+                        method,
+                        vec![Value::Ref(operator), Value::Ref(current)],
+                    )?
+                    .as_ref();
+            }
+            object(stream_from(vm, elements)?)
+        },
+    ),
+    method(
+        "iterate",
+        "(Ljava/lang/Object;Ljava/util/function/Predicate;Ljava/util/function/UnaryOperator;)Ljava/util/stream/Stream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let mut current = ref_arg(args, 0);
+            let predicate = ref_arg(args, 1);
+            let operator = ref_arg(args, 2);
+            let mut elements = Vec::new();
+            for _ in 0..1024 {
+                if !call_test(vm, predicate, current)? {
+                    break;
+                }
                 elements.push(current);
                 let (class, method) = vm.resolve_virtual_method(
                     operator,
@@ -1332,6 +1362,8 @@ const COLLECT_PARTITIONING: i32 = 18;
 const COLLECT_COLLECTING_AND_THEN: i32 = 19;
 const COLLECT_GROUPING: i32 = 20;
 const COLLECT_TEEING: i32 = 21;
+const COLLECT_FLAT_MAPPING: i32 = 22;
+const COLLECT_FILTERING: i32 = 23;
 
 fn collector_new(vm: &mut Vm<'_>, kind: i32) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class(COLLECTOR_CLASS)?;
@@ -1662,6 +1694,30 @@ fn collect_elements(
             }
             collect_elements(vm, downstream, mapped)
         }
+        COLLECT_FLAT_MAPPING => {
+            let mapper = collector_get(vm, collector, "f1");
+            let downstream = collector_get(vm, collector, "f3");
+            let mut mapped = Vec::new();
+            for element in &elements {
+                let stream = call_apply1(vm, mapper, *element)?;
+                if stream.is_null() {
+                    return Err(vm.throw_new("java/lang/NullPointerException", None));
+                }
+                mapped.extend(stream_elements(vm, stream));
+            }
+            collect_elements(vm, downstream, mapped)
+        }
+        COLLECT_FILTERING => {
+            let predicate = collector_get(vm, collector, "f1");
+            let downstream = collector_get(vm, collector, "f3");
+            let mut filtered = Vec::new();
+            for element in &elements {
+                if call_test(vm, predicate, *element)? {
+                    filtered.push(*element);
+                }
+            }
+            collect_elements(vm, downstream, filtered)
+        }
         COLLECT_REDUCING => {
             let identity = collector_get(vm, collector, "f4");
             let operator = collector_get(vm, collector, "f2");
@@ -1884,7 +1940,7 @@ pub(crate) const COLLECTOR: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const COLLECTORS_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
+const COLLECTORS_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
     method(
         "toList",
         "()Ljava/util/stream/Collector;",
@@ -2158,6 +2214,28 @@ const COLLECTORS_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
             collector_set(vm, collector, "f1", ref_arg(args, 0));
             collector_set(vm, collector, "f2", ref_arg(args, 1));
             collector_set(vm, collector, "f3", ref_arg(args, 2));
+            object(collector)
+        },
+    ),
+    method(
+        "flatMapping",
+        "(Ljava/util/function/Function;Ljava/util/stream/Collector;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_FLAT_MAPPING)?;
+            collector_set(vm, collector, "f1", ref_arg(args, 0));
+            collector_set(vm, collector, "f3", ref_arg(args, 1));
+            object(collector)
+        },
+    ),
+    method(
+        "filtering",
+        "(Ljava/util/function/Predicate;Ljava/util/stream/Collector;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_FILTERING)?;
+            collector_set(vm, collector, "f1", ref_arg(args, 0));
+            collector_set(vm, collector, "f3", ref_arg(args, 1));
             object(collector)
         },
     ),

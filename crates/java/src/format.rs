@@ -1336,6 +1336,60 @@ fn append_to_buffer(vm: &mut Vm<'_>, buffer: ObjectRef, text: &str) {
 
 /// Append formatted text to a `StringBuffer` and return the buffer, as the
 /// `format(value, StringBuffer, FieldPosition)` overloads do.
+/// Record the integer/fraction field range of a formatted number in a
+/// `FieldPosition`, relative to the buffer length before the append.
+fn set_number_field_position(
+    vm: &mut Vm<'_>,
+    position: ObjectRef,
+    text: &str,
+    base: usize,
+) -> Result<(), VmError> {
+    if position.is_null() {
+        return Ok(());
+    }
+    let field = read_int_field(vm, position, "field");
+    if field != 0 && field != 1 {
+        return Ok(());
+    }
+    let separator = text.find('.');
+    let (start, end) = if field == 0 {
+        let region_end = separator.unwrap_or(text.len());
+        let region = &text[..region_end];
+        let first = region.find(|c: char| c.is_ascii_digit());
+        let last = region.rfind(|c: char| c.is_ascii_digit());
+        match (first, last) {
+            (Some(a), Some(b)) => (a, b + 1),
+            _ => return Ok(()),
+        }
+    } else {
+        let Some(sep) = separator else {
+            return Ok(());
+        };
+        let region = &text[sep + 1..];
+        let first = region.find(|c: char| c.is_ascii_digit());
+        let last = region.rfind(|c: char| c.is_ascii_digit());
+        match (first, last) {
+            (Some(a), Some(b)) => (sep + 1 + a, sep + 1 + b + 1),
+            _ => return Ok(()),
+        }
+    };
+    write_int_field(vm, position, "beginIndex", (base + start) as i32);
+    write_int_field(vm, position, "endIndex", (base + end) as i32);
+    Ok(())
+}
+
+/// The current length of a `StringBuffer`/`StringBuilder`.
+fn buffer_length(vm: &mut Vm<'_>, buffer: ObjectRef) -> Result<usize, VmError> {
+    if buffer.is_null() {
+        return Ok(0);
+    }
+    let (class, method) = vm.resolve_virtual_method(buffer, "length", "()I")?;
+    Ok(vm
+        .invoke_method(class, method, vec![Value::Ref(buffer)])?
+        .as_int()
+        .max(0) as usize)
+}
+
 fn append_format_text(vm: &mut Vm<'_>, buffer: ObjectRef, text: &str) -> Result<Value, VmError> {
     let string = vm.make_string(text)?;
     let (class, method) = vm.resolve_virtual_method(
@@ -1438,7 +1492,7 @@ pub(crate) const PARSE_POSITION: oxjvm_vm::NativeClass = class(
 // NumberFormat
 // -------------------------------------------------------------------------------------------
 
-const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
+const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
     method(
         "getInstance",
         "()Ljava/text/NumberFormat;",
@@ -1559,7 +1613,10 @@ const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let text = format_number_required(vm, receiver(args), args[1].as_double())?;
-            append_format_text(vm, ref_arg(args, 2), &text)
+            let buffer = ref_arg(args, 2);
+            let base = buffer_length(vm, buffer)?;
+            set_number_field_position(vm, ref_arg(args, 3), &text, base)?;
+            append_format_text(vm, buffer, &text)
         },
     ),
     method(
@@ -1905,6 +1962,18 @@ const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
     method("isParseBigDecimal", "()Z", ACC_PUBLIC, |_, _, _| {
         crate::boolean(false)
     }),
+    method(
+        "format",
+        "(Ljava/lang/Object;Ljava/lang/StringBuffer;Ljava/text/FieldPosition;)Ljava/lang/StringBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = number_argument_text(vm, receiver(args), ref_arg(args, 1))?;
+            let buffer = ref_arg(args, 2);
+            let base = buffer_length(vm, buffer)?;
+            set_number_field_position(vm, ref_arg(args, 3), &text, base)?;
+            append_format_text(vm, buffer, &text)
+        },
+    ),
 ];
 
 /// Mark a fresh number format's digit/grouping settings as unset (`i32::MIN`), so the
