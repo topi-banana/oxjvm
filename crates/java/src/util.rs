@@ -24309,12 +24309,51 @@ fn time_zone_id(vm: &Vm<'_>, this: ObjectRef) -> String {
 }
 
 fn new_time_zone(vm: &mut Vm<'_>, id: &str) -> Result<Value, VmError> {
+    if let Some(offset) = custom_zone_offset(id) {
+        let class = vm.resolve_class("java/util/SimpleTimeZone")?;
+        let instance = vm.new_instance(class)?;
+        let (declaring, field) = vm.find_field(class, "id", "Ljava/lang/String;")?;
+        let text = vm.make_string(id)?;
+        vm.set_instance_ref(instance, declaring, field, text);
+        crate::lang::write_int_field(vm, instance, "rawOffset", offset);
+        crate::lang::write_int_field(vm, instance, "dstSavings", 3_600_000);
+        return object(instance);
+    }
     let class = vm.resolve_class("java/util/TimeZone")?;
     let instance = vm.new_instance(class)?;
     let (declaring, field) = vm.find_field(class, "id", "Ljava/lang/String;")?;
     let text = vm.make_string(id)?;
     vm.set_instance_ref(instance, declaring, field, text);
     object(instance)
+}
+
+/// Parse a custom `GMT+HH:MM` / `UTC-HH:MM` style zone id into a raw offset.
+fn custom_zone_offset(id: &str) -> Option<i32> {
+    let (sign, rest) =
+        if let Some(rest) = id.strip_prefix("GMT+").or_else(|| id.strip_prefix("UTC+")) {
+            (1, rest)
+        } else {
+            let rest = id
+                .strip_prefix("GMT-")
+                .or_else(|| id.strip_prefix("UTC-"))?;
+            (-1, rest)
+        };
+    let (hours, minutes) = match rest.split_once(':') {
+        Some((hours, minutes)) => (hours, minutes),
+        None => (rest, "0"),
+    };
+    if hours.is_empty() || hours.len() > 2 || !hours.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if minutes.len() > 2 || !minutes.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let hours: i32 = hours.parse().ok()?;
+    let minutes: i32 = minutes.parse().ok()?;
+    if hours > 23 || minutes > 59 {
+        return None;
+    }
+    Some(sign * (hours * 3_600_000 + minutes * 60_000))
 }
 
 const TIME_ZONE_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
@@ -24504,6 +24543,91 @@ pub(crate) const TIME_ZONE: oxjvm_vm::NativeClass = class(
         ),
     ],
     &TIME_ZONE_METHODS,
+    None,
+);
+
+const SIMPLE_TIME_ZONE_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+    method(
+        "<init>",
+        "(ILjava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let id = ref_arg(args, 2);
+            if id.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "id", "Ljava/lang/String;")?;
+            vm.set_instance_ref(this, declaring, field, id);
+            crate::lang::write_int_field(vm, this, "rawOffset", int_arg(args, 1));
+            crate::lang::write_int_field(vm, this, "dstSavings", 3_600_000);
+            void()
+        },
+    ),
+    method("getRawOffset", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "rawOffset"))
+    }),
+    method("setRawOffset", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        crate::lang::write_int_field(vm, receiver(args), "rawOffset", int_arg(args, 1));
+        void()
+    }),
+    method("getOffset", "(J)I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "rawOffset"))
+    }),
+    method("getOffset", "(IIIIII)I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "rawOffset"))
+    }),
+    method("getDSTSavings", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(
+            vm,
+            receiver(args),
+            "dstSavings",
+        ))
+    }),
+    method("useDaylightTime", "()Z", ACC_PUBLIC, |_, _, _| {
+        boolean(false)
+    }),
+    method(
+        "inDaylightTime",
+        "(Ljava/util/Date;)Z",
+        ACC_PUBLIC,
+        |_, _, _| boolean(false),
+    ),
+    method(
+        "hasSameRules",
+        "(Ljava/util/TimeZone;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = ref_arg(args, 1);
+            if other.is_null() {
+                return boolean(false);
+            }
+            let this = receiver(args);
+            boolean(
+                vm.class_of(this) == vm.class_of(other)
+                    && crate::lang::read_int_field(vm, this, "rawOffset")
+                        == crate::lang::read_int_field(vm, other, "rawOffset")
+                    && crate::lang::read_int_field(vm, this, "dstSavings")
+                        == crate::lang::read_int_field(vm, other, "dstSavings"),
+            )
+        },
+    ),
+    method("observesDaylightTime", "()Z", ACC_PUBLIC, |_, _, _| {
+        boolean(false)
+    }),
+];
+
+pub(crate) const SIMPLE_TIME_ZONE: oxjvm_vm::NativeClass = class(
+    "java/util/SimpleTimeZone",
+    Some("java/util/TimeZone"),
+    &["java/io/Serializable", "java/lang/Cloneable"],
+    ACC_PUBLIC,
+    &[
+        field("rawOffset", "I", ACC_PRIVATE, None),
+        field("dstSavings", "I", ACC_PRIVATE, None),
+    ],
+    &SIMPLE_TIME_ZONE_METHODS,
     None,
 );
 
