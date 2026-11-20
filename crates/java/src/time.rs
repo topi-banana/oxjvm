@@ -5668,6 +5668,21 @@ pub(crate) const MONTH: oxjvm_vm::NativeClass = class(
 // java.time.Period
 // -------------------------------------------------------------------------------------------
 
+/// `Period.minusX(long)`: negate with `Long.MIN_VALUE` handled as `plus(MAX).plus(1)`.
+fn period_minus(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    plus_name: &str,
+    amount: i64,
+) -> Result<Value, VmError> {
+    let (class, method) = vm.resolve_virtual_method(this, plus_name, "(J)Ljava/time/Period;")?;
+    if amount == i64::MIN {
+        let first = vm.invoke_method(class, method, vec![Value::Ref(this), long(i64::MAX)?])?;
+        return vm.invoke_method(class, method, vec![first, long(1)?]);
+    }
+    vm.invoke_method(class, method, vec![Value::Ref(this), long(-amount)?])
+}
+
 fn period_new(vm: &mut Vm<'_>, years: i32, months: i32, days: i32) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class("java/time/Period")?;
     let instance = vm.new_instance(class)?;
@@ -5829,7 +5844,7 @@ fn parse_period_text(text: &str) -> Option<(i32, i32, i32)> {
     Some((sign * years, sign * months, sign * days))
 }
 
-const PERIOD_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const PERIOD_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
     method(
         "of",
         "(III)Ljava/time/Period;",
@@ -6021,6 +6036,144 @@ const PERIOD_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
             }
         },
     ),
+    method(
+        "ofWeeks",
+        "(I)Ljava/time/Period;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let weeks = int_arg(args, 0);
+            let days = weeks.checked_mul(7).ok_or_else(|| {
+                vm.throw_new("java/lang/ArithmeticException", Some("integer overflow"))
+            })?;
+            object(period_new(vm, 0, 0, days)?)
+        },
+    ),
+    method(
+        "plusYears",
+        "(J)Ljava/time/Period;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let amount = i32::try_from(crate::long_arg(args, 1)).map_err(|_| {
+                vm.throw_new("java/lang/ArithmeticException", Some("integer overflow"))
+            })?;
+            let years = read_int_field(vm, this, "years")
+                .checked_add(amount)
+                .ok_or_else(|| {
+                    vm.throw_new("java/lang/ArithmeticException", Some("integer overflow"))
+                })?;
+            object(period_new(
+                vm,
+                years,
+                read_int_field(vm, this, "months"),
+                read_int_field(vm, this, "days"),
+            )?)
+        },
+    ),
+    method(
+        "plusMonths",
+        "(J)Ljava/time/Period;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let amount = i32::try_from(crate::long_arg(args, 1)).map_err(|_| {
+                vm.throw_new("java/lang/ArithmeticException", Some("integer overflow"))
+            })?;
+            let months = read_int_field(vm, this, "months")
+                .checked_add(amount)
+                .ok_or_else(|| {
+                    vm.throw_new("java/lang/ArithmeticException", Some("integer overflow"))
+                })?;
+            object(period_new(
+                vm,
+                read_int_field(vm, this, "years"),
+                months,
+                read_int_field(vm, this, "days"),
+            )?)
+        },
+    ),
+    method(
+        "plusDays",
+        "(J)Ljava/time/Period;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let amount = i32::try_from(crate::long_arg(args, 1)).map_err(|_| {
+                vm.throw_new("java/lang/ArithmeticException", Some("integer overflow"))
+            })?;
+            let days = read_int_field(vm, this, "days")
+                .checked_add(amount)
+                .ok_or_else(|| {
+                    vm.throw_new("java/lang/ArithmeticException", Some("integer overflow"))
+                })?;
+            object(period_new(
+                vm,
+                read_int_field(vm, this, "years"),
+                read_int_field(vm, this, "months"),
+                days,
+            )?)
+        },
+    ),
+    method(
+        "minusYears",
+        "(J)Ljava/time/Period;",
+        ACC_PUBLIC,
+        |vm, _, args| period_minus(vm, receiver(args), "plusYears", crate::long_arg(args, 1)),
+    ),
+    method(
+        "minusMonths",
+        "(J)Ljava/time/Period;",
+        ACC_PUBLIC,
+        |vm, _, args| period_minus(vm, receiver(args), "plusMonths", crate::long_arg(args, 1)),
+    ),
+    method(
+        "minusDays",
+        "(J)Ljava/time/Period;",
+        ACC_PUBLIC,
+        |vm, _, args| period_minus(vm, receiver(args), "plusDays", crate::long_arg(args, 1)),
+    ),
+    method(
+        "multipliedBy",
+        "(I)Ljava/time/Period;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let factor = int_arg(args, 1);
+            let years = read_int_field(vm, this, "years")
+                .checked_mul(factor)
+                .ok_or_else(|| {
+                    vm.throw_new("java/lang/ArithmeticException", Some("integer overflow"))
+                })?;
+            let months = read_int_field(vm, this, "months")
+                .checked_mul(factor)
+                .ok_or_else(|| {
+                    vm.throw_new("java/lang/ArithmeticException", Some("integer overflow"))
+                })?;
+            let days = read_int_field(vm, this, "days")
+                .checked_mul(factor)
+                .ok_or_else(|| {
+                    vm.throw_new("java/lang/ArithmeticException", Some("integer overflow"))
+                })?;
+            object(period_new(vm, years, months, days)?)
+        },
+    ),
+    method(
+        "negated",
+        "()Ljava/time/Period;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (class, method) =
+                vm.resolve_virtual_method(receiver(args), "multipliedBy", "(I)Ljava/time/Period;")?;
+            vm.invoke_method(class, method, vec![Value::Ref(receiver(args)), int(-1)?])
+        },
+    ),
+    method("toTotalMonths", "()J", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        long(
+            i64::from(read_int_field(vm, this, "years")) * 12
+                + i64::from(read_int_field(vm, this, "months")),
+        )
+    }),
 ];
 
 pub(crate) const PERIOD: oxjvm_vm::NativeClass = class(
