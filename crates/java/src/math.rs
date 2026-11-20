@@ -2455,7 +2455,7 @@ fn mul_mod(mut a: i128, mut b: i128, m: i128) -> i128 {
     result
 }
 
-const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
+const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 51] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -2831,6 +2831,215 @@ const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
                 }
                 _ => Err(vm.throw_new("java/lang/ArithmeticException", None)),
             }
+        },
+    ),
+    method(
+        "mod",
+        "(Ljava/math/BigInteger;)Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let a = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
+            let b = parse_i128(&big_text(vm, ref_arg(args, 1))).unwrap_or(0);
+            if b <= 0 {
+                return Err(vm.throw_new(
+                    "java/lang/ArithmeticException",
+                    Some("BigInteger: modulus not positive"),
+                ));
+            }
+            create_big_number(vm, "java/math/BigInteger", &a.rem_euclid(b).to_string())
+        },
+    ),
+    method(
+        "modInverse",
+        "(Ljava/math/BigInteger;)Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let a = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
+            let m = parse_i128(&big_text(vm, ref_arg(args, 1))).unwrap_or(0);
+            if m <= 0 {
+                return Err(vm.throw_new(
+                    "java/lang/ArithmeticException",
+                    Some("BigInteger: modulus not positive"),
+                ));
+            }
+            let (mut old_r, mut r) = (a.rem_euclid(m), m);
+            let (mut old_s, mut s) = (1i128, 0i128);
+            while r != 0 {
+                let q = old_r / r;
+                (old_r, r) = (r, old_r - q * r);
+                (old_s, s) = (s, old_s - q * s);
+            }
+            if old_r != 1 {
+                return Err(vm.throw_new(
+                    "java/lang/ArithmeticException",
+                    Some("BigInteger not invertible"),
+                ));
+            }
+            create_big_number(vm, "java/math/BigInteger", &old_s.rem_euclid(m).to_string())
+        },
+    ),
+    method("testBit", "(I)Z", ACC_PUBLIC, |vm, _, args| {
+        let value = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
+        let n = int_arg(args, 1);
+        if n < 0 {
+            return Err(vm.throw_new(
+                "java/lang/ArithmeticException",
+                Some("Negative bit address"),
+            ));
+        }
+        boolean(if n >= 128 {
+            value < 0
+        } else {
+            (value >> n) & 1 != 0
+        })
+    }),
+    method(
+        "setBit",
+        "(I)Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let value = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
+            let n = int_arg(args, 1);
+            if !(0..127).contains(&n) {
+                return Err(vm.throw_new(
+                    "java/lang/ArithmeticException",
+                    Some("bit index out of range"),
+                ));
+            }
+            create_big_number(
+                vm,
+                "java/math/BigInteger",
+                &(value | (1i128 << n)).to_string(),
+            )
+        },
+    ),
+    method(
+        "clearBit",
+        "(I)Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let value = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
+            let n = int_arg(args, 1);
+            if !(0..127).contains(&n) {
+                return Err(vm.throw_new(
+                    "java/lang/ArithmeticException",
+                    Some("bit index out of range"),
+                ));
+            }
+            create_big_number(
+                vm,
+                "java/math/BigInteger",
+                &(value & !(1i128 << n)).to_string(),
+            )
+        },
+    ),
+    method(
+        "flipBit",
+        "(I)Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let value = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
+            let n = int_arg(args, 1);
+            if !(0..127).contains(&n) {
+                return Err(vm.throw_new(
+                    "java/lang/ArithmeticException",
+                    Some("bit index out of range"),
+                ));
+            }
+            create_big_number(
+                vm,
+                "java/math/BigInteger",
+                &(value ^ (1i128 << n)).to_string(),
+            )
+        },
+    ),
+    method("bitCount", "()I", ACC_PUBLIC, |vm, _, args| {
+        let value = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
+        let magnitude = if value < 0 { !value } else { value };
+        int(magnitude.count_ones() as i32)
+    }),
+    method(
+        "and",
+        "(Ljava/math/BigInteger;)Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| big_integer_binary(vm, args, |a, b| a & b),
+    ),
+    method(
+        "or",
+        "(Ljava/math/BigInteger;)Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| big_integer_binary(vm, args, |a, b| a | b),
+    ),
+    method(
+        "xor",
+        "(Ljava/math/BigInteger;)Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| big_integer_binary(vm, args, |a, b| a ^ b),
+    ),
+    method(
+        "not",
+        "()Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let value = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
+            create_big_number(vm, "java/math/BigInteger", &(!value).to_string())
+        },
+    ),
+    method(
+        "divideAndRemainder",
+        "(Ljava/math/BigInteger;)[Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let a = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
+            let b = parse_i128(&big_text(vm, ref_arg(args, 1))).unwrap_or(0);
+            if b == 0 {
+                return Err(vm.throw_new(
+                    "java/lang/ArithmeticException",
+                    Some("BigInteger divide by zero"),
+                ));
+            }
+            let class = vm.resolve_class("java/math/BigInteger")?;
+            let array = vm.allocate_object_array(class, 2)?;
+            let quotient = create_big_number(vm, "java/math/BigInteger", &(a / b).to_string())?;
+            let remainder = create_big_number(vm, "java/math/BigInteger", &(a % b).to_string())?;
+            vm.array_set_ref(array, 0, quotient.as_ref())?;
+            vm.array_set_ref(array, 1, remainder.as_ref())?;
+            object(array)
+        },
+    ),
+    method(
+        "sqrt",
+        "()Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let value = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
+            if value < 0 {
+                return Err(
+                    vm.throw_new("java/lang/ArithmeticException", Some("Negative BigInteger"))
+                );
+            }
+            let root = isqrt_u128(value as u128) as i128;
+            create_big_number(vm, "java/math/BigInteger", &root.to_string())
+        },
+    ),
+    method(
+        "max",
+        "(Ljava/math/BigInteger;)Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let a = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
+            let b = parse_i128(&big_text(vm, ref_arg(args, 1))).unwrap_or(0);
+            create_big_number(vm, "java/math/BigInteger", &a.max(b).to_string())
+        },
+    ),
+    method(
+        "min",
+        "(Ljava/math/BigInteger;)Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let a = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
+            let b = parse_i128(&big_text(vm, ref_arg(args, 1))).unwrap_or(0);
+            create_big_number(vm, "java/math/BigInteger", &a.min(b).to_string())
         },
     ),
 ];
