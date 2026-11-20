@@ -40,6 +40,8 @@ struct NumberPattern {
     max_fraction: usize,
     /// The percent style multiplies the value by a hundred.
     percent: bool,
+    /// The per-mille style multiplies the value by a thousand.
+    per_mille: bool,
     /// The pattern writes the value as a mantissa and a power of ten (`0.###E0`).
     scientific: bool,
     /// The digit positions the integer part offers; the repeating range in scientific form.
@@ -102,6 +104,7 @@ impl NumberPattern {
         let min_exponent =
             exponent_part.map_or(0, |part| part.chars().filter(|ch| *ch == '0').count());
         let percent = suffix.contains('%');
+        let per_mille = suffix.contains('\u{2030}');
         Self {
             source: pattern.to_string(),
             prefix,
@@ -111,6 +114,7 @@ impl NumberPattern {
             min_fraction,
             max_fraction,
             percent,
+            per_mille,
             scientific,
             max_integer,
             min_exponent,
@@ -127,7 +131,13 @@ impl NumberPattern {
     /// `compat` selects the legacy `jdk.compat.DecimalFormat` behavior, which rounds the
     /// double's full exact binary expansion instead of its shortest round-trip digits.
     fn format_with(&self, value: f64, mode: Rounding, compat: bool) -> Option<String> {
-        let scaled = if self.percent { value * 100.0 } else { value };
+        let scaled = if self.percent {
+            value * 100.0
+        } else if self.per_mille {
+            value * 1000.0
+        } else {
+            value
+        };
         if scaled.is_nan() {
             return Some(String::from("NaN"));
         }
@@ -1608,7 +1618,16 @@ const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
             let mut pattern = NumberPattern::parse(&alloc::format!("{symbol}#,##0.00"));
             pattern.min_fraction = 2;
             pattern.max_fraction = 2;
-            number_format(vm, &pattern)
+            let value = number_format(vm, &pattern)?;
+            let instance = value.as_ref();
+            let class = vm.class_of(instance);
+            if let Some((declaring, field)) =
+                vm.find_field_opt(class, "currencySymbol", "Ljava/lang/String;")
+            {
+                let text = vm.make_string(symbol)?;
+                vm.set_instance_ref(instance, declaring, field, text);
+            }
+            Ok(value)
         },
     ),
     method(
@@ -2050,6 +2069,14 @@ fn init_number_format_state(vm: &mut Vm<'_>, this: ObjectRef) {
             vm.set_instance_int(this, declaring, field, i32::MIN);
         }
     }
+    if let Some((declaring, field)) =
+        vm.find_field_opt(class, "currencySymbol", "Ljava/lang/String;")
+    {
+        let symbol = currency_symbol(&default_country(vm));
+        if let Ok(text) = vm.make_string(symbol) {
+            vm.set_instance_ref(this, declaring, field, text);
+        }
+    }
 }
 
 /// Store a digit-count setting; negative values mean "unset", matching the JDK's defaults.
@@ -2085,8 +2112,24 @@ fn read_number_flag(vm: &Vm<'_>, this: ObjectRef, name: &str, default: i32) -> i
 
 /// The pattern a number format writes with, after its digit/grouping settings are applied,
 /// and the rounding mode it rounds under.
+/// The currency symbol a number format replaces the `\u{00a4}` placeholder with.
+fn format_currency_symbol(vm: &mut Vm<'_>, format: ObjectRef) -> String {
+    let class = vm.class_of(format);
+    if let Some(text) = vm.read_string_field(format, class, "currencySymbol") {
+        if !text.is_empty() {
+            return text;
+        }
+    }
+    currency_symbol(&default_country(vm)).to_string()
+}
+
 fn number_format_state(vm: &mut Vm<'_>, format: ObjectRef) -> (NumberPattern, Rounding) {
     let mut pattern = NumberPattern::parse(&pattern_of(vm, format));
+    if pattern.prefix.contains('\u{00a4}') || pattern.suffix.contains('\u{00a4}') {
+        let symbol = format_currency_symbol(vm, format);
+        pattern.prefix = pattern.prefix.replace('\u{00a4}', &symbol);
+        pattern.suffix = pattern.suffix.replace('\u{00a4}', &symbol);
+    }
     let class = vm.class_of(format);
     let max_fraction = read_number_digits(vm, format, "maxFractionDigits", -1);
     if max_fraction >= 0 {
@@ -2255,6 +2298,7 @@ pub(crate) const DECIMAL_FORMAT: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC,
     &[
         field("pattern", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("currencySymbol", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("positivePrefix", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("positiveSuffix", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("negativePrefix", "Ljava/lang/String;", ACC_PRIVATE, None),
@@ -3153,10 +3197,7 @@ const CHOICE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
             let this = receiver(args);
             let pattern = vm.string_or_empty(ref_arg(args, 1));
             let choice = Choice::parse(&pattern);
-            let text = vm.make_string(&choice.pattern())?;
-            let (declaring, field) =
-                vm.find_field(vm.class_of(this), "pattern", "Ljava/lang/String;")?;
-            vm.set_instance_ref(this, declaring, field, text);
+            choice_set_pattern(vm, this, &choice.pattern())?;
             void()
         },
     ),
@@ -3180,10 +3221,7 @@ const CHOICE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
                 pattern.push('#');
                 pattern.push_str(&vm.string_or_empty(text));
             }
-            let text = vm.make_string(&pattern)?;
-            let (declaring, field) =
-                vm.find_field(vm.class_of(this), "pattern", "Ljava/lang/String;")?;
-            vm.set_instance_ref(this, declaring, field, text);
+            choice_set_pattern(vm, this, &pattern)?;
             void()
         },
     ),
@@ -3203,10 +3241,7 @@ const CHOICE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
             pattern.push('#');
             pattern.push_str(&vm.string_or_empty(text));
         }
-        let text = vm.make_string(&pattern)?;
-        let (declaring, field) =
-            vm.find_field(vm.class_of(this), "pattern", "Ljava/lang/String;")?;
-        vm.set_instance_ref(this, declaring, field, text);
+        choice_set_pattern(vm, this, &pattern)?;
         void()
     }),
     method(
@@ -3348,10 +3383,7 @@ const CHOICE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
             let this = receiver(args);
             let pattern = vm.string_or_empty(ref_arg(args, 1));
             let choice = Choice::parse(&pattern);
-            let text = vm.make_string(&choice.pattern())?;
-            let (declaring, field) =
-                vm.find_field(vm.class_of(this), "pattern", "Ljava/lang/String;")?;
-            vm.set_instance_ref(this, declaring, field, text);
+            choice_set_pattern(vm, this, &choice.pattern())?;
             void()
         },
     ),
@@ -4407,6 +4439,17 @@ fn parse_message(pattern: &str) -> Result<Message, String> {
 }
 
 /// The number a choice format picks for a value.
+/// Store a choice pattern and mark the format's kind so a message format can use it.
+fn choice_set_pattern(vm: &mut Vm<'_>, this: ObjectRef, pattern: &str) -> Result<(), VmError> {
+    let text = vm.make_string(pattern)?;
+    let (declaring, field) = vm.find_field(vm.class_of(this), "pattern", "Ljava/lang/String;")?;
+    vm.set_instance_ref(this, declaring, field, text);
+    let kind = vm.make_string("choice")?;
+    let (declaring, field) = vm.find_field(vm.class_of(this), "kind", "Ljava/lang/String;")?;
+    vm.set_instance_ref(this, declaring, field, kind);
+    Ok(())
+}
+
 fn choice_text(pattern: &str, value: f64) -> String {
     Choice::parse(pattern).text(value)
 }
