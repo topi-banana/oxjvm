@@ -988,7 +988,7 @@ pub(crate) const POSIX_FILE_PERMISSIONS: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 63] = [
+const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 64] = [
     method(
         "getPosixFilePermissions",
         "(Ljava/nio/file/Path;[Ljava/nio/file/LinkOption;)Ljava/util/Set;",
@@ -1927,6 +1927,50 @@ const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 63] = [
                 lines.push(vm.make_string(line)?);
             }
             object(crate::stream::stream_from(vm, lines)?)
+        },
+    ),
+    method(
+        "getAttribute",
+        "(Ljava/nio/file/Path;Ljava/lang/String;[Ljava/nio/file/LinkOption;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            let attribute = string_arg(vm, args[1])?;
+            let Some(metadata) = fs_metadata(vm, &path) else {
+                return Err(vm.throw_new("java/io/IOException", Some(&path)));
+            };
+            let (view, name) = match attribute.split_once(':') {
+                Some((view, name)) => (view, name),
+                None => ("basic", attribute.as_str()),
+            };
+            if view != "basic" {
+                return Err(
+                    vm.throw_new("java/lang/UnsupportedOperationException", Some(&attribute))
+                );
+            }
+            match name {
+                "size" => crate::boxed::box_value(vm, Value::Long(metadata.len as i64), "J"),
+                "isDirectory" => crate::boxed::box_value(
+                    vm,
+                    Value::Int(i32::from(metadata.kind == FileKind::Directory)),
+                    "Z",
+                ),
+                "isRegularFile" => crate::boxed::box_value(
+                    vm,
+                    Value::Int(i32::from(metadata.kind == FileKind::File)),
+                    "Z",
+                ),
+                "isSymbolicLink" => crate::boxed::box_value(vm, Value::Int(0), "Z"),
+                "isOther" => crate::boxed::box_value(
+                    vm,
+                    Value::Int(i32::from(metadata.kind == FileKind::Other)),
+                    "Z",
+                ),
+                "lastModifiedTime" | "creationTime" | "lastAccessTime" => {
+                    file_time_of(vm, metadata.modified_millis)
+                }
+                _ => Err(vm.throw_new("java/lang/UnsupportedOperationException", Some(&attribute))),
+            }
         },
     ),
 ];
