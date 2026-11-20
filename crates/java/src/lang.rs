@@ -10483,7 +10483,7 @@ pub(crate) const VALUE_LAYOUT: oxjvm_vm::NativeClass = class(
 // RandomGenerator (shell)
 // -------------------------------------------------------------------------------------------
 
-const RANDOM_GENERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const RANDOM_GENERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method(
         "getDefault",
         "()Ljava/util/random/RandomGenerator;",
@@ -10559,6 +10559,21 @@ const RANDOM_GENERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
             crate::util::random_double_stream(vm, receiver(args), count, None)
         },
     ),
+    method(
+        "equiDoubles",
+        "(DDZZ)Ljava/util/stream/DoubleStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            crate::util::random_equi_doubles(
+                vm,
+                receiver(args),
+                double_arg(args, 1),
+                double_arg(args, 2),
+                bool_arg(args, 3),
+                bool_arg(args, 4),
+            )
+        },
+    ),
 ];
 
 pub(crate) const RANDOM_GENERATOR: oxjvm_vm::NativeClass = class(
@@ -10630,7 +10645,7 @@ pub(crate) const RANDOM_GENERATOR_FACTORY: oxjvm_vm::NativeClass = class(
 // ZoneId (shell)
 // -------------------------------------------------------------------------------------------
 
-const ZONE_ID_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const ZONE_ID_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method(
         "of",
         "(Ljava/lang/String;)Ljava/time/ZoneId;",
@@ -10724,6 +10739,34 @@ const ZONE_ID_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
                 vm.set_instance_int(instance, declaring, field, total);
             }
             object(instance)
+        },
+    ),
+    method(
+        "ofOffset",
+        "(Ljava/lang/String;Ljava/time/ZoneOffset;)Ljava/time/ZoneId;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let prefix = string_arg(vm, args[0])?;
+            let offset = ref_arg(args, 1);
+            if offset.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            if !prefix.is_empty() && prefix != "GMT" && prefix != "UTC" && prefix != "UT" {
+                return Err(
+                    vm.throw_new("java/lang/IllegalArgumentException", Some("Invalid prefix"))
+                );
+            }
+            let total = zone_id_offset_seconds(vm, offset);
+            let id = if total == 0 {
+                if prefix.is_empty() {
+                    String::from("Z")
+                } else {
+                    prefix.clone()
+                }
+            } else {
+                alloc::format!("{prefix}{}", zone_offset_id(total))
+            };
+            zone_id_with(vm, &id)
         },
     ),
 ];

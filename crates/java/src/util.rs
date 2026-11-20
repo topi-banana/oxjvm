@@ -6143,7 +6143,7 @@ fn equi_next_down(x: f64) -> f64 {
 
 /// `RandomGenerator.equiDoubles`: equidistant doubles in an interval, after Goualard (2022).
 /// Every value is an exact multiple `k * delta` of a power-of-two step.
-fn random_equi_doubles(
+pub(crate) fn random_equi_doubles(
     vm: &mut Vm<'_>,
     this: ObjectRef,
     left: f64,
