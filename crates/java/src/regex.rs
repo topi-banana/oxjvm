@@ -1483,14 +1483,16 @@ const MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
         let this = receiver(args);
         let (regex, _) = pattern_regex_for(vm, this)?;
         let text = matcher_text(vm, this)?;
-        let matched = match_at(&regex, &text, true);
+        let (start, end) = matcher_region(vm, this, text.len());
+        let matched = match_at(&regex, &text[start..end], true).map(|m| offset_match(m, start));
         matcher_record(vm, this, matched)
     }),
     method("lookingAt", "()Z", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let (regex, _) = pattern_regex_for(vm, this)?;
         let text = matcher_text(vm, this)?;
-        let matched = match_at(&regex, &text, false);
+        let (start, end) = matcher_region(vm, this, text.len());
+        let matched = match_at(&regex, &text[start..end], false).map(|m| offset_match(m, start));
         matcher_record(vm, this, matched)
     }),
     method("find", "()Z", ACC_PUBLIC, |vm, _, args| {
@@ -2127,6 +2129,29 @@ fn pattern_regex_for(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(Regex, usize),
         return Err(VmError::internal("Matcher without a pattern"));
     }
     pattern_regex(vm, pattern)
+}
+
+/// The active region of a matcher, clamped to the input length.
+fn matcher_region(vm: &Vm<'_>, this: ObjectRef, len: usize) -> (usize, usize) {
+    let start = crate::lang::read_int_field(vm, this, "regionStart").max(0) as usize;
+    let end_raw = crate::lang::read_int_field(vm, this, "regionEnd");
+    let end = if end_raw <= 0 {
+        len
+    } else {
+        (end_raw as usize).min(len)
+    };
+    (start.min(end), end)
+}
+
+/// Shift a match found in a region slice back to whole-input coordinates.
+fn offset_match(mut matched: RegexMatch, offset: usize) -> RegexMatch {
+    matched.start += offset;
+    matched.end += offset;
+    for (start, end) in matched.groups.iter_mut().flatten() {
+        *start += offset;
+        *end += offset;
+    }
+    matched
 }
 
 fn matcher_record(

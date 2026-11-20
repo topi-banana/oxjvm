@@ -1077,7 +1077,7 @@ fn unsigned_radix_string(mut value: u64, radix: i32) -> String {
     digits.iter().rev().collect()
 }
 
-const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 50] = [
+const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 51] = [
     method("<init>", "(J)V", ACC_PUBLIC, |vm, _, args| {
         write_value_long(vm, receiver(args), long_arg(args, 1));
         void()
@@ -1468,6 +1468,22 @@ const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 50] = [
         let mask = long_arg(args, 1) as u64;
         long(expand_bits(value, mask) as i64)
     }),
+    method(
+        "parseLong",
+        "(Ljava/lang/String;I)J",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = parse_string_arg(vm, args[0])?;
+            let radix = int_arg(args, 1);
+            match format::parse_long_radix(&text, radix as u32) {
+                Some(value) => long(value),
+                None => Err(vm.throw_new(
+                    "java/lang/NumberFormatException",
+                    Some(&alloc::format!("For input string: \"{text}\"")),
+                )),
+            }
+        },
+    ),
 ];
 
 /// `Long.getLong`: the system property parsed as a long, or the default when unset/unparseable.

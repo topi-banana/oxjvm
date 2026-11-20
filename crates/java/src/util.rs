@@ -6866,6 +6866,321 @@ pub(crate) const ARRAY_LIST: oxjvm_vm::NativeClass = class(
 ///
 /// The observable difference (iterator/removal corner cases) is not exercised by the current
 /// corpus; sharing the implementation keeps list semantics in one place.
+const LINKED_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 56] = [
+    method("<init>", "()V", ACC_PUBLIC, array_list_init),
+    method("<init>", "(I)V", ACC_PUBLIC, array_list_init),
+    method("ensureCapacity", "(I)V", ACC_PUBLIC, |_, _, _| void()),
+    method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, array_list_add),
+    method(
+        "addAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        array_list_add_all,
+    ),
+    method(
+        "addAll",
+        "(ILjava/util/Collection;)Z",
+        ACC_PUBLIC,
+        array_list_add_all_at,
+    ),
+    method("get", "(I)Ljava/lang/Object;", ACC_PUBLIC, array_list_get),
+    method(
+        "set",
+        "(ILjava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        array_list_set,
+    ),
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "size"))
+    }),
+    method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "size") == 0)
+    }),
+    method(
+        "remove",
+        "(I)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        array_list_remove,
+    ),
+    method(
+        "remove",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        array_list_remove_object,
+    ),
+    method(
+        "contains",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| boolean(array_list_index_of(vm, receiver(args), ref_arg(args, 1))? >= 0),
+    ),
+    method(
+        "indexOf",
+        "(Ljava/lang/Object;)I",
+        ACC_PUBLIC,
+        |vm, _, args| int(array_list_index_of(vm, receiver(args), ref_arg(args, 1))?),
+    ),
+    method("clear", "()V", ACC_PUBLIC, array_list_clear),
+    method(
+        "iterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC,
+        array_list_iterator,
+    ),
+    method(
+        "toArray",
+        "()[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        array_list_to_array,
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        array_list_to_string,
+    ),
+    method(
+        "add",
+        "(ILjava/lang/Object;)V",
+        ACC_PUBLIC,
+        array_list_insert,
+    ),
+    method(
+        "toArray",
+        "([Ljava/lang/Object;)[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        array_list_to_array_into,
+    ),
+    method(
+        "forEach",
+        "(Ljava/util/function/Consumer;)V",
+        ACC_PUBLIC,
+        collection_for_each,
+    ),
+    method(
+        "<init>",
+        "(Ljava/util/Collection;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = collection_elements(vm, ref_arg(args, 1))?;
+            array_list_store(vm, receiver(args), &elements)?;
+            void()
+        },
+    ),
+    method(
+        "toArray",
+        "(Ljava/util/function/IntFunction;)[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        array_list_to_array_generator,
+    ),
+    method(
+        "sort",
+        "(Ljava/util/Comparator;)V",
+        ACC_PUBLIC,
+        array_list_sort,
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        array_list_equals,
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, array_list_hash_code),
+    method(
+        "removeAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        collection_remove_all,
+    ),
+    method(
+        "retainAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        collection_retain_all,
+    ),
+    method("trimToSize", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "listIterator",
+        "()Ljava/util/ListIterator;",
+        ACC_PUBLIC,
+        |vm, _, args| list_iterator_new(vm, receiver(args), 0),
+    ),
+    method(
+        "listIterator",
+        "(I)Ljava/util/ListIterator;",
+        ACC_PUBLIC,
+        |vm, _, args| list_iterator_new(vm, receiver(args), int_arg(args, 1)),
+    ),
+    method(
+        "subList",
+        "(II)Ljava/util/List;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let from = int_arg(args, 1);
+            let to = int_arg(args, 2);
+            let size = array_list_elements(vm, this).len() as i32;
+            if from < 0 || to > size || from > to {
+                return Err(vm.throw_new(
+                    "java/lang/IndexOutOfBoundsException",
+                    Some(&alloc::format!(
+                        "fromIndex: {from}, toIndex: {to}, size: {size}"
+                    )),
+                ));
+            }
+            let class = vm.resolve_class("java/util/AbstractList$SubList")?;
+            let view = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "parent", "Ljava/util/List;")?;
+            vm.set_instance_ref(view, declaring, field, this);
+            crate::lang::write_int_field(vm, view, "offset", from);
+            crate::lang::write_int_field(vm, view, "length", to - from);
+            object(view)
+        },
+    ),
+    method(
+        "getFirst",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| deque_first(vm, receiver(args), "java/util/NoSuchElementException"),
+    ),
+    method(
+        "getLast",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| deque_last(vm, receiver(args), "java/util/NoSuchElementException"),
+    ),
+    method(
+        "addFirst",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        deque_add_first,
+    ),
+    method(
+        "addLast",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        array_list_add,
+    ),
+    method(
+        "removeFirst",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| deque_remove_first(vm, receiver(args), "java/util/NoSuchElementException"),
+    ),
+    method(
+        "removeLast",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| deque_remove_last(vm, receiver(args), "java/util/NoSuchElementException"),
+    ),
+    method(
+        "reversed",
+        "()Ljava/util/LinkedList;",
+        ACC_PUBLIC,
+        |vm, _, args| object(rev_list_new(vm, receiver(args))?),
+    ),
+    method(
+        "reversed",
+        "()Ljava/util/SequencedCollection;",
+        ACC_PUBLIC,
+        |vm, _, args| object(rev_list_new(vm, receiver(args))?),
+    ),
+    method("offer", "(Ljava/lang/Object;)Z", ACC_PUBLIC, array_list_add),
+    method(
+        "offerLast",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        array_list_add,
+    ),
+    method("push", "(Ljava/lang/Object;)V", ACC_PUBLIC, deque_add_first),
+    method(
+        "offerFirst",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        deque_offer_first,
+    ),
+    method("poll", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        deque_poll_first(vm, receiver(args))
+    }),
+    method(
+        "pollFirst",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| deque_poll_first(vm, receiver(args)),
+    ),
+    method(
+        "pollLast",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| deque_poll_last(vm, receiver(args)),
+    ),
+    method("pop", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        deque_remove_first(vm, receiver(args), "java/util/NoSuchElementException")
+    }),
+    method(
+        "remove",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| deque_remove_first(vm, receiver(args), "java/util/NoSuchElementException"),
+    ),
+    method(
+        "removeFirstOccurrence",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| deque_remove_occurrence(vm, args, true),
+    ),
+    method(
+        "removeLastOccurrence",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| deque_remove_occurrence(vm, args, false),
+    ),
+    method("peek", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let elements = array_list_elements(vm, receiver(args));
+        object(elements.first().copied().unwrap_or(ObjectRef::NULL))
+    }),
+    method(
+        "peekFirst",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = array_list_elements(vm, receiver(args));
+            object(elements.first().copied().unwrap_or(ObjectRef::NULL))
+        },
+    ),
+    method(
+        "peekLast",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = array_list_elements(vm, receiver(args));
+            object(elements.last().copied().unwrap_or(ObjectRef::NULL))
+        },
+    ),
+    method(
+        "element",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| deque_first(vm, receiver(args), "java/util/NoSuchElementException"),
+    ),
+    method(
+        "descendingIterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let mut elements = array_list_elements(vm, receiver(args));
+            elements.reverse();
+            let list = array_list_from(vm, &elements)?;
+            let class = vm.resolve_class("java/util/ArrayList$Itr")?;
+            let iterator = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "list", "Ljava/util/List;")?;
+            vm.set_instance_ref(iterator, declaring, field, list);
+            crate::lang::write_int_field(vm, iterator, "cursor", 0);
+            object(iterator)
+        },
+    ),
+];
+
 pub(crate) const LINKED_LIST: oxjvm_vm::NativeClass = class(
     "java/util/LinkedList",
     Some("java/lang/Object"),
@@ -6879,7 +7194,7 @@ pub(crate) const LINKED_LIST: oxjvm_vm::NativeClass = class(
         field("elementData", "[Ljava/lang/Object;", ACC_PRIVATE, None),
         field("size", "I", ACC_PRIVATE, None),
     ],
-    &ARRAY_LIST_METHODS,
+    &LINKED_LIST_METHODS,
     None,
 );
 

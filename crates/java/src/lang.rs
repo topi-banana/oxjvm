@@ -844,13 +844,25 @@ fn class_get_simple_name(
 ) -> Result<Value, VmError> {
     let class = class_argument(vm, receiver(args))?;
     let name = vm.class_name(class);
-    let simple = if let Some(element) = name.strip_prefix('[') {
-        if let Some(object) = element.strip_prefix('L') {
-            let object = object.strip_suffix(';').unwrap_or(object);
-            alloc::format!("{object}[]")
-        } else {
-            alloc::format!("{element}[]")
-        }
+    let simple = if name.starts_with('[') {
+        let dims = name.bytes().take_while(|b| *b == b'[').count();
+        let base = &name[dims..];
+        let base_simple = match base {
+            "Z" => "boolean",
+            "B" => "byte",
+            "C" => "char",
+            "D" => "double",
+            "F" => "float",
+            "I" => "int",
+            "J" => "long",
+            "S" => "short",
+            _ => {
+                let object = base.strip_prefix('L').unwrap_or(base);
+                let object = object.strip_suffix(';').unwrap_or(object);
+                object.rsplit('/').next().unwrap_or(object)
+            }
+        };
+        alloc::format!("{base_simple}{}", "[]".repeat(dims))
     } else {
         let base = name.rsplit('/').next().unwrap_or(name);
         base.rsplit('$').next().unwrap_or(base).to_string()
