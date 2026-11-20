@@ -6244,7 +6244,7 @@ pub(crate) fn random_long_stream(
     object(crate::primitive_stream::new_long_stream(vm, values)?)
 }
 
-fn random_double_stream(
+pub(crate) fn random_double_stream(
     vm: &mut Vm<'_>,
     this: ObjectRef,
     count: usize,

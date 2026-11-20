@@ -10483,7 +10483,7 @@ pub(crate) const VALUE_LAYOUT: oxjvm_vm::NativeClass = class(
 // RandomGenerator (shell)
 // -------------------------------------------------------------------------------------------
 
-const RANDOM_GENERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const RANDOM_GENERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method(
         "getDefault",
         "()Ljava/util/random/RandomGenerator;",
@@ -10548,6 +10548,15 @@ const RANDOM_GENERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         |vm, _, args| {
             let count = crate::util::random_stream_count(vm, long_arg(args, 1))?;
             crate::util::random_long_stream(vm, receiver(args), count, None)
+        },
+    ),
+    method(
+        "doubles",
+        "(J)Ljava/util/stream/DoubleStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let count = crate::util::random_stream_count(vm, long_arg(args, 1))?;
+            crate::util::random_double_stream(vm, receiver(args), count, None)
         },
     ),
 ];
