@@ -1014,10 +1014,87 @@ pub(crate) const NOOP_LOCK: oxjvm_vm::NativeClass = class(
     None,
 );
 
-fn new_noop_lock(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
-    let class = vm.resolve_class("java/util/concurrent/locks/ReentrantReadWriteLock$NoopLock")?;
-    vm.new_instance(class)
+/// Adjust the parent lock's read hold count.
+fn read_lock_adjust(vm: &mut Vm<'_>, this: ObjectRef, delta: i32) {
+    let class = vm.class_of(this);
+    let parent = vm
+        .read_ref_field(
+            this,
+            class,
+            "parent",
+            "Ljava/util/concurrent/locks/ReentrantReadWriteLock;",
+        )
+        .unwrap_or(ObjectRef::NULL);
+    if parent.is_null() {
+        return;
+    }
+    let count = crate::lang::read_int_field(vm, parent, "readCount");
+    crate::lang::write_int_field(vm, parent, "readCount", (count + delta).max(0));
 }
+
+const READ_LOCK_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method("lock", "()V", ACC_PUBLIC, |vm, _, args| {
+        read_lock_adjust(vm, receiver(args), 1);
+        void()
+    }),
+    method("lockInterruptibly", "()V", ACC_PUBLIC, |vm, _, args| {
+        read_lock_adjust(vm, receiver(args), 1);
+        void()
+    }),
+    method("tryLock", "()Z", ACC_PUBLIC, |vm, _, args| {
+        read_lock_adjust(vm, receiver(args), 1);
+        boolean(true)
+    }),
+    method(
+        "tryLock",
+        "(JLjava/util/concurrent/TimeUnit;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            read_lock_adjust(vm, receiver(args), 1);
+            boolean(true)
+        },
+    ),
+    method("unlock", "()V", ACC_PUBLIC, |vm, _, args| {
+        read_lock_adjust(vm, receiver(args), -1);
+        void()
+    }),
+    method(
+        "newCondition",
+        "()Ljava/util/concurrent/locks/Condition;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("oxjvm/Condition")?;
+            object(vm.new_instance(class)?)
+        },
+    ),
+];
+
+/// `ReentrantReadWriteLock.ReadLock`: a non-blocking read lock.
+pub(crate) const READ_LOCK: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/locks/ReentrantReadWriteLock$ReadLock",
+    Some("java/lang/Object"),
+    &["java/util/concurrent/locks/Lock"],
+    ACC_PUBLIC | ACC_FINAL,
+    &[field(
+        "parent",
+        "Ljava/util/concurrent/locks/ReentrantReadWriteLock;",
+        ACC_PRIVATE,
+        None,
+    )],
+    &READ_LOCK_METHODS,
+    None,
+);
+
+/// `ReentrantReadWriteLock.WriteLock`: a non-blocking write lock.
+pub(crate) const WRITE_LOCK: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/locks/ReentrantReadWriteLock$WriteLock",
+    Some("java/lang/Object"),
+    &["java/util/concurrent/locks/Lock"],
+    ACC_PUBLIC | ACC_FINAL,
+    &[],
+    &NOOP_LOCK_METHODS,
+    None,
+);
 
 const REENTRANT_READ_WRITE_LOCK_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
@@ -1028,20 +1105,25 @@ const REENTRANT_READ_WRITE_LOCK_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     }),
     method(
         "readLock",
-        "()Ljava/util/concurrent/locks/Lock;",
+        "()Ljava/util/concurrent/locks/ReentrantReadWriteLock$ReadLock;",
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
             let class = vm.class_of(this);
             let lock = vm
-                .read_ref_field(this, class, "readLock", "Ljava/util/concurrent/locks/Lock;")
+                .read_ref_field(
+                    this,
+                    class,
+                    "readLock",
+                    "Ljava/util/concurrent/locks/ReentrantReadWriteLock$ReadLock;",
+                )
                 .unwrap_or(ObjectRef::NULL);
             object(lock)
         },
     ),
     method(
         "writeLock",
-        "()Ljava/util/concurrent/locks/Lock;",
+        "()Ljava/util/concurrent/locks/ReentrantReadWriteLock$WriteLock;",
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
@@ -1051,7 +1133,7 @@ const REENTRANT_READ_WRITE_LOCK_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
                     this,
                     class,
                     "writeLock",
-                    "Ljava/util/concurrent/locks/Lock;",
+                    "Ljava/util/concurrent/locks/ReentrantReadWriteLock$WriteLock;",
                 )
                 .unwrap_or(ObjectRef::NULL);
             object(lock)
@@ -1067,9 +1149,13 @@ const REENTRANT_READ_WRITE_LOCK_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         ACC_PUBLIC,
         |_, _, _| boolean(false),
     ),
-    method("getReadHoldCount", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method("getReadHoldCount", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "readCount"))
+    }),
     method("getWriteHoldCount", "()I", ACC_PUBLIC, |_, _, _| int(0)),
-    method("getReadLockCount", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method("getReadLockCount", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "readCount"))
+    }),
     method(
         "toString",
         "()Ljava/lang/String;",
@@ -1081,13 +1167,31 @@ const REENTRANT_READ_WRITE_LOCK_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
 fn init_read_write_lock(vm: &mut Vm<'_>, this: ObjectRef, fair: bool) -> Result<Value, VmError> {
     crate::lang::write_int_field(vm, this, "fair", i32::from(fair));
     let class = vm.class_of(this);
-    let read = new_noop_lock(vm)?;
-    let write = new_noop_lock(vm)?;
-    let (declaring, field) =
-        vm.find_field(class, "readLock", "Ljava/util/concurrent/locks/Lock;")?;
+    let read_class =
+        vm.resolve_class("java/util/concurrent/locks/ReentrantReadWriteLock$ReadLock")?;
+    let write_class =
+        vm.resolve_class("java/util/concurrent/locks/ReentrantReadWriteLock$WriteLock")?;
+    let read = vm.new_instance(read_class)?;
+    let write = vm.new_instance(write_class)?;
+    let (declaring, field) = vm.find_field(
+        class,
+        "readLock",
+        "Ljava/util/concurrent/locks/ReentrantReadWriteLock$ReadLock;",
+    )?;
     vm.set_instance_ref(this, declaring, field, read);
-    let (declaring, field) =
-        vm.find_field(class, "writeLock", "Ljava/util/concurrent/locks/Lock;")?;
+    let read_class_of = vm.class_of(read);
+    if let Some((declaring, field)) = vm.find_field_opt(
+        read_class_of,
+        "parent",
+        "Ljava/util/concurrent/locks/ReentrantReadWriteLock;",
+    ) {
+        vm.set_instance_ref(read, declaring, field, this);
+    }
+    let (declaring, field) = vm.find_field(
+        class,
+        "writeLock",
+        "Ljava/util/concurrent/locks/ReentrantReadWriteLock$WriteLock;",
+    )?;
     vm.set_instance_ref(this, declaring, field, write);
     void()
 }
@@ -1104,17 +1208,18 @@ pub(crate) const REENTRANT_READ_WRITE_LOCK: oxjvm_vm::NativeClass = class(
     &[
         field(
             "readLock",
-            "Ljava/util/concurrent/locks/Lock;",
+            "Ljava/util/concurrent/locks/ReentrantReadWriteLock$ReadLock;",
             ACC_PRIVATE,
             None,
         ),
         field(
             "writeLock",
-            "Ljava/util/concurrent/locks/Lock;",
+            "Ljava/util/concurrent/locks/ReentrantReadWriteLock$WriteLock;",
             ACC_PRIVATE,
             None,
         ),
         field("fair", "I", ACC_PRIVATE, None),
+        field("readCount", "I", ACC_PRIVATE, None),
     ],
     &REENTRANT_READ_WRITE_LOCK_METHODS,
     None,

@@ -153,14 +153,14 @@ const DURATION_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
         |vm, _, args| {
             let start = ref_arg(args, 0);
             let end = ref_arg(args, 1);
-            let secs = read_long_field(vm, end, "epochSecond").saturating_sub(read_long_field(
-                vm,
-                start,
-                "epochSecond",
-            ));
-            let nanos = i64::from(read_int_field(vm, end, "nano"))
-                - i64::from(read_int_field(vm, start, "nano"));
-            duration_of_seconds(vm, secs, nanos)
+            if start.is_null() || end.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let (start_day, start_nano) = temporal_day_nano(vm, start)?;
+            let (end_day, end_nano) = temporal_day_nano(vm, end)?;
+            let nano_delta = end_nano - start_nano;
+            let secs = (end_day - start_day) * 86_400 + nano_delta / 1_000_000_000;
+            duration_of_seconds(vm, secs, nano_delta % 1_000_000_000)
         },
     ),
     method(
@@ -552,6 +552,34 @@ fn format_duration(nanos: i64) -> String {
 }
 
 /// Build a `Duration` from a seconds/nanos pair (as `Duration.ofSeconds(JJ)`).
+/// The local epoch-day and nano-of-day of a temporal, for duration arithmetic.
+fn temporal_day_nano(vm: &mut Vm<'_>, obj: ObjectRef) -> Result<(i64, i64), VmError> {
+    let name = vm.class_name(vm.class_of(obj)).to_string();
+    match name.as_str() {
+        "java/time/LocalDate" => Ok((read_long_field(vm, obj, "epochDay"), 0)),
+        "java/time/LocalTime" | "java/time/OffsetTime" => {
+            Ok((0, read_long_field(vm, obj, "nanoOfDay")))
+        }
+        "java/time/LocalDateTime" | "java/time/OffsetDateTime" => Ok((
+            read_long_field(vm, obj, "epochDay"),
+            read_long_field(vm, obj, "nanoOfDay"),
+        )),
+        "java/time/ZonedDateTime" => Ok(zdt_local_parts(vm, obj)),
+        "java/time/Instant" => {
+            let seconds = read_long_field(vm, obj, "epochSecond");
+            let nano = i64::from(read_int_field(vm, obj, "nano"));
+            Ok((
+                seconds.div_euclid(86_400),
+                seconds.rem_euclid(86_400) * 1_000_000_000 + nano,
+            ))
+        }
+        _ => Err(vm.throw_new(
+            "java/time/DateTimeException",
+            Some("Unsupported temporal type for duration"),
+        )),
+    }
+}
+
 fn duration_of_seconds(vm: &mut Vm<'_>, seconds: i64, nano: i64) -> Result<Value, VmError> {
     duration_new(
         vm,
@@ -2889,7 +2917,7 @@ fn local_date_dates_until(
     object(crate::stream::stream_from(vm, elements)?)
 }
 
-const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 55] = [
+const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 56] = [
     method(
         "of",
         "(III)Ljava/time/LocalDate;",
@@ -3606,6 +3634,29 @@ const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 55] = [
                 .unwrap_or_default();
             let millis = temporal_local_millis(vm, this)?;
             object(vm.make_string(&crate::text::format_pattern(&pattern, millis))?)
+        },
+    ),
+    method(
+        "until",
+        "(Ljava/time/chrono/ChronoLocalDate;)Ljava/time/Period;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let end = ref_arg(args, 1);
+            if end.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let period_class = vm.resolve_class("java/time/Period")?;
+            let (declaring, between) = vm
+                .find_method(
+                    period_class,
+                    "between",
+                    "(Ljava/time/LocalDate;Ljava/time/LocalDate;)Ljava/time/Period;",
+                )
+                .ok_or_else(|| {
+                    vm.throw_new("java/lang/NoSuchMethodError", Some("Period.between"))
+                })?;
+            vm.invoke_method(declaring, between, vec![Value::Ref(this), Value::Ref(end)])
         },
     ),
 ];
@@ -5096,7 +5147,7 @@ fn month_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     Ok(())
 }
 
-const MONTH_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
+const MONTH_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
     method(
         "of",
         "(I)Ljava/time/Month;",
@@ -5252,6 +5303,37 @@ const MONTH_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
             object(vm.make_string(&english_display_name(MONTH_NAMES[value - 1], ordinal))?)
         },
     ),
+    method("maxLength", "()I", ACC_PUBLIC, |vm, _, args| {
+        let value = read_int_field(vm, receiver(args), "value");
+        int(match value {
+            2 => 29,
+            4 | 6 | 9 | 11 => 30,
+            _ => 31,
+        })
+    }),
+    method("minLength", "()I", ACC_PUBLIC, |vm, _, args| {
+        let value = read_int_field(vm, receiver(args), "value");
+        int(match value {
+            2 => 28,
+            4 | 6 | 9 | 11 => 30,
+            _ => 31,
+        })
+    }),
+    method("length", "(Z)I", ACC_PUBLIC, |vm, _, args| {
+        let value = read_int_field(vm, receiver(args), "value");
+        let leap = int_arg(args, 1) != 0;
+        int(match value {
+            2 => {
+                if leap {
+                    29
+                } else {
+                    28
+                }
+            }
+            4 | 6 | 9 | 11 => 30,
+            _ => 31,
+        })
+    }),
 ];
 
 pub(crate) const MONTH: oxjvm_vm::NativeClass = class(
@@ -7219,6 +7301,194 @@ const YEAR_MONTH_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
         },
     ),
 ];
+
+fn year_new(vm: &mut Vm<'_>, year: i32) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/time/Year")?;
+    let instance = vm.new_instance(class)?;
+    write_int_field(vm, instance, "value", year);
+    Ok(instance)
+}
+
+const YEAR_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+    method(
+        "of",
+        "(I)Ljava/time/Year;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| object(year_new(vm, int_arg(args, 0))?),
+    ),
+    method(
+        "now",
+        "()Ljava/time/Year;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let millis = vm.host_time_millis();
+            let zone = system_default_zone(vm)?;
+            let offset = i64::from(zone_offset_seconds(vm, zone));
+            let (year, _, _) = civil_from_days((millis / 1000 + offset).div_euclid(86_400));
+            object(year_new(vm, year)?)
+        },
+    ),
+    method(
+        "parse",
+        "(Ljava/lang/CharSequence;)Ljava/time/Year;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = crate::string_arg(vm, args[0])?;
+            let year: i32 = text.parse().map_err(|_| {
+                vm.throw_new("java/time/format/DateTimeParseException", Some(&text))
+            })?;
+            object(year_new(vm, year)?)
+        },
+    ),
+    method("isLeap", "(J)Z", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        boolean(is_leap_year(crate::long_arg(args, 0) as i32))
+    }),
+    method("isLeap", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(is_leap_year(read_int_field(vm, receiver(args), "value")))
+    }),
+    method("getValue", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_int_field(vm, receiver(args), "value"))
+    }),
+    method("length", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(
+            if is_leap_year(read_int_field(vm, receiver(args), "value")) {
+                366
+            } else {
+                365
+            },
+        )
+    }),
+    method(
+        "atDay",
+        "(I)Ljava/time/LocalDate;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let year = read_int_field(vm, receiver(args), "value");
+            object(local_date_new(
+                vm,
+                days_from_civil(year, 1, int_arg(args, 1)),
+            )?)
+        },
+    ),
+    method(
+        "atMonth",
+        "(I)Ljava/time/YearMonth;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let year = read_int_field(vm, receiver(args), "value");
+            object(year_month_new(vm, year, int_arg(args, 1))?)
+        },
+    ),
+    method(
+        "atMonth",
+        "(Ljava/time/Month;)Ljava/time/YearMonth;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let year = read_int_field(vm, receiver(args), "value");
+            let month = read_int_field(vm, ref_arg(args, 1), "value");
+            object(year_month_new(vm, year, month)?)
+        },
+    ),
+    method(
+        "plusYears",
+        "(J)Ljava/time/Year;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let year = read_int_field(vm, receiver(args), "value");
+            object(year_new(
+                vm,
+                (i64::from(year) + crate::long_arg(args, 1)) as i32,
+            )?)
+        },
+    ),
+    method(
+        "minusYears",
+        "(J)Ljava/time/Year;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let year = read_int_field(vm, receiver(args), "value");
+            object(year_new(
+                vm,
+                (i64::from(year) - crate::long_arg(args, 1)) as i32,
+            )?)
+        },
+    ),
+    method(
+        "isAfter",
+        "(Ljava/time/Year;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let year = read_int_field(vm, receiver(args), "value");
+            boolean(year > read_int_field(vm, ref_arg(args, 1), "value"))
+        },
+    ),
+    method(
+        "isBefore",
+        "(Ljava/time/Year;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let year = read_int_field(vm, receiver(args), "value");
+            boolean(year < read_int_field(vm, ref_arg(args, 1), "value"))
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = ref_arg(args, 1);
+            if other.is_null() || vm.class_name(vm.class_of(other)) != "java/time/Year" {
+                return boolean(false);
+            }
+            boolean(
+                read_int_field(vm, receiver(args), "value") == read_int_field(vm, other, "value"),
+            )
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_int_field(vm, receiver(args), "value"))
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let value = read_int_field(vm, receiver(args), "value");
+            let text = if value < 0 {
+                alloc::format!("-{:04}", -(i64::from(value)))
+            } else if value > 9999 {
+                alloc::format!("+{}", value)
+            } else {
+                alloc::format!("{}", value)
+            };
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "compareTo",
+        "(Ljava/time/Year;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let year = read_int_field(vm, receiver(args), "value");
+            int(year - read_int_field(vm, ref_arg(args, 1), "value"))
+        },
+    ),
+];
+
+/// `java.time.Year`.
+pub(crate) const YEAR: oxjvm_vm::NativeClass = class(
+    "java/time/Year",
+    Some("java/lang/Object"),
+    &[
+        "java/time/temporal/TemporalAccessor",
+        "java/time/temporal/TemporalAdjuster",
+        "java/lang/Comparable",
+    ],
+    ACC_PUBLIC | ACC_FINAL,
+    &[field("value", "I", ACC_PRIVATE | ACC_FINAL, None)],
+    &YEAR_METHODS,
+    None,
+);
 
 pub(crate) const YEAR_MONTH: oxjvm_vm::NativeClass = class(
     "java/time/YearMonth",
