@@ -519,6 +519,33 @@ pub enum MethodHandleValue {
         /// The captured constant value (boxed for primitives).
         value: Value,
     },
+    /// A handle with arguments discarded at a fixed position (`dropArguments`).
+    Dropped {
+        /// The argument position where dropped values begin.
+        position: usize,
+        /// The number of dropped arguments.
+        count: usize,
+        /// The underlying target.
+        target: alloc::boxed::Box<MethodHandleValue>,
+    },
+    /// A handle whose leading arguments are folded by a combiner (`foldArguments`).
+    Folded {
+        /// The position the folded result is inserted at.
+        position: usize,
+        /// The combiner handle.
+        combiner: alloc::boxed::Box<MethodHandleValue>,
+        /// The underlying target.
+        target: alloc::boxed::Box<MethodHandleValue>,
+    },
+    /// A handle whose arguments are transformed by filters (`filterArguments`).
+    Filtered {
+        /// The first argument position a filter applies to.
+        position: usize,
+        /// Per-argument filters (`None` leaves the argument unchanged).
+        filters: Vec<Option<alloc::boxed::Box<MethodHandleValue>>>,
+        /// The underlying target.
+        target: alloc::boxed::Box<MethodHandleValue>,
+    },
     /// A handle that always throws `UnsupportedOperationException` (`MethodHandles.empty`).
     Empty {
         /// The requested method type.
@@ -548,6 +575,23 @@ impl MethodHandleValue {
             | Self::Empty { .. }
             | Self::ArrayElementGetter { .. } => 0,
             Self::Constant { .. } => size_of::<Value>() as u64,
+            Self::Dropped { target, .. } => {
+                size_of::<MethodHandleValue>() as u64 + target.payload_bytes()
+            }
+            Self::Folded {
+                combiner, target, ..
+            } => {
+                size_of::<MethodHandleValue>() as u64 * 2
+                    + combiner.payload_bytes()
+                    + target.payload_bytes()
+            }
+            Self::Filtered {
+                filters, target, ..
+            } => {
+                (filters.len() * size_of::<Option<alloc::boxed::Box<MethodHandleValue>>>()) as u64
+                    + size_of::<MethodHandleValue>() as u64
+                    + target.payload_bytes()
+            }
             Self::Bound { target, .. } => {
                 size_of::<MethodHandleValue>() as u64 + target.payload_bytes()
             }

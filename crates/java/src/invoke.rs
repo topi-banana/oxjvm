@@ -534,6 +534,9 @@ const METHOD_HANDLE_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
                 Some(MethodHandleValue::Inserted { .. }) => "MethodHandle(inserted)",
                 Some(MethodHandleValue::Identity { .. }) => "MethodHandle(identity)",
                 Some(MethodHandleValue::Constant { .. }) => "MethodHandle(constant)",
+                Some(MethodHandleValue::Dropped { .. }) => "MethodHandle(dropped)",
+                Some(MethodHandleValue::Folded { .. }) => "MethodHandle(folded)",
+                Some(MethodHandleValue::Filtered { .. }) => "MethodHandle(filtered)",
                 Some(MethodHandleValue::Empty { .. }) => "MethodHandle(empty)",
                 Some(MethodHandleValue::ArrayElementGetter { .. }) => {
                     "MethodHandle(arrayElementGetter)"
@@ -700,13 +703,50 @@ const METHOD_HANDLES_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         "foldArguments",
         "(Ljava/lang/invoke/MethodHandle;Ljava/lang/invoke/MethodHandle;)Ljava/lang/invoke/MethodHandle;",
         ACC_PUBLIC | ACC_STATIC,
-        |_, _, args| object(ref_arg(args, 0)),
+        |vm, _, args| {
+            let target = vm
+                .method_handle_of(ref_arg(args, 0))
+                .ok_or_else(|| VmError::internal("not a handle"))?;
+            let combiner = vm
+                .method_handle_of(ref_arg(args, 1))
+                .ok_or_else(|| VmError::internal("not a handle"))?;
+            let handle = MethodHandleValue::Folded {
+                position: 0,
+                combiner: alloc::boxed::Box::new(combiner),
+                target: alloc::boxed::Box::new(target),
+            };
+            object(vm.make_method_handle(handle)?)
+        },
     ),
     method(
         "filterArguments",
         "(Ljava/lang/invoke/MethodHandle;I[Ljava/lang/invoke/MethodHandle;)Ljava/lang/invoke/MethodHandle;",
-        ACC_PUBLIC | ACC_STATIC,
-        |_, _, args| object(ref_arg(args, 0)),
+        ACC_PUBLIC | ACC_STATIC | ACC_VARARGS,
+        |vm, _, args| {
+            let target = vm
+                .method_handle_of(ref_arg(args, 0))
+                .ok_or_else(|| VmError::internal("not a handle"))?;
+            let position = crate::int_arg(args, 1).max(0) as usize;
+            let array = ref_arg(args, 2);
+            let length = vm.array_length(array)?;
+            let mut filters = Vec::new();
+            for index in 0..length {
+                let element = vm.array_get(array, index as i32)?;
+                let filter = match element {
+                    Value::Ref(r) if !r.is_null() => {
+                        vm.method_handle_of(r).map(alloc::boxed::Box::new)
+                    }
+                    _ => None,
+                };
+                filters.push(filter);
+            }
+            let handle = MethodHandleValue::Filtered {
+                position,
+                filters,
+                target: alloc::boxed::Box::new(target),
+            };
+            object(vm.make_method_handle(handle)?)
+        },
     ),
     method(
         "explicitCastArguments",
@@ -717,8 +757,21 @@ const METHOD_HANDLES_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method(
         "dropArguments",
         "(Ljava/lang/invoke/MethodHandle;I[Ljava/lang/Class;)Ljava/lang/invoke/MethodHandle;",
-        ACC_PUBLIC | ACC_STATIC,
-        |_, _, args| object(ref_arg(args, 0)),
+        ACC_PUBLIC | ACC_STATIC | ACC_VARARGS,
+        |vm, _, args| {
+            let target = vm
+                .method_handle_of(ref_arg(args, 0))
+                .ok_or_else(|| VmError::internal("not a handle"))?;
+            let position = crate::int_arg(args, 1).max(0) as usize;
+            let array = ref_arg(args, 2);
+            let count = vm.array_length(array)?;
+            let handle = MethodHandleValue::Dropped {
+                position,
+                count,
+                target: alloc::boxed::Box::new(target),
+            };
+            object(vm.make_method_handle(handle)?)
+        },
     ),
     method(
         "insertArguments",

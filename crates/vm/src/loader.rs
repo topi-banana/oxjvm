@@ -2249,6 +2249,51 @@ impl<'a> Vm<'a> {
                 }
             }
             MethodHandleValue::Constant { value } => Ok(*value),
+            MethodHandleValue::Dropped {
+                position,
+                count,
+                target,
+            } => {
+                let pos = (*position).min(args.len());
+                let end = pos.saturating_add(*count).min(args.len());
+                let mut call_args = Vec::with_capacity(args.len() - (end - pos));
+                call_args.extend_from_slice(&args[..pos]);
+                call_args.extend_from_slice(&args[end..]);
+                self.invoke_handle(target, &call_args)
+            }
+            MethodHandleValue::Folded {
+                position,
+                combiner,
+                target,
+            } => {
+                let pos = (*position).min(args.len());
+                let n = handle_method_type(self, combiner)
+                    .map(|(params, _)| params.len())
+                    .unwrap_or(0);
+                let end = pos.saturating_add(n).min(args.len());
+                let folded = self.invoke_handle(combiner, &args[pos..end])?;
+                let mut call_args = Vec::with_capacity(args.len() - (end - pos) + 1);
+                call_args.extend_from_slice(&args[..pos]);
+                call_args.push(folded);
+                call_args.extend_from_slice(&args[end..]);
+                self.invoke_handle(target, &call_args)
+            }
+            MethodHandleValue::Filtered {
+                position,
+                filters,
+                target,
+            } => {
+                let mut call_args = args.to_vec();
+                for (index, filter) in filters.iter().enumerate() {
+                    if let Some(filter) = filter {
+                        let idx = position + index;
+                        if let Some(arg) = call_args.get(idx).copied() {
+                            call_args[idx] = self.invoke_handle(filter, &[arg])?;
+                        }
+                    }
+                }
+                self.invoke_handle(target, &call_args)
+            }
             MethodHandleValue::Empty { .. } => {
                 let returns = handle_method_type(self, handle).and_then(|(_, returns)| returns);
                 Ok(match returns {
