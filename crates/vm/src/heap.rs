@@ -519,6 +519,11 @@ pub enum MethodHandleValue {
         /// The requested method type.
         method_type: ObjectRef,
     },
+    /// An array element getter (`MethodHandles.arrayElementGetter`).
+    ArrayElementGetter {
+        /// The array class.
+        array_class: ClassId,
+    },
 }
 
 impl MethodHandleValue {
@@ -535,7 +540,8 @@ impl MethodHandleValue {
             | Self::Getter { .. }
             | Self::Setter { .. }
             | Self::Identity { .. }
-            | Self::Empty { .. } => 0,
+            | Self::Empty { .. }
+            | Self::ArrayElementGetter { .. } => 0,
             Self::Bound { target, .. } => {
                 size_of::<MethodHandleValue>() as u64 + target.payload_bytes()
             }

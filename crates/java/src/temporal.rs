@@ -9,8 +9,13 @@ use alloc::vec;
 use oxjvm_classfile::flags::*;
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
-use crate::lang::{abstract_method_pub, read_int_field, read_long_field, write_int_field};
-use crate::{boolean, class, field, int, long, long_arg, method, object, receiver, ref_arg};
+use crate::lang::{
+    abstract_method_pub, read_int_field, read_long_field, write_int_field, write_long_field,
+};
+use crate::time::{civil_from_days, days_from_civil, length_of_month, zone_offset_seconds};
+use crate::{
+    boolean, class, field, int, int_arg, long, long_arg, method, object, receiver, ref_arg,
+};
 
 // -------------------------------------------------------------------------------------------
 // Interfaces
@@ -1648,7 +1653,7 @@ fn temporal_epoch_day(vm: &Vm<'_>, temporal: ObjectRef) -> Option<i64> {
         let zone = vm
             .read_ref_field(temporal, class, "zone", "Ljava/time/ZoneId;")
             .unwrap_or(ObjectRef::NULL);
-        let offset = crate::time::zone_offset_seconds(vm, zone);
+        let offset = zone_offset_seconds(vm, zone);
         return Some((millis.div_euclid(1000) + i64::from(offset)).div_euclid(86_400));
     }
     None
@@ -1660,8 +1665,8 @@ fn week_based_parts(epoch_day: i64, first_day: i32, minimal_days: i32) -> (i32, 
     let offset = (dow - first_day + 7) % 7;
     let week_start = epoch_day - i64::from(offset);
     let pivot = week_start + i64::from(minimal_days - 1);
-    let (wby, _, _) = crate::time::civil_from_days(pivot);
-    let jan1 = crate::time::days_from_civil(wby, 1, 1);
+    let (wby, _, _) = civil_from_days(pivot);
+    let jan1 = days_from_civil(wby, 1, 1);
     let jan1_dow = ((jan1 + 3).rem_euclid(7) + 1) as i32;
     let since_first = (jan1_dow - first_day + 7) % 7;
     let first_week_start = if since_first >= minimal_days {
@@ -1781,7 +1786,7 @@ const WEEK_FIELDS_COMPUTED_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
             match kind {
                 0 => long((epoch_day + 3).rem_euclid(7) + 1),
                 1 => {
-                    let (_, _, day) = crate::time::civil_from_days(epoch_day);
+                    let (_, _, day) = civil_from_days(epoch_day);
                     long(i64::from((day - 1) / 7 + 1))
                 }
                 4 => {
@@ -1869,7 +1874,7 @@ const WEEK_FIELDS_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
             if first.is_null() {
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
-            let minimal_days = crate::int_arg(args, 1);
+            let minimal_days = int_arg(args, 1);
             if !(1..=7).contains(&minimal_days) {
                 return Err(vm.throw_new(
                     "java/lang/IllegalArgumentException",
@@ -1955,4 +1960,340 @@ pub(crate) const WEEK_FIELDS: oxjvm_vm::NativeClass = class(
     ],
     &WEEK_FIELDS_METHODS,
     Some(week_fields_clinit),
+);
+
+// -------------------------------------------------------------------------------------------
+// TemporalAdjusters
+// -------------------------------------------------------------------------------------------
+
+/// Adjuster kinds implemented by `TemporalAdjusters$Impl`.
+const ADJUSTER_FIRST_DAY_OF_MONTH: i32 = 0;
+const ADJUSTER_LAST_DAY_OF_MONTH: i32 = 1;
+const ADJUSTER_FIRST_DAY_OF_NEXT_MONTH: i32 = 2;
+const ADJUSTER_FIRST_DAY_OF_YEAR: i32 = 3;
+const ADJUSTER_LAST_DAY_OF_YEAR: i32 = 4;
+const ADJUSTER_FIRST_DAY_OF_NEXT_YEAR: i32 = 5;
+const ADJUSTER_FIRST_IN_MONTH: i32 = 6;
+const ADJUSTER_LAST_IN_MONTH: i32 = 7;
+const ADJUSTER_NEXT: i32 = 8;
+const ADJUSTER_NEXT_OR_SAME: i32 = 9;
+const ADJUSTER_PREVIOUS: i32 = 10;
+const ADJUSTER_PREVIOUS_OR_SAME: i32 = 11;
+const ADJUSTER_DAY_OF_WEEK_IN_MONTH: i32 = 12;
+
+fn temporal_adjuster_new(
+    vm: &mut Vm<'_>,
+    kind: i32,
+    day_of_week: i32,
+    ordinal: i32,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/time/temporal/TemporalAdjusters$Impl")?;
+    let instance = vm.new_instance(class)?;
+    write_int_field(vm, instance, "kind", kind);
+    write_int_field(vm, instance, "dayOfWeek", day_of_week);
+    write_int_field(vm, instance, "ordinal", ordinal);
+    Ok(instance)
+}
+
+/// The `DayOfWeek` argument of an adjuster factory (NPE on null).
+fn adjuster_day_of_week(vm: &mut Vm<'_>, reference: ObjectRef) -> Result<i32, VmError> {
+    if reference.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    Ok(read_int_field(vm, reference, "value"))
+}
+
+/// The epoch day of a date-bearing temporal, if it has one.
+fn adjuster_epoch_day(vm: &Vm<'_>, temporal: ObjectRef) -> Option<i64> {
+    let class = vm.class_of(temporal);
+    if vm.find_field_opt(class, "epochDay", "J").is_some() {
+        return Some(read_long_field(vm, temporal, "epochDay"));
+    }
+    if vm.find_field_opt(class, "millis", "J").is_some() {
+        let millis = read_long_field(vm, temporal, "millis");
+        let zone = vm
+            .read_ref_field(temporal, class, "zone", "Ljava/time/ZoneId;")
+            .unwrap_or(ObjectRef::NULL);
+        let seconds = millis.div_euclid(1000) + i64::from(zone_offset_seconds(vm, zone));
+        return Some(seconds.div_euclid(86_400));
+    }
+    None
+}
+
+/// Copy a reference field between two instances of the same class.
+fn adjuster_copy_ref(
+    vm: &mut Vm<'_>,
+    from: ObjectRef,
+    to: ObjectRef,
+    name: &str,
+    descriptor: &str,
+) -> Result<(), VmError> {
+    if let Some(value) = vm.read_ref_field(from, vm.class_of(from), name, descriptor) {
+        if let Some((declaring, field)) = vm.find_field_opt(vm.class_of(to), name, descriptor) {
+            vm.set_instance_ref(to, declaring, field, value);
+        }
+    }
+    Ok(())
+}
+
+const TEMPORAL_ADJUSTERS_IMPL_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "adjustInto",
+    "(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;",
+    ACC_PUBLIC,
+    |vm, _, args| {
+        let this = receiver(args);
+        let temporal = ref_arg(args, 1);
+        if temporal.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let epoch_day = adjuster_epoch_day(vm, temporal).ok_or_else(|| {
+            vm.throw_new(
+                "java/time/temporal/UnsupportedTemporalTypeException",
+                Some("Unsupported temporal type"),
+            )
+        })?;
+        let kind = read_int_field(vm, this, "kind");
+        let target_dow = read_int_field(vm, this, "dayOfWeek");
+        let ordinal = read_int_field(vm, this, "ordinal");
+        let (year, month, day) = civil_from_days(epoch_day);
+        let current_dow = ((epoch_day + 3).rem_euclid(7) + 1) as i32;
+        let first_of_month = epoch_day - i64::from(day - 1);
+        let last_of_month = epoch_day - i64::from(day) + i64::from(length_of_month(year, month));
+        let first_dow = ((first_of_month + 3).rem_euclid(7) + 1) as i32;
+        let last_dow = ((last_of_month + 3).rem_euclid(7) + 1) as i32;
+        let first_in_month = first_of_month + i64::from((target_dow - first_dow + 7) % 7);
+        let last_in_month = last_of_month - i64::from((last_dow - target_dow + 7) % 7);
+        let new_day = match kind {
+            ADJUSTER_FIRST_DAY_OF_MONTH => first_of_month,
+            ADJUSTER_LAST_DAY_OF_MONTH => last_of_month,
+            ADJUSTER_FIRST_DAY_OF_NEXT_MONTH => last_of_month + 1,
+            ADJUSTER_FIRST_DAY_OF_YEAR => days_from_civil(year, 1, 1),
+            ADJUSTER_LAST_DAY_OF_YEAR => days_from_civil(year, 12, 31),
+            ADJUSTER_FIRST_DAY_OF_NEXT_YEAR => days_from_civil(year + 1, 1, 1),
+            ADJUSTER_FIRST_IN_MONTH => first_in_month,
+            ADJUSTER_LAST_IN_MONTH => last_in_month,
+            ADJUSTER_NEXT => {
+                let diff = (target_dow - current_dow + 7) % 7;
+                epoch_day + i64::from(if diff == 0 { 7 } else { diff })
+            }
+            ADJUSTER_NEXT_OR_SAME => epoch_day + i64::from((target_dow - current_dow + 7) % 7),
+            ADJUSTER_PREVIOUS => {
+                let diff = (current_dow - target_dow + 7) % 7;
+                epoch_day - i64::from(if diff == 0 { 7 } else { diff })
+            }
+            ADJUSTER_PREVIOUS_OR_SAME => epoch_day - i64::from((current_dow - target_dow + 7) % 7),
+            _ => {
+                if ordinal > 0 {
+                    first_in_month + i64::from((ordinal - 1) * 7)
+                } else {
+                    last_in_month + i64::from((ordinal + 1) * 7)
+                }
+            }
+        };
+        let class = vm.class_of(temporal);
+        let name = alloc::string::String::from(vm.class_name(class));
+        let instance = vm.new_instance(class)?;
+        match name.as_str() {
+            "java/time/LocalDate" => {
+                write_long_field(vm, instance, "epochDay", new_day);
+            }
+            "java/time/LocalDateTime" => {
+                write_long_field(vm, instance, "epochDay", new_day);
+                write_long_field(
+                    vm,
+                    instance,
+                    "nanoOfDay",
+                    read_long_field(vm, temporal, "nanoOfDay"),
+                );
+            }
+            "java/time/OffsetDateTime" => {
+                write_long_field(vm, instance, "epochDay", new_day);
+                write_long_field(
+                    vm,
+                    instance,
+                    "nanoOfDay",
+                    read_long_field(vm, temporal, "nanoOfDay"),
+                );
+                adjuster_copy_ref(vm, temporal, instance, "offset", "Ljava/time/ZoneOffset;")?;
+            }
+            "java/time/ZonedDateTime" => {
+                let old_millis = read_long_field(vm, temporal, "millis");
+                let millis = new_day * 86_400_000 + old_millis.rem_euclid(86_400_000);
+                write_long_field(vm, instance, "millis", millis);
+                write_int_field(vm, instance, "nano", read_int_field(vm, temporal, "nano"));
+                adjuster_copy_ref(vm, temporal, instance, "zone", "Ljava/time/ZoneId;")?;
+            }
+            _ => {
+                return Err(vm.throw_new(
+                    "java/time/temporal/UnsupportedTemporalTypeException",
+                    Some("Unsupported temporal type"),
+                ));
+            }
+        }
+        object(instance)
+    },
+)];
+
+pub(crate) const TEMPORAL_ADJUSTERS_IMPL: oxjvm_vm::NativeClass = class(
+    "java/time/temporal/TemporalAdjusters$Impl",
+    Some("java/lang/Object"),
+    &["java/time/temporal/TemporalAdjuster"],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("kind", "I", ACC_PRIVATE | ACC_FINAL, None),
+        field("dayOfWeek", "I", ACC_PRIVATE | ACC_FINAL, None),
+        field("ordinal", "I", ACC_PRIVATE | ACC_FINAL, None),
+    ],
+    &TEMPORAL_ADJUSTERS_IMPL_METHODS,
+    None,
+);
+
+const TEMPORAL_ADJUSTERS_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
+    method(
+        "firstDayOfMonth",
+        "()Ljava/time/temporal/TemporalAdjuster;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            object(temporal_adjuster_new(
+                vm,
+                ADJUSTER_FIRST_DAY_OF_MONTH,
+                0,
+                0,
+            )?)
+        },
+    ),
+    method(
+        "lastDayOfMonth",
+        "()Ljava/time/temporal/TemporalAdjuster;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(temporal_adjuster_new(vm, ADJUSTER_LAST_DAY_OF_MONTH, 0, 0)?),
+    ),
+    method(
+        "firstDayOfNextMonth",
+        "()Ljava/time/temporal/TemporalAdjuster;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            object(temporal_adjuster_new(
+                vm,
+                ADJUSTER_FIRST_DAY_OF_NEXT_MONTH,
+                0,
+                0,
+            )?)
+        },
+    ),
+    method(
+        "firstDayOfYear",
+        "()Ljava/time/temporal/TemporalAdjuster;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(temporal_adjuster_new(vm, ADJUSTER_FIRST_DAY_OF_YEAR, 0, 0)?),
+    ),
+    method(
+        "lastDayOfYear",
+        "()Ljava/time/temporal/TemporalAdjuster;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| object(temporal_adjuster_new(vm, ADJUSTER_LAST_DAY_OF_YEAR, 0, 0)?),
+    ),
+    method(
+        "firstDayOfNextYear",
+        "()Ljava/time/temporal/TemporalAdjuster;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            object(temporal_adjuster_new(
+                vm,
+                ADJUSTER_FIRST_DAY_OF_NEXT_YEAR,
+                0,
+                0,
+            )?)
+        },
+    ),
+    method(
+        "firstInMonth",
+        "(Ljava/time/DayOfWeek;)Ljava/time/temporal/TemporalAdjuster;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let dow = adjuster_day_of_week(vm, ref_arg(args, 0))?;
+            object(temporal_adjuster_new(vm, ADJUSTER_FIRST_IN_MONTH, dow, 0)?)
+        },
+    ),
+    method(
+        "lastInMonth",
+        "(Ljava/time/DayOfWeek;)Ljava/time/temporal/TemporalAdjuster;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let dow = adjuster_day_of_week(vm, ref_arg(args, 0))?;
+            object(temporal_adjuster_new(vm, ADJUSTER_LAST_IN_MONTH, dow, 0)?)
+        },
+    ),
+    method(
+        "next",
+        "(Ljava/time/DayOfWeek;)Ljava/time/temporal/TemporalAdjuster;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let dow = adjuster_day_of_week(vm, ref_arg(args, 0))?;
+            object(temporal_adjuster_new(vm, ADJUSTER_NEXT, dow, 0)?)
+        },
+    ),
+    method(
+        "nextOrSame",
+        "(Ljava/time/DayOfWeek;)Ljava/time/temporal/TemporalAdjuster;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let dow = adjuster_day_of_week(vm, ref_arg(args, 0))?;
+            object(temporal_adjuster_new(vm, ADJUSTER_NEXT_OR_SAME, dow, 0)?)
+        },
+    ),
+    method(
+        "previous",
+        "(Ljava/time/DayOfWeek;)Ljava/time/temporal/TemporalAdjuster;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let dow = adjuster_day_of_week(vm, ref_arg(args, 0))?;
+            object(temporal_adjuster_new(vm, ADJUSTER_PREVIOUS, dow, 0)?)
+        },
+    ),
+    method(
+        "previousOrSame",
+        "(Ljava/time/DayOfWeek;)Ljava/time/temporal/TemporalAdjuster;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let dow = adjuster_day_of_week(vm, ref_arg(args, 0))?;
+            object(temporal_adjuster_new(
+                vm,
+                ADJUSTER_PREVIOUS_OR_SAME,
+                dow,
+                0,
+            )?)
+        },
+    ),
+    method(
+        "dayOfWeekInMonth",
+        "(ILjava/time/DayOfWeek;)Ljava/time/temporal/TemporalAdjuster;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let ordinal = int_arg(args, 0);
+            if ordinal == 0 {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("The ordinal must not be zero"),
+                ));
+            }
+            let dow = adjuster_day_of_week(vm, ref_arg(args, 1))?;
+            object(temporal_adjuster_new(
+                vm,
+                ADJUSTER_DAY_OF_WEEK_IN_MONTH,
+                dow,
+                ordinal,
+            )?)
+        },
+    ),
+];
+
+pub(crate) const TEMPORAL_ADJUSTERS: oxjvm_vm::NativeClass = class(
+    "java/time/temporal/TemporalAdjusters",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[],
+    &TEMPORAL_ADJUSTERS_METHODS,
+    None,
 );

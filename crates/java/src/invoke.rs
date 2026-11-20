@@ -534,6 +534,9 @@ const METHOD_HANDLE_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
                 Some(MethodHandleValue::Inserted { .. }) => "MethodHandle(inserted)",
                 Some(MethodHandleValue::Identity { .. }) => "MethodHandle(identity)",
                 Some(MethodHandleValue::Empty { .. }) => "MethodHandle(empty)",
+                Some(MethodHandleValue::ArrayElementGetter { .. }) => {
+                    "MethodHandle(arrayElementGetter)"
+                }
                 None => "MethodHandle",
             };
             object(vm.make_string(text)?)
@@ -602,7 +605,7 @@ pub(crate) const METHOD_HANDLE: oxjvm_vm::NativeClass = class(
 // MethodHandles + Lookup
 // -------------------------------------------------------------------------------------------
 
-const METHOD_HANDLES_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const METHOD_HANDLES_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method(
         "lookup",
         "()Ljava/lang/invoke/MethodHandles$Lookup;",
@@ -748,6 +751,32 @@ const METHOD_HANDLES_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
             object(vm.make_method_handle(MethodHandleValue::Empty { method_type })?)
+        },
+    ),
+    method(
+        "arrayElementGetter",
+        "(Ljava/lang/Class;)Ljava/lang/invoke/MethodHandle;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let class_object = ref_arg(args, 0);
+            if class_object.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let array_class = match vm.heap.get(class_object).map(|object| &object.data) {
+                Some(oxjvm_vm::ObjectData::Class(class)) => *class,
+                _ => {
+                    return Err(
+                        vm.throw_new("java/lang/IllegalArgumentException", Some("not a class"))
+                    );
+                }
+            };
+            if !vm.class_name(array_class).starts_with('[') {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("not an array type"),
+                ));
+            }
+            object(vm.make_method_handle(MethodHandleValue::ArrayElementGetter { array_class })?)
         },
     ),
 ];

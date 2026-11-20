@@ -2225,6 +2225,23 @@ impl<'a> Vm<'a> {
                     _ => Value::Ref(ObjectRef::NULL),
                 })
             }
+            MethodHandleValue::ArrayElementGetter { .. } => {
+                let array = args.first().copied().unwrap_or(Value::Ref(ObjectRef::NULL));
+                if array.is_null_ref() {
+                    return Err(self.throw_new("java/lang/NullPointerException", None));
+                }
+                let index = args.get(1).copied().unwrap_or(Value::Int(0)).as_int();
+                let length = self.array_length(array.as_ref())?;
+                if index < 0 || index as usize >= length {
+                    return Err(self.throw_new(
+                        "java/lang/ArrayIndexOutOfBoundsException",
+                        Some(&alloc::format!(
+                            "Index {index} out of bounds for length {length}"
+                        )),
+                    ));
+                }
+                self.array_get(array.as_ref(), index)
+            }
         }
     }
 }
@@ -2348,6 +2365,13 @@ pub(crate) fn handle_method_type(
             format!("({parameters}){returns}")
         }
         MethodHandleValue::Empty { method_type } => vm.method_type_of(*method_type)?,
+        MethodHandleValue::ArrayElementGetter { array_class } => {
+            let name = vm.class_name(*array_class);
+            if !name.starts_with('[') {
+                return None;
+            }
+            format!("({name}I){}", &name[1..])
+        }
         _ => return None,
     };
     let parsed = MethodDescriptor::parse(&descriptor).ok()?;

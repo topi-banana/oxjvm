@@ -1204,7 +1204,7 @@ pub(crate) const DATE_TIME_FORMATTER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
+const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method(
         "now",
         "()Ljava/time/ZonedDateTime;",
@@ -1482,6 +1482,24 @@ const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
             zoned_date_time_new(vm, millis, nano, zone)
         },
     ),
+    method(
+        "plusDays",
+        "(J)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let days = crate::long_arg(args, 1);
+            if days == 0 {
+                return object(this);
+            }
+            let millis = read_long_field(vm, this, "millis") + days * 86_400_000;
+            let nano = read_int_field(vm, this, "nano");
+            let zone = vm
+                .read_ref_field(this, vm.class_of(this), "zone", "Ljava/time/ZoneId;")
+                .unwrap_or(ObjectRef::NULL);
+            zoned_date_time_new(vm, millis, nano, zone)
+        },
+    ),
 ];
 
 // -------------------------------------------------------------------------------------------
@@ -1671,11 +1689,11 @@ pub(crate) fn days_from_civil(year: i32, month: i32, day: i32) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-fn is_leap_year(year: i32) -> bool {
+pub(crate) fn is_leap_year(year: i32) -> bool {
     (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
 }
 
-fn length_of_month(year: i32, month: i32) -> i32 {
+pub(crate) fn length_of_month(year: i32, month: i32) -> i32 {
     match month {
         2 => {
             if is_leap_year(year) {

@@ -7,6 +7,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use oxjvm_classfile::flags::*;
 
+use crate::lang::{read_int_field, write_int_field};
 use crate::{class, field, method, object, receiver, ref_arg};
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
@@ -33,6 +34,57 @@ fn base64_encode_bytes(bytes: &[u8]) -> Vec<u8> {
         });
     }
     out
+}
+
+/// Wrap MIME base64 output into lines of `line_length` characters.
+fn base64_encode_mime(encoded: &[u8], line_length: i32, separator: &str) -> Vec<u8> {
+    if line_length <= 0 {
+        return encoded.to_vec();
+    }
+    let line = line_length as usize;
+    let mut out = Vec::new();
+    let mut chunks = encoded.chunks(line).peekable();
+    while let Some(chunk) = chunks.next() {
+        out.extend_from_slice(chunk);
+        if chunks.peek().is_some() {
+            out.extend_from_slice(separator.as_bytes());
+        }
+    }
+    out
+}
+
+/// Build a MIME encoder instance with the given line length and separator.
+fn base64_mime_encoder(
+    vm: &mut Vm<'_>,
+    line_length: i32,
+    separator: &str,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/Base64$Encoder")?;
+    let instance = vm.new_instance(class)?;
+    write_int_field(vm, instance, "mime", 1);
+    write_int_field(vm, instance, "lineLength", line_length.max(0));
+    let text = vm.make_string(separator)?;
+    if let Some((declaring, field)) = vm.find_field_opt(class, "lineSep", "Ljava/lang/String;") {
+        vm.set_instance_ref(instance, declaring, field, text);
+    }
+    Ok(instance)
+}
+
+/// The MIME line length/separator of an encoder (0/"" for the basic encoders).
+fn base64_mime_parts(vm: &Vm<'_>, encoder: ObjectRef) -> (i32, String) {
+    if read_int_field(vm, encoder, "mime") == 0 {
+        return (0, String::new());
+    }
+    let separator = vm
+        .read_ref_field(
+            encoder,
+            vm.class_of(encoder),
+            "lineSep",
+            "Ljava/lang/String;",
+        )
+        .map(|text| vm.string_or_empty(text))
+        .unwrap_or_default();
+    (read_int_field(vm, encoder, "lineLength"), separator)
 }
 
 fn base64_decode_text(text: &str) -> Vec<u8> {
@@ -79,7 +131,7 @@ fn byte_array_of(vm: &mut Vm<'_>, reference: ObjectRef) -> Result<Vec<u8>, VmErr
 // Base64
 // -------------------------------------------------------------------------------------------
 
-const BASE64_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const BASE64_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     method(
         "getEncoder",
         "()Ljava/util/Base64$Encoder;",
@@ -120,9 +172,29 @@ const BASE64_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         "getMimeEncoder",
         "()Ljava/util/Base64$Encoder;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| {
-            let class = vm.resolve_class("java/util/Base64$Encoder")?;
-            object(vm.new_instance(class)?)
+        |vm, _, _| object(base64_mime_encoder(vm, 76, "\r\n")?),
+    ),
+    method(
+        "getMimeEncoder",
+        "(I[B)Ljava/util/Base64$Encoder;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let line_length = crate::int_arg(args, 0);
+            let separator_ref = ref_arg(args, 1);
+            if separator_ref.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let separator_bytes = byte_array_of(vm, separator_ref)?;
+            for byte in &separator_bytes {
+                if ALPHABET.contains(byte) || *byte == b'=' {
+                    return Err(vm.throw_new(
+                        "java/lang/IllegalArgumentException",
+                        Some("lineSeparator contains base64 alphabet character"),
+                    ));
+                }
+            }
+            let separator = String::from_utf8_lossy(&separator_bytes).into_owned();
+            object(base64_mime_encoder(vm, line_length, &separator)?)
         },
     ),
     method(
@@ -150,7 +222,9 @@ const BASE64_ENCODER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
     method("encode", "([B)[B", ACC_PUBLIC, |vm, _, args| {
         let bytes = byte_array_of(vm, ref_arg(args, 1))?;
         let encoded = base64_encode_bytes(&bytes);
-        object(bytes_array(vm, &encoded)?)
+        let (line_length, separator) = base64_mime_parts(vm, receiver(args));
+        let wrapped = base64_encode_mime(&encoded, line_length, &separator);
+        object(bytes_array(vm, &wrapped)?)
     }),
     method(
         "encodeToString",
@@ -159,7 +233,9 @@ const BASE64_ENCODER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
         |vm, _, args| {
             let bytes = byte_array_of(vm, ref_arg(args, 1))?;
             let encoded = base64_encode_bytes(&bytes);
-            let text = String::from_utf8_lossy(&encoded).into_owned();
+            let (line_length, separator) = base64_mime_parts(vm, receiver(args));
+            let wrapped = base64_encode_mime(&encoded, line_length, &separator);
+            let text = String::from_utf8_lossy(&wrapped).into_owned();
             object(vm.make_string(&text)?)
         },
     ),
@@ -176,7 +252,11 @@ pub(crate) const BASE64_ENCODER: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_FINAL,
-    &[],
+    &[
+        field("mime", "I", ACC_PRIVATE, None),
+        field("lineLength", "I", ACC_PRIVATE, None),
+        field("lineSep", "Ljava/lang/String;", ACC_PRIVATE, None),
+    ],
     &BASE64_ENCODER_METHODS,
     None,
 );
@@ -261,7 +341,7 @@ const HEX_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let delimiter = hex_delimiter(vm, receiver(args));
-            let uppercase = crate::lang::read_int_field(vm, receiver(args), "upperCase") != 0;
+            let uppercase = read_int_field(vm, receiver(args), "upperCase") != 0;
             let bytes = byte_array_of(vm, ref_arg(args, 1))?;
             let text = hex_format_text(&delimiter, &bytes, uppercase);
             object(vm.make_string(&text)?)
@@ -273,7 +353,7 @@ const HEX_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            crate::lang::write_int_field(vm, this, "upperCase", 1);
+            write_int_field(vm, this, "upperCase", 1);
             object(this)
         },
     ),
