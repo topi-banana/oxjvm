@@ -1548,8 +1548,22 @@ const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
         "getCurrencyInstance",
         "(Ljava/util/Locale;)Ljava/text/NumberFormat;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| {
-            let pattern = currency_pattern(vm);
+        |vm, _, args| {
+            let locale = ref_arg(args, 0);
+            let country = if locale.is_null() {
+                default_country(vm)
+            } else {
+                vm.read_string_field(locale, vm.class_of(locale), "country")
+                    .unwrap_or_default()
+            };
+            let symbol = if country.is_empty() {
+                "\u{00a4}"
+            } else {
+                currency_symbol(&country)
+            };
+            let mut pattern = NumberPattern::parse(&alloc::format!("{symbol}#,##0.00"));
+            pattern.min_fraction = 2;
+            pattern.max_fraction = 2;
             number_format(vm, &pattern)
         },
     ),
