@@ -7024,6 +7024,286 @@ pub(crate) const ZONE_RULES: oxjvm_vm::NativeClass = class(
     None,
 );
 
+/// Offsets (in seconds) of a `ZoneOffsetTransition`, before and after.
+fn zot_offset_seconds(vm: &Vm<'_>, this: ObjectRef) -> (i32, i32) {
+    let class = vm.class_of(this);
+    let before = vm
+        .read_ref_field(this, class, "offsetBefore", "Ljava/time/ZoneOffset;")
+        .unwrap_or(ObjectRef::NULL);
+    let after = vm
+        .read_ref_field(this, class, "offsetAfter", "Ljava/time/ZoneOffset;")
+        .unwrap_or(ObjectRef::NULL);
+    (
+        zone_offset_seconds(vm, before),
+        zone_offset_seconds(vm, after),
+    )
+}
+
+/// The transition `LocalDateTime` of a `ZoneOffsetTransition`.
+fn zot_transition(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(
+        this,
+        vm.class_of(this),
+        "transition",
+        "Ljava/time/LocalDateTime;",
+    )
+    .unwrap_or(ObjectRef::NULL)
+}
+
+const ZONE_OFFSET_TRANSITION_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+    method(
+        "of",
+        "(Ljava/time/LocalDateTime;Ljava/time/ZoneOffset;Ljava/time/ZoneOffset;)Ljava/time/zone/ZoneOffsetTransition;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let transition = ref_arg(args, 0);
+            let before = ref_arg(args, 1);
+            let after = ref_arg(args, 2);
+            if transition.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", Some("transition")));
+            }
+            if before.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", Some("offsetBefore")));
+            }
+            if after.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", Some("offsetAfter")));
+            }
+            let before_secs = zone_offset_seconds(vm, before);
+            let after_secs = zone_offset_seconds(vm, after);
+            if before_secs == after_secs {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("Offsets must not be equal"),
+                ));
+            }
+            let epoch_day = read_long_field(vm, transition, "epochDay");
+            let nano_of_day = read_long_field(vm, transition, "nanoOfDay");
+            if nano_of_day % 1_000_000_000 != 0 {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("Nano-of-second must be zero"),
+                ));
+            }
+            let epoch_second =
+                epoch_day * 86_400 + nano_of_day / 1_000_000_000 - i64::from(before_secs);
+            let class = vm.resolve_class("java/time/zone/ZoneOffsetTransition")?;
+            let instance = vm.new_instance(class)?;
+            write_long_field(vm, instance, "epochSecond", epoch_second);
+            for (name, value) in [
+                ("transition", transition),
+                ("offsetBefore", before),
+                ("offsetAfter", after),
+            ] {
+                if let Some((declaring, field)) = vm
+                    .find_field_opt(class, name, "Ljava/time/LocalDateTime;")
+                    .or_else(|| vm.find_field_opt(class, name, "Ljava/time/ZoneOffset;"))
+                {
+                    vm.set_instance_ref(instance, declaring, field, value);
+                }
+            }
+            object(instance)
+        },
+    ),
+    method(
+        "getInstant",
+        "()Ljava/time/Instant;",
+        ACC_PUBLIC,
+        |vm, _, args| instant_new(vm, read_long_field(vm, receiver(args), "epochSecond"), 0),
+    ),
+    method("toEpochSecond", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(read_long_field(vm, receiver(args), "epochSecond"))
+    }),
+    method(
+        "getDateTimeBefore",
+        "()Ljava/time/LocalDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| object(zot_transition(vm, receiver(args))),
+    ),
+    method(
+        "getDateTimeAfter",
+        "()Ljava/time/LocalDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (before, after) = zot_offset_seconds(vm, this);
+            let transition = zot_transition(vm, this);
+            let (class, method) = vm.resolve_virtual_method(
+                transition,
+                "plusSeconds",
+                "(J)Ljava/time/LocalDateTime;",
+            )?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![
+                    Value::Ref(transition),
+                    Value::Long(i64::from(after - before)),
+                ],
+            )
+        },
+    ),
+    method(
+        "getOffsetBefore",
+        "()Ljava/time/ZoneOffset;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(
+                vm.read_ref_field(
+                    this,
+                    vm.class_of(this),
+                    "offsetBefore",
+                    "Ljava/time/ZoneOffset;",
+                )
+                .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method(
+        "getOffsetAfter",
+        "()Ljava/time/ZoneOffset;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(
+                vm.read_ref_field(
+                    this,
+                    vm.class_of(this),
+                    "offsetAfter",
+                    "Ljava/time/ZoneOffset;",
+                )
+                .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method(
+        "getDuration",
+        "()Ljava/time/Duration;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (before, after) = zot_offset_seconds(vm, receiver(args));
+            duration_of_seconds(vm, i64::from(after - before), 0)
+        },
+    ),
+    method("isGap", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let (before, after) = zot_offset_seconds(vm, receiver(args));
+        boolean(after > before)
+    }),
+    method("isOverlap", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let (before, after) = zot_offset_seconds(vm, receiver(args));
+        boolean(after < before)
+    }),
+    method(
+        "isValidOffset",
+        "(Ljava/time/ZoneOffset;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let offset = ref_arg(args, 1);
+            if offset.is_null() {
+                return boolean(false);
+            }
+            let (before, after) = zot_offset_seconds(vm, receiver(args));
+            let total = zone_offset_seconds(vm, offset);
+            boolean(after <= before && (total == before || total == after))
+        },
+    ),
+    method(
+        "compareTo",
+        "(Ljava/time/zone/ZoneOffsetTransition;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let a = read_long_field(vm, this, "epochSecond");
+            let b = read_long_field(vm, other, "epochSecond");
+            int(a.cmp(&b) as i32)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let class = vm.resolve_class("java/time/zone/ZoneOffsetTransition")?;
+            if other.is_null() || !vm.is_instance(other, class) {
+                return boolean(false);
+            }
+            let (b1, a1) = zot_offset_seconds(vm, this);
+            let (b2, a2) = zot_offset_seconds(vm, other);
+            boolean(
+                read_long_field(vm, this, "epochSecond")
+                    == read_long_field(vm, other, "epochSecond")
+                    && b1 == b2
+                    && a1 == a2,
+            )
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let transition = zot_transition(vm, this);
+        let (class, method) = vm.resolve_virtual_method(transition, "hashCode", "()I")?;
+        let thash = vm
+            .invoke_method(class, method, vec![Value::Ref(transition)])?
+            .as_int();
+        let (before, after) = zot_offset_seconds(vm, this);
+        int(thash ^ before ^ ((after as u32).rotate_left(16) as i32))
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (before, after) = zot_offset_seconds(vm, this);
+            let transition = zot_transition(vm, this);
+            let (class, method) =
+                vm.resolve_virtual_method(transition, "toString", "()Ljava/lang/String;")?;
+            let text = vm.invoke_method(class, method, vec![Value::Ref(transition)])?;
+            let kind = if after > before { "Gap" } else { "Overlap" };
+            let result = alloc::format!(
+                "Transition[{kind} at {}{} to {}]",
+                vm.string_or_empty(text.as_ref()),
+                crate::lang::zone_offset_id(before),
+                crate::lang::zone_offset_id(after),
+            );
+            object(vm.make_string(&result)?)
+        },
+    ),
+];
+
+/// `java.time.zone.ZoneOffsetTransition`: a gap or overlap between two offsets.
+pub(crate) const ZONE_OFFSET_TRANSITION: oxjvm_vm::NativeClass = class(
+    "java/time/zone/ZoneOffsetTransition",
+    Some("java/lang/Object"),
+    &["java/lang/Comparable", "java/io/Serializable"],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("epochSecond", "J", ACC_PRIVATE | ACC_FINAL, None),
+        field(
+            "transition",
+            "Ljava/time/LocalDateTime;",
+            ACC_PRIVATE | ACC_FINAL,
+            None,
+        ),
+        field(
+            "offsetBefore",
+            "Ljava/time/ZoneOffset;",
+            ACC_PRIVATE | ACC_FINAL,
+            None,
+        ),
+        field(
+            "offsetAfter",
+            "Ljava/time/ZoneOffset;",
+            ACC_PRIVATE | ACC_FINAL,
+            None,
+        ),
+    ],
+    &ZONE_OFFSET_TRANSITION_METHODS,
+    None,
+);
+
 // -------------------------------------------------------------------------------------------
 // java.time.OffsetDateTime
 // -------------------------------------------------------------------------------------------
