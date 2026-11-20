@@ -4669,6 +4669,156 @@ pub(crate) const STRING_READER: oxjvm_vm::NativeClass = class(
     None,
 );
 
+fn pushback_reader_in(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "in", "Ljava/io/Reader;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn pushback_reader_buf(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "buf", "[I")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn pushback_reader_ctor(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    input: ObjectRef,
+    size: i32,
+) -> Result<(), VmError> {
+    if size <= 0 {
+        return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("size <= 0")));
+    }
+    let (declaring, field) = vm.find_field(vm.class_of(this), "in", "Ljava/io/Reader;")?;
+    vm.set_instance_ref(this, declaring, field, input);
+    let buf = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Int, size as usize)?;
+    let (declaring, field) = vm.find_field(vm.class_of(this), "buf", "[I")?;
+    vm.set_instance_ref(this, declaring, field, buf);
+    crate::lang::write_int_field(vm, this, "count", 0);
+    Ok(())
+}
+
+fn pushback_reader_unread_int(vm: &mut Vm<'_>, this: ObjectRef, ch: i32) -> Result<(), VmError> {
+    let buf = pushback_reader_buf(vm, this);
+    let count = crate::lang::read_int_field(vm, this, "count");
+    let capacity = vm.array_length(buf)? as i32;
+    if count >= capacity {
+        return Err(vm.throw_new("java/io/IOException", Some("Pushback buffer overflow")));
+    }
+    vm.array_set(buf, count, Value::Int(ch), true)?;
+    crate::lang::write_int_field(vm, this, "count", count + 1);
+    Ok(())
+}
+
+const PUSHBACK_READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+    method(
+        "<init>",
+        "(Ljava/io/Reader;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            pushback_reader_ctor(vm, receiver(args), ref_arg(args, 1), 1)?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/Reader;I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            pushback_reader_ctor(vm, receiver(args), ref_arg(args, 1), int_arg(args, 2))?;
+            void()
+        },
+    ),
+    method("read", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let count = crate::lang::read_int_field(vm, this, "count");
+        if count > 0 {
+            let buf = pushback_reader_buf(vm, this);
+            let ch = vm.array_get(buf, count - 1)?.as_int();
+            crate::lang::write_int_field(vm, this, "count", count - 1);
+            int(ch)
+        } else {
+            let input = pushback_reader_in(vm, this);
+            let (class, method) = vm.resolve_virtual_method(input, "read", "()I")?;
+            vm.invoke_method(class, method, vec![Value::Ref(input)])
+        }
+    }),
+    method("read", "([CII)I", ACC_PUBLIC, |vm, _, args| {
+        reader_read_chars(vm, args, int_arg(args, 2), Some(int_arg(args, 3)))
+    }),
+    method("unread", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        pushback_reader_unread_int(vm, receiver(args), int_arg(args, 1))?;
+        void()
+    }),
+    method("unread", "([C)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let array = ref_arg(args, 1);
+        let length = vm.array_length(array)? as i32;
+        let (class, method) = vm.resolve_virtual_method(this, "unread", "([CII)V")?;
+        vm.invoke_method(
+            class,
+            method,
+            vec![
+                Value::Ref(this),
+                Value::Ref(array),
+                Value::Int(0),
+                Value::Int(length),
+            ],
+        )?;
+        void()
+    }),
+    method("unread", "([CII)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let array = ref_arg(args, 1);
+        let offset = int_arg(args, 2);
+        let length = int_arg(args, 3);
+        let capacity = vm.array_length(array)? as i32;
+        if offset < 0 || length < 0 || offset + length > capacity {
+            return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+        }
+        let buf = pushback_reader_buf(vm, this);
+        let count = crate::lang::read_int_field(vm, this, "count");
+        let buf_capacity = vm.array_length(buf)? as i32;
+        if count + length > buf_capacity {
+            return Err(vm.throw_new("java/io/IOException", Some("Pushback buffer overflow")));
+        }
+        for index in (offset..offset + length).rev() {
+            let ch = vm.array_get(array, index)?.as_int();
+            pushback_reader_unread_int(vm, this, ch)?;
+        }
+        void()
+    }),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        let input = pushback_reader_in(vm, receiver(args));
+        let (class, method) = vm.resolve_virtual_method(input, "close", "()V")?;
+        vm.invoke_method(class, method, vec![Value::Ref(input)])?;
+        void()
+    }),
+    method("ready", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if crate::lang::read_int_field(vm, this, "count") > 0 {
+            return boolean(true);
+        }
+        let input = pushback_reader_in(vm, this);
+        let (class, method) = vm.resolve_virtual_method(input, "ready", "()Z")?;
+        vm.invoke_method(class, method, vec![Value::Ref(input)])
+    }),
+];
+
+/// `java.io.PushbackReader`: a Reader with a pushback buffer for unreading characters.
+pub(crate) const PUSHBACK_READER: oxjvm_vm::NativeClass = class(
+    "java/io/PushbackReader",
+    Some("java/io/Reader"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("in", "Ljava/io/Reader;", ACC_PRIVATE, None),
+        field("buf", "[I", ACC_PRIVATE, None),
+        field("count", "I", ACC_PRIVATE, None),
+    ],
+    &PUSHBACK_READER_METHODS,
+    None,
+);
+
 // -------------------------------------------------------------------------------------------
 // RandomAccessFile
 // -------------------------------------------------------------------------------------------
