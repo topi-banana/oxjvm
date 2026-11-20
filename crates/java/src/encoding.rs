@@ -355,7 +355,7 @@ fn hex_format_text(delimiter: &str, bytes: &[u8], uppercase: bool) -> String {
     out
 }
 
-const HEX_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+const HEX_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method(
         "of",
         "()Ljava/util/HexFormat;",
@@ -423,6 +423,47 @@ const HEX_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
                 bytes.push((high << 4) | low);
             }
             object(bytes_array(vm, &bytes)?)
+        },
+    ),
+    method(
+        "toHexDigits",
+        "(I)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let uppercase = read_int_field(vm, receiver(args), "upperCase") != 0;
+            let value = crate::int_arg(args, 1) as u32;
+            let text = if uppercase {
+                alloc::format!("{:08X}", value)
+            } else {
+                alloc::format!("{:08x}", value)
+            };
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "toHexDigits",
+        "(J)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let uppercase = read_int_field(vm, receiver(args), "upperCase") != 0;
+            let value = crate::long_arg(args, 1) as u64;
+            let text = if uppercase {
+                alloc::format!("{:016X}", value)
+            } else {
+                alloc::format!("{:016x}", value)
+            };
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "fromHexDigits",
+        "(Ljava/lang/CharSequence;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = vm.string_or_empty(ref_arg(args, 1));
+            let value = u32::from_str_radix(text.trim(), 16)
+                .map_err(|_| vm.throw_new("java/lang/NumberFormatException", Some(&text)))?;
+            crate::int(value as i32)
         },
     ),
 ];

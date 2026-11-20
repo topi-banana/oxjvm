@@ -3,7 +3,7 @@
 //! These are plain objects with a single `value` field; the guest's own concurrency guarantees are
 //! met because the interpreter executes one instruction at a time.
 
-use alloc::string::ToString;
+use alloc::string::{String, ToString};
 use alloc::vec;
 
 use oxjvm_classfile::flags::*;
@@ -1155,5 +1155,526 @@ pub(crate) const DOUBLE_ACCUMULATOR: oxjvm_vm::NativeClass = class(
         ),
     ],
     &DOUBLE_ACCUMULATOR_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// Atomic arrays
+// -------------------------------------------------------------------------------------------
+
+fn atomic_int_array(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "array", "[I")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn atomic_long_array(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "array", "[J")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn atomic_ref_array(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "array", "[Ljava/lang/Object;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn atomic_int_array_add(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    index: i32,
+    delta: i32,
+) -> Result<(i32, i32), VmError> {
+    let array = atomic_int_array(vm, this);
+    let old = vm.array_get(array, index)?.as_int();
+    let new = old.wrapping_add(delta);
+    vm.array_set(array, index, Value::Int(new), false)?;
+    Ok((old, new))
+}
+
+fn atomic_long_array_add(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    index: i32,
+    delta: i64,
+) -> Result<(i64, i64), VmError> {
+    let array = atomic_long_array(vm, this);
+    let old = vm.array_get(array, index)?.as_long();
+    let new = old.wrapping_add(delta);
+    vm.array_set(array, index, Value::Long(new), false)?;
+    Ok((old, new))
+}
+
+const ATOMIC_INTEGER_ARRAY_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+    method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let length = crate::int_arg(args, 1);
+        if length < 0 {
+            return Err(vm.throw_new("java/lang/NegativeArraySizeException", None));
+        }
+        let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Int, length as usize)?;
+        let class = vm.class_of(this);
+        let (declaring, field) = vm.find_field(class, "array", "[I")?;
+        vm.set_instance_ref(this, declaring, field, array);
+        void()
+    }),
+    method("<init>", "([I)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let source = ref_arg(args, 1);
+        if source.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let length = vm.array_length(source)?;
+        let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Int, length)?;
+        for index in 0..length {
+            let value = vm.array_get(source, index as i32)?;
+            vm.array_set(array, index as i32, value, false)?;
+        }
+        let class = vm.class_of(this);
+        let (declaring, field) = vm.find_field(class, "array", "[I")?;
+        vm.set_instance_ref(this, declaring, field, array);
+        void()
+    }),
+    method("length", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(vm.array_length(atomic_int_array(vm, receiver(args)))? as i32)
+    }),
+    method("get", "(I)I", ACC_PUBLIC, |vm, _, args| {
+        int(vm
+            .array_get(
+                atomic_int_array(vm, receiver(args)),
+                crate::int_arg(args, 1),
+            )?
+            .as_int())
+    }),
+    method("set", "(II)V", ACC_PUBLIC, |vm, _, args| {
+        vm.array_set(
+            atomic_int_array(vm, receiver(args)),
+            crate::int_arg(args, 1),
+            Value::Int(crate::int_arg(args, 2)),
+            false,
+        )?;
+        void()
+    }),
+    method("lazySet", "(II)V", ACC_PUBLIC, |vm, _, args| {
+        vm.array_set(
+            atomic_int_array(vm, receiver(args)),
+            crate::int_arg(args, 1),
+            Value::Int(crate::int_arg(args, 2)),
+            false,
+        )?;
+        void()
+    }),
+    method("getAndSet", "(II)I", ACC_PUBLIC, |vm, _, args| {
+        let array = atomic_int_array(vm, receiver(args));
+        let index = crate::int_arg(args, 1);
+        let old = vm.array_get(array, index)?.as_int();
+        vm.array_set(array, index, Value::Int(crate::int_arg(args, 2)), false)?;
+        int(old)
+    }),
+    method("compareAndSet", "(III)Z", ACC_PUBLIC, |vm, _, args| {
+        let array = atomic_int_array(vm, receiver(args));
+        let index = crate::int_arg(args, 1);
+        let expected = crate::int_arg(args, 2);
+        let update = crate::int_arg(args, 3);
+        if vm.array_get(array, index)?.as_int() == expected {
+            vm.array_set(array, index, Value::Int(update), false)?;
+            return boolean(true);
+        }
+        boolean(false)
+    }),
+    method("weakCompareAndSet", "(III)Z", ACC_PUBLIC, |vm, _, args| {
+        let array = atomic_int_array(vm, receiver(args));
+        let index = crate::int_arg(args, 1);
+        let expected = crate::int_arg(args, 2);
+        let update = crate::int_arg(args, 3);
+        if vm.array_get(array, index)?.as_int() == expected {
+            vm.array_set(array, index, Value::Int(update), false)?;
+            return boolean(true);
+        }
+        boolean(false)
+    }),
+    method("getAndIncrement", "(I)I", ACC_PUBLIC, |vm, _, args| {
+        let (old, _) = atomic_int_array_add(vm, receiver(args), crate::int_arg(args, 1), 1)?;
+        int(old)
+    }),
+    method("getAndDecrement", "(I)I", ACC_PUBLIC, |vm, _, args| {
+        let (old, _) = atomic_int_array_add(vm, receiver(args), crate::int_arg(args, 1), -1)?;
+        int(old)
+    }),
+    method("incrementAndGet", "(I)I", ACC_PUBLIC, |vm, _, args| {
+        let (_, new) = atomic_int_array_add(vm, receiver(args), crate::int_arg(args, 1), 1)?;
+        int(new)
+    }),
+    method("decrementAndGet", "(I)I", ACC_PUBLIC, |vm, _, args| {
+        let (_, new) = atomic_int_array_add(vm, receiver(args), crate::int_arg(args, 1), -1)?;
+        int(new)
+    }),
+    method("getAndAdd", "(II)I", ACC_PUBLIC, |vm, _, args| {
+        let (old, _) = atomic_int_array_add(
+            vm,
+            receiver(args),
+            crate::int_arg(args, 1),
+            crate::int_arg(args, 2),
+        )?;
+        int(old)
+    }),
+    method("addAndGet", "(II)I", ACC_PUBLIC, |vm, _, args| {
+        let (_, new) = atomic_int_array_add(
+            vm,
+            receiver(args),
+            crate::int_arg(args, 1),
+            crate::int_arg(args, 2),
+        )?;
+        int(new)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let array = atomic_int_array(vm, receiver(args));
+            let length = vm.array_length(array)?;
+            let mut text = String::from("[");
+            for index in 0..length {
+                if index > 0 {
+                    text.push_str(", ");
+                }
+                text.push_str(&alloc::format!(
+                    "{}",
+                    vm.array_get(array, index as i32)?.as_int()
+                ));
+            }
+            text.push(']');
+            object(vm.make_string(&text)?)
+        },
+    ),
+];
+
+/// `AtomicIntegerArray`: an int array with atomic element operations.
+pub(crate) const ATOMIC_INTEGER_ARRAY: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/atomic/AtomicIntegerArray",
+    Some("java/lang/Object"),
+    &["java/io/Serializable"],
+    ACC_PUBLIC,
+    &[field("array", "[I", ACC_PRIVATE | ACC_FINAL, None)],
+    &ATOMIC_INTEGER_ARRAY_METHODS,
+    None,
+);
+
+const ATOMIC_LONG_ARRAY_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+    method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let length = crate::int_arg(args, 1);
+        if length < 0 {
+            return Err(vm.throw_new("java/lang/NegativeArraySizeException", None));
+        }
+        let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Long, length as usize)?;
+        let class = vm.class_of(this);
+        let (declaring, field) = vm.find_field(class, "array", "[J")?;
+        vm.set_instance_ref(this, declaring, field, array);
+        void()
+    }),
+    method("<init>", "([J)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let source = ref_arg(args, 1);
+        if source.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let length = vm.array_length(source)?;
+        let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Long, length)?;
+        for index in 0..length {
+            let value = vm.array_get(source, index as i32)?;
+            vm.array_set(array, index as i32, value, false)?;
+        }
+        let class = vm.class_of(this);
+        let (declaring, field) = vm.find_field(class, "array", "[J")?;
+        vm.set_instance_ref(this, declaring, field, array);
+        void()
+    }),
+    method("length", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(vm.array_length(atomic_long_array(vm, receiver(args)))? as i32)
+    }),
+    method("get", "(I)J", ACC_PUBLIC, |vm, _, args| {
+        long(
+            vm.array_get(
+                atomic_long_array(vm, receiver(args)),
+                crate::int_arg(args, 1),
+            )?
+            .as_long(),
+        )
+    }),
+    method("set", "(IJ)V", ACC_PUBLIC, |vm, _, args| {
+        vm.array_set(
+            atomic_long_array(vm, receiver(args)),
+            crate::int_arg(args, 1),
+            Value::Long(crate::long_arg(args, 2)),
+            false,
+        )?;
+        void()
+    }),
+    method("lazySet", "(IJ)V", ACC_PUBLIC, |vm, _, args| {
+        vm.array_set(
+            atomic_long_array(vm, receiver(args)),
+            crate::int_arg(args, 1),
+            Value::Long(crate::long_arg(args, 2)),
+            false,
+        )?;
+        void()
+    }),
+    method("getAndSet", "(IJ)J", ACC_PUBLIC, |vm, _, args| {
+        let array = atomic_long_array(vm, receiver(args));
+        let index = crate::int_arg(args, 1);
+        let old = vm.array_get(array, index)?.as_long();
+        vm.array_set(array, index, Value::Long(crate::long_arg(args, 2)), false)?;
+        long(old)
+    }),
+    method("compareAndSet", "(IJJ)Z", ACC_PUBLIC, |vm, _, args| {
+        let array = atomic_long_array(vm, receiver(args));
+        let index = crate::int_arg(args, 1);
+        let expected = crate::long_arg(args, 2);
+        let update = crate::long_arg(args, 3);
+        if vm.array_get(array, index)?.as_long() == expected {
+            vm.array_set(array, index, Value::Long(update), false)?;
+            return boolean(true);
+        }
+        boolean(false)
+    }),
+    method("weakCompareAndSet", "(IJJ)Z", ACC_PUBLIC, |vm, _, args| {
+        let array = atomic_long_array(vm, receiver(args));
+        let index = crate::int_arg(args, 1);
+        let expected = crate::long_arg(args, 2);
+        let update = crate::long_arg(args, 3);
+        if vm.array_get(array, index)?.as_long() == expected {
+            vm.array_set(array, index, Value::Long(update), false)?;
+            return boolean(true);
+        }
+        boolean(false)
+    }),
+    method("getAndIncrement", "(I)J", ACC_PUBLIC, |vm, _, args| {
+        let (old, _) = atomic_long_array_add(vm, receiver(args), crate::int_arg(args, 1), 1)?;
+        long(old)
+    }),
+    method("getAndDecrement", "(I)J", ACC_PUBLIC, |vm, _, args| {
+        let (old, _) = atomic_long_array_add(vm, receiver(args), crate::int_arg(args, 1), -1)?;
+        long(old)
+    }),
+    method("incrementAndGet", "(I)J", ACC_PUBLIC, |vm, _, args| {
+        let (_, new) = atomic_long_array_add(vm, receiver(args), crate::int_arg(args, 1), 1)?;
+        long(new)
+    }),
+    method("decrementAndGet", "(I)J", ACC_PUBLIC, |vm, _, args| {
+        let (_, new) = atomic_long_array_add(vm, receiver(args), crate::int_arg(args, 1), -1)?;
+        long(new)
+    }),
+    method("getAndAdd", "(IJ)J", ACC_PUBLIC, |vm, _, args| {
+        let (old, _) = atomic_long_array_add(
+            vm,
+            receiver(args),
+            crate::int_arg(args, 1),
+            crate::long_arg(args, 2),
+        )?;
+        long(old)
+    }),
+    method("addAndGet", "(IJ)J", ACC_PUBLIC, |vm, _, args| {
+        let (_, new) = atomic_long_array_add(
+            vm,
+            receiver(args),
+            crate::int_arg(args, 1),
+            crate::long_arg(args, 2),
+        )?;
+        long(new)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let array = atomic_long_array(vm, receiver(args));
+            let length = vm.array_length(array)?;
+            let mut text = String::from("[");
+            for index in 0..length {
+                if index > 0 {
+                    text.push_str(", ");
+                }
+                text.push_str(&alloc::format!(
+                    "{}",
+                    vm.array_get(array, index as i32)?.as_long()
+                ));
+            }
+            text.push(']');
+            object(vm.make_string(&text)?)
+        },
+    ),
+];
+
+/// `AtomicLongArray`: a long array with atomic element operations.
+pub(crate) const ATOMIC_LONG_ARRAY: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/atomic/AtomicLongArray",
+    Some("java/lang/Object"),
+    &["java/io/Serializable"],
+    ACC_PUBLIC,
+    &[field("array", "[J", ACC_PRIVATE | ACC_FINAL, None)],
+    &ATOMIC_LONG_ARRAY_METHODS,
+    None,
+);
+
+const ATOMIC_REFERENCE_ARRAY_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+    method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let length = crate::int_arg(args, 1);
+        if length < 0 {
+            return Err(vm.throw_new("java/lang/NegativeArraySizeException", None));
+        }
+        let object_class = vm.resolve_class("java/lang/Object")?;
+        let array = vm.allocate_object_array(object_class, length as usize)?;
+        let class = vm.class_of(this);
+        let (declaring, field) = vm.find_field(class, "array", "[Ljava/lang/Object;")?;
+        vm.set_instance_ref(this, declaring, field, array);
+        void()
+    }),
+    method(
+        "<init>",
+        "([Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let source = ref_arg(args, 1);
+            if source.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let length = vm.array_length(source)?;
+            let object_class = vm.resolve_class("java/lang/Object")?;
+            let array = vm.allocate_object_array(object_class, length)?;
+            for index in 0..length {
+                let value = vm.array_get(source, index as i32)?.as_ref();
+                vm.array_set_ref(array, index, value)?;
+            }
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "array", "[Ljava/lang/Object;")?;
+            vm.set_instance_ref(this, declaring, field, array);
+            void()
+        },
+    ),
+    method("length", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(vm.array_length(atomic_ref_array(vm, receiver(args)))? as i32)
+    }),
+    method("get", "(I)Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        object(
+            vm.array_get(
+                atomic_ref_array(vm, receiver(args)),
+                crate::int_arg(args, 1),
+            )?
+            .as_ref(),
+        )
+    }),
+    method(
+        "set",
+        "(ILjava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            vm.array_set_ref(
+                atomic_ref_array(vm, receiver(args)),
+                crate::int_arg(args, 1) as usize,
+                ref_arg(args, 2),
+            )?;
+            void()
+        },
+    ),
+    method(
+        "lazySet",
+        "(ILjava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            vm.array_set_ref(
+                atomic_ref_array(vm, receiver(args)),
+                crate::int_arg(args, 1) as usize,
+                ref_arg(args, 2),
+            )?;
+            void()
+        },
+    ),
+    method(
+        "getAndSet",
+        "(ILjava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let array = atomic_ref_array(vm, receiver(args));
+            let index = crate::int_arg(args, 1);
+            let old = vm.array_get(array, index)?.as_ref();
+            vm.array_set_ref(array, index as usize, ref_arg(args, 2))?;
+            object(old)
+        },
+    ),
+    method(
+        "compareAndSet",
+        "(ILjava/lang/Object;Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let array = atomic_ref_array(vm, receiver(args));
+            let index = crate::int_arg(args, 1);
+            let expected = ref_arg(args, 2);
+            let update = ref_arg(args, 3);
+            if vm.array_get(array, index)?.as_ref() == expected {
+                vm.array_set_ref(array, index as usize, update)?;
+                return boolean(true);
+            }
+            boolean(false)
+        },
+    ),
+    method(
+        "weakCompareAndSet",
+        "(ILjava/lang/Object;Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let array = atomic_ref_array(vm, receiver(args));
+            let index = crate::int_arg(args, 1);
+            let expected = ref_arg(args, 2);
+            let update = ref_arg(args, 3);
+            if vm.array_get(array, index)?.as_ref() == expected {
+                vm.array_set_ref(array, index as usize, update)?;
+                return boolean(true);
+            }
+            boolean(false)
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let array = atomic_ref_array(vm, receiver(args));
+            let length = vm.array_length(array)?;
+            let mut text = String::from("[");
+            for index in 0..length {
+                if index > 0 {
+                    text.push_str(", ");
+                }
+                let element = vm.array_get(array, index as i32)?.as_ref();
+                if element.is_null() {
+                    text.push_str("null");
+                } else {
+                    let (class, method) =
+                        vm.resolve_virtual_method(element, "toString", "()Ljava/lang/String;")?;
+                    let rendered = vm.invoke_method(class, method, vec![Value::Ref(element)])?;
+                    text.push_str(&vm.string_or_empty(rendered.as_ref()));
+                }
+            }
+            text.push(']');
+            object(vm.make_string(&text)?)
+        },
+    ),
+];
+
+/// `AtomicReferenceArray`: an object array with atomic element operations.
+pub(crate) const ATOMIC_REFERENCE_ARRAY: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/atomic/AtomicReferenceArray",
+    Some("java/lang/Object"),
+    &["java/io/Serializable"],
+    ACC_PUBLIC,
+    &[field(
+        "array",
+        "[Ljava/lang/Object;",
+        ACC_PRIVATE | ACC_FINAL,
+        None,
+    )],
+    &ATOMIC_REFERENCE_ARRAY_METHODS,
     None,
 );
