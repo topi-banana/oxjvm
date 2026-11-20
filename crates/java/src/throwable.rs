@@ -1297,6 +1297,11 @@ exception!(
     "java/lang/IllegalArgumentException"
 );
 exception!(
+    ILLEGAL_CHARSET_NAME_EXCEPTION,
+    "java/nio/charset/IllegalCharsetNameException",
+    "java/lang/IllegalArgumentException"
+);
+exception!(
     ILLEGAL_MONITOR_STATE_EXCEPTION,
     "java/lang/IllegalMonitorStateException",
     "java/lang/RuntimeException"

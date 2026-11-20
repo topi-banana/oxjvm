@@ -8,7 +8,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use oxjvm_classfile::flags::*;
 
-use crate::{boolean, class, field, int, method, object, receiver, ref_arg, string_arg};
+use crate::{boolean, class, field, int, method, object, receiver, ref_arg};
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
 /// (canonical name, additional normalized aliases)
@@ -163,6 +163,83 @@ pub(crate) fn for_name(vm: &mut Vm<'_>, name: &str) -> Result<Option<ObjectRef>,
     Ok(Some(instance))
 }
 
+/// Whether `name` is a legal charset name (the JDK's `Charset` name syntax).
+fn legal_charset_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_alphanumeric() {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':' | '+'))
+}
+
+/// The historical alias names of each canonical charset.
+const CHARSET_ALIASES: &[(&str, &[&str])] = &[
+    ("UTF-8", &["UTF8", "unicode-1-1-utf-8"]),
+    (
+        "US-ASCII",
+        &[
+            "646",
+            "ANSI_X3.4-1968",
+            "ANSI_X3.4-1986",
+            "ASCII",
+            "IBM367",
+            "ISO646-US",
+            "ISO_646.irv:1991",
+            "ascii7",
+            "cp367",
+            "csASCII",
+            "iso-ir-6",
+            "iso_646.irv:1983",
+            "us",
+        ],
+    ),
+    (
+        "ISO-8859-1",
+        &[
+            "819",
+            "8859_1",
+            "IBM-819",
+            "IBM819",
+            "ISO8859-1",
+            "ISO8859_1",
+            "ISO_8859-1",
+            "ISO_8859-1:1987",
+            "ISO_8859_1",
+            "cp819",
+            "csISOLatin1",
+            "iso-ir-100",
+            "l1",
+            "latin1",
+        ],
+    ),
+    ("UTF-16", &["UTF_16", "UnicodeBig", "unicode", "utf16"]),
+    (
+        "UTF-16BE",
+        &[
+            "ISO-10646-UCS-2",
+            "UTF_16BE",
+            "UnicodeBigUnmarked",
+            "X-UTF-16BE",
+        ],
+    ),
+    (
+        "UTF-16LE",
+        &["UTF_16LE", "UnicodeLittleUnmarked", "X-UTF-16LE"],
+    ),
+];
+
+/// Whether every character representable in `other` is also representable in `this`.
+fn charset_contains(this: &str, other: &str) -> bool {
+    match this {
+        "US-ASCII" => other == "US-ASCII",
+        "ISO-8859-1" => other == "US-ASCII" || other == "ISO-8859-1",
+        _ => true,
+    }
+}
+
 fn charset_for_name(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
     match for_name(vm, name)? {
         Some(charset) => Ok(charset),
@@ -187,13 +264,29 @@ fn charset_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     Ok(())
 }
 
-const CHARSET_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+const CHARSET_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method(
         "forName",
         "(Ljava/lang/String;)Ljava/nio/charset/Charset;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            let name = string_arg(vm, args[0])?;
+            let reference = args[0].as_ref();
+            let name = if reference.is_null() {
+                None
+            } else {
+                vm.string_value(reference)
+            };
+            let Some(name) = name else {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("Null charset name"),
+                ));
+            };
+            if !legal_charset_name(&name) {
+                return Err(
+                    vm.throw_new("java/nio/charset/IllegalCharsetNameException", Some(&name))
+                );
+            }
             object(charset_for_name(vm, &name)?)
         },
     ),
@@ -340,6 +433,28 @@ const CHARSET_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
             let bytes = crate::buffer::byte_buffer_remaining_bytes(vm, ref_arg(args, 1))?;
             let text = alloc::string::String::from_utf16_lossy(&decode(&bytes, &name));
             object(crate::buffer::char_buffer_from_text(vm, &text)?)
+        },
+    ),
+    method("aliases", "()Ljava/util/Set;", ACC_PUBLIC, |vm, _, args| {
+        let canonical = name_of(vm, receiver(args));
+        let mut elements = Vec::new();
+        for (name, aliases) in CHARSET_ALIASES {
+            if canonical == *name {
+                for alias in *aliases {
+                    elements.push(vm.make_string(alias)?);
+                }
+            }
+        }
+        object(crate::util::hash_set_from(vm, &elements)?)
+    }),
+    method(
+        "contains",
+        "(Ljava/nio/charset/Charset;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = name_of(vm, receiver(args));
+            let other = name_of(vm, ref_arg(args, 1));
+            boolean(charset_contains(&this, &other))
         },
     ),
 ];
