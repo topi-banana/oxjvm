@@ -700,7 +700,15 @@ fn resource_bundle_get(
             return object(instance);
         }
     }
-    let message = format!("Can't find bundle for base name {base}");
+    let locale_str = if locale.is_null() {
+        String::new()
+    } else {
+        let (class, method) =
+            vm.resolve_virtual_method(locale, "toString", "()Ljava/lang/String;")?;
+        let text = vm.invoke_method(class, method, vec![Value::Ref(locale)])?;
+        vm.string_or_empty(text.as_ref())
+    };
+    let message = format!("Can't find bundle for base name {base}, locale {locale_str}");
     Err(vm.throw_new("java/util/MissingResourceException", Some(&message)))
 }
 

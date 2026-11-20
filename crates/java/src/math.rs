@@ -2893,7 +2893,7 @@ fn mul_mod(mut a: i128, mut b: i128, m: i128) -> i128 {
     result
 }
 
-const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 52] = [
+const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -3513,6 +3513,28 @@ const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 52] = [
                 }
             }
             Err(vm.throw_new("java/lang/ArithmeticException", Some("no prime found")))
+        },
+    ),
+    method(
+        "sqrtAndRemainder",
+        "()[Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let value = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
+            if value < 0 {
+                return Err(
+                    vm.throw_new("java/lang/ArithmeticException", Some("Negative BigInteger"))
+                );
+            }
+            let root = isqrt_u128(value as u128) as i128;
+            let remainder = value - root * root;
+            let class = vm.resolve_class("java/math/BigInteger")?;
+            let array = vm.allocate_object_array(class, 2)?;
+            let root_obj = create_big_number(vm, "java/math/BigInteger", &root.to_string())?;
+            let rem_obj = create_big_number(vm, "java/math/BigInteger", &remainder.to_string())?;
+            vm.array_set_ref(array, 0, root_obj.as_ref())?;
+            vm.array_set_ref(array, 1, rem_obj.as_ref())?;
+            object(array)
         },
     ),
 ];
