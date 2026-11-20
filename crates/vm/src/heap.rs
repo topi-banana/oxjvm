@@ -514,6 +514,11 @@ pub enum MethodHandleValue {
         /// The class the value is cast to.
         class: ClassId,
     },
+    /// A handle that always returns a fixed value (`MethodHandles.constant`).
+    Constant {
+        /// The captured constant value (boxed for primitives).
+        value: Value,
+    },
     /// A handle that always throws `UnsupportedOperationException` (`MethodHandles.empty`).
     Empty {
         /// The requested method type.
@@ -542,6 +547,7 @@ impl MethodHandleValue {
             | Self::Identity { .. }
             | Self::Empty { .. }
             | Self::ArrayElementGetter { .. } => 0,
+            Self::Constant { .. } => size_of::<Value>() as u64,
             Self::Bound { target, .. } => {
                 size_of::<MethodHandleValue>() as u64 + target.payload_bytes()
             }

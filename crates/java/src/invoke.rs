@@ -533,6 +533,7 @@ const METHOD_HANDLE_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
                 Some(MethodHandleValue::Bound { .. }) => "MethodHandle(bound)",
                 Some(MethodHandleValue::Inserted { .. }) => "MethodHandle(inserted)",
                 Some(MethodHandleValue::Identity { .. }) => "MethodHandle(identity)",
+                Some(MethodHandleValue::Constant { .. }) => "MethodHandle(constant)",
                 Some(MethodHandleValue::Empty { .. }) => "MethodHandle(empty)",
                 Some(MethodHandleValue::ArrayElementGetter { .. }) => {
                     "MethodHandle(arrayElementGetter)"
@@ -639,8 +640,9 @@ const METHOD_HANDLES_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         "(Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/invoke/MethodHandle;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            let class = class_argument(vm, ref_arg(args, 0))?;
-            object(vm.make_method_handle(MethodHandleValue::Identity { class })?)
+            class_argument(vm, ref_arg(args, 0))?;
+            let value = args.get(1).copied().unwrap_or(Value::Ref(ObjectRef::NULL));
+            object(vm.make_method_handle(MethodHandleValue::Constant { value })?)
         },
     ),
     method(

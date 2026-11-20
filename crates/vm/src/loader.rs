@@ -2248,6 +2248,7 @@ impl<'a> Vm<'a> {
                     Err(self.throw_new("java/lang/ClassCastException", None))
                 }
             }
+            MethodHandleValue::Constant { value } => Ok(*value),
             MethodHandleValue::Empty { .. } => {
                 let returns = handle_method_type(self, handle).and_then(|(_, returns)| returns);
                 Ok(match returns {

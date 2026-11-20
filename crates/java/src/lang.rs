@@ -10391,6 +10391,56 @@ const ANNOTATION_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
     ),
 ];
 
+pub(crate) const OVERRIDE: oxjvm_vm::NativeClass = class(
+    "java/lang/Override",
+    Some("java/lang/Object"),
+    &["java/lang/annotation/Annotation"],
+    ACC_PUBLIC | ACC_ANNOTATION | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const FUNCTIONAL_INTERFACE: oxjvm_vm::NativeClass = class(
+    "java/lang/FunctionalInterface",
+    Some("java/lang/Object"),
+    &["java/lang/annotation/Annotation"],
+    ACC_PUBLIC | ACC_ANNOTATION | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const SAFE_VARARGS: oxjvm_vm::NativeClass = class(
+    "java/lang/SafeVarargs",
+    Some("java/lang/Object"),
+    &["java/lang/annotation/Annotation"],
+    ACC_PUBLIC | ACC_ANNOTATION | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const SUPPRESS_WARNINGS: oxjvm_vm::NativeClass = class(
+    "java/lang/SuppressWarnings",
+    Some("java/lang/Object"),
+    &["java/lang/annotation/Annotation"],
+    ACC_PUBLIC | ACC_ANNOTATION | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const DEPRECATED: oxjvm_vm::NativeClass = class(
+    "java/lang/Deprecated",
+    Some("java/lang/Object"),
+    &["java/lang/annotation/Annotation"],
+    ACC_PUBLIC | ACC_ANNOTATION | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[],
+    None,
+);
+
 pub(crate) const ANNOTATION: oxjvm_vm::NativeClass = class(
     "java/lang/annotation/Annotation",
     Some("java/lang/Object"),
