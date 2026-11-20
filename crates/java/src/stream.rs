@@ -3035,8 +3035,21 @@ const OJVM_SPLITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
         "trySplit",
         "()Ljava/util/Spliterator;",
         ACC_PUBLIC,
-        // Splitting only buys parallelism, and these streams are eager and single-threaded.
-        |_, _, _| object(ObjectRef::NULL),
+        |vm, _, args| {
+            let this = receiver(args);
+            let elements = stream_elements(vm, this);
+            let cursor = crate::lang::read_int_field(vm, this, "cursor").max(0) as usize;
+            let remaining = elements.len().saturating_sub(cursor);
+            if remaining < 2 {
+                return object(ObjectRef::NULL);
+            }
+            let mid = cursor + remaining / 2;
+            let prefix = spliterator_from(vm, &elements[cursor..mid])?;
+            let chars = crate::lang::read_int_field(vm, this, "chars");
+            crate::lang::write_int_field(vm, prefix, "chars", chars);
+            crate::lang::write_int_field(vm, this, "cursor", mid as i32);
+            object(prefix)
+        },
     ),
     method("estimateSize", "()J", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
@@ -3279,7 +3292,7 @@ pub(crate) fn spliterator_from(
     }
     let (declaring, field) = vm.find_field(class, "elements", "[Ljava/lang/Object;")?;
     vm.set_instance_ref(instance, declaring, field, array);
-    crate::lang::write_int_field(vm, instance, "chars", SPLITERATOR_ORDERED);
+    crate::lang::write_int_field(vm, instance, "chars", SPLITERATOR_ORDERED | 0x0040 | 0x4000);
     Ok(instance)
 }
 
