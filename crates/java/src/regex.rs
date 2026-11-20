@@ -1478,7 +1478,7 @@ fn pattern_regex(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(Regex, usize), VmE
 // Matcher
 // -------------------------------------------------------------------------------------------
 
-const MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
+const MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
     method("matches", "()Z", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let (regex, _) = pattern_regex_for(vm, this)?;
@@ -1767,6 +1767,18 @@ const MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
             object(vm.make_string(&quoted)?)
         },
     ),
+    method("regionStart", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let text = matcher_text(vm, this)?;
+        let (start, _) = matcher_region(vm, this, text.len());
+        int(start as i32)
+    }),
+    method("regionEnd", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let text = matcher_text(vm, this)?;
+        let (_, end) = matcher_region(vm, this, text.len());
+        int(end as i32)
+    }),
 ];
 
 pub(crate) const MATCHER: oxjvm_vm::NativeClass = class(

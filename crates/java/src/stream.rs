@@ -2830,7 +2830,7 @@ pub(crate) const STREAM_ITERATOR: oxjvm_vm::NativeClass = class(
 // Spliterator + StreamSupport
 // -------------------------------------------------------------------------------------------
 
-const SPLITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const SPLITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     method(
         "tryAdvance",
         "(Ljava/util/function/Consumer;)Z",
@@ -2864,6 +2864,12 @@ const SPLITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     method(
         "hasCharacteristics",
         "(I)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "getExactSizeIfKnown",
+        "()J",
         ACC_PUBLIC | ACC_ABSTRACT,
         abstract_method_pub,
     ),
