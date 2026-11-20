@@ -67,7 +67,7 @@ fn call_int_consumer(vm: &mut Vm<'_>, consumer: ObjectRef, value: i32) -> Result
     Ok(())
 }
 
-const INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
+const INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
     method(
         "of",
         "(I)Ljava/util/stream/IntStream;",
@@ -331,6 +331,40 @@ const INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
         "(Ljava/util/function/IntToLongFunction;)Ljava/util/stream/LongStream;",
         ACC_PUBLIC | ACC_ABSTRACT,
         abstract_method_pub,
+    ),
+    method(
+        "iterate",
+        "(ILjava/util/function/IntUnaryOperator;)Ljava/util/stream/IntStream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let mut current = crate::int_arg(args, 0);
+            let operator = ref_arg(args, 1);
+            let mut values = Vec::new();
+            for _ in 0..1024 {
+                values.push(current);
+                current = call_int_unary(vm, operator, current)?;
+            }
+            object(int_stream_from(vm, values)?)
+        },
+    ),
+    method(
+        "iterate",
+        "(ILjava/util/function/IntPredicate;Ljava/util/function/IntUnaryOperator;)Ljava/util/stream/IntStream;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let mut current = crate::int_arg(args, 0);
+            let predicate = ref_arg(args, 1);
+            let operator = ref_arg(args, 2);
+            let mut values = Vec::new();
+            for _ in 0..1024 {
+                if !call_int_predicate(vm, predicate, current)? {
+                    break;
+                }
+                values.push(current);
+                current = call_int_unary(vm, operator, current)?;
+            }
+            object(int_stream_from(vm, values)?)
+        },
     ),
 ];
 
