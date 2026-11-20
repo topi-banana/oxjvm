@@ -1310,7 +1310,7 @@ fn temporal_local_millis(vm: &mut Vm<'_>, obj: ObjectRef) -> Result<i64, VmError
     }
 }
 
-const DATE_TIME_FORMATTER_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+const DATE_TIME_FORMATTER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method(
         "ofPattern",
         "(Ljava/lang/String;)Ljava/time/format/DateTimeFormatter;",
@@ -1351,6 +1351,85 @@ const DATE_TIME_FORMATTER_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
             object(vm.make_string(&crate::text::format_pattern(&pattern, millis))?)
         },
     ),
+    method(
+        "ofLocalizedDate",
+        "(Ljava/time/format/FormatStyle;)Ljava/time/format/DateTimeFormatter;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let style = ref_arg(args, 0);
+            if style.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let ordinal = read_int_field(vm, style, "ordinal");
+            date_time_formatter_with_pattern(vm, localized_date_pattern(ordinal))
+        },
+    ),
+    method(
+        "ofLocalizedTime",
+        "(Ljava/time/format/FormatStyle;)Ljava/time/format/DateTimeFormatter;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let style = ref_arg(args, 0);
+            if style.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let ordinal = read_int_field(vm, style, "ordinal");
+            date_time_formatter_with_pattern(vm, localized_time_pattern(ordinal))
+        },
+    ),
+    method(
+        "ofLocalizedDateTime",
+        "(Ljava/time/format/FormatStyle;)Ljava/time/format/DateTimeFormatter;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let style = ref_arg(args, 0);
+            if style.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let ordinal = read_int_field(vm, style, "ordinal");
+            let pattern = alloc::format!(
+                "{} {}",
+                localized_date_pattern(ordinal),
+                localized_time_pattern(ordinal)
+            );
+            date_time_formatter_with_pattern(vm, &pattern)
+        },
+    ),
+    method(
+        "ofLocalizedDateTime",
+        "(Ljava/time/format/FormatStyle;Ljava/time/format/FormatStyle;)Ljava/time/format/DateTimeFormatter;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let date_style = ref_arg(args, 0);
+            let time_style = ref_arg(args, 1);
+            if date_style.is_null() || time_style.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let date_ordinal = read_int_field(vm, date_style, "ordinal");
+            let time_ordinal = read_int_field(vm, time_style, "ordinal");
+            let pattern = alloc::format!(
+                "{} {}",
+                localized_date_pattern(date_ordinal),
+                localized_time_pattern(time_ordinal)
+            );
+            date_time_formatter_with_pattern(vm, &pattern)
+        },
+    ),
+    method(
+        "withLocale",
+        "(Ljava/util/Locale;)Ljava/time/format/DateTimeFormatter;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let pattern = vm
+                .read_string_field(this, vm.class_of(this), "pattern")
+                .unwrap_or_default();
+            date_time_formatter_with_pattern(vm, &pattern)
+        },
+    ),
 ];
 
 fn date_time_formatter_new(vm: &mut Vm<'_>, pattern: ObjectRef) -> Result<Value, VmError> {
@@ -1362,6 +1441,29 @@ fn date_time_formatter_new(vm: &mut Vm<'_>, pattern: ObjectRef) -> Result<Value,
     let (declaring, field) = vm.find_field(class, "pattern", "Ljava/lang/String;")?;
     vm.set_instance_ref(instance, declaring, field, pattern);
     object(instance)
+}
+
+fn localized_date_pattern(ordinal: i32) -> &'static str {
+    match ordinal {
+        0 => "EEEE, MMMM d, yyyy",
+        1 => "MMMM d, yyyy",
+        2 => "MMM d, yyyy",
+        _ => "M/d/yy",
+    }
+}
+
+fn localized_time_pattern(ordinal: i32) -> &'static str {
+    match ordinal {
+        0 => "h:mm:ss\u{202F}a zzzz",
+        1 => "h:mm:ss\u{202F}a z",
+        2 => "h:mm:ss\u{202F}a",
+        _ => "h:mm\u{202F}a",
+    }
+}
+
+fn date_time_formatter_with_pattern(vm: &mut Vm<'_>, pattern: &str) -> Result<Value, VmError> {
+    let string = vm.make_string(pattern)?;
+    date_time_formatter_new(vm, string)
 }
 
 /// The ISO pattern constants, initialized once.
@@ -2917,7 +3019,7 @@ fn local_date_dates_until(
     object(crate::stream::stream_from(vm, elements)?)
 }
 
-const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 56] = [
+const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 57] = [
     method(
         "of",
         "(III)Ljava/time/LocalDate;",
@@ -3657,6 +3759,34 @@ const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 56] = [
                     vm.throw_new("java/lang/NoSuchMethodError", Some("Period.between"))
                 })?;
             vm.invoke_method(declaring, between, vec![Value::Ref(this), Value::Ref(end)])
+        },
+    ),
+    method(
+        "parse",
+        "(Ljava/lang/CharSequence;Ljava/time/format/DateTimeFormatter;)Ljava/time/LocalDate;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = vm.string_or_empty(ref_arg(args, 0));
+            let formatter = ref_arg(args, 1);
+            if formatter.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let pattern = vm
+                .read_string_field(formatter, vm.class_of(formatter), "pattern")
+                .unwrap_or_default();
+            let parts: Vec<&str> = text.split(['-', '/', '.']).collect();
+            if parts.len() != 3 {
+                return Err(vm.throw_new("java/time/format/DateTimeParseException", Some(&text)));
+            }
+            let (y, m, d) = if pattern.starts_with("dd") {
+                (parts[2], parts[1], parts[0])
+            } else {
+                (parts[0], parts[1], parts[2])
+            };
+            let year = y.parse::<i32>().unwrap_or(0);
+            let month = m.parse::<i32>().unwrap_or(0);
+            let day = d.parse::<i32>().unwrap_or(0);
+            object(local_date_new(vm, days_from_civil(year, month, day))?)
         },
     ),
 ];

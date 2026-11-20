@@ -68,7 +68,7 @@ fn join_path(base: &str, child: &str) -> String {
 // Path (concrete implementation) + Paths
 // -------------------------------------------------------------------------------------------
 
-const PATH_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
+const PATH_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -425,6 +425,26 @@ const PATH_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
             new_path(vm, &real)
         },
     ),
+    method(
+        "startsWith",
+        "(Ljava/lang/String;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let path = path_string(vm, receiver(args));
+            let other = vm.string_or_empty(ref_arg(args, 1));
+            boolean(path.starts_with(&other))
+        },
+    ),
+    method(
+        "endsWith",
+        "(Ljava/lang/String;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let path = path_string(vm, receiver(args));
+            let other = vm.string_or_empty(ref_arg(args, 1));
+            boolean(path.ends_with(&other))
+        },
+    ),
 ];
 
 pub(crate) const OXJVM_PATH: oxjvm_vm::NativeClass = class(
@@ -441,7 +461,7 @@ pub(crate) const OXJVM_PATH: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PATH_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
+const PATH_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
     method(
         "of",
         "(Ljava/lang/String;[Ljava/lang/String;)Ljava/nio/file/Path;",
@@ -567,6 +587,12 @@ const PATH_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
     method(
         "startsWith",
         "(Ljava/nio/file/Path;)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "startsWith",
+        "(Ljava/lang/String;)Z",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
