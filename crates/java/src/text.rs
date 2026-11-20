@@ -547,7 +547,7 @@ fn simple_date_format_millis(vm: &mut Vm<'_>, date: ObjectRef) -> Result<i64, Vm
     }
 }
 
-const SIMPLE_DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+const SIMPLE_DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let (declaring, field) =
@@ -708,6 +708,12 @@ const SIMPLE_DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
                 .unwrap_or(ObjectRef::NULL);
             object(start)
         },
+    ),
+    method(
+        "toLocalizedPattern",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| object(vm.make_string(&simple_date_format_pattern(vm, receiver(args)))?),
     ),
 ];
 

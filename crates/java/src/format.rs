@@ -3086,7 +3086,7 @@ fn ieee_remainder_one(value: f64) -> f64 {
     value - crate::math::floor(value + 0.5)
 }
 
-const CHOICE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+const CHOICE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -3280,6 +3280,21 @@ const CHOICE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
                     object(ObjectRef::NULL)
                 }
             }
+        },
+    ),
+    method(
+        "applyPattern",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let pattern = vm.string_or_empty(ref_arg(args, 1));
+            let choice = Choice::parse(&pattern);
+            let text = vm.make_string(&choice.pattern())?;
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "pattern", "Ljava/lang/String;")?;
+            vm.set_instance_ref(this, declaring, field, text);
+            void()
         },
     ),
 ];
