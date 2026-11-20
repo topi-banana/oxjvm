@@ -274,6 +274,12 @@ impl<'a> Vm<'a> {
                 let index = self.threads.len();
                 let mut thread = JavaThread::new(index, object, name, daemon);
                 thread.started = true;
+                if let Some((declaring, field)) = self.find_field_opt(thread_class, "priority", "I")
+                {
+                    if let Some(priority) = self.read_instance_int(object, declaring, field) {
+                        thread.priority = priority;
+                    }
+                }
                 self.threads.push(thread);
                 self.thread_objects.insert(object, index);
                 index

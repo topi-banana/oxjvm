@@ -5281,7 +5281,7 @@ fn next_random_bounded(vm: &mut Vm<'_>, this: ObjectRef, bound: i32) -> Result<i
 /// the other unbounded sources.
 const RANDOM_STREAM_CAP: usize = 1024;
 
-fn random_stream_count(vm: &mut Vm<'_>, size: i64) -> Result<usize, VmError> {
+pub(crate) fn random_stream_count(vm: &mut Vm<'_>, size: i64) -> Result<usize, VmError> {
     if size < 0 {
         return Err(vm.throw_new(
             "java/lang/IllegalArgumentException",
@@ -5449,7 +5449,7 @@ fn random_equi_doubles(
     object(crate::primitive_stream::new_double_stream(vm, values)?)
 }
 
-fn random_int_stream(
+pub(crate) fn random_int_stream(
     vm: &mut Vm<'_>,
     this: ObjectRef,
     count: usize,
@@ -5468,7 +5468,7 @@ fn random_int_stream(
     object(crate::intstream::int_stream_from(vm, values)?)
 }
 
-fn random_long_stream(
+pub(crate) fn random_long_stream(
     vm: &mut Vm<'_>,
     this: ObjectRef,
     count: usize,
@@ -5558,7 +5558,7 @@ pub(crate) const RANDOM_ACCESS: oxjvm_vm::NativeClass = class(
 pub(crate) const RANDOM: oxjvm_vm::NativeClass = class(
     "java/util/Random",
     Some("java/lang/Object"),
-    &["java/io/Serializable"],
+    &["java/io/Serializable", "java/util/random/RandomGenerator"],
     ACC_PUBLIC,
     &[field("seed", "J", ACC_PRIVATE, None)],
     &RANDOM_METHODS,

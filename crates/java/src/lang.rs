@@ -8227,6 +8227,20 @@ fn thread_builder_make(vm: &mut Vm<'_>, args: &[Value], start: bool) -> Result<V
             )?;
         }
     }
+    if read_int_field(vm, this, "daemonSet") != 0 {
+        let daemon = read_int_field(vm, this, "daemon") != 0;
+        let (declaring, method) = vm.resolve_virtual_method(thread, "setDaemon", "(Z)V")?;
+        vm.invoke_method(
+            declaring,
+            method,
+            vec![Value::Ref(thread), boolean(daemon)?],
+        )?;
+    }
+    let priority = read_int_field(vm, this, "priority");
+    if priority > 0 {
+        let (declaring, method) = vm.resolve_virtual_method(thread, "setPriority", "(I)V")?;
+        vm.invoke_method(declaring, method, vec![Value::Ref(thread), int(priority)?])?;
+    }
     if start {
         let (declaring, method) = vm.resolve_virtual_method(thread, "start", "()V")?;
         vm.invoke_method(declaring, method, vec![Value::Ref(thread)])?;
@@ -8234,7 +8248,7 @@ fn thread_builder_make(vm: &mut Vm<'_>, args: &[Value], start: bool) -> Result<V
     object(thread)
 }
 
-const THREAD_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+const THREAD_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     method(
         "name",
         "(Ljava/lang/String;)Ljava/lang/Thread$Builder;",
@@ -8265,6 +8279,18 @@ const THREAD_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         ACC_PUBLIC | ACC_ABSTRACT,
         abstract_method_pub,
     ),
+    method(
+        "inheritInheritableThreadLocals",
+        "(Z)Ljava/lang/Thread$Builder;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "uncaughtExceptionHandler",
+        "(Ljava/lang/Thread$UncaughtExceptionHandler;)Ljava/lang/Thread$Builder;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
 ];
 
 pub(crate) const THREAD_BUILDER: oxjvm_vm::NativeClass = class(
@@ -8277,7 +8303,7 @@ pub(crate) const THREAD_BUILDER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const OF_VIRTUAL_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+const OF_VIRTUAL_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
     method(
         "name",
         "(Ljava/lang/String;)Ljava/lang/Thread$Builder$OfVirtual;",
@@ -8287,6 +8313,18 @@ const OF_VIRTUAL_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
     method(
         "name",
         "(Ljava/lang/String;J)Ljava/lang/Thread$Builder$OfVirtual;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "inheritInheritableThreadLocals",
+        "(Z)Ljava/lang/Thread$Builder$OfVirtual;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "uncaughtExceptionHandler",
+        "(Ljava/lang/Thread$UncaughtExceptionHandler;)Ljava/lang/Thread$Builder$OfVirtual;",
         ACC_PUBLIC | ACC_ABSTRACT,
         abstract_method_pub,
     ),
@@ -8302,7 +8340,7 @@ pub(crate) const THREAD_BUILDER_OF_VIRTUAL: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const OF_PLATFORM_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+const OF_PLATFORM_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method(
         "name",
         "(Ljava/lang/String;)Ljava/lang/Thread$Builder$OfPlatform;",
@@ -8312,6 +8350,48 @@ const OF_PLATFORM_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
     method(
         "name",
         "(Ljava/lang/String;J)Ljava/lang/Thread$Builder$OfPlatform;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "inheritInheritableThreadLocals",
+        "(Z)Ljava/lang/Thread$Builder$OfPlatform;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "uncaughtExceptionHandler",
+        "(Ljava/lang/Thread$UncaughtExceptionHandler;)Ljava/lang/Thread$Builder$OfPlatform;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "group",
+        "(Ljava/lang/ThreadGroup;)Ljava/lang/Thread$Builder$OfPlatform;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "daemon",
+        "(Z)Ljava/lang/Thread$Builder$OfPlatform;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "daemon",
+        "()Ljava/lang/Thread$Builder$OfPlatform;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "priority",
+        "(I)Ljava/lang/Thread$Builder$OfPlatform;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "stackSize",
+        "(J)Ljava/lang/Thread$Builder$OfPlatform;",
         ACC_PUBLIC | ACC_ABSTRACT,
         abstract_method_pub,
     ),
@@ -8327,7 +8407,7 @@ pub(crate) const THREAD_BUILDER_OF_PLATFORM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const OJVM_THREAD_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const OJVM_THREAD_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
     method(
         "name",
         "(Ljava/lang/String;)Ljava/lang/Thread$Builder;",
@@ -8385,6 +8465,122 @@ const OJVM_THREAD_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
             object(vm.new_instance(class)?)
         },
     ),
+    method(
+        "inheritInheritableThreadLocals",
+        "(Z)Ljava/lang/Thread$Builder;",
+        ACC_PUBLIC,
+        |_, _, args| object(receiver(args)),
+    ),
+    method(
+        "inheritInheritableThreadLocals",
+        "(Z)Ljava/lang/Thread$Builder$OfPlatform;",
+        ACC_PUBLIC,
+        |_, _, args| object(receiver(args)),
+    ),
+    method(
+        "inheritInheritableThreadLocals",
+        "(Z)Ljava/lang/Thread$Builder$OfVirtual;",
+        ACC_PUBLIC,
+        |_, _, args| object(receiver(args)),
+    ),
+    method(
+        "uncaughtExceptionHandler",
+        "(Ljava/lang/Thread$UncaughtExceptionHandler;)Ljava/lang/Thread$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(receiver(args))
+        },
+    ),
+    method(
+        "uncaughtExceptionHandler",
+        "(Ljava/lang/Thread$UncaughtExceptionHandler;)Ljava/lang/Thread$Builder$OfPlatform;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(receiver(args))
+        },
+    ),
+    method(
+        "uncaughtExceptionHandler",
+        "(Ljava/lang/Thread$UncaughtExceptionHandler;)Ljava/lang/Thread$Builder$OfVirtual;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(receiver(args))
+        },
+    ),
+    method(
+        "group",
+        "(Ljava/lang/ThreadGroup;)Ljava/lang/Thread$Builder$OfPlatform;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(receiver(args))
+        },
+    ),
+    method(
+        "daemon",
+        "(Z)Ljava/lang/Thread$Builder$OfPlatform;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "daemon", "I")?;
+            vm.set_instance_int(this, declaring, field, i32::from(bool_arg(args, 1)));
+            let (declaring, field) = vm.find_field(class, "daemonSet", "I")?;
+            vm.set_instance_int(this, declaring, field, 1);
+            object(this)
+        },
+    ),
+    method(
+        "daemon",
+        "()Ljava/lang/Thread$Builder$OfPlatform;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "daemon", "I")?;
+            vm.set_instance_int(this, declaring, field, 1);
+            let (declaring, field) = vm.find_field(class, "daemonSet", "I")?;
+            vm.set_instance_int(this, declaring, field, 1);
+            object(this)
+        },
+    ),
+    method(
+        "priority",
+        "(I)Ljava/lang/Thread$Builder$OfPlatform;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let priority = int_arg(args, 1);
+            if !(1..=10).contains(&priority) {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            let this = receiver(args);
+            let (declaring, field) = vm.find_field(vm.class_of(this), "priority", "I")?;
+            vm.set_instance_int(this, declaring, field, priority);
+            object(this)
+        },
+    ),
+    method(
+        "stackSize",
+        "(J)Ljava/lang/Thread$Builder$OfPlatform;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            if long_arg(args, 1) < 0 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            object(receiver(args))
+        },
+    ),
 ];
 
 pub(crate) const OJVM_THREAD_BUILDER: oxjvm_vm::NativeClass = class(
@@ -8396,7 +8592,12 @@ pub(crate) const OJVM_THREAD_BUILDER: oxjvm_vm::NativeClass = class(
         "java/lang/Thread$Builder$OfPlatform",
     ],
     ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
-    &[field("name", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &[
+        field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("daemon", "I", ACC_PRIVATE, None),
+        field("daemonSet", "I", ACC_PRIVATE, None),
+        field("priority", "I", ACC_PRIVATE, None),
+    ],
     &OJVM_THREAD_BUILDER_METHODS,
     None,
 );
@@ -10043,7 +10244,7 @@ pub(crate) const VALUE_LAYOUT: oxjvm_vm::NativeClass = class(
 // RandomGenerator (shell)
 // -------------------------------------------------------------------------------------------
 
-const RANDOM_GENERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+const RANDOM_GENERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method(
         "getDefault",
         "()Ljava/util/random/RandomGenerator;",
@@ -10083,6 +10284,24 @@ const RANDOM_GENERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         let (class, method) = vm.resolve_virtual_method(this, "nextBoolean", "()Z")?;
         vm.invoke_method(class, method, vec![Value::Ref(this)])
     }),
+    method(
+        "ints",
+        "(J)Ljava/util/stream/IntStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let count = crate::util::random_stream_count(vm, long_arg(args, 1))?;
+            crate::util::random_int_stream(vm, receiver(args), count, None)
+        },
+    ),
+    method(
+        "longs",
+        "(J)Ljava/util/stream/LongStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let count = crate::util::random_stream_count(vm, long_arg(args, 1))?;
+            crate::util::random_long_stream(vm, receiver(args), count, None)
+        },
+    ),
 ];
 
 pub(crate) const RANDOM_GENERATOR: oxjvm_vm::NativeClass = class(

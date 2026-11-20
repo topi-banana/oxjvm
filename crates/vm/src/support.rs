@@ -115,8 +115,11 @@ impl<'a> Vm<'a> {
     /// A thread's priority.
     #[must_use]
     pub fn thread_priority(&self, object: ObjectRef) -> Option<i32> {
-        self.thread_record(object)
-            .map(|index| self.threads[index].priority)
+        if let Some(&index) = self.thread_objects.get(&object) {
+            return Some(self.threads[index].priority);
+        }
+        // Unstarted threads keep their priority in the instance field.
+        self.read_instance_int_named(object, self.class_of(object), "priority", "I")
     }
 
     /// Set a thread's priority.
@@ -134,9 +137,13 @@ impl<'a> Vm<'a> {
     /// Whether a thread object is a daemon.
     #[must_use]
     pub fn thread_is_daemon(&self, object: ObjectRef) -> bool {
-        self.thread_objects
-            .get(&object)
-            .is_some_and(|&index| self.threads[index].daemon)
+        if let Some(&index) = self.thread_objects.get(&object) {
+            return self.threads[index].daemon;
+        }
+        // Unstarted threads keep their daemon flag in the instance field.
+        self.read_instance_int_named(object, self.class_of(object), "daemon", "Z")
+            .unwrap_or(0)
+            != 0
     }
 
     /// Set a thread object's daemon flag.

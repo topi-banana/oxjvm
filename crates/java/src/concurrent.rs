@@ -72,7 +72,7 @@ fn time_unit_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     Ok(())
 }
 
-const TIME_UNIT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const TIME_UNIT_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     method("toNanos", "(J)J", ACC_PUBLIC, |vm, _, args| {
         unit_to(vm, args, 0)
     }),
@@ -169,6 +169,20 @@ const TIME_UNIT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method("ordinal", "()I", ACC_PUBLIC, |vm, _, args| {
         int(unit_index(vm, receiver(args)) as i32)
     }),
+    method(
+        "convert",
+        "(Ljava/time/Duration;)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let duration = ref_arg(args, 1);
+            if duration.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let nanos = crate::lang::read_long_field(vm, duration, "nanos");
+            let to = unit_index(vm, receiver(args));
+            long(unit_convert(nanos, 0, to))
+        },
+    ),
 ];
 
 pub(crate) const TIME_UNIT: oxjvm_vm::NativeClass = class(

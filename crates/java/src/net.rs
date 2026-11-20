@@ -2900,7 +2900,7 @@ const AUTHENTICATOR_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
     ),
 ];
 
-const PROXY_SELECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+const PROXY_SELECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     method(
         "getDefault",
         "()Ljava/net/ProxySelector;",
@@ -2935,6 +2935,25 @@ const PROXY_SELECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
+    method(
+        "of",
+        "(Ljava/net/InetSocketAddress;)Ljava/net/ProxySelector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let address = ref_arg(args, 0);
+            let class = vm.resolve_class("java/net/OjvmProxySelector")?;
+            let instance = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "address", "Ljava/net/SocketAddress;")?;
+            vm.set_instance_ref(instance, declaring, field, address);
+            object(instance)
+        },
+    ),
+    method(
+        "connectFailed",
+        "(Ljava/net/URI;Ljava/net/SocketAddress;Ljava/io/IOException;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
 ];
 
 pub(crate) const PROXY_SELECTOR: oxjvm_vm::NativeClass = class(
@@ -2949,6 +2968,104 @@ pub(crate) const PROXY_SELECTOR: oxjvm_vm::NativeClass = class(
         None,
     )],
     &PROXY_SELECTOR_METHODS,
+    None,
+);
+
+const OJVM_PROXY_SELECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "select",
+        "(Ljava/net/URI;)Ljava/util/List;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let uri = ref_arg(args, 1);
+            if uri.is_null() {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("URI can't be null"),
+                ));
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(uri, "getScheme", "()Ljava/lang/String;")?;
+            let scheme = vm.invoke_method(class, method, vec![Value::Ref(uri)])?;
+            let scheme = vm.string_or_empty(scheme.as_ref());
+            if scheme.is_empty() {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("protocol can't be null"),
+                ));
+            }
+            let this = receiver(args);
+            let address = vm
+                .read_ref_field(
+                    this,
+                    vm.class_of(this),
+                    "address",
+                    "Ljava/net/SocketAddress;",
+                )
+                .unwrap_or(ObjectRef::NULL);
+            let proxy_class = vm.resolve_class("java/net/Proxy")?;
+            vm.ensure_initialized(proxy_class)?;
+            let use_proxy = !address.is_null()
+                && (scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https"));
+            let proxy = if use_proxy {
+                let types = vm.resolve_class("java/net/Proxy$Type")?;
+                vm.ensure_initialized(types)?;
+                let http = vm
+                    .read_static_ref(types, "HTTP", "Ljava/net/Proxy$Type;")
+                    .ok_or_else(|| VmError::internal("Proxy.Type.HTTP missing"))?;
+                let instance = vm.new_instance(proxy_class)?;
+                let (declaring, ctor) = vm
+                    .find_method(
+                        proxy_class,
+                        "<init>",
+                        "(Ljava/net/Proxy$Type;Ljava/net/SocketAddress;)V",
+                    )
+                    .ok_or_else(|| {
+                        VmError::internal("Proxy(Type,SocketAddress) constructor missing")
+                    })?;
+                vm.invoke_method(
+                    declaring,
+                    ctor,
+                    vec![Value::Ref(instance), Value::Ref(http), Value::Ref(address)],
+                )?;
+                instance
+            } else {
+                vm.read_static_ref(proxy_class, "NO_PROXY", "Ljava/net/Proxy;")
+                    .ok_or_else(|| VmError::internal("Proxy.NO_PROXY missing"))?
+            };
+            object(crate::util::array_list_from(vm, &[proxy])?)
+        },
+    ),
+    method(
+        "connectFailed",
+        "(Ljava/net/URI;Ljava/net/SocketAddress;Ljava/io/IOException;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            for index in 1..=3 {
+                if ref_arg(args, index).is_null() {
+                    return Err(vm.throw_new(
+                        "java/lang/IllegalArgumentException",
+                        Some("Arguments can't be null."),
+                    ));
+                }
+            }
+            void()
+        },
+    ),
+];
+
+pub(crate) const OJVM_PROXY_SELECTOR: oxjvm_vm::NativeClass = class(
+    "java/net/OjvmProxySelector",
+    Some("java/net/ProxySelector"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[field(
+        "address",
+        "Ljava/net/SocketAddress;",
+        ACC_PRIVATE,
+        None,
+    )],
+    &OJVM_PROXY_SELECTOR_METHODS,
     None,
 );
 

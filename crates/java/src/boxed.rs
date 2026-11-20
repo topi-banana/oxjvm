@@ -2827,7 +2827,7 @@ fn jdk_double_min(a: f64, b: f64) -> f64 {
     if a < b { a } else { b }
 }
 
-const FLOAT_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
+const FLOAT_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
     method("<init>", "(F)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(
             vm,
@@ -3024,6 +3024,26 @@ const FLOAT_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
             crate::float_arg(args, 1),
         ))
     }),
+    method(
+        "valueOf",
+        "(Ljava/lang/String;)Ljava/lang/Float;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = string_arg(vm, args[0])?;
+            match format::parse_float(&text) {
+                Some(value) => {
+                    let class = vm.resolve_class("java/lang/Float")?;
+                    let instance = vm.new_instance(class)?;
+                    write_value_int(vm, instance, value.to_bits() as i32);
+                    object(instance)
+                }
+                None => Err(vm.throw_new(
+                    "java/lang/NumberFormatException",
+                    Some(&alloc::format!("For input string: \"{text}\"")),
+                )),
+            }
+        },
+    ),
 ];
 
 fn float16_to_float(bits: u16) -> f32 {
