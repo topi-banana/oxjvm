@@ -803,6 +803,11 @@ exception!(
     "java/time/DateTimeException"
 );
 exception!(
+    ZONE_RULES_EXCEPTION,
+    "java/time/zone/ZoneRulesException",
+    "java/time/DateTimeException"
+);
+exception!(
     FILE_NOT_FOUND_EXCEPTION,
     "java/io/FileNotFoundException",
     "java/io/IOException"

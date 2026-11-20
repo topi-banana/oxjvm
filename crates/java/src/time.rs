@@ -6917,7 +6917,7 @@ pub(crate) fn local_date_time_of_epoch_millis(
     local_date_time_new(vm, epoch_day, nano_of_day)
 }
 
-const ZONE_RULES_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const ZONE_RULES_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     method(
         "getOffset",
         "(Ljava/time/Instant;)Ljava/time/ZoneOffset;",
@@ -6954,6 +6954,61 @@ const ZONE_RULES_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         |vm, _, _| {
             let empty: [ObjectRef; 0] = [];
             object(crate::util::array_list_from(vm, &empty)?)
+        },
+    ),
+    method(
+        "getTransition",
+        "(Ljava/time/LocalDateTime;)Ljava/time/zone/ZoneOffsetTransition;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "nextTransition",
+        "(Ljava/time/Instant;)Ljava/time/zone/ZoneOffsetTransition;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "previousTransition",
+        "(Ljava/time/Instant;)Ljava/time/zone/ZoneOffsetTransition;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "getTransitionRules",
+        "()Ljava/util/List;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let empty: [ObjectRef; 0] = [];
+            object(crate::util::array_list_from(vm, &empty)?)
+        },
+    ),
+    method(
+        "getDaylightSavings",
+        "(Ljava/time/Instant;)Ljava/time/Duration;",
+        ACC_PUBLIC,
+        |vm, _, _| duration_new(vm, 0),
+    ),
+    method(
+        "isDaylightSavings",
+        "(Ljava/time/Instant;)Z",
+        ACC_PUBLIC,
+        |_, _, _| boolean(false),
+    ),
+    method(
+        "of",
+        "(Ljava/time/ZoneOffset;)Ljava/time/zone/ZoneRules;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let offset = ref_arg(args, 0);
+            if offset.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let total = zone_offset_seconds(vm, offset);
+            let class = vm.resolve_class("java/time/zone/ZoneRules")?;
+            let instance = vm.new_instance(class)?;
+            write_int_field(vm, instance, "totalSeconds", total);
+            object(instance)
         },
     ),
 ];
