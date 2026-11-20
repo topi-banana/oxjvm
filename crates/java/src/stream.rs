@@ -1420,6 +1420,111 @@ const COLLECT_GROUPING: i32 = 20;
 const COLLECT_TEEING: i32 = 21;
 const COLLECT_FLAT_MAPPING: i32 = 22;
 const COLLECT_FILTERING: i32 = 23;
+const COLLECT_SUMMARIZING_INT: i32 = 24;
+
+fn int_summary_new(
+    vm: &mut Vm<'_>,
+    count: i64,
+    sum: i64,
+    min: i32,
+    max: i32,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/IntSummaryStatistics")?;
+    let instance = vm.new_instance(class)?;
+    crate::lang::write_long_field(vm, instance, "count", count);
+    crate::lang::write_long_field(vm, instance, "sum", sum);
+    crate::lang::write_int_field(vm, instance, "min", min);
+    crate::lang::write_int_field(vm, instance, "max", max);
+    Ok(instance)
+}
+
+const INT_SUMMARY_STATISTICS_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        crate::lang::write_long_field(vm, this, "count", 0);
+        crate::lang::write_long_field(vm, this, "sum", 0);
+        crate::lang::write_int_field(vm, this, "min", i32::MAX);
+        crate::lang::write_int_field(vm, this, "max", i32::MIN);
+        void()
+    }),
+    method("getCount", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(crate::lang::read_long_field(vm, receiver(args), "count"))
+    }),
+    method("getSum", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(crate::lang::read_long_field(vm, receiver(args), "sum"))
+    }),
+    method("getMin", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "min"))
+    }),
+    method("getMax", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "max"))
+    }),
+    method("getAverage", "()D", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let count = crate::lang::read_long_field(vm, this, "count");
+        let sum = crate::lang::read_long_field(vm, this, "sum");
+        crate::double(if count == 0 {
+            0.0
+        } else {
+            sum as f64 / count as f64
+        })
+    }),
+    method("accept", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let value = crate::int_arg(args, 1);
+        let count = crate::lang::read_long_field(vm, this, "count");
+        let sum = crate::lang::read_long_field(vm, this, "sum");
+        let min = crate::lang::read_int_field(vm, this, "min");
+        let max = crate::lang::read_int_field(vm, this, "max");
+        crate::lang::write_long_field(vm, this, "count", count + 1);
+        crate::lang::write_long_field(vm, this, "sum", sum + i64::from(value));
+        crate::lang::write_int_field(vm, this, "min", min.min(value));
+        crate::lang::write_int_field(vm, this, "max", max.max(value));
+        void()
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let count = crate::lang::read_long_field(vm, this, "count");
+            let sum = crate::lang::read_long_field(vm, this, "sum");
+            let min = crate::lang::read_int_field(vm, this, "min");
+            let max = crate::lang::read_int_field(vm, this, "max");
+            let average = if count == 0 {
+                0.0
+            } else {
+                sum as f64 / count as f64
+            };
+            let text = alloc::format!(
+                "IntSummaryStatistics{{count={}, sum={}, min={}, average={:.6}, max={}}}",
+                count,
+                sum,
+                min,
+                average,
+                max
+            );
+            object(vm.make_string(&text)?)
+        },
+    ),
+];
+
+/// `java.util.IntSummaryStatistics`: count/sum/min/max/average of an int stream.
+pub(crate) const INT_SUMMARY_STATISTICS: oxjvm_vm::NativeClass = class(
+    "java/util/IntSummaryStatistics",
+    Some("java/lang/Object"),
+    &["java/util/function/IntConsumer"],
+    ACC_PUBLIC,
+    &[
+        field("count", "J", ACC_PRIVATE, None),
+        field("sum", "J", ACC_PRIVATE, None),
+        field("min", "I", ACC_PRIVATE, None),
+        field("max", "I", ACC_PRIVATE, None),
+    ],
+    &INT_SUMMARY_STATISTICS_METHODS,
+    None,
+);
 
 fn collector_new(vm: &mut Vm<'_>, kind: i32) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class(COLLECTOR_CLASS)?;
@@ -1700,6 +1805,21 @@ fn collect_elements(
                 sum += call_apply_as_double(vm, mapper, *element)?;
             }
             crate::boxed::boxed_double(vm, sum)
+        }
+        COLLECT_SUMMARIZING_INT => {
+            let mapper = collector_get(vm, collector, "f1");
+            let mut count = 0i64;
+            let mut sum = 0i64;
+            let mut min = i32::MAX;
+            let mut max = i32::MIN;
+            for element in &elements {
+                let value = call_apply_as_int(vm, mapper, *element)?;
+                count += 1;
+                sum += i64::from(value);
+                min = min.min(value);
+                max = max.max(value);
+            }
+            object(int_summary_new(vm, count, sum, min, max)?)
         }
         COLLECT_AVERAGING_INT => {
             let mapper = collector_get(vm, collector, "f1");
@@ -1996,7 +2116,7 @@ pub(crate) const COLLECTOR: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const COLLECTORS_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
+const COLLECTORS_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
     method(
         "toList",
         "()Ljava/util/stream/Collector;",
@@ -2292,6 +2412,16 @@ const COLLECTORS_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
             let collector = collector_new(vm, COLLECT_FILTERING)?;
             collector_set(vm, collector, "f1", ref_arg(args, 0));
             collector_set(vm, collector, "f3", ref_arg(args, 1));
+            object(collector)
+        },
+    ),
+    method(
+        "summarizingInt",
+        "(Ljava/util/function/ToIntFunction;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_SUMMARIZING_INT)?;
+            collector_set(vm, collector, "f1", ref_arg(args, 0));
             object(collector)
         },
     ),
