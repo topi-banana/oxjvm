@@ -842,6 +842,50 @@ pub(crate) fn format_fixed_jdk(value: f64, digits: usize) -> String {
         .unwrap_or_else(|| oxjvm_vm::format::double_to_string(value))
 }
 
+/// `java.util.Formatter` `%e`/`%E`: scientific notation with a fixed number of
+/// fraction digits (default 6) and a signed, at-least-two-digit exponent.
+pub(crate) fn format_scientific_jdk(value: f64, digits: usize, upper: bool) -> String {
+    if value.is_nan() {
+        return String::from("NaN");
+    }
+    if value.is_infinite() {
+        return String::from(if value > 0.0 { "Infinity" } else { "-Infinity" });
+    }
+    let e = if upper { 'E' } else { 'e' };
+    let sign = if value.is_sign_negative() { "-" } else { "" };
+    let magnitude = value.abs();
+    if magnitude == 0.0 {
+        let frac = alloc::format!("{:0width$}", 0, width = digits);
+        return alloc::format!("{sign}0.{frac}{e}+00");
+    }
+    let (significant, decimal_at) = shortest_digits(magnitude);
+    let mut exponent = decimal_at - 1;
+    let mantissa_text = if significant.len() == 1 {
+        significant.clone()
+    } else {
+        alloc::format!("{}.{}", &significant[..1], &significant[1..])
+    };
+    let mantissa: f64 = mantissa_text.parse().unwrap_or(0.0);
+    let fixed = format_fixed_jdk(mantissa, digits);
+    let (int_part, frac_part) = fixed.split_once('.').unwrap_or((fixed.as_str(), ""));
+    let mut int_part = int_part.to_string();
+    let mut frac_part = frac_part.to_string();
+    if int_part.len() > 1 {
+        frac_part = alloc::format!("{}{}", &int_part[1..], frac_part);
+        frac_part.truncate(digits);
+        int_part.truncate(1);
+        exponent += 1;
+    }
+    while frac_part.len() < digits {
+        frac_part.push('0');
+    }
+    let exp_sign = if exponent < 0 { '-' } else { '+' };
+    alloc::format!(
+        "{sign}{int_part}.{frac_part}{e}{exp_sign}{:02}",
+        exponent.abs()
+    )
+}
+
 /// The digits of a whole number held as an exact integer.
 fn format_u128(value: u128) -> String {
     alloc::format!("{value}")

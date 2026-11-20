@@ -3857,12 +3857,7 @@ pub(crate) fn format_string(
                 let value = arguments.get(argument).copied().unwrap_or(ObjectRef::NULL);
                 argument += 1;
                 let number = object_to_double(vm, value);
-                let text = alloc::format!("{number:e}");
-                if spec == 'E' {
-                    text.to_uppercase()
-                } else {
-                    text
-                }
+                crate::format::format_scientific_jdk(number, precision.unwrap_or(6), spec == 'E')
             }
             other => alloc::format!("%{other}"),
         };

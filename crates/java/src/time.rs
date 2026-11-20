@@ -88,7 +88,7 @@ fn duration_parse(vm: &mut Vm<'_>, text: &str) -> Result<Value, VmError> {
     duration_new(vm, nanos)
 }
 
-const DURATION_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
+const DURATION_METHODS: [oxjvm_vm::NativeMethodDef; 48] = [
     method(
         "ofNanos",
         "(J)Ljava/time/Duration;",
@@ -496,6 +496,18 @@ const DURATION_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
             let text = crate::string_arg(vm, args[0])?;
             duration_parse(vm, &text)
         },
+    ),
+    method(
+        "addTo",
+        "(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;",
+        ACC_PUBLIC,
+        |vm, _, args| duration_shift_temporal(vm, receiver(args), ref_arg(args, 1), false),
+    ),
+    method(
+        "subtractFrom",
+        "(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;",
+        ACC_PUBLIC,
+        |vm, _, args| duration_shift_temporal(vm, receiver(args), ref_arg(args, 1), true),
     ),
 ];
 
@@ -6624,6 +6636,45 @@ pub(crate) fn chrono_unit_named(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef
 
 /// `Period.addTo`/`subtractFrom`: add the total months then the days, mirroring
 /// the JDK (a zero period returns the temporal unchanged).
+/// `Duration.addTo`/`subtractFrom`: shift a temporal by the duration's seconds
+/// and nanos (stored as a single total-nanos field).
+fn duration_shift_temporal(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    temporal: ObjectRef,
+    negate: bool,
+) -> Result<Value, VmError> {
+    let sign = if negate { -1i64 } else { 1i64 };
+    let nanos = read_long_field(vm, this, "nanos");
+    let seconds = nanos.div_euclid(1_000_000_000) * sign;
+    let nano = nanos.rem_euclid(1_000_000_000) * sign;
+    let mut result = Value::Ref(temporal);
+    if seconds != 0 {
+        let unit = chrono_unit_named(vm, "SECONDS")?;
+        let (class, method) = vm.resolve_virtual_method(
+            temporal,
+            "plus",
+            "(JLjava/time/temporal/TemporalUnit;)Ljava/time/temporal/Temporal;",
+        )?;
+        result = vm.invoke_method(
+            class,
+            method,
+            vec![result, long(seconds)?, Value::Ref(unit)],
+        )?;
+    }
+    if nano != 0 {
+        let unit = chrono_unit_named(vm, "NANOS")?;
+        let receiver = result.as_ref();
+        let (class, method) = vm.resolve_virtual_method(
+            receiver,
+            "plus",
+            "(JLjava/time/temporal/TemporalUnit;)Ljava/time/temporal/Temporal;",
+        )?;
+        result = vm.invoke_method(class, method, vec![result, long(nano)?, Value::Ref(unit)])?;
+    }
+    Ok(result)
+}
+
 fn period_shift(
     vm: &mut Vm<'_>,
     this: ObjectRef,
