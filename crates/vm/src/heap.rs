@@ -546,6 +546,22 @@ pub enum MethodHandleValue {
         /// The underlying target.
         target: alloc::boxed::Box<MethodHandleValue>,
     },
+    /// A handle that reorders its arguments (`permuteArguments`).
+    Permuted {
+        /// The source argument index for each target position.
+        reorder: Vec<usize>,
+        /// The underlying target.
+        target: alloc::boxed::Box<MethodHandleValue>,
+    },
+    /// A handle that selects a branch by a boolean test (`guardWithTest`).
+    Guarded {
+        /// The boolean test handle.
+        test: alloc::boxed::Box<MethodHandleValue>,
+        /// The handle invoked when the test is true.
+        target: alloc::boxed::Box<MethodHandleValue>,
+        /// The handle invoked when the test is false.
+        fallback: alloc::boxed::Box<MethodHandleValue>,
+    },
     /// A handle that always throws `UnsupportedOperationException` (`MethodHandles.empty`).
     Empty {
         /// The requested method type.
@@ -591,6 +607,21 @@ impl MethodHandleValue {
                 (filters.len() * size_of::<Option<alloc::boxed::Box<MethodHandleValue>>>()) as u64
                     + size_of::<MethodHandleValue>() as u64
                     + target.payload_bytes()
+            }
+            Self::Permuted { reorder, target } => {
+                (reorder.len() * size_of::<usize>()) as u64
+                    + size_of::<MethodHandleValue>() as u64
+                    + target.payload_bytes()
+            }
+            Self::Guarded {
+                test,
+                target,
+                fallback,
+            } => {
+                size_of::<MethodHandleValue>() as u64 * 3
+                    + test.payload_bytes()
+                    + target.payload_bytes()
+                    + fallback.payload_bytes()
             }
             Self::Bound { target, .. } => {
                 size_of::<MethodHandleValue>() as u64 + target.payload_bytes()

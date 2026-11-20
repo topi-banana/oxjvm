@@ -2242,6 +2242,9 @@ impl<'a> Vm<'a> {
             }
             MethodHandleValue::Identity { class } => {
                 let value = args.first().copied().unwrap_or(Value::Ref(ObjectRef::NULL));
+                if self.classes.get(*class).kind == ClassKind::Primitive {
+                    return Ok(value);
+                }
                 if value.is_null_ref() || self.is_instance(value.as_ref(), *class) {
                     Ok(value)
                 } else {
@@ -2293,6 +2296,25 @@ impl<'a> Vm<'a> {
                     }
                 }
                 self.invoke_handle(target, &call_args)
+            }
+            MethodHandleValue::Permuted { reorder, target } => {
+                let mut call_args = Vec::with_capacity(reorder.len());
+                for index in reorder {
+                    call_args.push(args.get(*index).copied().unwrap_or(Value::Int(0)));
+                }
+                self.invoke_handle(target, &call_args)
+            }
+            MethodHandleValue::Guarded {
+                test,
+                target,
+                fallback,
+            } => {
+                let condition = self.invoke_handle(test, args)?;
+                if condition.as_int() != 0 {
+                    self.invoke_handle(target, args)
+                } else {
+                    self.invoke_handle(fallback, args)
+                }
             }
             MethodHandleValue::Empty { .. } => {
                 let returns = handle_method_type(self, handle).and_then(|(_, returns)| returns);
@@ -2412,6 +2434,62 @@ fn lambda_invoke_native(
     vm.invoke_handle(&target, &call_args)
 }
 
+/// The field descriptor of a class (`I` for primitives, `Lname;` for references).
+fn class_field_descriptor(vm: &Vm<'_>, class: ClassId) -> String {
+    let info = vm.classes.get(class);
+    if info.kind == ClassKind::Primitive {
+        match info.primitive {
+            Some(BaseType::Boolean) => "Z".into(),
+            Some(BaseType::Byte) => "B".into(),
+            Some(BaseType::Char) => "C".into(),
+            Some(BaseType::Short) => "S".into(),
+            Some(BaseType::Int) => "I".into(),
+            Some(BaseType::Long) => "J".into(),
+            Some(BaseType::Float) => "F".into(),
+            Some(BaseType::Double) => "D".into(),
+            _ => "V".into(),
+        }
+    } else {
+        let name = vm.class_name(class);
+        if name.starts_with('[') {
+            name.to_string()
+        } else {
+            format!("L{name};")
+        }
+    }
+}
+
+/// The field type of a captured value, unboxing wrapper classes to their primitive.
+fn value_field_type(vm: &Vm<'_>, value: Value) -> Option<FieldType> {
+    match value {
+        Value::Int(_) => Some(FieldType::Base(BaseType::Int)),
+        Value::Long(_) => Some(FieldType::Base(BaseType::Long)),
+        Value::Float(_) => Some(FieldType::Base(BaseType::Float)),
+        Value::Double(_) => Some(FieldType::Base(BaseType::Double)),
+        Value::Ref(reference) => {
+            if reference.is_null() {
+                return None;
+            }
+            let name = vm.class_name(vm.class_of(reference));
+            let base = match name {
+                "java/lang/Boolean" => Some(BaseType::Boolean),
+                "java/lang/Byte" => Some(BaseType::Byte),
+                "java/lang/Character" => Some(BaseType::Char),
+                "java/lang/Short" => Some(BaseType::Short),
+                "java/lang/Integer" => Some(BaseType::Int),
+                "java/lang/Long" => Some(BaseType::Long),
+                "java/lang/Float" => Some(BaseType::Float),
+                "java/lang/Double" => Some(BaseType::Double),
+                _ => None,
+            };
+            Some(match base {
+                Some(base) => FieldType::Base(base),
+                None => FieldType::Object(name.to_string()),
+            })
+        }
+    }
+}
+
 /// The `(params)return` type of a method handle, with a virtual/special receiver as the first
 /// parameter.  `None` when it cannot be derived (getters/setters, constructors).
 pub(crate) fn handle_method_type(
@@ -2450,6 +2528,14 @@ pub(crate) fn handle_method_type(
                 return None;
             }
             format!("({name}I){}", &name[1..])
+        }
+        MethodHandleValue::Identity { class } => {
+            let ty = class_field_descriptor(vm, *class);
+            format!("({ty}){ty}")
+        }
+        MethodHandleValue::Constant { value } => {
+            let returns = value_field_type(vm, *value)?;
+            return Some((Vec::new(), Some(returns)));
         }
         _ => return None,
     };

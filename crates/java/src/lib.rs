@@ -167,7 +167,7 @@ pub fn is_non_writable_property(key: &str) -> bool {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 1105] = [
+static REGISTRY: [NativeClass; 1110] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -1044,6 +1044,11 @@ static REGISTRY: [NativeClass; 1105] = [
     invoke::INT_BINARY_OPERATOR,
     invoke::INT_FUNCTION,
     invoke::TO_INT_FUNCTION,
+    invoke::TO_INT_BI_FUNCTION,
+    invoke::TO_LONG_BI_FUNCTION,
+    invoke::TO_DOUBLE_BI_FUNCTION,
+    invoke::OBJ_DOUBLE_CONSUMER,
+    invoke::OBJ_LONG_CONSUMER,
     invoke::TO_LONG_FUNCTION,
     invoke::TO_DOUBLE_FUNCTION,
     invoke::APPENDABLE,

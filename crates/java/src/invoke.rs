@@ -537,6 +537,8 @@ const METHOD_HANDLE_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
                 Some(MethodHandleValue::Dropped { .. }) => "MethodHandle(dropped)",
                 Some(MethodHandleValue::Folded { .. }) => "MethodHandle(folded)",
                 Some(MethodHandleValue::Filtered { .. }) => "MethodHandle(filtered)",
+                Some(MethodHandleValue::Permuted { .. }) => "MethodHandle(permuted)",
+                Some(MethodHandleValue::Guarded { .. }) => "MethodHandle(guarded)",
                 Some(MethodHandleValue::Empty { .. }) => "MethodHandle(empty)",
                 Some(MethodHandleValue::ArrayElementGetter { .. }) => {
                     "MethodHandle(arrayElementGetter)"
@@ -609,7 +611,7 @@ pub(crate) const METHOD_HANDLE: oxjvm_vm::NativeClass = class(
 // MethodHandles + Lookup
 // -------------------------------------------------------------------------------------------
 
-const METHOD_HANDLES_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+const METHOD_HANDLES_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
     method(
         "lookup",
         "()Ljava/lang/invoke/MethodHandles$Lookup;",
@@ -832,6 +834,69 @@ const METHOD_HANDLES_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
                 ));
             }
             object(vm.make_method_handle(MethodHandleValue::ArrayElementGetter { array_class })?)
+        },
+    ),
+    method(
+        "collectArguments",
+        "(Ljava/lang/invoke/MethodHandle;ILjava/lang/invoke/MethodHandle;)Ljava/lang/invoke/MethodHandle;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let target = vm
+                .method_handle_of(ref_arg(args, 0))
+                .ok_or_else(|| VmError::internal("not a handle"))?;
+            let position = crate::int_arg(args, 1).max(0) as usize;
+            let collector = vm
+                .method_handle_of(ref_arg(args, 2))
+                .ok_or_else(|| VmError::internal("not a handle"))?;
+            let handle = MethodHandleValue::Folded {
+                position,
+                combiner: alloc::boxed::Box::new(collector),
+                target: alloc::boxed::Box::new(target),
+            };
+            object(vm.make_method_handle(handle)?)
+        },
+    ),
+    method(
+        "permuteArguments",
+        "(Ljava/lang/invoke/MethodHandle;Ljava/lang/invoke/MethodType;[I)Ljava/lang/invoke/MethodHandle;",
+        ACC_PUBLIC | ACC_STATIC | ACC_VARARGS,
+        |vm, _, args| {
+            let target = vm
+                .method_handle_of(ref_arg(args, 0))
+                .ok_or_else(|| VmError::internal("not a handle"))?;
+            let array = ref_arg(args, 2);
+            let length = vm.array_length(array)?;
+            let mut reorder = Vec::new();
+            for index in 0..length {
+                reorder.push(vm.array_get(array, index as i32)?.as_int().max(0) as usize);
+            }
+            let handle = MethodHandleValue::Permuted {
+                reorder,
+                target: alloc::boxed::Box::new(target),
+            };
+            object(vm.make_method_handle(handle)?)
+        },
+    ),
+    method(
+        "guardWithTest",
+        "(Ljava/lang/invoke/MethodHandle;Ljava/lang/invoke/MethodHandle;Ljava/lang/invoke/MethodHandle;)Ljava/lang/invoke/MethodHandle;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let test = vm
+                .method_handle_of(ref_arg(args, 0))
+                .ok_or_else(|| VmError::internal("not a handle"))?;
+            let target = vm
+                .method_handle_of(ref_arg(args, 1))
+                .ok_or_else(|| VmError::internal("not a handle"))?;
+            let fallback = vm
+                .method_handle_of(ref_arg(args, 2))
+                .ok_or_else(|| VmError::internal("not a handle"))?;
+            let handle = MethodHandleValue::Guarded {
+                test: alloc::boxed::Box::new(test),
+                target: alloc::boxed::Box::new(target),
+                fallback: alloc::boxed::Box::new(fallback),
+            };
+            object(vm.make_method_handle(handle)?)
         },
     ),
 ];
@@ -1869,7 +1934,7 @@ macro_rules! functional_interface {
 // Each interface carries the same shape; the dispatcher selects by descriptor, so a shared array
 // with one abstract method of each common descriptor is sufficient and lets a single class serve
 // every functional interface users link against.
-const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 60] = [
+const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 63] = [
     method(
         "apply",
         "(Ljava/lang/Object;)Ljava/lang/Object;",
@@ -2261,6 +2326,24 @@ const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 60] = [
     method(
         "accept",
         "(Ljava/lang/Object;I)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "applyAsInt",
+        "(Ljava/lang/Object;Ljava/lang/Object;)I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "applyAsLong",
+        "(Ljava/lang/Object;Ljava/lang/Object;)J",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "applyAsDouble",
+        "(Ljava/lang/Object;Ljava/lang/Object;)D",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
@@ -2870,6 +2953,14 @@ functional_interface!(INT_BINARY_OPERATOR, "java/util/function/IntBinaryOperator
 functional_interface!(CALLABLE, "java/util/concurrent/Callable");
 functional_interface!(INT_FUNCTION, "java/util/function/IntFunction");
 functional_interface!(TO_INT_FUNCTION, "java/util/function/ToIntFunction");
+functional_interface!(TO_INT_BI_FUNCTION, "java/util/function/ToIntBiFunction");
+functional_interface!(TO_LONG_BI_FUNCTION, "java/util/function/ToLongBiFunction");
+functional_interface!(
+    TO_DOUBLE_BI_FUNCTION,
+    "java/util/function/ToDoubleBiFunction"
+);
+functional_interface!(OBJ_DOUBLE_CONSUMER, "java/util/function/ObjDoubleConsumer");
+functional_interface!(OBJ_LONG_CONSUMER, "java/util/function/ObjLongConsumer");
 functional_interface!(TO_LONG_FUNCTION, "java/util/function/ToLongFunction");
 functional_interface!(TO_DOUBLE_FUNCTION, "java/util/function/ToDoubleFunction");
 functional_interface!(THREAD_FACTORY, "java/util/concurrent/ThreadFactory");
