@@ -2796,7 +2796,7 @@ fn arrays_set_all(
     void()
 }
 
-const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 204] = [
+const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 211] = [
     method(
         "setAll",
         "([ILjava/util/function/IntUnaryOperator;)V",
@@ -4317,6 +4317,69 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 204] = [
             )
         },
     ),
+    method("sort", "([III)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+        arrays_sort_primitive_range(
+            vm,
+            ref_arg(args, 0),
+            ArrayComponent::Int,
+            int_arg(args, 1),
+            int_arg(args, 2),
+        )
+    }),
+    method("sort", "([JJJ)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+        arrays_sort_primitive_range(
+            vm,
+            ref_arg(args, 0),
+            ArrayComponent::Long,
+            int_arg(args, 1),
+            int_arg(args, 2),
+        )
+    }),
+    method("sort", "([SSS)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+        arrays_sort_primitive_range(
+            vm,
+            ref_arg(args, 0),
+            ArrayComponent::Short,
+            int_arg(args, 1),
+            int_arg(args, 2),
+        )
+    }),
+    method("sort", "([CCC)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+        arrays_sort_primitive_range(
+            vm,
+            ref_arg(args, 0),
+            ArrayComponent::Char,
+            int_arg(args, 1),
+            int_arg(args, 2),
+        )
+    }),
+    method("sort", "([BBB)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+        arrays_sort_primitive_range(
+            vm,
+            ref_arg(args, 0),
+            ArrayComponent::Byte,
+            int_arg(args, 1),
+            int_arg(args, 2),
+        )
+    }),
+    method("sort", "([FFF)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+        arrays_sort_primitive_range(
+            vm,
+            ref_arg(args, 0),
+            ArrayComponent::Float,
+            int_arg(args, 1),
+            int_arg(args, 2),
+        )
+    }),
+    method("sort", "([DDD)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+        arrays_sort_primitive_range(
+            vm,
+            ref_arg(args, 0),
+            ArrayComponent::Double,
+            int_arg(args, 1),
+            int_arg(args, 2),
+        )
+    }),
 ];
 
 /// The recursive rendering used by `Arrays.deepToString`.
@@ -4782,6 +4845,85 @@ fn arrays_sort_primitive(
     values.sort_by(f64::total_cmp);
     for (index, value) in values.into_iter().enumerate() {
         vm.array_set(array, index as i32, Value::Double(value), false)?;
+    }
+    void()
+}
+
+/// `Arrays.sort(primitive[], fromIndex, toIndex)`: sort only the subrange.
+fn arrays_sort_primitive_range(
+    vm: &mut Vm<'_>,
+    array: ObjectRef,
+    component: ArrayComponent,
+    from: i32,
+    to: i32,
+) -> Result<Value, VmError> {
+    if array.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let length = vm.array_length(array)? as i32;
+    if from > to {
+        return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+    }
+    if from < 0 || to > length {
+        return Err(vm.throw_new("java/lang/ArrayIndexOutOfBoundsException", None));
+    }
+    let from = from as usize;
+    let to = to as usize;
+    if matches!(component, ArrayComponent::Int | ArrayComponent::Long) {
+        let mut values: Vec<Value> = Vec::with_capacity(to - from);
+        for index in from..to {
+            values.push(vm.array_get(array, index as i32)?);
+        }
+        if component == ArrayComponent::Int {
+            values.sort_by_key(|value| value.as_int());
+        } else {
+            values.sort_by_key(|value| value.as_long());
+        }
+        for (offset, value) in values.into_iter().enumerate() {
+            vm.array_set(array, (from + offset) as i32, value, false)?;
+        }
+        return void();
+    }
+    if matches!(
+        component,
+        ArrayComponent::Byte | ArrayComponent::Char | ArrayComponent::Short | ArrayComponent::Float
+    ) {
+        let mut values: Vec<i32> = Vec::with_capacity(to - from);
+        for index in from..to {
+            let value = vm.array_get(array, index as i32)?;
+            values.push(if component == ArrayComponent::Float {
+                sortable_float(value).to_bits() as i32
+            } else {
+                value.as_int()
+            });
+        }
+        if component == ArrayComponent::Float {
+            values.sort_by(|a, b| f32::from_bits(*a as u32).total_cmp(&f32::from_bits(*b as u32)));
+        } else {
+            let key: fn(i32) -> i32 = match component {
+                ArrayComponent::Byte => |value| i32::from(value as i8),
+                ArrayComponent::Short => |value| i32::from(value as i16),
+                _ => |value| i32::from(value as u16),
+            };
+            values.sort_by_key(|value| key(*value));
+        }
+        for (offset, value) in values.into_iter().enumerate() {
+            let slot = if component == ArrayComponent::Float {
+                Value::Float(sortable_float(Value::Int(value)))
+            } else {
+                Value::Int(value)
+            };
+            vm.array_set(array, (from + offset) as i32, slot, false)?;
+        }
+        return void();
+    }
+    let mut values: Vec<f64> = Vec::with_capacity(to - from);
+    for index in from..to {
+        values.push(sortable_double(vm.array_get(array, index as i32)?));
+    }
+    values.sort_by(f64::total_cmp);
+    for (offset, value) in values.into_iter().enumerate() {
+        vm.array_set(array, (from + offset) as i32, Value::Double(value), false)?;
     }
     void()
 }
