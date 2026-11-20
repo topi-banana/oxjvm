@@ -33,7 +33,7 @@ pub(crate) fn process_info(vm: &mut Vm<'_>, pid: i64) -> Result<Value, VmError> 
     object(instance)
 }
 
-const PROCESS_HANDLE_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const PROCESS_HANDLE_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method(
         "current",
         "()Ljava/lang/ProcessHandle;",
@@ -104,6 +104,18 @@ const PROCESS_HANDLE_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
             let text = alloc::format!("ProcessHandle[pid={pid}]");
             object(vm.make_string(&text)?)
         },
+    ),
+    method(
+        "children",
+        "()Ljava/util/stream/Stream;",
+        ACC_PUBLIC,
+        |vm, _, _| object(crate::stream::stream_from(vm, Vec::new())?),
+    ),
+    method(
+        "descendants",
+        "()Ljava/util/stream/Stream;",
+        ACC_PUBLIC,
+        |vm, _, _| object(crate::stream::stream_from(vm, Vec::new())?),
     ),
 ];
 

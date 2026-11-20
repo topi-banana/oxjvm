@@ -514,6 +514,11 @@ pub enum MethodHandleValue {
         /// The class the value is cast to.
         class: ClassId,
     },
+    /// A handle that always throws `UnsupportedOperationException` (`MethodHandles.empty`).
+    Empty {
+        /// The requested method type.
+        method_type: ObjectRef,
+    },
 }
 
 impl MethodHandleValue {
@@ -529,7 +534,8 @@ impl MethodHandleValue {
             | Self::StaticSetter { .. }
             | Self::Getter { .. }
             | Self::Setter { .. }
-            | Self::Identity { .. } => 0,
+            | Self::Identity { .. }
+            | Self::Empty { .. } => 0,
             Self::Bound { target, .. } => {
                 size_of::<MethodHandleValue>() as u64 + target.payload_bytes()
             }

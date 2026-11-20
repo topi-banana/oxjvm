@@ -10320,7 +10320,7 @@ pub(crate) const ZONE_ID: oxjvm_vm::NativeClass = class(
 );
 
 /// Format a fixed offset (in seconds) as a `ZoneOffset` id: `Z`, `+HH:MM` or `+HH:MM:SS`.
-fn zone_offset_id(total: i32) -> String {
+pub(crate) fn zone_offset_id(total: i32) -> String {
     if total == 0 {
         return String::from("Z");
     }

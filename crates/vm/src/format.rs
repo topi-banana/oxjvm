@@ -41,6 +41,18 @@ pub fn float_to_string(value: f32) -> String {
             "0.0".into()
         };
     }
+    // Subnormals use the JDK's Schubfach rendering, whose decimal grid is
+    // pinned to the minimum exponent rather than the value's magnitude.
+    let bits = value.to_bits();
+    let mantissa = u64::from(bits & 0x007F_FFFF);
+    if bits & 0x7F80_0000 == 0 && mantissa != 0 {
+        let magnitude = subnormal_to_string(mantissa, false);
+        return if value.is_sign_negative() {
+            alloc::format!("-{magnitude}")
+        } else {
+            magnitude
+        };
+    }
     let magnitude = value.abs();
     if (1e-3..1e7).contains(&f64::from(magnitude)) {
         let mut text = alloc::format!("{value}");
@@ -72,6 +84,18 @@ pub fn double_to_string(value: f64) -> String {
             "0.0".into()
         };
     }
+    // Subnormals use the JDK's Schubfach rendering, whose decimal grid is
+    // pinned to the minimum exponent rather than the value's magnitude.
+    let bits = value.to_bits();
+    let mantissa = bits & 0x000F_FFFF_FFFF_FFFF;
+    if bits & 0x7FF0_0000_0000_0000 == 0 && mantissa != 0 {
+        let magnitude = subnormal_to_string(mantissa, true);
+        return if value.is_sign_negative() {
+            alloc::format!("-{magnitude}")
+        } else {
+            magnitude
+        };
+    }
     let magnitude = value.abs();
     if (1e-3..1e7).contains(&magnitude) {
         let mut text = alloc::format!("{value}");
@@ -82,6 +106,95 @@ pub fn double_to_string(value: f64) -> String {
     } else {
         scientific(&alloc::format!("{value:e}"))
     }
+}
+
+/// Render a subnormal magnitude exactly as the JDK's Schubfach algorithm does.
+/// For subnormals the binary exponent is pinned at `Q_MIN`, so the decimal grid
+/// `10^floor(log10(2^Q_MIN))` is fixed; this yields more significant digits than
+/// a magnitude-based shortest form for small subnormals (e.g. `4.9E-324`).
+fn subnormal_to_string(mantissa: u64, double: bool) -> String {
+    const MASK_63: u64 = (1 << 63) - 1;
+
+    fn multiply_high(a: u64, b: u64) -> u64 {
+        ((u128::from(a) * u128::from(b)) >> 64) as u64
+    }
+
+    /// The rounded high part of `cp * (g1 2^63 + g0) * 2^-127`.
+    fn rop(g1: u64, g0: u64, cp: u64) -> u64 {
+        let x1 = multiply_high(g0, cp);
+        let y0 = (u128::from(g1) * u128::from(cp)) as u64;
+        let y1 = multiply_high(g1, cp);
+        let z = (y0 >> 1) + x1;
+        let vbp = y1 + (z >> 63);
+        vbp | (((z & MASK_63) + MASK_63) >> 63)
+    }
+
+    /// Format `f * 10^e` in Java scientific notation (always used for subnormals).
+    fn format_subnormal(f: u64, e: i32) -> String {
+        let digits = alloc::format!("{f}");
+        let exponent = e + digits.len() as i32 - 1;
+        let mut fraction = if digits.len() > 1 {
+            digits[1..].to_string()
+        } else {
+            String::from("0")
+        };
+        while fraction.len() > 1 && fraction.ends_with('0') {
+            fraction.pop();
+        }
+        alloc::format!("{}.{}E{}", &digits[..1], fraction, exponent)
+    }
+
+    let (q_min, c_tiny, k, g1, g0, flog2): (i32, u64, i32, u64, u64, i32) = if double {
+        (
+            -1074,
+            3,
+            -324,
+            0x4F0C_EDC9_5A71_8DD4,
+            0x5B01_E8B0_9AA0_D1B5,
+            1076,
+        )
+    } else {
+        (
+            -149,
+            8,
+            -45,
+            0x59AE_DFC1_0D72_79C5,
+            0x7768_A00B_22A0_0001,
+            149,
+        )
+    };
+    let (c, dk) = if mantissa < c_tiny {
+        (10 * mantissa, -1i32)
+    } else {
+        (mantissa, 0)
+    };
+    let out = c & 1;
+    let cb = c << 2;
+    let cbr = cb + 2;
+    let cbl = cb - 2;
+    let h = (q_min + flog2 + 2) as u32;
+    let vb = rop(g1, g0, cb << h);
+    let vbl = rop(g1, g0, cbl << h);
+    let vbr = rop(g1, g0, cbr << h);
+    let s = vb >> 2;
+    if s >= 100 {
+        let sp10 = 10 * multiply_high(s, 115_292_150_460_684_698 << 4);
+        let tp10 = sp10 + 10;
+        let upin = vbl + out <= sp10 << 2;
+        let wpin = (tp10 << 2) + out <= vbr;
+        if upin != wpin {
+            return format_subnormal(if upin { sp10 } else { tp10 }, k);
+        }
+    }
+    let t = s + 1;
+    let uin = vbl + out <= s << 2;
+    let win = (t << 2) + out <= vbr;
+    if uin != win {
+        return format_subnormal(if uin { s } else { t }, k + dk);
+    }
+    let cmp = vb as i64 - ((s + t) << 1) as i64;
+    let away = cmp > 0 || (cmp == 0 && (s & 1) != 0);
+    format_subnormal(if away { t } else { s }, k + dk)
 }
 
 fn scientific(rust_exponent: &str) -> String {

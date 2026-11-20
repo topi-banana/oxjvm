@@ -513,10 +513,11 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
             .map(|m| m.kind == FileKind::Directory)
             .unwrap_or(false);
         let suffix = if is_dir { "/" } else { "" };
+        let encoded = uri_encode_path(&path);
         let text = if path.starts_with('/') {
-            alloc::format!("file:{path}{suffix}")
+            alloc::format!("file:{encoded}{suffix}")
         } else {
-            alloc::format!("file:/{path}{suffix}")
+            alloc::format!("file:/{encoded}{suffix}")
         };
         crate::uri::new_uri(vm, &text)
     }),
@@ -635,6 +636,41 @@ fn file_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     vm.set_static_value(class, "separatorChar", "C", Value::Int('/' as i32));
     vm.set_static_value(class, "pathSeparatorChar", "C", Value::Int(':' as i32));
     Ok(())
+}
+
+/// Percent-encode a file path for the path component of a `file:` URI, the way
+/// `new URI("file", null, path, null)` quotes characters outside the URI set.
+fn uri_encode_path(path: &str) -> String {
+    let mut out = String::new();
+    for &byte in path.as_bytes() {
+        let allowed = byte.is_ascii_alphanumeric()
+            || matches!(
+                byte,
+                b'-' | b'.'
+                    | b'_'
+                    | b'~'
+                    | b'!'
+                    | b'$'
+                    | b'&'
+                    | b'\''
+                    | b'('
+                    | b')'
+                    | b'*'
+                    | b'+'
+                    | b','
+                    | b';'
+                    | b'='
+                    | b':'
+                    | b'@'
+                    | b'/'
+            );
+        if allowed {
+            out.push(byte as char);
+        } else {
+            out.push_str(&alloc::format!("%{byte:02X}"));
+        }
+    }
+    out
 }
 
 pub(crate) fn file_path(vm: &Vm<'_>, this: ObjectRef) -> String {

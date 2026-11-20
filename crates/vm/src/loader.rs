@@ -2215,6 +2215,16 @@ impl<'a> Vm<'a> {
                     Err(self.throw_new("java/lang/ClassCastException", None))
                 }
             }
+            MethodHandleValue::Empty { .. } => {
+                let returns = handle_method_type(self, handle).and_then(|(_, returns)| returns);
+                Ok(match returns {
+                    Some(FieldType::Base(BaseType::Long)) => Value::Long(0),
+                    Some(FieldType::Base(BaseType::Float)) => Value::Float(0.0),
+                    Some(FieldType::Base(BaseType::Double)) => Value::Double(0.0),
+                    Some(FieldType::Base(_)) => Value::Int(0),
+                    _ => Value::Ref(ObjectRef::NULL),
+                })
+            }
         }
     }
 }
@@ -2308,7 +2318,7 @@ fn lambda_invoke_native(
 
 /// The `(params)return` type of a method handle, with a virtual/special receiver as the first
 /// parameter.  `None` when it cannot be derived (getters/setters, constructors).
-fn handle_method_type(
+pub(crate) fn handle_method_type(
     vm: &Vm<'_>,
     handle: &MethodHandleValue,
 ) -> Option<(Vec<FieldType>, Option<FieldType>)> {
@@ -2337,6 +2347,7 @@ fn handle_method_type(
             let returns = returns.map_or_else(|| String::from("V"), |field| field.descriptor());
             format!("({parameters}){returns}")
         }
+        MethodHandleValue::Empty { method_type } => vm.method_type_of(*method_type)?,
         _ => return None,
     };
     let parsed = MethodDescriptor::parse(&descriptor).ok()?;
@@ -2344,7 +2355,11 @@ fn handle_method_type(
 }
 
 /// `Box.valueOf(value)` for the SAM's primitive-to-reference adaptation.
-fn box_primitive(vm: &mut Vm<'_>, base: BaseType, value: Value) -> Result<Value, VmError> {
+pub(crate) fn box_primitive(
+    vm: &mut Vm<'_>,
+    base: BaseType,
+    value: Value,
+) -> Result<Value, VmError> {
     let (class_name, descriptor) = match base {
         BaseType::Boolean => ("java/lang/Boolean", "(Z)Ljava/lang/Boolean;"),
         BaseType::Byte => ("java/lang/Byte", "(B)Ljava/lang/Byte;"),
@@ -2365,7 +2380,11 @@ fn box_primitive(vm: &mut Vm<'_>, base: BaseType, value: Value) -> Result<Value,
 
 /// Adapt an inserted handle argument to a primitive parameter: unbox a
 /// wrapper reference, then widen the primitive representation if needed.
-fn coerce_handle_arg(vm: &mut Vm<'_>, base: BaseType, value: Value) -> Result<Value, VmError> {
+pub(crate) fn coerce_handle_arg(
+    vm: &mut Vm<'_>,
+    base: BaseType,
+    value: Value,
+) -> Result<Value, VmError> {
     let mut value = value;
     if let Value::Ref(object) = value {
         if object.is_null() {

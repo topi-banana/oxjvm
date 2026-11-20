@@ -2202,7 +2202,7 @@ impl<'a> Vm<'a> {
         class: ClassId,
         cp_index: u16,
     ) -> Result<Option<Outcome>, VmError> {
-        let (_name, descriptor, owner_name) = {
+        let (name, descriptor, owner_name) = {
             let target = self.classes.get(class);
             let pool = &target.constant_pool;
             let Ok(CpInfo::Methodref {
@@ -2247,10 +2247,46 @@ impl<'a> Vm<'a> {
         };
         let value = self.invoke_handle(&handle, &args)?;
         if parsed.returns.is_some() {
+            let value = if name == "invokeExact" {
+                value
+            } else {
+                self.adapt_handle_return(&handle, value, parsed.returns.clone())?
+            };
             self.push(value);
         }
         Ok(Some(Outcome::Continue))
     }
+
+    /// Adapt a handle's result to the call-site return type for `invoke` and
+    /// `invokeBasic`, which perform an `asType` conversion (boxing a primitive
+    /// when the call site expects a reference, and vice versa).
+    fn adapt_handle_return(
+        &mut self,
+        handle: &MethodHandleValue,
+        value: Value,
+        target: Option<FieldType>,
+    ) -> Result<Value, VmError> {
+        let Some(target) = target else {
+            return Ok(value);
+        };
+        match target {
+            FieldType::Base(base) => crate::loader::coerce_handle_arg(self, base, value),
+            _ => match value {
+                Value::Ref(_) => Ok(value),
+                _ => {
+                    let source = crate::loader::handle_method_type(self, handle)
+                        .and_then(|(_, returns)| returns);
+                    match source {
+                        Some(FieldType::Base(base)) => {
+                            crate::loader::box_primitive(self, base, value)
+                        }
+                        _ => Ok(value),
+                    }
+                }
+            },
+        }
+    }
+
     /// Handle the signature-polymorphic `VarHandle.get`/`set` family.
     fn try_polymorphic_var_handle_invoke(
         &mut self,

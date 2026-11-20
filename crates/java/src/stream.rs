@@ -167,7 +167,7 @@ fn stream_get(vm: &mut Vm<'_>, this: ObjectRef) -> Vec<ObjectRef> {
     stream_elements(vm, this)
 }
 
-const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
+const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
     method(
         "of",
         "([Ljava/lang/Object;)Ljava/util/stream/Stream;",
@@ -461,6 +461,12 @@ const STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
         ACC_PUBLIC | ACC_ABSTRACT,
         abstract_method_pub,
     ),
+    method(
+        "mapMulti",
+        "(Ljava/util/function/BiConsumer;)Ljava/util/stream/Stream;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
 ];
 
 fn stream_builder_init(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
@@ -639,7 +645,7 @@ pub(crate) const STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const OXJVM_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
+const OXJVM_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
     method(
         "filter",
         "(Ljava/util/function/Predicate;)Ljava/util/stream/Stream;",
@@ -1162,6 +1168,38 @@ const OXJVM_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
             object(accumulator)
         },
     ),
+    method(
+        "mapMulti",
+        "(Ljava/util/function/BiConsumer;)Ljava/util/stream/Stream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let mapper = ref_arg(args, 1);
+            let list = crate::util::new_array_list(vm)?;
+            let collector_class = vm.resolve_class("java/util/OjvmSpliteratorCollector")?;
+            let consumer = vm.new_instance(collector_class)?;
+            let (declaring, field) =
+                vm.find_field(collector_class, "list", "Ljava/util/ArrayList;")?;
+            vm.set_instance_ref(consumer, declaring, field, list);
+            for element in stream_get(vm, receiver(args)) {
+                let (class, method) = vm.resolve_virtual_method(
+                    mapper,
+                    "accept",
+                    "(Ljava/lang/Object;Ljava/lang/Object;)V",
+                )?;
+                vm.invoke_method(
+                    class,
+                    method,
+                    vec![
+                        Value::Ref(mapper),
+                        Value::Ref(element),
+                        Value::Ref(consumer),
+                    ],
+                )?;
+            }
+            let elements = crate::util::array_list_elements(vm, list);
+            object(stream_from(vm, elements)?)
+        },
+    ),
 ];
 
 fn stream_for_each(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
@@ -1293,6 +1331,7 @@ const COLLECT_REDUCING: i32 = 17;
 const COLLECT_PARTITIONING: i32 = 18;
 const COLLECT_COLLECTING_AND_THEN: i32 = 19;
 const COLLECT_GROUPING: i32 = 20;
+const COLLECT_TEEING: i32 = 21;
 
 fn collector_new(vm: &mut Vm<'_>, kind: i32) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class(COLLECTOR_CLASS)?;
@@ -1537,6 +1576,19 @@ fn collect_elements(
             collector_get(vm, collector, "s3"),
         ),
         COLLECT_COUNTING => crate::boxed::boxed_long(vm, elements.len() as i64),
+        COLLECT_TEEING => {
+            let down1 = collector_get(vm, collector, "f1");
+            let down2 = collector_get(vm, collector, "f2");
+            let merge = collector_get(vm, collector, "f3");
+            let first = collect_elements(vm, down1, elements.clone())?;
+            let second = collect_elements(vm, down2, elements)?;
+            let (class, method) = vm.resolve_virtual_method(
+                merge,
+                "apply",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+            )?;
+            vm.invoke_method(class, method, vec![Value::Ref(merge), first, second])
+        }
         COLLECT_SUMMING_INT => {
             let mapper = collector_get(vm, collector, "f1");
             let mut sum = 0i32;
@@ -1832,7 +1884,7 @@ pub(crate) const COLLECTOR: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const COLLECTORS_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
+const COLLECTORS_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
     method(
         "toList",
         "()Ljava/util/stream/Collector;",
@@ -2091,6 +2143,18 @@ const COLLECTORS_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let collector = collector_new(vm, COLLECT_TO_UNMODIFIABLE_MAP)?;
+            collector_set(vm, collector, "f1", ref_arg(args, 0));
+            collector_set(vm, collector, "f2", ref_arg(args, 1));
+            collector_set(vm, collector, "f3", ref_arg(args, 2));
+            object(collector)
+        },
+    ),
+    method(
+        "teeing",
+        "(Ljava/util/stream/Collector;Ljava/util/stream/Collector;Ljava/util/function/BiFunction;)Ljava/util/stream/Collector;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let collector = collector_new(vm, COLLECT_TEEING)?;
             collector_set(vm, collector, "f1", ref_arg(args, 0));
             collector_set(vm, collector, "f2", ref_arg(args, 1));
             collector_set(vm, collector, "f3", ref_arg(args, 2));

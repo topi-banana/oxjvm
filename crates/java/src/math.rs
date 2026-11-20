@@ -1616,12 +1616,50 @@ macro_rules! math_methods {
                     float_arg(args, 2),
                 ))
             }),
+            method(
+                "powExact",
+                "(II)I",
+                ACC_PUBLIC | ACC_STATIC,
+                |vm, _, args| {
+                    let x = int_arg(args, 0);
+                    let n = int_arg(args, 1);
+                    if n < 0 {
+                        return Err(vm.throw_new(
+                            "java/lang/ArithmeticException",
+                            Some("negative exponent"),
+                        ));
+                    }
+                    let result = x.checked_pow(n as u32).ok_or_else(|| {
+                        vm.throw_new("java/lang/ArithmeticException", Some("integer overflow"))
+                    })?;
+                    int(result)
+                },
+            ),
+            method(
+                "powExact",
+                "(JI)J",
+                ACC_PUBLIC | ACC_STATIC,
+                |vm, _, args| {
+                    let x = long_arg(args, 0);
+                    let n = int_arg(args, 1);
+                    if n < 0 {
+                        return Err(vm.throw_new(
+                            "java/lang/ArithmeticException",
+                            Some("negative exponent"),
+                        ));
+                    }
+                    let result = x.checked_pow(n as u32).ok_or_else(|| {
+                        vm.throw_new("java/lang/ArithmeticException", Some("integer overflow"))
+                    })?;
+                    long(result)
+                },
+            ),
         ]
     }};
 }
 
-const MATH_METHODS: [oxjvm_vm::NativeMethodDef; 86] = math_methods!();
-const STRICT_MATH_METHODS: [oxjvm_vm::NativeMethodDef; 86] = math_methods!();
+const MATH_METHODS: [oxjvm_vm::NativeMethodDef; 88] = math_methods!();
+const STRICT_MATH_METHODS: [oxjvm_vm::NativeMethodDef; 88] = math_methods!();
 
 pub(crate) const MATH: oxjvm_vm::NativeClass = class(
     "java/lang/Math",

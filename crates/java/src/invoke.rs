@@ -514,7 +514,7 @@ pub(crate) const METHOD_TYPE: oxjvm_vm::NativeClass = class(
 // MethodHandle
 // -------------------------------------------------------------------------------------------
 
-const METHOD_HANDLE_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+const METHOD_HANDLE_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     method(
         "toString",
         "()Ljava/lang/String;",
@@ -533,6 +533,7 @@ const METHOD_HANDLE_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
                 Some(MethodHandleValue::Bound { .. }) => "MethodHandle(bound)",
                 Some(MethodHandleValue::Inserted { .. }) => "MethodHandle(inserted)",
                 Some(MethodHandleValue::Identity { .. }) => "MethodHandle(identity)",
+                Some(MethodHandleValue::Empty { .. }) => "MethodHandle(empty)",
                 None => "MethodHandle",
             };
             object(vm.make_string(text)?)
@@ -582,6 +583,9 @@ const METHOD_HANDLE_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
             vm.invoke_handle(&handle, &values)
         },
     ),
+    method("isVarargsCollector", "()Z", ACC_PUBLIC, |_, _, _| {
+        boolean(false)
+    }),
 ];
 
 pub(crate) const METHOD_HANDLE: oxjvm_vm::NativeClass = class(
@@ -598,7 +602,7 @@ pub(crate) const METHOD_HANDLE: oxjvm_vm::NativeClass = class(
 // MethodHandles + Lookup
 // -------------------------------------------------------------------------------------------
 
-const METHOD_HANDLES_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+const METHOD_HANDLES_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method(
         "lookup",
         "()Ljava/lang/invoke/MethodHandles$Lookup;",
@@ -734,6 +738,18 @@ const METHOD_HANDLES_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
             object(vm.make_method_handle(handle)?)
         },
     ),
+    method(
+        "empty",
+        "(Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/MethodHandle;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let method_type = ref_arg(args, 0);
+            if method_type.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(vm.make_method_handle(MethodHandleValue::Empty { method_type })?)
+        },
+    ),
 ];
 
 fn lookup_singleton(
@@ -776,7 +792,7 @@ pub(crate) const METHOD_HANDLES: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const LOOKUP_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+const LOOKUP_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method(
         "findStatic",
         "(Ljava/lang/Class;Ljava/lang/String;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/MethodHandle;",
@@ -900,6 +916,43 @@ const LOOKUP_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
         "(Ljava/lang/invoke/MethodHandle;)Ljava/lang/invoke/MethodHandleInfo;",
         ACC_PUBLIC,
         |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "findClass",
+        "(Ljava/lang/String;)Ljava/lang/Class;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = string_arg(vm, args[1])?;
+            let class = vm.resolve_class(&name.replace('.', "/"))?;
+            object(vm.class_object(class)?)
+        },
+    ),
+    method(
+        "accessClass",
+        "(Ljava/lang/Class;)Ljava/lang/Class;",
+        ACC_PUBLIC,
+        |_, _, args| object(ref_arg(args, 1)),
+    ),
+    method(
+        "bind",
+        "(Ljava/lang/Object;Ljava/lang/String;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/MethodHandle;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let receiver = ref_arg(args, 1);
+            if receiver.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let class = vm.class_of(receiver);
+            let name = string_arg(vm, args[2])?;
+            let descriptor = method_type_argument(vm, ref_arg(args, 3))?;
+            let target =
+                vm.find_method_handle_target(class, &name, &descriptor, false, true, false)?;
+            let bound = MethodHandleValue::Bound {
+                receiver,
+                target: alloc::boxed::Box::new(target),
+            };
+            object(vm.make_method_handle(bound)?)
+        },
     ),
 ];
 

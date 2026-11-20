@@ -1204,14 +1204,20 @@ pub(crate) const DATE_TIME_FORMATTER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method(
         "now",
         "()Ljava/time/ZonedDateTime;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _| {
             let millis = vm.host_time_millis();
-            zoned_date_time_new(vm, millis, (millis.rem_euclid(1000) * 1_000_000) as i32)
+            let zone = system_default_zone(vm)?;
+            zoned_date_time_new(
+                vm,
+                millis,
+                (millis.rem_euclid(1000) * 1_000_000) as i32,
+                zone,
+            )
         },
     ),
     method(
@@ -1223,7 +1229,12 @@ const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
             let millis = vm.host_time_millis();
-            zoned_date_time_new(vm, millis, (millis.rem_euclid(1000) * 1_000_000) as i32)
+            zoned_date_time_new(
+                vm,
+                millis,
+                (millis.rem_euclid(1000) * 1_000_000) as i32,
+                ref_arg(args, 0),
+            )
         },
     ),
     method(
@@ -1245,6 +1256,7 @@ const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
                 vm,
                 (local_second - i64::from(offset)) * 1000 + i64::from(nano) / 1_000_000,
                 nano,
+                zone,
             )
         },
     ),
@@ -1287,11 +1299,49 @@ const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let millis = read_long_field(vm, receiver(args), "millis");
-            object(vm.make_string(&crate::text::format_pattern(
-                "yyyy-MM-dd'T'HH:mm:ss.SSS",
-                millis,
-            ))?)
+            let this = receiver(args);
+            let millis = read_long_field(vm, this, "millis");
+            let nano = read_int_field(vm, this, "nano");
+            let zone = vm
+                .read_ref_field(this, vm.class_of(this), "zone", "Ljava/time/ZoneId;")
+                .unwrap_or(ObjectRef::NULL);
+            let offset = zone_offset_seconds(vm, zone);
+            let local_millis = millis + i64::from(offset) * 1000;
+            let epoch_second = local_millis.div_euclid(1000);
+            let epoch_day = epoch_second.div_euclid(86_400);
+            let second_of_day = epoch_second.rem_euclid(86_400);
+            let (year, month, day) = civil_from_days(epoch_day);
+            let hour = second_of_day / 3600;
+            let minute = (second_of_day % 3600) / 60;
+            let second = second_of_day % 60;
+            let mut text = alloc::format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}");
+            if second != 0 || nano != 0 {
+                text.push_str(&alloc::format!(":{second:02}"));
+            }
+            if nano != 0 {
+                let fraction = if nano % 1_000_000 == 0 {
+                    alloc::format!("{:03}", nano / 1_000_000)
+                } else if nano % 1_000 == 0 {
+                    alloc::format!("{:06}", nano / 1_000)
+                } else {
+                    alloc::format!("{nano:09}")
+                };
+                text.push('.');
+                text.push_str(&fraction);
+            }
+            text.push_str(&crate::lang::zone_offset_id(offset));
+            let is_offset = vm
+                .find_field_opt(vm.class_of(zone), "totalSeconds", "I")
+                .is_some();
+            if !zone.is_null() && !is_offset {
+                let id = vm
+                    .read_string_field(zone, vm.class_of(zone), "id")
+                    .unwrap_or_default();
+                text.push('[');
+                text.push_str(&id);
+                text.push(']');
+            }
+            object(vm.make_string(&text)?)
         },
     ),
     method(
@@ -1311,6 +1361,59 @@ const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
                 read_long_field(vm, receiver(args), "millis")
                     == read_long_field(vm, other, "millis"),
             )
+        },
+    ),
+    method(
+        "of",
+        "(IIIIIIILjava/time/ZoneId;)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let year = crate::int_arg(args, 0);
+            let month = crate::int_arg(args, 1);
+            let day = crate::int_arg(args, 2);
+            let hour = crate::int_arg(args, 3);
+            let minute = crate::int_arg(args, 4);
+            let second = crate::int_arg(args, 5);
+            let nano = crate::int_arg(args, 6);
+            let zone = ref_arg(args, 7);
+            if zone.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            if !(1..=12).contains(&month) || day < 1 || day > length_of_month(year, month) {
+                return Err(vm.throw_new("java/time/DateTimeException", Some("Invalid date")));
+            }
+            if !(0..=23).contains(&hour)
+                || !(0..=59).contains(&minute)
+                || !(0..=59).contains(&second)
+                || !(0..=999_999_999).contains(&nano)
+            {
+                return Err(vm.throw_new("java/time/DateTimeException", Some("Invalid time")));
+            }
+            let epoch_day = days_from_civil(year, month, day);
+            let nano_of_day = (i64::from(hour) * 3600 + i64::from(minute) * 60 + i64::from(second))
+                * 1_000_000_000
+                + i64::from(nano);
+            let local_second = epoch_day * 86_400 + nano_of_day / 1_000_000_000;
+            let offset = zone_offset_seconds(vm, zone);
+            zoned_date_time_new(
+                vm,
+                (local_second - i64::from(offset)) * 1000
+                    + nano_of_day.rem_euclid(1_000_000_000) / 1_000_000,
+                nano,
+                zone,
+            )
+        },
+    ),
+    method(
+        "getZone",
+        "()Ljava/time/ZoneId;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let zone = vm
+                .read_ref_field(this, vm.class_of(this), "zone", "Ljava/time/ZoneId;")
+                .unwrap_or(ObjectRef::NULL);
+            object(zone)
         },
     ),
 ];
@@ -1439,11 +1542,19 @@ pub(crate) const FORMAT_STYLE: oxjvm_vm::NativeClass = class(
     Some(format_style_clinit),
 );
 
-fn zoned_date_time_new(vm: &mut Vm<'_>, millis: i64, nano: i32) -> Result<Value, VmError> {
+fn zoned_date_time_new(
+    vm: &mut Vm<'_>,
+    millis: i64,
+    nano: i32,
+    zone: ObjectRef,
+) -> Result<Value, VmError> {
     let class = vm.resolve_class("java/time/ZonedDateTime")?;
     let instance = vm.new_instance(class)?;
     write_long_field(vm, instance, "millis", millis);
     write_int_field(vm, instance, "nano", nano);
+    if let Some((declaring, field)) = vm.find_field_opt(class, "zone", "Ljava/time/ZoneId;") {
+        vm.set_instance_ref(instance, declaring, field, zone);
+    }
     object(instance)
 }
 
@@ -1457,6 +1568,7 @@ pub(crate) const ZONED_DATE_TIME: oxjvm_vm::NativeClass = class(
     &[
         field("millis", "J", ACC_PRIVATE, None),
         field("nano", "I", ACC_PRIVATE, None),
+        field("zone", "Ljava/time/ZoneId;", ACC_PRIVATE, None),
     ],
     &ZONED_DATE_TIME_METHODS,
     None,
@@ -2715,6 +2827,7 @@ const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
                 vm,
                 (local_second - i64::from(offset)).saturating_mul(1000),
                 0,
+                zone,
             )
         },
     ),
@@ -3992,6 +4105,7 @@ const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
                 vm,
                 (local_second - i64::from(offset)) * 1000 + i64::from(nano) / 1_000_000,
                 nano,
+                zone,
             )
         },
     ),
