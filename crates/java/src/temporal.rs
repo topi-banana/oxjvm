@@ -1030,6 +1030,39 @@ fn chrono_unit_constant(vm: &mut Vm<'_>, ordinal: i32) -> Result<Value, VmError>
     object(value)
 }
 
+const CHRONO_FIELD_DISPLAY_NAMES: [&str; 30] = [
+    "NanoOfSecond",
+    "NanoOfDay",
+    "MicroOfSecond",
+    "MicroOfDay",
+    "MilliOfSecond",
+    "MilliOfDay",
+    "SecondOfMinute",
+    "SecondOfDay",
+    "MinuteOfHour",
+    "MinuteOfDay",
+    "HourOfAmPm",
+    "ClockHourOfAmPm",
+    "HourOfDay",
+    "ClockHourOfDay",
+    "AmPmOfDay",
+    "DayOfWeek",
+    "AlignedDayOfWeekInMonth",
+    "AlignedDayOfWeekInYear",
+    "DayOfMonth",
+    "DayOfYear",
+    "EpochDay",
+    "AlignedWeekOfMonth",
+    "AlignedWeekOfYear",
+    "MonthOfYear",
+    "ProlepticMonth",
+    "YearOfEra",
+    "Year",
+    "Era",
+    "InstantSeconds",
+    "OffsetSeconds",
+];
+
 const CHRONO_FIELD_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method("ordinal", "()I", ACC_PUBLIC, |vm, _, args| {
         int(read_int_field(vm, receiver(args), "ordinal"))
@@ -1041,7 +1074,10 @@ const CHRONO_FIELD_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
         "toString",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
-        |vm, _, args| object(vm.make_string(chrono_field_entry(vm, receiver(args)).0)?),
+        |vm, _, args| {
+            let ordinal = read_int_field(vm, receiver(args), "ordinal").clamp(0, 29) as usize;
+            object(vm.make_string(CHRONO_FIELD_DISPLAY_NAMES[ordinal])?)
+        },
     ),
     method(
         "getBaseUnit",
