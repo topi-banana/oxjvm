@@ -10394,10 +10394,19 @@ pub(crate) const VALUE_LAYOUT: oxjvm_vm::NativeClass = class(
 // RandomGenerator (shell)
 // -------------------------------------------------------------------------------------------
 
-const RANDOM_GENERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const RANDOM_GENERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method(
         "getDefault",
         "()Ljava/util/random/RandomGenerator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/util/Random")?;
+            object(vm.new_instance(class)?)
+        },
+    ),
+    method(
+        "of",
+        "(Ljava/lang/String;)Ljava/util/random/RandomGenerator;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _| {
             let class = vm.resolve_class("java/util/Random")?;
@@ -10461,6 +10470,61 @@ pub(crate) const RANDOM_GENERATOR: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC | ACC_INTERFACE,
     &[],
     &RANDOM_GENERATOR_METHODS,
+    None,
+);
+
+const RANDOM_GENERATOR_FACTORY_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "of",
+        "(Ljava/lang/String;)Ljava/util/random/RandomGeneratorFactory;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let class = vm.resolve_class("java/util/random/RandomGeneratorFactory")?;
+            let instance = vm.new_instance(class)?;
+            let name = string_arg(vm, args[0])?;
+            let text = vm.make_string(&name)?;
+            let (declaring, field) = vm.find_field(class, "name", "Ljava/lang/String;")?;
+            vm.set_instance_ref(instance, declaring, field, text);
+            object(instance)
+        },
+    ),
+    method(
+        "getDefault",
+        "()Ljava/util/random/RandomGeneratorFactory;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/util/random/RandomGeneratorFactory")?;
+            object(vm.new_instance(class)?)
+        },
+    ),
+    method(
+        "create",
+        "()Ljava/util/random/RandomGenerator;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/util/Random")?;
+            object(vm.new_instance(class)?)
+        },
+    ),
+    method(
+        "create",
+        "(J)Ljava/util/random/RandomGenerator;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/util/Random")?;
+            object(vm.new_instance(class)?)
+        },
+    ),
+];
+
+/// `java.util.random.RandomGeneratorFactory`: creates RandomGenerator instances.
+pub(crate) const RANDOM_GENERATOR_FACTORY: oxjvm_vm::NativeClass = class(
+    "java/util/random/RandomGeneratorFactory",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[field("name", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &RANDOM_GENERATOR_FACTORY_METHODS,
     None,
 );
 

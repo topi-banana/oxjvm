@@ -1814,7 +1814,7 @@ macro_rules! functional_interface {
 // Each interface carries the same shape; the dispatcher selects by descriptor, so a shared array
 // with one abstract method of each common descriptor is sufficient and lets a single class serve
 // every functional interface users link against.
-const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 55] = [
+const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 59] = [
     method(
         "apply",
         "(Ljava/lang/Object;)Ljava/lang/Object;",
@@ -2178,6 +2178,30 @@ const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 55] = [
             let instance = vm.new_instance(class)?;
             object(instance)
         },
+    ),
+    method(
+        "andThen",
+        "(Ljava/util/function/BiConsumer;)Ljava/util/function/BiConsumer;",
+        ACC_PUBLIC,
+        |vm, _, args| bi_consumer_and_then(vm, receiver(args), ref_arg(args, 1)),
+    ),
+    method(
+        "and",
+        "(Ljava/util/function/BiPredicate;)Ljava/util/function/BiPredicate;",
+        ACC_PUBLIC,
+        |vm, _, args| bi_predicate_combine(vm, 0, receiver(args), ref_arg(args, 1)),
+    ),
+    method(
+        "or",
+        "(Ljava/util/function/BiPredicate;)Ljava/util/function/BiPredicate;",
+        ACC_PUBLIC,
+        |vm, _, args| bi_predicate_combine(vm, 1, receiver(args), ref_arg(args, 1)),
+    ),
+    method(
+        "negate",
+        "()Ljava/util/function/BiPredicate;",
+        ACC_PUBLIC,
+        |vm, _, args| bi_predicate_combine(vm, 2, receiver(args), ObjectRef::NULL),
     ),
 ];
 
@@ -2580,6 +2604,166 @@ const OJVM_BI_FUNCTION_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
         )
     },
 )];
+
+fn bi_consumer_and_then(
+    vm: &mut Vm<'_>,
+    receiver: ObjectRef,
+    after: ObjectRef,
+) -> Result<Value, VmError> {
+    if after.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let class = vm.resolve_class("java/util/function/OxjvmBiConsumer")?;
+    let instance = vm.new_instance(class)?;
+    for (name, value) in [("first", receiver), ("second", after)] {
+        let (declaring, field) = vm.find_field(class, name, "Ljava/util/function/BiConsumer;")?;
+        vm.set_instance_ref(instance, declaring, field, value);
+    }
+    object(instance)
+}
+
+const OJVM_BI_CONSUMER_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "accept",
+    "(Ljava/lang/Object;Ljava/lang/Object;)V",
+    ACC_PUBLIC,
+    |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let first = ref_arg(args, 1);
+        let second = ref_arg(args, 2);
+        for name in ["first", "second"] {
+            let consumer = vm
+                .read_ref_field(this, class, name, "Ljava/util/function/BiConsumer;")
+                .unwrap_or(ObjectRef::NULL);
+            let (consumer_class, consumer_method) = vm.resolve_virtual_method(
+                consumer,
+                "accept",
+                "(Ljava/lang/Object;Ljava/lang/Object;)V",
+            )?;
+            vm.invoke_method(
+                consumer_class,
+                consumer_method,
+                alloc::vec![Value::Ref(consumer), Value::Ref(first), Value::Ref(second)],
+            )?;
+        }
+        void()
+    },
+)];
+
+/// A composed `BiConsumer` returned by `BiConsumer.andThen`.
+pub(crate) const OJVM_BI_CONSUMER: oxjvm_vm::NativeClass = class(
+    "java/util/function/OxjvmBiConsumer",
+    Some("java/lang/Object"),
+    &["java/util/function/BiConsumer"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[
+        field(
+            "first",
+            "Ljava/util/function/BiConsumer;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field(
+            "second",
+            "Ljava/util/function/BiConsumer;",
+            ACC_PRIVATE,
+            None,
+        ),
+    ],
+    &OJVM_BI_CONSUMER_METHODS,
+    None,
+);
+
+fn bi_predicate_test(
+    vm: &mut Vm<'_>,
+    target: ObjectRef,
+    first: ObjectRef,
+    second: ObjectRef,
+) -> Result<bool, VmError> {
+    let (class, method) =
+        vm.resolve_virtual_method(target, "test", "(Ljava/lang/Object;Ljava/lang/Object;)Z")?;
+    Ok(vm
+        .invoke_method(
+            class,
+            method,
+            alloc::vec![Value::Ref(target), Value::Ref(first), Value::Ref(second)],
+        )?
+        .as_int()
+        != 0)
+}
+
+fn bi_predicate_combine(
+    vm: &mut Vm<'_>,
+    op: i32,
+    left: ObjectRef,
+    right: ObjectRef,
+) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/util/function/OxjvmBiPredicate")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "op", "I")?;
+    vm.set_instance_int(instance, declaring, field, op);
+    let (declaring, field) = vm.find_field(class, "left", "Ljava/util/function/BiPredicate;")?;
+    vm.set_instance_ref(instance, declaring, field, left);
+    let (declaring, field) = vm.find_field(class, "right", "Ljava/util/function/BiPredicate;")?;
+    vm.set_instance_ref(instance, declaring, field, right);
+    object(instance)
+}
+
+const BI_PREDICATE_COMBINER_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "test",
+    "(Ljava/lang/Object;Ljava/lang/Object;)Z",
+    ACC_PUBLIC,
+    |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let op = crate::lang::read_int_field(vm, this, "op");
+        let left = vm
+            .read_ref_field(this, class, "left", "Ljava/util/function/BiPredicate;")
+            .unwrap_or(ObjectRef::NULL);
+        let right = vm
+            .read_ref_field(this, class, "right", "Ljava/util/function/BiPredicate;")
+            .unwrap_or(ObjectRef::NULL);
+        let first = ref_arg(args, 1);
+        let second = ref_arg(args, 2);
+        let result = match op {
+            0 => {
+                bi_predicate_test(vm, left, first, second)?
+                    && bi_predicate_test(vm, right, first, second)?
+            }
+            1 => {
+                bi_predicate_test(vm, left, first, second)?
+                    || bi_predicate_test(vm, right, first, second)?
+            }
+            _ => !bi_predicate_test(vm, left, first, second)?,
+        };
+        boolean(result)
+    },
+)];
+
+/// A composite `BiPredicate` from `and`, `or`, and `negate`.
+pub(crate) const BI_PREDICATE_COMBINER: oxjvm_vm::NativeClass = class(
+    "java/util/function/OxjvmBiPredicate",
+    Some("java/lang/Object"),
+    &["java/util/function/BiPredicate"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[
+        field("op", "I", ACC_PRIVATE, None),
+        field(
+            "left",
+            "Ljava/util/function/BiPredicate;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field(
+            "right",
+            "Ljava/util/function/BiPredicate;",
+            ACC_PRIVATE,
+            None,
+        ),
+    ],
+    &BI_PREDICATE_COMBINER_METHODS,
+    None,
+);
 
 /// A composed `BiFunction` returned by `BiFunction.andThen`.
 pub(crate) const OJVM_BI_FUNCTION: oxjvm_vm::NativeClass = class(
