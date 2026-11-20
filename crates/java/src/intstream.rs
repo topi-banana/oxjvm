@@ -67,7 +67,7 @@ fn call_int_consumer(vm: &mut Vm<'_>, consumer: ObjectRef, value: i32) -> Result
     Ok(())
 }
 
-const INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
+const INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
     method(
         "of",
         "(I)Ljava/util/stream/IntStream;",
@@ -314,6 +314,18 @@ const INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
             object(int_stream_from(vm, values)?)
         },
     ),
+    method(
+        "mapToDouble",
+        "(Ljava/util/function/IntToDoubleFunction;)Ljava/util/stream/DoubleStream;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "mapToLong",
+        "(Ljava/util/function/IntToLongFunction;)Ljava/util/stream/LongStream;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
 ];
 
 pub(crate) const INT_STREAM: oxjvm_vm::NativeClass = class(
@@ -326,7 +338,7 @@ pub(crate) const INT_STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const OJVM_INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
+const OJVM_INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
     method(
         "map",
         "(Ljava/util/function/IntUnaryOperator;)Ljava/util/stream/IntStream;",
@@ -526,6 +538,40 @@ const OJVM_INT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
         "()Ljava/util/stream/IntStream;",
         ACC_PUBLIC,
         |_, _, args| object(receiver(args)),
+    ),
+    method(
+        "mapToDouble",
+        "(Ljava/util/function/IntToDoubleFunction;)Ljava/util/stream/DoubleStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let function = ref_arg(args, 1);
+            let (class, method) = vm.resolve_virtual_method(function, "applyAsDouble", "(I)D")?;
+            let mut mapped = Vec::new();
+            for value in int_elements(vm, receiver(args)) {
+                mapped.push(
+                    vm.invoke_method(class, method, vec![Value::Ref(function), Value::Int(value)])?
+                        .as_double(),
+                );
+            }
+            object(crate::primitive_stream::double_stream_from(vm, mapped)?)
+        },
+    ),
+    method(
+        "mapToLong",
+        "(Ljava/util/function/IntToLongFunction;)Ljava/util/stream/LongStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let function = ref_arg(args, 1);
+            let (class, method) = vm.resolve_virtual_method(function, "applyAsLong", "(I)J")?;
+            let mut mapped = Vec::new();
+            for value in int_elements(vm, receiver(args)) {
+                mapped.push(
+                    vm.invoke_method(class, method, vec![Value::Ref(function), Value::Int(value)])?
+                        .as_long(),
+                );
+            }
+            object(crate::primitive_stream::long_stream_from(vm, mapped)?)
+        },
     ),
 ];
 

@@ -2792,7 +2792,7 @@ fn arrays_set_all(
     void()
 }
 
-const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 169] = [
+const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 185] = [
     method(
         "setAll",
         "([ILjava/util/function/IntUnaryOperator;)V",
@@ -3321,20 +3321,28 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 169] = [
         "binarySearch",
         "([II)I",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| arrays_binary_search_int(vm, ref_arg(args, 0), i64::from(int_arg(args, 1))),
+        |vm, _, args| {
+            arrays_binary_search_int(vm, ref_arg(args, 0), i64::from(int_arg(args, 1)), 0, -1)
+        },
     ),
     method(
         "binarySearch",
         "([JJ)I",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| arrays_binary_search_int(vm, ref_arg(args, 0), long_arg(args, 1)),
+        |vm, _, args| arrays_binary_search_int(vm, ref_arg(args, 0), long_arg(args, 1), 0, -1),
     ),
     method(
         "binarySearch",
         "([BB)I",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            arrays_binary_search_int(vm, ref_arg(args, 0), i64::from(int_arg(args, 1) as i8))
+            arrays_binary_search_int(
+                vm,
+                ref_arg(args, 0),
+                i64::from(int_arg(args, 1) as i8),
+                0,
+                -1,
+            )
         },
     ),
     method(
@@ -3342,28 +3350,44 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 169] = [
         "([SS)I",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            arrays_binary_search_int(vm, ref_arg(args, 0), i64::from(int_arg(args, 1) as i16))
+            arrays_binary_search_int(
+                vm,
+                ref_arg(args, 0),
+                i64::from(int_arg(args, 1) as i16),
+                0,
+                -1,
+            )
         },
     ),
     method(
         "binarySearch",
         "([DD)I",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| arrays_binary_search_double(vm, ref_arg(args, 0), crate::double_arg(args, 1)),
+        |vm, _, args| {
+            arrays_binary_search_double(vm, ref_arg(args, 0), crate::double_arg(args, 1), 0, -1)
+        },
     ),
     method(
         "binarySearch",
         "([FF)I",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            arrays_binary_search_double(vm, ref_arg(args, 0), f64::from(crate::float_arg(args, 1)))
+            arrays_binary_search_double(
+                vm,
+                ref_arg(args, 0),
+                f64::from(crate::float_arg(args, 1)),
+                0,
+                -1,
+            )
         },
     ),
     method(
         "binarySearch",
         "([Ljava/lang/Object;Ljava/lang/Object;)I",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| arrays_binary_search_object(vm, ref_arg(args, 0), ref_arg(args, 1), None),
+        |vm, _, args| {
+            arrays_binary_search_object(vm, ref_arg(args, 0), ref_arg(args, 1), None, 0, -1)
+        },
     ),
     method(
         "binarySearch",
@@ -3375,6 +3399,8 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 169] = [
                 ref_arg(args, 0),
                 ref_arg(args, 1),
                 Some(ref_arg(args, 2)),
+                0,
+                -1,
             )
         },
     ),
@@ -3884,6 +3910,199 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 169] = [
             object(vm.make_string(&text)?)
         },
     ),
+    method(
+        "binarySearch",
+        "([Ljava/lang/Object;IILjava/lang/Object;)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_binary_search_object(
+                vm,
+                ref_arg(args, 0),
+                ref_arg(args, 3),
+                None,
+                int_arg(args, 1),
+                int_arg(args, 2),
+            )
+        },
+    ),
+    method(
+        "binarySearch",
+        "([BIIB)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_binary_search_int(
+                vm,
+                ref_arg(args, 0),
+                i64::from(int_arg(args, 3) as i8),
+                int_arg(args, 1),
+                int_arg(args, 2),
+            )
+        },
+    ),
+    method(
+        "binarySearch",
+        "([CIIC)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_binary_search_int(
+                vm,
+                ref_arg(args, 0),
+                i64::from(int_arg(args, 3) as u16),
+                int_arg(args, 1),
+                int_arg(args, 2),
+            )
+        },
+    ),
+    method(
+        "binarySearch",
+        "([SIIS)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_binary_search_int(
+                vm,
+                ref_arg(args, 0),
+                i64::from(int_arg(args, 3) as i16),
+                int_arg(args, 1),
+                int_arg(args, 2),
+            )
+        },
+    ),
+    method(
+        "binarySearch",
+        "([IIII)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_binary_search_int(
+                vm,
+                ref_arg(args, 0),
+                i64::from(int_arg(args, 3)),
+                int_arg(args, 1),
+                int_arg(args, 2),
+            )
+        },
+    ),
+    method(
+        "binarySearch",
+        "([JJIJ)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_binary_search_int(
+                vm,
+                ref_arg(args, 0),
+                long_arg(args, 3),
+                int_arg(args, 1),
+                int_arg(args, 2),
+            )
+        },
+    ),
+    method(
+        "binarySearch",
+        "([FFIF)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_binary_search_double(
+                vm,
+                ref_arg(args, 0),
+                f64::from(crate::float_arg(args, 3)),
+                int_arg(args, 1),
+                int_arg(args, 2),
+            )
+        },
+    ),
+    method(
+        "binarySearch",
+        "([DDID)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_binary_search_double(
+                vm,
+                ref_arg(args, 0),
+                crate::double_arg(args, 3),
+                int_arg(args, 1),
+                int_arg(args, 2),
+            )
+        },
+    ),
+    method(
+        "parallelPrefix",
+        "([ILjava/util/function/IntBinaryOperator;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_parallel_prefix_int(vm, ref_arg(args, 0), 0, -1, ref_arg(args, 1)),
+    ),
+    method(
+        "parallelPrefix",
+        "([IIILjava/util/function/IntBinaryOperator;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_parallel_prefix_int(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                int_arg(args, 2),
+                ref_arg(args, 3),
+            )
+        },
+    ),
+    method(
+        "parallelPrefix",
+        "([JLjava/util/function/LongBinaryOperator;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_parallel_prefix_long(vm, ref_arg(args, 0), 0, -1, ref_arg(args, 1)),
+    ),
+    method(
+        "parallelPrefix",
+        "([JJILjava/util/function/LongBinaryOperator;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_parallel_prefix_long(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                int_arg(args, 2),
+                ref_arg(args, 3),
+            )
+        },
+    ),
+    method(
+        "parallelPrefix",
+        "([DLjava/util/function/DoubleBinaryOperator;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_parallel_prefix_double(vm, ref_arg(args, 0), 0, -1, ref_arg(args, 1)),
+    ),
+    method(
+        "parallelPrefix",
+        "([DDILjava/util/function/DoubleBinaryOperator;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_parallel_prefix_double(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                int_arg(args, 2),
+                ref_arg(args, 3),
+            )
+        },
+    ),
+    method(
+        "parallelPrefix",
+        "([Ljava/lang/Object;Ljava/util/function/BinaryOperator;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| arrays_parallel_prefix_object(vm, ref_arg(args, 0), 0, -1, ref_arg(args, 1)),
+    ),
+    method(
+        "parallelPrefix",
+        "([Ljava/lang/Object;IILjava/util/function/BinaryOperator;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            arrays_parallel_prefix_object(
+                vm,
+                ref_arg(args, 0),
+                int_arg(args, 1),
+                int_arg(args, 2),
+                ref_arg(args, 3),
+            )
+        },
+    ),
 ];
 
 /// The recursive rendering used by `Arrays.deepToString`.
@@ -3986,7 +4205,174 @@ fn arrays_binary_search_char(
 }
 
 /// Binary search over an integral primitive array (`byte`/`short`/`int`/`long`).
-fn arrays_binary_search_int(vm: &mut Vm<'_>, array: ObjectRef, key: i64) -> Result<Value, VmError> {
+/// Validate a `binarySearch`/`parallelPrefix` range; `to == -1` means the whole array.
+fn arrays_range_bounds(
+    vm: &mut Vm<'_>,
+    len: usize,
+    from: i32,
+    to: i32,
+) -> Result<(usize, usize), VmError> {
+    let to = if to < 0 { len as i32 } else { to };
+    if from > to {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("fromIndex > toIndex"),
+        ));
+    }
+    if from < 0 {
+        return Err(vm.throw_new(
+            "java/lang/ArrayIndexOutOfBoundsException",
+            Some(&alloc::format!("fromIndex < 0: {from}")),
+        ));
+    }
+    if to as usize > len {
+        return Err(vm.throw_new(
+            "java/lang/ArrayIndexOutOfBoundsException",
+            Some(&alloc::format!("toIndex > length: {to}")),
+        ));
+    }
+    Ok((from as usize, to as usize))
+}
+
+/// `Arrays.parallelPrefix` over an int array: a sequential cumulative scan.
+fn arrays_parallel_prefix_int(
+    vm: &mut Vm<'_>,
+    array: ObjectRef,
+    from: i32,
+    to: i32,
+    op: ObjectRef,
+) -> Result<Value, VmError> {
+    if array.is_null() || op.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let len = vm.array_length(array)?;
+    let (from, to) = arrays_range_bounds(vm, len, from, to)?;
+    if to.saturating_sub(from) <= 1 {
+        return void();
+    }
+    let (class, method) = vm.resolve_virtual_method(op, "applyAsInt", "(II)I")?;
+    let mut prev = vm.array_get(array, from as i32)?.as_int();
+    for index in from + 1..to {
+        let cur = vm.array_get(array, index as i32)?.as_int();
+        prev = vm
+            .invoke_method(
+                class,
+                method,
+                vec![Value::Ref(op), Value::Int(prev), Value::Int(cur)],
+            )?
+            .as_int();
+        vm.array_set(array, index as i32, Value::Int(prev), false)?;
+    }
+    void()
+}
+
+/// `Arrays.parallelPrefix` over a long array.
+fn arrays_parallel_prefix_long(
+    vm: &mut Vm<'_>,
+    array: ObjectRef,
+    from: i32,
+    to: i32,
+    op: ObjectRef,
+) -> Result<Value, VmError> {
+    if array.is_null() || op.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let len = vm.array_length(array)?;
+    let (from, to) = arrays_range_bounds(vm, len, from, to)?;
+    if to.saturating_sub(from) <= 1 {
+        return void();
+    }
+    let (class, method) = vm.resolve_virtual_method(op, "applyAsLong", "(JJ)J")?;
+    let mut prev = vm.array_get(array, from as i32)?.as_long();
+    for index in from + 1..to {
+        let cur = vm.array_get(array, index as i32)?.as_long();
+        prev = vm
+            .invoke_method(
+                class,
+                method,
+                vec![Value::Ref(op), Value::Long(prev), Value::Long(cur)],
+            )?
+            .as_long();
+        vm.array_set(array, index as i32, Value::Long(prev), false)?;
+    }
+    void()
+}
+
+/// `Arrays.parallelPrefix` over a double array.
+fn arrays_parallel_prefix_double(
+    vm: &mut Vm<'_>,
+    array: ObjectRef,
+    from: i32,
+    to: i32,
+    op: ObjectRef,
+) -> Result<Value, VmError> {
+    if array.is_null() || op.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let len = vm.array_length(array)?;
+    let (from, to) = arrays_range_bounds(vm, len, from, to)?;
+    if to.saturating_sub(from) <= 1 {
+        return void();
+    }
+    let (class, method) = vm.resolve_virtual_method(op, "applyAsDouble", "(DD)D")?;
+    let mut prev = vm.array_get(array, from as i32)?.as_double();
+    for index in from + 1..to {
+        let cur = vm.array_get(array, index as i32)?.as_double();
+        prev = vm
+            .invoke_method(
+                class,
+                method,
+                vec![Value::Ref(op), Value::Double(prev), Value::Double(cur)],
+            )?
+            .as_double();
+        vm.array_set(array, index as i32, Value::Double(prev), false)?;
+    }
+    void()
+}
+
+/// `Arrays.parallelPrefix` over an object array with a `BinaryOperator`.
+fn arrays_parallel_prefix_object(
+    vm: &mut Vm<'_>,
+    array: ObjectRef,
+    from: i32,
+    to: i32,
+    op: ObjectRef,
+) -> Result<Value, VmError> {
+    if array.is_null() || op.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let len = vm.array_length(array)?;
+    let (from, to) = arrays_range_bounds(vm, len, from, to)?;
+    if to.saturating_sub(from) <= 1 {
+        return void();
+    }
+    let (class, method) = vm.resolve_virtual_method(
+        op,
+        "apply",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+    )?;
+    let mut prev = vm.array_get(array, from as i32)?.as_ref();
+    for index in from + 1..to {
+        let cur = vm.array_get(array, index as i32)?.as_ref();
+        prev = vm
+            .invoke_method(
+                class,
+                method,
+                vec![Value::Ref(op), Value::Ref(prev), Value::Ref(cur)],
+            )?
+            .as_ref();
+        vm.array_set_ref(array, index, prev)?;
+    }
+    void()
+}
+
+fn arrays_binary_search_int(
+    vm: &mut Vm<'_>,
+    array: ObjectRef,
+    key: i64,
+    from: i32,
+    to: i32,
+) -> Result<Value, VmError> {
     if array.is_null() {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
@@ -3997,8 +4383,9 @@ fn arrays_binary_search_int(vm: &mut Vm<'_>, array: ObjectRef, key: i64) -> Resu
         Some(ObjectData::Array(ArrayData::Short(v))) => v.iter().map(|&x| i64::from(x)).collect(),
         _ => return Err(vm.throw_new("java/lang/NullPointerException", None)),
     };
-    let mut lo: i32 = 0;
-    let mut hi: i32 = values.len() as i32 - 1;
+    let (from, to) = arrays_range_bounds(vm, values.len(), from, to)?;
+    let mut lo: i32 = from as i32;
+    let mut hi: i32 = to as i32 - 1;
     while lo <= hi {
         let mid = ((lo as usize) + (hi as usize)) / 2;
         let v = values[mid];
@@ -4018,6 +4405,8 @@ fn arrays_binary_search_double(
     vm: &mut Vm<'_>,
     array: ObjectRef,
     key: f64,
+    from: i32,
+    to: i32,
 ) -> Result<Value, VmError> {
     if array.is_null() {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
@@ -4027,8 +4416,9 @@ fn arrays_binary_search_double(
         Some(ObjectData::Array(ArrayData::Float(v))) => v.iter().map(|&x| f64::from(x)).collect(),
         _ => return Err(vm.throw_new("java/lang/NullPointerException", None)),
     };
-    let mut lo: i32 = 0;
-    let mut hi: i32 = values.len() as i32 - 1;
+    let (from, to) = arrays_range_bounds(vm, values.len(), from, to)?;
+    let mut lo: i32 = from as i32;
+    let mut hi: i32 = to as i32 - 1;
     while lo <= hi {
         let mid = ((lo as usize) + (hi as usize)) / 2;
         let v = values[mid];
@@ -4049,6 +4439,8 @@ fn arrays_binary_search_object(
     array: ObjectRef,
     key: ObjectRef,
     comparator: Option<ObjectRef>,
+    from: i32,
+    to: i32,
 ) -> Result<Value, VmError> {
     if array.is_null() {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
@@ -4057,8 +4449,9 @@ fn arrays_binary_search_object(
         Some(ObjectData::Array(ArrayData::Reference(v))) => v.clone(),
         _ => return Err(vm.throw_new("java/lang/NullPointerException", None)),
     };
-    let mut lo: i32 = 0;
-    let mut hi: i32 = elements.len() as i32 - 1;
+    let (from, to) = arrays_range_bounds(vm, elements.len(), from, to)?;
+    let mut lo: i32 = from as i32;
+    let mut hi: i32 = to as i32 - 1;
     while lo <= hi {
         let mid = ((lo as usize) + (hi as usize)) / 2;
         let cmp = arrays_bsearch_compare(vm, elements[mid], key, comparator)?;
@@ -23814,7 +24207,7 @@ fn new_time_zone(vm: &mut Vm<'_>, id: &str) -> Result<Value, VmError> {
     object(instance)
 }
 
-const TIME_ZONE_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
+const TIME_ZONE_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
     method(
         "getDefault",
         "()Ljava/util/TimeZone;",
@@ -23981,6 +24374,9 @@ const TIME_ZONE_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
             boolean(vm.class_of(receiver(args)) == vm.class_of(other))
         },
     ),
+    method("observesDaylightTime", "()Z", ACC_PUBLIC, |_, _, _| {
+        boolean(false)
+    }),
 ];
 
 pub(crate) const TIME_ZONE: oxjvm_vm::NativeClass = class(

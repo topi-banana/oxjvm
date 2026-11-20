@@ -562,6 +562,26 @@ const CHRONO_UNITS: [(&str, i64, bool, bool, bool); 16] = [
     ("FOREVER", i64::MAX, true, false, false),
 ];
 
+/// `ChronoUnit.toString` uses friendly names ("Weeks"), unlike `name()`.
+const CHRONO_UNIT_DISPLAY_NAMES: [&str; 16] = [
+    "Nanos",
+    "Micros",
+    "Millis",
+    "Seconds",
+    "Minutes",
+    "Hours",
+    "HalfDays",
+    "Days",
+    "Weeks",
+    "Months",
+    "Years",
+    "Decades",
+    "Centuries",
+    "Millennia",
+    "Eras",
+    "Forever",
+];
+
 fn chrono_unit_new(vm: &mut Vm<'_>, ordinal: i32) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class("java/time/temporal/ChronoUnit")?;
     let instance = vm.new_instance(class)?;
@@ -608,7 +628,7 @@ const CHRONO_UNIT_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let ordinal = read_int_field(vm, receiver(args), "ordinal").clamp(0, 15) as usize;
-            object(vm.make_string(CHRONO_UNITS[ordinal].0)?)
+            object(vm.make_string(CHRONO_UNIT_DISPLAY_NAMES[ordinal])?)
         },
     ),
     method(
@@ -1601,19 +1621,179 @@ pub(crate) const ISO_FIELDS: oxjvm_vm::NativeClass = class(
 // WeekFields
 // -------------------------------------------------------------------------------------------
 
-fn week_fields_computed_new(vm: &mut Vm<'_>, kind: i32) -> Result<ObjectRef, VmError> {
+fn week_fields_computed_new(
+    vm: &mut Vm<'_>,
+    kind: i32,
+    parent: ObjectRef,
+) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class("java/time/temporal/WeekFields$ComputedDayOfField")?;
     let instance = vm.new_instance(class)?;
     write_int_field(vm, instance, "kind", kind);
+    if let Some((declaring, field)) =
+        vm.find_field_opt(class, "weekFields", "Ljava/time/temporal/WeekFields;")
+    {
+        vm.set_instance_ref(instance, declaring, field, parent);
+    }
     Ok(instance)
 }
 
-const WEEK_FIELDS_COMPUTED_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+/// The epoch day of a temporal, for week-field computations.
+fn temporal_epoch_day(vm: &Vm<'_>, temporal: ObjectRef) -> Option<i64> {
+    let class = vm.class_of(temporal);
+    if vm.find_field_opt(class, "epochDay", "J").is_some() {
+        return Some(read_long_field(vm, temporal, "epochDay"));
+    }
+    if vm.find_field_opt(class, "millis", "J").is_some() {
+        let millis = read_long_field(vm, temporal, "millis");
+        let zone = vm
+            .read_ref_field(temporal, class, "zone", "Ljava/time/ZoneId;")
+            .unwrap_or(ObjectRef::NULL);
+        let offset = crate::time::zone_offset_seconds(vm, zone);
+        return Some((millis.div_euclid(1000) + i64::from(offset)).div_euclid(86_400));
+    }
+    None
+}
+
+/// The week-based year and week number of an epoch day under a week definition.
+fn week_based_parts(epoch_day: i64, first_day: i32, minimal_days: i32) -> (i32, i32) {
+    let dow = ((epoch_day + 3).rem_euclid(7) + 1) as i32;
+    let offset = (dow - first_day + 7) % 7;
+    let week_start = epoch_day - i64::from(offset);
+    let pivot = week_start + i64::from(minimal_days - 1);
+    let (wby, _, _) = crate::time::civil_from_days(pivot);
+    let jan1 = crate::time::days_from_civil(wby, 1, 1);
+    let jan1_dow = ((jan1 + 3).rem_euclid(7) + 1) as i32;
+    let since_first = (jan1_dow - first_day + 7) % 7;
+    let first_week_start = if since_first >= minimal_days {
+        jan1 + i64::from(7 - since_first)
+    } else {
+        jan1 - i64::from(since_first)
+    };
+    let week = ((week_start - first_week_start) / 7 + 1) as i32;
+    (wby, week)
+}
+
+/// The week definition (first day, minimal days) of a computed field's parent.
+fn computed_week_definition(vm: &Vm<'_>, this: ObjectRef) -> (i32, i32) {
+    let parent = vm
+        .read_ref_field(
+            this,
+            vm.class_of(this),
+            "weekFields",
+            "Ljava/time/temporal/WeekFields;",
+        )
+        .unwrap_or(ObjectRef::NULL);
+    if parent.is_null() {
+        return (1, 4);
+    }
+    (
+        read_int_field(vm, parent, "firstDay"),
+        read_int_field(vm, parent, "minimalDays"),
+    )
+}
+
+const WEEK_FIELDS_COMPUTED_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method(
         "toString",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
-        |vm, _, _| object(vm.make_string("ComputedDayOfField")?),
+        |vm, _, args| {
+            let this = receiver(args);
+            let kind = read_int_field(vm, this, "kind");
+            let name = match kind {
+                0 => "DayOfWeek",
+                1 => "WeekOfMonth",
+                2 => "WeekOfYear",
+                3 => "WeekOfWeekBasedYear",
+                _ => "WeekBasedYear",
+            };
+            let parent = vm
+                .read_ref_field(
+                    this,
+                    vm.class_of(this),
+                    "weekFields",
+                    "Ljava/time/temporal/WeekFields;",
+                )
+                .unwrap_or(ObjectRef::NULL);
+            let text = if parent.is_null() {
+                alloc::string::String::from(name)
+            } else {
+                let (class, method) =
+                    vm.resolve_virtual_method(parent, "toString", "()Ljava/lang/String;")?;
+                let value = vm.invoke_method(class, method, vec![Value::Ref(parent)])?;
+                let parent_text = vm.string_value(value.as_ref()).unwrap_or_default();
+                alloc::format!("{name}[{parent_text}]")
+            };
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "getBaseUnit",
+        "()Ljava/time/temporal/TemporalUnit;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let kind = read_int_field(vm, receiver(args), "kind");
+            let name = match kind {
+                0 => "DAYS",
+                4 => "YEARS",
+                _ => "WEEKS",
+            };
+            object(crate::time::chrono_unit_named(vm, name)?)
+        },
+    ),
+    method(
+        "getRangeUnit",
+        "()Ljava/time/temporal/TemporalUnit;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let kind = read_int_field(vm, receiver(args), "kind");
+            let name = match kind {
+                0 => "WEEKS",
+                1 => "MONTHS",
+                4 => "FOREVER",
+                _ => "YEARS",
+            };
+            object(crate::time::chrono_unit_named(vm, name)?)
+        },
+    ),
+    method("isDateBased", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
+    method("isTimeBased", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method(
+        "isSupportedBy",
+        "(Ljava/time/temporal/TemporalAccessor;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| boolean(temporal_epoch_day(vm, ref_arg(args, 1)).is_some()),
+    ),
+    method(
+        "getFrom",
+        "(Ljava/time/temporal/TemporalAccessor;)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let epoch_day = temporal_epoch_day(vm, ref_arg(args, 1)).ok_or_else(|| {
+                vm.throw_new(
+                    "java/time/temporal/UnsupportedTemporalTypeException",
+                    Some("unsupported field"),
+                )
+            })?;
+            let kind = read_int_field(vm, this, "kind");
+            let (first_day, minimal_days) = computed_week_definition(vm, this);
+            match kind {
+                0 => long((epoch_day + 3).rem_euclid(7) + 1),
+                1 => {
+                    let (_, _, day) = crate::time::civil_from_days(epoch_day);
+                    long(i64::from((day - 1) / 7 + 1))
+                }
+                4 => {
+                    let (wby, _) = week_based_parts(epoch_day, first_day, minimal_days);
+                    long(i64::from(wby))
+                }
+                _ => {
+                    let (_, week) = week_based_parts(epoch_day, first_day, minimal_days);
+                    long(i64::from(week))
+                }
+            }
+        },
     ),
     method(
         "getDisplayName",
@@ -1640,22 +1820,35 @@ pub(crate) const WEEK_FIELDS_COMPUTED_DAY_OF_FIELD: oxjvm_vm::NativeClass = clas
     Some("java/lang/Object"),
     &["java/time/temporal/TemporalField"],
     ACC_PUBLIC | ACC_FINAL,
-    &[field("kind", "I", ACC_PRIVATE | ACC_FINAL, None)],
+    &[
+        field("kind", "I", ACC_PRIVATE | ACC_FINAL, None),
+        field(
+            "weekFields",
+            "Ljava/time/temporal/WeekFields;",
+            ACC_PRIVATE | ACC_FINAL,
+            None,
+        ),
+    ],
     &WEEK_FIELDS_COMPUTED_METHODS,
     None,
 );
 
-fn week_fields_new(vm: &mut Vm<'_>, first_day: i32) -> Result<ObjectRef, VmError> {
+fn week_fields_new(
+    vm: &mut Vm<'_>,
+    first_day: i32,
+    minimal_days: i32,
+) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class("java/time/temporal/WeekFields")?;
     let instance = vm.new_instance(class)?;
     write_int_field(vm, instance, "firstDay", first_day);
+    write_int_field(vm, instance, "minimalDays", minimal_days);
     Ok(instance)
 }
 
 fn week_fields_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     let class = vm.resolve_class("java/time/temporal/WeekFields")?;
-    for (name, first_day) in [("SUNDAY_START", 7), ("ISO", 1)] {
-        let instance = week_fields_new(vm, first_day)?;
+    for (name, first_day, minimal_days) in [("SUNDAY_START", 7, 1), ("ISO", 1, 4)] {
+        let instance = week_fields_new(vm, first_day, minimal_days)?;
         vm.set_static_value(
             class,
             name,
@@ -1666,21 +1859,76 @@ fn week_fields_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     Ok(())
 }
 
-const WEEK_FIELDS_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+const WEEK_FIELDS_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     method(
         "of",
         "(Ljava/time/DayOfWeek;I)Ljava/time/temporal/WeekFields;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            let day = read_int_field(vm, ref_arg(args, 0), "value");
-            object(week_fields_new(vm, day)?)
+            let first = ref_arg(args, 0);
+            if first.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let minimal_days = crate::int_arg(args, 1);
+            if !(1..=7).contains(&minimal_days) {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("minimalDaysInFirstWeek must be in the range 1 to 7"),
+                ));
+            }
+            let day = read_int_field(vm, first, "value");
+            object(week_fields_new(vm, day, minimal_days)?)
         },
     ),
     method(
         "weekOfYear",
         "()Ljava/time/temporal/TemporalField;",
         ACC_PUBLIC,
-        |vm, _, _| object(week_fields_computed_new(vm, 2)?),
+        |vm, _, args| object(week_fields_computed_new(vm, 2, receiver(args))?),
+    ),
+    method(
+        "dayOfWeek",
+        "()Ljava/time/temporal/TemporalField;",
+        ACC_PUBLIC,
+        |vm, _, args| object(week_fields_computed_new(vm, 0, receiver(args))?),
+    ),
+    method(
+        "weekOfMonth",
+        "()Ljava/time/temporal/TemporalField;",
+        ACC_PUBLIC,
+        |vm, _, args| object(week_fields_computed_new(vm, 1, receiver(args))?),
+    ),
+    method(
+        "weekOfWeekBasedYear",
+        "()Ljava/time/temporal/TemporalField;",
+        ACC_PUBLIC,
+        |vm, _, args| object(week_fields_computed_new(vm, 3, receiver(args))?),
+    ),
+    method(
+        "weekBasedYear",
+        "()Ljava/time/temporal/TemporalField;",
+        ACC_PUBLIC,
+        |vm, _, args| object(week_fields_computed_new(vm, 4, receiver(args))?),
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let first_day = read_int_field(vm, this, "firstDay");
+            let minimal_days = read_int_field(vm, this, "minimalDays");
+            let day_name = match first_day {
+                1 => "MONDAY",
+                2 => "TUESDAY",
+                3 => "WEDNESDAY",
+                4 => "THURSDAY",
+                5 => "FRIDAY",
+                6 => "SATURDAY",
+                _ => "SUNDAY",
+            };
+            object(vm.make_string(&alloc::format!("WeekFields[{day_name},{minimal_days}]"))?)
+        },
     ),
 ];
 
@@ -1691,6 +1939,7 @@ pub(crate) const WEEK_FIELDS: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC | ACC_FINAL,
     &[
         field("firstDay", "I", ACC_PRIVATE | ACC_FINAL, None),
+        field("minimalDays", "I", ACC_PRIVATE | ACC_FINAL, None),
         field(
             "SUNDAY_START",
             "Ljava/time/temporal/WeekFields;",

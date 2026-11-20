@@ -1204,7 +1204,7 @@ pub(crate) const DATE_TIME_FORMATTER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     method(
         "now",
         "()Ljava/time/ZonedDateTime;",
@@ -1416,6 +1416,72 @@ const ZONED_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
             object(zone)
         },
     ),
+    method(
+        "until",
+        "(Ljava/time/temporal/Temporal;Ljava/time/temporal/TemporalUnit;)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let end = ref_arg(args, 1);
+            if end.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let ordinal =
+                chrono_unit_ordinal(vm, ref_arg(args, 2)).ok_or_else(|| unsupported_unit(vm))?;
+            let class = vm.class_of(this);
+            let zone = vm
+                .read_ref_field(this, class, "zone", "Ljava/time/ZoneId;")
+                .unwrap_or(ObjectRef::NULL);
+            let offset = i64::from(zone_offset_seconds(vm, zone));
+            // Both instants expressed as local millis in this zone.
+            let start_millis = read_long_field(vm, this, "millis") + offset * 1000;
+            let start_nano = i64::from(read_int_field(vm, this, "nano"));
+            let end_millis = read_long_field(vm, end, "millis") + offset * 1000;
+            let end_nano = i64::from(read_int_field(vm, end, "nano"));
+            if let Some(unit_nanos) = time_unit_nanos(ordinal) {
+                let amount = (end_millis - start_millis) * 1_000_000 + (end_nano - start_nano);
+                return long(amount / unit_nanos);
+            }
+            let start_epoch = start_millis.div_euclid(1000).div_euclid(86_400);
+            let start_day_nano =
+                start_millis.div_euclid(1000).rem_euclid(86_400) * 1_000_000_000 + start_nano;
+            let end_epoch = end_millis.div_euclid(1000).div_euclid(86_400);
+            let end_day_nano =
+                end_millis.div_euclid(1000).rem_euclid(86_400) * 1_000_000_000 + end_nano;
+            let mut adjusted_end = end_epoch;
+            if end_epoch > start_epoch && end_day_nano < start_day_nano {
+                adjusted_end -= 1;
+            } else if end_epoch < start_epoch && end_day_nano > start_day_nano {
+                adjusted_end += 1;
+            }
+            long(
+                date_until(start_epoch, adjusted_end, ordinal)
+                    .ok_or_else(|| unsupported_unit(vm))?,
+            )
+        },
+    ),
+    method(
+        "withNano",
+        "(I)Ljava/time/ZonedDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let nano = crate::int_arg(args, 1);
+            if !(0..=999_999_999).contains(&nano) {
+                return Err(vm.throw_new(
+                    "java/time/DateTimeException",
+                    Some("Invalid value for NanoOfSecond"),
+                ));
+            }
+            let this = receiver(args);
+            let old_nano = read_int_field(vm, this, "nano");
+            let millis = read_long_field(vm, this, "millis") - i64::from(old_nano) / 1_000_000
+                + i64::from(nano) / 1_000_000;
+            let zone = vm
+                .read_ref_field(this, vm.class_of(this), "zone", "Ljava/time/ZoneId;")
+                .unwrap_or(ObjectRef::NULL);
+            zoned_date_time_new(vm, millis, nano, zone)
+        },
+    ),
 ];
 
 // -------------------------------------------------------------------------------------------
@@ -1580,7 +1646,7 @@ pub(crate) const ZONED_DATE_TIME: oxjvm_vm::NativeClass = class(
 
 /// Convert a count of days since 1970-01-01 into (year, month, day) using Howard Hinnant's
 /// civil-calendar algorithm.
-fn civil_from_days(days: i64) -> (i32, i32, i32) {
+pub(crate) fn civil_from_days(days: i64) -> (i32, i32, i32) {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z - era * 146_097;
@@ -1595,7 +1661,7 @@ fn civil_from_days(days: i64) -> (i32, i32, i32) {
 }
 
 /// Convert (year, month, day) into a count of days since 1970-01-01.
-fn days_from_civil(year: i32, month: i32, day: i32) -> i64 {
+pub(crate) fn days_from_civil(year: i32, month: i32, day: i32) -> i64 {
     let y = i64::from(year) - i64::from(month <= 2);
     let m = i64::from(month);
     let era = y.div_euclid(400);
@@ -2440,7 +2506,7 @@ fn local_date_dates_until(
     object(crate::stream::stream_from(vm, elements)?)
 }
 
-const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
+const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
     method(
         "of",
         "(III)Ljava/time/LocalDate;",
@@ -2913,8 +2979,22 @@ const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
         "(Ljava/time/temporal/TemporalField;)Z",
         ACC_PUBLIC,
         |vm, _, args| {
-            let ordinal = chrono_field_ordinal(vm, ref_arg(args, 1));
-            crate::boolean(matches!(ordinal, Some(15..=27)))
+            let field = ref_arg(args, 1);
+            match chrono_field_ordinal(vm, field) {
+                Some(ordinal) => crate::boolean(matches!(ordinal, 15..=27)),
+                None => {
+                    let (class, method) = vm.resolve_virtual_method(
+                        field,
+                        "isSupportedBy",
+                        "(Ljava/time/temporal/TemporalAccessor;)Z",
+                    )?;
+                    vm.invoke_method(
+                        class,
+                        method,
+                        vec![Value::Ref(field), Value::Ref(receiver(args))],
+                    )
+                }
+            }
         },
     ),
     method(
@@ -2923,10 +3003,14 @@ const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            let ordinal =
-                chrono_field_ordinal(vm, ref_arg(args, 1)).ok_or_else(|| unsupported_field(vm))?;
+            let field = ref_arg(args, 1);
             let epoch_day = read_long_field(vm, this, "epochDay");
-            long(date_field_long(epoch_day, ordinal).ok_or_else(|| unsupported_field(vm))?)
+            match chrono_field_ordinal(vm, field) {
+                Some(ordinal) => {
+                    long(date_field_long(epoch_day, ordinal).ok_or_else(|| unsupported_field(vm))?)
+                }
+                None => temporal_field_get_from(vm, field, this),
+            }
         },
     ),
     method(
@@ -3095,6 +3179,33 @@ const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
             local_date_dates_until(vm, receiver(args), ref_arg(args, 1), Some(step))
+        },
+    ),
+    method(
+        "get",
+        "(Ljava/time/temporal/TemporalField;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (class, method) = vm.resolve_virtual_method(
+                this,
+                "getLong",
+                "(Ljava/time/temporal/TemporalField;)J",
+            )?;
+            let value = vm
+                .invoke_method(
+                    class,
+                    method,
+                    vec![Value::Ref(this), Value::Ref(ref_arg(args, 1))],
+                )?
+                .as_long();
+            if value < i64::from(i32::MIN) || value > i64::from(i32::MAX) {
+                return Err(vm.throw_new(
+                    "java/time/DateTimeException",
+                    Some("field value out of range"),
+                ));
+            }
+            int(value as i32)
         },
     ),
 ];
@@ -3448,7 +3559,7 @@ pub(crate) const LOCAL_TIME: oxjvm_vm::NativeClass = class(
     Some(local_time_clinit),
 );
 
-const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
+const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 64] = [
     method(
         "of",
         "(IIIII)Ljava/time/LocalDateTime;",
@@ -3934,14 +4045,18 @@ const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            let ordinal =
-                chrono_field_ordinal(vm, ref_arg(args, 1)).ok_or_else(|| unsupported_field(vm))?;
+            let field = ref_arg(args, 1);
             let nano_of_day = read_long_field(vm, this, "nanoOfDay");
-            if let Some(value) = time_field_long(nano_of_day, ordinal) {
-                return long(value);
-            }
             let epoch_day = read_long_field(vm, this, "epochDay");
-            long(date_field_long(epoch_day, ordinal).ok_or_else(|| unsupported_field(vm))?)
+            match chrono_field_ordinal(vm, field) {
+                Some(ordinal) => {
+                    if let Some(value) = time_field_long(nano_of_day, ordinal) {
+                        return long(value);
+                    }
+                    long(date_field_long(epoch_day, ordinal).ok_or_else(|| unsupported_field(vm))?)
+                }
+                None => temporal_field_get_from(vm, field, this),
+            }
         },
     ),
     method(
@@ -4109,6 +4224,33 @@ const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
             )
         },
     ),
+    method(
+        "toInstant",
+        "(Ljava/time/ZoneOffset;)Ljava/time/Instant;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let offset = ref_arg(args, 1);
+            if offset.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let this = receiver(args);
+            let epoch_day = read_long_field(vm, this, "epochDay");
+            let nano_of_day = read_long_field(vm, this, "nanoOfDay");
+            let seconds = epoch_day * 86_400 + nano_of_day / 1_000_000_000
+                - i64::from(zone_offset_seconds(vm, offset));
+            instant_new(vm, seconds, (nano_of_day % 1_000_000_000) as i32)
+        },
+    ),
+    method(
+        "getDayOfWeek",
+        "()Ljava/time/DayOfWeek;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let epoch_day = read_long_field(vm, receiver(args), "epochDay");
+            let value = ((epoch_day + 3).rem_euclid(7) + 1) as i32;
+            object(day_of_week_of(vm, value)?)
+        },
+    ),
 ];
 
 /// The fixed offset (seconds) of a `ZoneId`/`ZoneOffset` argument (region transitions not modelled).
@@ -4163,6 +4305,58 @@ const DAY_OF_WEEK_NAMES: [&str; 7] = [
     "SUNDAY",
 ];
 
+/// English display name for a day/month constant at a `TextStyle` ordinal
+/// (FULL/FULL_STANDALONE, SHORT/SHORT_STANDALONE, NARROW/NARROW_STANDALONE).
+fn english_display_name(name: &str, style: i32) -> alloc::string::String {
+    let mut full = alloc::string::String::new();
+    for (index, ch) in name.chars().enumerate() {
+        if index == 0 {
+            full.extend(ch.to_uppercase());
+        } else {
+            full.extend(ch.to_lowercase());
+        }
+    }
+    match style {
+        0 | 1 => full,
+        2 | 3 => full.chars().take(3).collect(),
+        _ => full.chars().take(1).collect(),
+    }
+}
+
+/// Non-`ChronoField` `getLong`: delegate to the field's own `getFrom`.
+fn temporal_field_get_from(
+    vm: &mut Vm<'_>,
+    field: ObjectRef,
+    temporal: ObjectRef,
+) -> Result<Value, VmError> {
+    let (class, method) =
+        vm.resolve_virtual_method(field, "getFrom", "(Ljava/time/temporal/TemporalAccessor;)J")?;
+    vm.invoke_method(class, method, vec![Value::Ref(field), Value::Ref(temporal)])
+}
+
+/// `DayOfWeek.of`/`plus`/`minus`: return the cached enum singleton (identity).
+fn day_of_week_of(vm: &mut Vm<'_>, value: i32) -> Result<ObjectRef, VmError> {
+    if !(1..=7).contains(&value) {
+        return Err(vm.throw_new("java/time/DateTimeException", Some("Invalid day of week")));
+    }
+    let class = vm.resolve_class("java/time/DayOfWeek")?;
+    vm.ensure_initialized(class)?;
+    let name = DAY_OF_WEEK_NAMES[(value - 1) as usize];
+    if let Some(cached) = vm.read_static_ref_if_set(class, name, "Ljava/time/DayOfWeek;") {
+        return Ok(cached);
+    }
+    day_of_week_new(vm, value)
+}
+
+fn day_of_week_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/time/DayOfWeek")?;
+    for (index, name) in DAY_OF_WEEK_NAMES.iter().enumerate() {
+        let instance = day_of_week_new(vm, index as i32 + 1)?;
+        vm.set_static_value(class, name, "Ljava/time/DayOfWeek;", Value::Ref(instance));
+    }
+    Ok(())
+}
+
 fn day_of_week_new(vm: &mut Vm<'_>, value: i32) -> Result<ObjectRef, VmError> {
     if !(1..=7).contains(&value) {
         return Err(vm.throw_new("java/time/DateTimeException", Some("Invalid day of week")));
@@ -4173,12 +4367,12 @@ fn day_of_week_new(vm: &mut Vm<'_>, value: i32) -> Result<ObjectRef, VmError> {
     Ok(instance)
 }
 
-const DAY_OF_WEEK_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+const DAY_OF_WEEK_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method(
         "of",
         "(I)Ljava/time/DayOfWeek;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| object(day_of_week_new(vm, crate::int_arg(args, 0))?),
+        |vm, _, args| object(day_of_week_of(vm, crate::int_arg(args, 0))?),
     ),
     method(
         "values",
@@ -4225,7 +4419,7 @@ const DAY_OF_WEEK_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         |vm, _, args| {
             let value = read_int_field(vm, receiver(args), "value");
             let shifted = (i64::from(value - 1) + crate::long_arg(args, 1)).rem_euclid(7) + 1;
-            object(day_of_week_new(vm, shifted as i32)?)
+            object(day_of_week_of(vm, shifted as i32)?)
         },
     ),
     method(
@@ -4235,7 +4429,25 @@ const DAY_OF_WEEK_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         |vm, _, args| {
             let value = read_int_field(vm, receiver(args), "value");
             let shifted = (i64::from(value - 1) - crate::long_arg(args, 1)).rem_euclid(7) + 1;
-            object(day_of_week_new(vm, shifted as i32)?)
+            object(day_of_week_of(vm, shifted as i32)?)
+        },
+    ),
+    method(
+        "getDisplayName",
+        "(Ljava/time/format/TextStyle;Ljava/util/Locale;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let style = ref_arg(args, 1);
+            if style.is_null() || ref_arg(args, 2).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let value = read_int_field(vm, receiver(args), "value");
+            let name = DAY_OF_WEEK_NAMES
+                .get((value - 1) as usize)
+                .copied()
+                .unwrap_or("");
+            let ordinal = read_int_field(vm, style, "ordinal");
+            object(vm.make_string(&english_display_name(name, ordinal))?)
         },
     ),
 ];
@@ -4245,9 +4457,53 @@ pub(crate) const DAY_OF_WEEK: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_FINAL,
-    &[field("value", "I", ACC_PRIVATE, None)],
+    &[
+        field("value", "I", ACC_PRIVATE, None),
+        field(
+            "MONDAY",
+            "Ljava/time/DayOfWeek;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "TUESDAY",
+            "Ljava/time/DayOfWeek;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "WEDNESDAY",
+            "Ljava/time/DayOfWeek;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "THURSDAY",
+            "Ljava/time/DayOfWeek;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "FRIDAY",
+            "Ljava/time/DayOfWeek;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "SATURDAY",
+            "Ljava/time/DayOfWeek;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "SUNDAY",
+            "Ljava/time/DayOfWeek;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+    ],
     &DAY_OF_WEEK_METHODS,
-    None,
+    Some(day_of_week_clinit),
 );
 
 // -------------------------------------------------------------------------------------------
@@ -4303,7 +4559,7 @@ fn month_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     Ok(())
 }
 
-const MONTH_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const MONTH_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     method(
         "of",
         "(I)Ljava/time/Month;",
@@ -4445,6 +4701,20 @@ const MONTH_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
             )
         },
     ),
+    method(
+        "getDisplayName",
+        "(Ljava/time/format/TextStyle;Ljava/util/Locale;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let style = ref_arg(args, 1);
+            if style.is_null() || ref_arg(args, 2).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let value = read_int_field(vm, receiver(args), "value").clamp(1, 12) as usize;
+            let ordinal = read_int_field(vm, style, "ordinal");
+            object(vm.make_string(&english_display_name(MONTH_NAMES[value - 1], ordinal))?)
+        },
+    ),
 ];
 
 pub(crate) const MONTH: oxjvm_vm::NativeClass = class(
@@ -4568,7 +4838,7 @@ fn period_of(vm: &mut Vm<'_>, years: i32, months: i32, days: i32) -> Result<Obje
 }
 
 /// A `ChronoUnit` singleton by name, for `Period` arithmetic delegation.
-fn chrono_unit_named(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
+pub(crate) fn chrono_unit_named(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class("java/time/temporal/ChronoUnit")?;
     vm.ensure_initialized(class)?;
     Ok(vm
@@ -5088,7 +5358,7 @@ pub(crate) fn local_date_time_of_epoch_millis(
     local_date_time_new(vm, epoch_day, nano_of_day)
 }
 
-const ZONE_RULES_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+const ZONE_RULES_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     method(
         "getOffset",
         "(Ljava/time/Instant;)Ljava/time/ZoneOffset;",
@@ -5118,6 +5388,15 @@ const ZONE_RULES_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
             let total = read_int_field(vm, receiver(args), "totalSeconds");
             let offset = crate::lang::zone_offset_new(vm, total)?;
             object(crate::util::array_list_from(vm, &[offset])?)
+        },
+    ),
+    method(
+        "getTransitions",
+        "()Ljava/util/List;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let empty: [ObjectRef; 0] = [];
+            object(crate::util::array_list_from(vm, &empty)?)
         },
     ),
 ];
@@ -5164,7 +5443,7 @@ fn offset_date_time_epoch_second(vm: &Vm<'_>, this: ObjectRef) -> i64 {
     epoch_day * 86_400 + nano_of_day / 1_000_000_000 - i64::from(offset)
 }
 
-const OFFSET_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
+const OFFSET_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
     method(
         "of",
         "(IIIIIIILjava/time/ZoneOffset;)Ljava/time/OffsetDateTime;",
@@ -5369,6 +5648,258 @@ const OFFSET_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
             object(instance)
         },
     ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (year, month, day) = civil_from_days(read_long_field(vm, this, "epochDay"));
+            let nano = read_long_field(vm, this, "nanoOfDay");
+            let hour = nano / 3_600_000_000_000;
+            let minute = (nano / 60_000_000_000) % 60;
+            let second = (nano / 1_000_000_000) % 60;
+            let nanos = nano % 1_000_000_000;
+            let time_text = if second == 0 && nanos == 0 {
+                alloc::format!("{hour:02}:{minute:02}")
+            } else {
+                alloc::format!("{hour:02}:{minute:02}:{second:02}{}", nano_fraction(nanos))
+            };
+            let offset = vm
+                .read_ref_field(this, vm.class_of(this), "offset", "Ljava/time/ZoneOffset;")
+                .unwrap_or(ObjectRef::NULL);
+            let text = alloc::format!(
+                "{year:04}-{month:02}-{day:02}T{time_text}{}",
+                crate::lang::zone_offset_id(zone_offset_seconds(vm, offset))
+            );
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "plusSeconds",
+        "(J)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let seconds = crate::long_arg(args, 1);
+            if seconds == 0 {
+                return object(this);
+            }
+            let total = read_long_field(vm, this, "nanoOfDay") + seconds * 1_000_000_000;
+            let offset = vm
+                .read_ref_field(this, vm.class_of(this), "offset", "Ljava/time/ZoneOffset;")
+                .unwrap_or(ObjectRef::NULL);
+            object(offset_date_time_new(
+                vm,
+                read_long_field(vm, this, "epochDay") + total.div_euclid(NANOS_PER_DAY),
+                total.rem_euclid(NANOS_PER_DAY),
+                offset,
+            )?)
+        },
+    ),
+    method("getDayOfYear", "()I", ACC_PUBLIC, |vm, _, args| {
+        let epoch_day = read_long_field(vm, receiver(args), "epochDay");
+        let (year, _, _) = civil_from_days(epoch_day);
+        int((epoch_day - days_from_civil(year, 1, 1) + 1) as i32)
+    }),
+    method(
+        "compareTo",
+        "(Ljava/time/OffsetDateTime;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let this_offset = i64::from(zone_offset_seconds(
+                vm,
+                vm.read_ref_field(this, vm.class_of(this), "offset", "Ljava/time/ZoneOffset;")
+                    .unwrap_or(ObjectRef::NULL),
+            ));
+            let other_offset = i64::from(zone_offset_seconds(
+                vm,
+                vm.read_ref_field(
+                    other,
+                    vm.class_of(other),
+                    "offset",
+                    "Ljava/time/ZoneOffset;",
+                )
+                .unwrap_or(ObjectRef::NULL),
+            ));
+            let this_second = read_long_field(vm, this, "epochDay") * 86_400
+                + read_long_field(vm, this, "nanoOfDay") / 1_000_000_000
+                - this_offset;
+            let other_second = read_long_field(vm, other, "epochDay") * 86_400
+                + read_long_field(vm, other, "nanoOfDay") / 1_000_000_000
+                - other_offset;
+            if this_second != other_second {
+                return int(this_second.cmp(&other_second) as i32);
+            }
+            let this_nano = read_long_field(vm, this, "nanoOfDay") % 1_000_000_000;
+            let other_nano = read_long_field(vm, other, "nanoOfDay") % 1_000_000_000;
+            if this_nano != other_nano {
+                return int(this_nano.cmp(&other_nano) as i32);
+            }
+            let this_local = read_long_field(vm, this, "epochDay") * NANOS_PER_DAY
+                + read_long_field(vm, this, "nanoOfDay");
+            let other_local = read_long_field(vm, other, "epochDay") * NANOS_PER_DAY
+                + read_long_field(vm, other, "nanoOfDay");
+            int(this_local.cmp(&other_local) as i32)
+        },
+    ),
+    method(
+        "parse",
+        "(Ljava/lang/CharSequence;)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = vm.string_or_empty(ref_arg(args, 0));
+            let parse_error = |vm: &mut Vm<'_>| {
+                vm.throw_new("java/time/format/DateTimeParseException", Some(&text))
+            };
+            let (date_text, time_text) = text.split_once('T').ok_or_else(|| parse_error(vm))?;
+            let parts: Vec<&str> = date_text.split('-').collect();
+            if parts.len() != 3 {
+                return Err(parse_error(vm));
+            }
+            let year = parts[0].parse::<i32>().unwrap_or(0);
+            let month = parts[1].parse::<i32>().unwrap_or(0);
+            let day = parts[2].parse::<i32>().unwrap_or(0);
+            let (clock_text, offset_total) = if let Some(stripped) = time_text.strip_suffix('Z') {
+                (stripped, 0)
+            } else {
+                let sign_pos = time_text.rfind(['+', '-']).ok_or_else(|| parse_error(vm))?;
+                let total = crate::lang::zone_offset_parse(&time_text[sign_pos..])
+                    .ok_or_else(|| parse_error(vm))?;
+                (&time_text[..sign_pos], total)
+            };
+            let tparts: Vec<&str> = clock_text.split(':').collect();
+            if tparts.len() < 2 {
+                return Err(parse_error(vm));
+            }
+            let hour = tparts[0].parse::<i64>().unwrap_or(0);
+            let minute = tparts[1].parse::<i64>().unwrap_or(0);
+            let mut second = 0i64;
+            let mut nano = 0i64;
+            if let Some(sec_text) = tparts.get(2) {
+                if let Some((s, frac)) = sec_text.split_once('.') {
+                    second = s.parse().unwrap_or(0);
+                    let mut frac_text = alloc::string::String::from(frac);
+                    while frac_text.len() < 9 {
+                        frac_text.push('0');
+                    }
+                    nano = frac_text[..9].parse().unwrap_or(0);
+                } else {
+                    second = sec_text.parse().unwrap_or(0);
+                }
+            }
+            let nano_of_day = (hour * 3600 + minute * 60 + second) * 1_000_000_000 + nano;
+            let offset = crate::lang::zone_offset_new(vm, offset_total)?;
+            object(offset_date_time_new(
+                vm,
+                days_from_civil(year, month, day),
+                nano_of_day,
+                offset,
+            )?)
+        },
+    ),
+    method(
+        "with",
+        "(Ljava/time/temporal/TemporalAdjuster;)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let adjuster = ref_arg(args, 1);
+            let (class, method) = vm.resolve_virtual_method(
+                adjuster,
+                "adjustInto",
+                "(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;",
+            )?;
+            vm.invoke_method(class, method, vec![Value::Ref(adjuster), Value::Ref(this)])
+        },
+    ),
+    method(
+        "getLong",
+        "(Ljava/time/temporal/TemporalField;)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let field = ref_arg(args, 1);
+            let epoch_day = read_long_field(vm, this, "epochDay");
+            let nano_of_day = read_long_field(vm, this, "nanoOfDay");
+            match chrono_field_ordinal(vm, field) {
+                Some(ordinal) => {
+                    if let Some(value) = time_field_long(nano_of_day, ordinal) {
+                        return long(value);
+                    }
+                    if let Some(value) = date_field_long(epoch_day, ordinal) {
+                        return long(value);
+                    }
+                    let offset = vm
+                        .read_ref_field(this, vm.class_of(this), "offset", "Ljava/time/ZoneOffset;")
+                        .unwrap_or(ObjectRef::NULL);
+                    if ordinal == 28 {
+                        return long(
+                            epoch_day * 86_400 + nano_of_day / 1_000_000_000
+                                - i64::from(zone_offset_seconds(vm, offset)),
+                        );
+                    }
+                    if ordinal == 29 {
+                        return long(i64::from(zone_offset_seconds(vm, offset)));
+                    }
+                    Err(unsupported_field(vm))
+                }
+                None => temporal_field_get_from(vm, field, this),
+            }
+        },
+    ),
+    method(
+        "get",
+        "(Ljava/time/temporal/TemporalField;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (class, method) = vm.resolve_virtual_method(
+                this,
+                "getLong",
+                "(Ljava/time/temporal/TemporalField;)J",
+            )?;
+            let value = vm
+                .invoke_method(
+                    class,
+                    method,
+                    vec![Value::Ref(this), Value::Ref(ref_arg(args, 1))],
+                )?
+                .as_long();
+            if value < i64::from(i32::MIN) || value > i64::from(i32::MAX) {
+                return Err(vm.throw_new(
+                    "java/time/DateTimeException",
+                    Some("field value out of range"),
+                ));
+            }
+            int(value as i32)
+        },
+    ),
+    method(
+        "isSupported",
+        "(Ljava/time/temporal/TemporalField;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let field = ref_arg(args, 1);
+            match chrono_field_ordinal(vm, field) {
+                Some(ordinal) => crate::boolean(matches!(ordinal, 0..=29)),
+                None => {
+                    let (class, method) = vm.resolve_virtual_method(
+                        field,
+                        "isSupportedBy",
+                        "(Ljava/time/temporal/TemporalAccessor;)Z",
+                    )?;
+                    vm.invoke_method(
+                        class,
+                        method,
+                        vec![Value::Ref(field), Value::Ref(receiver(args))],
+                    )
+                }
+            }
+        },
+    ),
 ];
 
 /// `java.time.OffsetDateTime`: a local date-time plus a fixed zone offset.
@@ -5529,7 +6060,7 @@ fn clock_local_parts(vm: &mut Vm<'_>, clock: ObjectRef) -> Result<(i64, i64), Vm
     Ok((epoch_day, nano_of_day))
 }
 
-const CLOCK_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
+const CLOCK_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method(
         "systemUTC",
         "()Ljava/time/Clock;",
@@ -5808,6 +6339,32 @@ const CLOCK_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
         let (second, nano) = clock_instant_parts(vm, receiver(args));
         int((second ^ (second >> 32)) as i32 ^ nano)
     }),
+    method(
+        "tickSeconds",
+        "(Ljava/time/ZoneId;)Ljava/time/Clock;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let zone = ref_arg(args, 0);
+            if zone.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let base = clock_new(vm, zone, false, 0, 0, 0)?;
+            object(clock_tick_new(vm, base, 1_000_000_000)?)
+        },
+    ),
+    method(
+        "tickMinutes",
+        "(Ljava/time/ZoneId;)Ljava/time/Clock;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let zone = ref_arg(args, 0);
+            if zone.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let base = clock_new(vm, zone, false, 0, 0, 0)?;
+            object(clock_tick_new(vm, base, 60_000_000_000)?)
+        },
+    ),
 ];
 
 /// `java.time.Clock`: a source of instants, either the host time or a fixed

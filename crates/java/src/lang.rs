@@ -10670,7 +10670,7 @@ pub(crate) fn zone_offset_new(vm: &mut Vm<'_>, total: i32) -> Result<ObjectRef, 
 }
 
 /// Parse a `ZoneOffset.of` string: `Z`, `±HH`, `±HHMM`, `±HH:MM`, `±HHMMSS`, `±HH:MM:SS`.
-fn zone_offset_parse(text: &str) -> Option<i32> {
+pub(crate) fn zone_offset_parse(text: &str) -> Option<i32> {
     let text = text.trim();
     if text == "Z" || text == "z" {
         return Some(0);
@@ -10698,7 +10698,7 @@ fn zone_offset_parse(text: &str) -> Option<i32> {
     Some(sign * (hours * 3600 + minutes * 60 + seconds))
 }
 
-const ZONE_OFFSET_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+const ZONE_OFFSET_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method("<init>", "(I)V", ACC_PRIVATE, |vm, _, args| {
         let this = receiver(args);
         write_int_field(vm, this, "totalSeconds", int_arg(args, 1));
@@ -10752,6 +10752,38 @@ const ZONE_OFFSET_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     method("getTotalSeconds", "()I", ACC_PUBLIC, |vm, _, args| {
         int(read_int_field(vm, receiver(args), "totalSeconds"))
     }),
+    method(
+        "from",
+        "(Ljava/time/temporal/TemporalAccessor;)Ljava/time/ZoneOffset;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let temporal = ref_arg(args, 0);
+            if temporal.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let class = vm.class_of(temporal);
+            if vm.find_field_opt(class, "totalSeconds", "I").is_some() {
+                return object(temporal);
+            }
+            if let Some(offset) =
+                vm.read_ref_field(temporal, class, "offset", "Ljava/time/ZoneOffset;")
+            {
+                if !offset.is_null() {
+                    return object(offset);
+                }
+            }
+            if let Some(zone) = vm.read_ref_field(temporal, class, "zone", "Ljava/time/ZoneId;") {
+                if !zone.is_null() {
+                    let total = crate::time::zone_offset_seconds(vm, zone);
+                    return object(zone_offset_new(vm, total)?);
+                }
+            }
+            Err(vm.throw_new(
+                "java/time/DateTimeException",
+                Some("Unable to obtain ZoneOffset from TemporalAccessor"),
+            ))
+        },
+    ),
 ];
 
 fn zone_offset_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
