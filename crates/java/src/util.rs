@@ -7178,7 +7178,7 @@ fn deque_remove_occurrence(vm: &mut Vm<'_>, args: &[Value], first: bool) -> Resu
     boolean(true)
 }
 
-const ARRAY_DEQUE_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
+const ARRAY_DEQUE_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
     method("<init>", "()V", ACC_PUBLIC, array_list_init),
     method("<init>", "(I)V", ACC_PUBLIC, array_list_init),
     method(
@@ -7395,6 +7395,22 @@ const ARRAY_DEQUE_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
         "()Ljava/util/SequencedCollection;",
         ACC_PUBLIC,
         |vm, _, args| object(rev_deque_new(vm, receiver(args))?),
+    ),
+    method(
+        "descendingIterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let mut elements = array_list_elements(vm, receiver(args));
+            elements.reverse();
+            let list = array_list_from(vm, &elements)?;
+            let class = vm.resolve_class("java/util/ArrayList$Itr")?;
+            let iterator = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "list", "Ljava/util/List;")?;
+            vm.set_instance_ref(iterator, declaring, field, list);
+            crate::lang::write_int_field(vm, iterator, "cursor", 0);
+            object(iterator)
+        },
     ),
 ];
 

@@ -5699,7 +5699,86 @@ fn period_shift(
     Ok(result)
 }
 
-const PERIOD_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+/// Parses the ISO-8601 period text (`PnYnMnD`, `PnW`, optional leading sign).
+/// A time section is only accepted when every component is zero.
+fn parse_period_text(text: &str) -> Option<(i32, i32, i32)> {
+    let (sign, rest) = if let Some(rest) = text.strip_prefix('-') {
+        (-1i32, rest)
+    } else if let Some(rest) = text.strip_prefix('+') {
+        (1, rest)
+    } else {
+        (1, text)
+    };
+    let rest = rest.strip_prefix('P')?;
+    let (date_part, time_part) = match rest.split_once('T') {
+        Some((date, time)) => (date, Some(time)),
+        None => (rest, None),
+    };
+    if date_part.is_empty() {
+        return None;
+    }
+    let mut years = 0i32;
+    let mut months = 0i32;
+    let mut days = 0i32;
+    let mut saw_week = false;
+    let mut saw_other = false;
+    let mut number = String::new();
+    for ch in date_part.chars() {
+        if ch.is_ascii_digit() {
+            number.push(ch);
+            continue;
+        }
+        let value: i32 = number.parse().ok()?;
+        number.clear();
+        match ch {
+            'Y' => {
+                years = value;
+                saw_other = true;
+            }
+            'M' => {
+                months = value;
+                saw_other = true;
+            }
+            'D' => {
+                days = value;
+                saw_other = true;
+            }
+            'W' => {
+                days = value.checked_mul(7)?;
+                saw_week = true;
+            }
+            _ => return None,
+        }
+    }
+    if !number.is_empty() || (saw_week && saw_other) {
+        return None;
+    }
+    if let Some(time) = time_part {
+        if time.is_empty() {
+            return None;
+        }
+        let mut number = String::new();
+        for ch in time.chars() {
+            if ch.is_ascii_digit() || ch == '.' {
+                number.push(ch);
+                continue;
+            }
+            if number.is_empty() || !number.chars().all(|c| c == '0' || c == '.') {
+                return None;
+            }
+            number.clear();
+            if !matches!(ch, 'H' | 'M' | 'S') {
+                return None;
+            }
+        }
+        if !number.is_empty() {
+            return None;
+        }
+    }
+    Some((sign * years, sign * months, sign * days))
+}
+
+const PERIOD_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method(
         "of",
         "(III)Ljava/time/Period;",
@@ -5877,6 +5956,18 @@ const PERIOD_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
                 return object(this);
             }
             object(period_of(vm, new_years, new_months, days)?)
+        },
+    ),
+    method(
+        "parse",
+        "(Ljava/lang/CharSequence;)Ljava/time/Period;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = vm.string_or_empty(ref_arg(args, 0));
+            match parse_period_text(&text) {
+                Some((years, months, days)) => object(period_of(vm, years, months, days)?),
+                None => Err(vm.throw_new("java/time/format/DateTimeParseException", Some(&text))),
+            }
         },
     ),
 ];
