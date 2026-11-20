@@ -8233,6 +8233,684 @@ pub(crate) const YEAR: oxjvm_vm::NativeClass = class(
     None,
 );
 
+/// Build an `OffsetTime` from a nano-of-day and a `ZoneOffset`.
+fn offset_time_new(
+    vm: &mut Vm<'_>,
+    nano_of_day: i64,
+    offset: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/time/OffsetTime")?;
+    let instance = vm.new_instance(class)?;
+    write_long_field(vm, instance, "nanoOfDay", nano_of_day);
+    if let Some((declaring, field)) = vm.find_field_opt(class, "offset", "Ljava/time/ZoneOffset;") {
+        vm.set_instance_ref(instance, declaring, field, offset);
+    }
+    Ok(instance)
+}
+
+/// Obtain a `ZoneOffset` for a total-seconds value via `ZoneOffset.ofTotalSeconds`.
+fn zone_offset_from_seconds(vm: &mut Vm<'_>, seconds: i32) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/time/ZoneOffset")?;
+    let (declaring, method) = vm
+        .find_method(class, "ofTotalSeconds", "(I)Ljava/time/ZoneOffset;")
+        .ok_or_else(|| VmError::internal("ZoneOffset.ofTotalSeconds missing"))?;
+    Ok(vm
+        .invoke_method(declaring, method, vec![int(seconds)?])?
+        .as_ref())
+}
+
+/// Shift an `OffsetTime` by nanoseconds, wrapping within a single day.
+fn offset_time_plus_nanos(vm: &mut Vm<'_>, this: ObjectRef, nanos: i64) -> Result<Value, VmError> {
+    let offset = vm
+        .read_ref_field(this, vm.class_of(this), "offset", "Ljava/time/ZoneOffset;")
+        .unwrap_or(ObjectRef::NULL);
+    let total = read_long_field(vm, this, "nanoOfDay") + nanos;
+    object(offset_time_new(
+        vm,
+        total.rem_euclid(86_400_000_000_000),
+        offset,
+    )?)
+}
+
+const OFFSET_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
+    method(
+        "of",
+        "(IIIILjava/time/ZoneOffset;)Ljava/time/OffsetTime;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let hour = int_arg(args, 0);
+            let minute = int_arg(args, 1);
+            let second = int_arg(args, 2);
+            let nano = int_arg(args, 3);
+            let offset = ref_arg(args, 4);
+            if offset.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            if !(0..24).contains(&hour)
+                || !(0..60).contains(&minute)
+                || !(0..60).contains(&second)
+                || !(0..1_000_000_000).contains(&nano)
+            {
+                return Err(vm.throw_new("java/time/DateTimeException", None));
+            }
+            let nano_of_day = (i64::from(hour) * 3600 + i64::from(minute) * 60 + i64::from(second))
+                * 1_000_000_000
+                + i64::from(nano);
+            object(offset_time_new(vm, nano_of_day, offset)?)
+        },
+    ),
+    method(
+        "of",
+        "(IIILjava/time/ZoneOffset;)Ljava/time/OffsetTime;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let class = vm.resolve_class("java/time/OffsetTime")?;
+            let (declaring, method) = vm
+                .find_method(
+                    class,
+                    "of",
+                    "(IIIILjava/time/ZoneOffset;)Ljava/time/OffsetTime;",
+                )
+                .ok_or_else(|| VmError::internal("OffsetTime.of missing"))?;
+            vm.invoke_method(
+                declaring,
+                method,
+                vec![
+                    int(int_arg(args, 0))?,
+                    int(int_arg(args, 1))?,
+                    int(int_arg(args, 2))?,
+                    int(0)?,
+                    Value::Ref(ref_arg(args, 3)),
+                ],
+            )
+        },
+    ),
+    method(
+        "of",
+        "(IILjava/time/ZoneOffset;)Ljava/time/OffsetTime;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let class = vm.resolve_class("java/time/OffsetTime")?;
+            let (declaring, method) = vm
+                .find_method(
+                    class,
+                    "of",
+                    "(IIIILjava/time/ZoneOffset;)Ljava/time/OffsetTime;",
+                )
+                .ok_or_else(|| VmError::internal("OffsetTime.of missing"))?;
+            vm.invoke_method(
+                declaring,
+                method,
+                vec![
+                    int(int_arg(args, 0))?,
+                    int(int_arg(args, 1))?,
+                    int(0)?,
+                    int(0)?,
+                    Value::Ref(ref_arg(args, 2)),
+                ],
+            )
+        },
+    ),
+    method(
+        "of",
+        "(Ljava/time/LocalTime;Ljava/time/ZoneOffset;)Ljava/time/OffsetTime;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let local = ref_arg(args, 0);
+            let offset = ref_arg(args, 1);
+            if local.is_null() || offset.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(offset_time_new(
+                vm,
+                read_long_field(vm, local, "nanoOfDay"),
+                offset,
+            )?)
+        },
+    ),
+    method(
+        "now",
+        "()Ljava/time/OffsetTime;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let zone = system_default_zone(vm)?;
+            let seconds = zone_offset_seconds(vm, zone);
+            let offset = zone_offset_from_seconds(vm, seconds)?;
+            let local_millis = vm.host_time_millis() + i64::from(seconds) * 1000;
+            let nano = local_millis.rem_euclid(86_400_000) * 1_000_000;
+            object(offset_time_new(vm, nano, offset)?)
+        },
+    ),
+    method(
+        "now",
+        "(Ljava/time/ZoneId;)Ljava/time/OffsetTime;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let zone = ref_arg(args, 0);
+            if zone.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let seconds = zone_offset_seconds(vm, zone);
+            let offset = zone_offset_from_seconds(vm, seconds)?;
+            let local_millis = vm.host_time_millis() + i64::from(seconds) * 1000;
+            let nano = local_millis.rem_euclid(86_400_000) * 1_000_000;
+            object(offset_time_new(vm, nano, offset)?)
+        },
+    ),
+    method(
+        "parse",
+        "(Ljava/lang/CharSequence;)Ljava/time/OffsetTime;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = crate::string_arg(vm, args[0])?;
+            let error = |vm: &mut Vm<'_>| {
+                vm.throw_new("java/time/format/DateTimeParseException", Some(&text))
+            };
+            let split = text
+                .bytes()
+                .enumerate()
+                .skip(1)
+                .find(|(_, b)| *b == b'+' || *b == b'-' || *b == b'Z')
+                .map(|(i, _)| i);
+            let Some(split) = split else {
+                return Err(error(vm));
+            };
+            let (local_text, offset_text) = text.split_at(split);
+            let parts: Vec<&str> = local_text.split(':').collect();
+            if parts.len() < 2 || parts.len() > 3 {
+                return Err(error(vm));
+            }
+            let hour: i64 = parts[0].parse().map_err(|_| error(vm))?;
+            let minute: i64 = parts[1].parse().map_err(|_| error(vm))?;
+            let (second, nano) = if parts.len() == 3 {
+                let (sec_text, frac) = match parts[2].split_once('.') {
+                    Some((sec, frac)) => (sec, frac),
+                    None => (parts[2], ""),
+                };
+                let second: i64 = sec_text.parse().map_err(|_| error(vm))?;
+                if frac.is_empty() || frac.len() > 9 || !frac.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(error(vm));
+                }
+                let mut padded = String::from(frac);
+                while padded.len() < 9 {
+                    padded.push('0');
+                }
+                let nano: i64 = padded.parse().map_err(|_| error(vm))?;
+                (second, nano)
+            } else {
+                (0, 0)
+            };
+            if !(0..24).contains(&hour) || !(0..60).contains(&minute) || !(0..60).contains(&second)
+            {
+                return Err(error(vm));
+            }
+            let offset_seconds = if offset_text == "Z" {
+                0
+            } else {
+                let sign = if offset_text.starts_with('-') { -1 } else { 1 };
+                let rest = &offset_text[1..];
+                let oparts: Vec<&str> = rest.split(':').collect();
+                if oparts.len() < 2 || oparts.len() > 3 {
+                    return Err(error(vm));
+                }
+                let oh: i32 = oparts[0].parse().map_err(|_| error(vm))?;
+                let om: i32 = oparts[1].parse().map_err(|_| error(vm))?;
+                let os: i32 = if oparts.len() == 3 {
+                    oparts[2].parse().map_err(|_| error(vm))?
+                } else {
+                    0
+                };
+                if !(0..=18).contains(&oh) || !(0..60).contains(&om) || !(0..60).contains(&os) {
+                    return Err(error(vm));
+                }
+                sign * (oh * 3600 + om * 60 + os)
+            };
+            let offset = zone_offset_from_seconds(vm, offset_seconds)?;
+            let nano_of_day = (hour * 3600 + minute * 60 + second) * 1_000_000_000 + nano;
+            object(offset_time_new(vm, nano_of_day, offset)?)
+        },
+    ),
+    method("getHour", "()I", ACC_PUBLIC, |vm, _, args| {
+        int((read_long_field(vm, receiver(args), "nanoOfDay") / 3_600_000_000_000) as i32)
+    }),
+    method("getMinute", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(((read_long_field(vm, receiver(args), "nanoOfDay") / 60_000_000_000) % 60) as i32)
+    }),
+    method("getSecond", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(((read_long_field(vm, receiver(args), "nanoOfDay") / 1_000_000_000) % 60) as i32)
+    }),
+    method("getNano", "()I", ACC_PUBLIC, |vm, _, args| {
+        int((read_long_field(vm, receiver(args), "nanoOfDay") % 1_000_000_000) as i32)
+    }),
+    method(
+        "toLocalTime",
+        "()Ljava/time/LocalTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(local_time_new(
+                vm,
+                read_long_field(vm, receiver(args), "nanoOfDay"),
+            )?)
+        },
+    ),
+    method(
+        "getOffset",
+        "()Ljava/time/ZoneOffset;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(
+                vm.read_ref_field(this, vm.class_of(this), "offset", "Ljava/time/ZoneOffset;")
+                    .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method(
+        "withOffsetSameInstant",
+        "(Ljava/time/ZoneOffset;)Ljava/time/OffsetTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let new_offset = ref_arg(args, 1);
+            if new_offset.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let old_offset = vm
+                .read_ref_field(this, vm.class_of(this), "offset", "Ljava/time/ZoneOffset;")
+                .unwrap_or(ObjectRef::NULL);
+            let shift = i64::from(
+                zone_offset_seconds(vm, new_offset) - zone_offset_seconds(vm, old_offset),
+            );
+            let total = read_long_field(vm, this, "nanoOfDay") + shift * 1_000_000_000;
+            object(offset_time_new(
+                vm,
+                total.rem_euclid(86_400_000_000_000),
+                new_offset,
+            )?)
+        },
+    ),
+    method(
+        "withOffsetSameLocal",
+        "(Ljava/time/ZoneOffset;)Ljava/time/OffsetTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let new_offset = ref_arg(args, 1);
+            if new_offset.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(offset_time_new(
+                vm,
+                read_long_field(vm, this, "nanoOfDay"),
+                new_offset,
+            )?)
+        },
+    ),
+    method(
+        "atDate",
+        "(Ljava/time/LocalDate;)Ljava/time/OffsetDateTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let date = ref_arg(args, 1);
+            if date.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let offset = vm
+                .read_ref_field(this, vm.class_of(this), "offset", "Ljava/time/ZoneOffset;")
+                .unwrap_or(ObjectRef::NULL);
+            object(offset_date_time_new(
+                vm,
+                read_long_field(vm, date, "epochDay"),
+                read_long_field(vm, this, "nanoOfDay"),
+                offset,
+            )?)
+        },
+    ),
+    method(
+        "isBefore",
+        "(Ljava/time/OffsetTime;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let this_offset = vm
+                .read_ref_field(this, vm.class_of(this), "offset", "Ljava/time/ZoneOffset;")
+                .unwrap_or(ObjectRef::NULL);
+            let other_offset = vm
+                .read_ref_field(
+                    other,
+                    vm.class_of(other),
+                    "offset",
+                    "Ljava/time/ZoneOffset;",
+                )
+                .unwrap_or(ObjectRef::NULL);
+            let a = read_long_field(vm, this, "nanoOfDay")
+                - i64::from(zone_offset_seconds(vm, this_offset)) * 1_000_000_000;
+            let b = read_long_field(vm, other, "nanoOfDay")
+                - i64::from(zone_offset_seconds(vm, other_offset)) * 1_000_000_000;
+            boolean(a < b)
+        },
+    ),
+    method(
+        "isAfter",
+        "(Ljava/time/OffsetTime;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let this_offset = vm
+                .read_ref_field(this, vm.class_of(this), "offset", "Ljava/time/ZoneOffset;")
+                .unwrap_or(ObjectRef::NULL);
+            let other_offset = vm
+                .read_ref_field(
+                    other,
+                    vm.class_of(other),
+                    "offset",
+                    "Ljava/time/ZoneOffset;",
+                )
+                .unwrap_or(ObjectRef::NULL);
+            let a = read_long_field(vm, this, "nanoOfDay")
+                - i64::from(zone_offset_seconds(vm, this_offset)) * 1_000_000_000;
+            let b = read_long_field(vm, other, "nanoOfDay")
+                - i64::from(zone_offset_seconds(vm, other_offset)) * 1_000_000_000;
+            boolean(a > b)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if other.is_null() || vm.class_name(vm.class_of(other)) != "java/time/OffsetTime" {
+                return boolean(false);
+            }
+            if read_long_field(vm, this, "nanoOfDay") != read_long_field(vm, other, "nanoOfDay") {
+                return boolean(false);
+            }
+            let this_offset = vm
+                .read_ref_field(this, vm.class_of(this), "offset", "Ljava/time/ZoneOffset;")
+                .unwrap_or(ObjectRef::NULL);
+            let other_offset = vm
+                .read_ref_field(
+                    other,
+                    vm.class_of(other),
+                    "offset",
+                    "Ljava/time/ZoneOffset;",
+                )
+                .unwrap_or(ObjectRef::NULL);
+            boolean(zone_offset_seconds(vm, this_offset) == zone_offset_seconds(vm, other_offset))
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let nano = read_long_field(vm, this, "nanoOfDay");
+        let offset = vm
+            .read_ref_field(this, vm.class_of(this), "offset", "Ljava/time/ZoneOffset;")
+            .unwrap_or(ObjectRef::NULL);
+        int(((nano ^ (nano >> 32)) as i32) ^ zone_offset_seconds(vm, offset))
+    }),
+    method(
+        "compareTo",
+        "(Ljava/time/OffsetTime;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let this_offset = vm
+                .read_ref_field(this, vm.class_of(this), "offset", "Ljava/time/ZoneOffset;")
+                .unwrap_or(ObjectRef::NULL);
+            let other_offset = vm
+                .read_ref_field(
+                    other,
+                    vm.class_of(other),
+                    "offset",
+                    "Ljava/time/ZoneOffset;",
+                )
+                .unwrap_or(ObjectRef::NULL);
+            let a = read_long_field(vm, this, "nanoOfDay")
+                - i64::from(zone_offset_seconds(vm, this_offset)) * 1_000_000_000;
+            let b = read_long_field(vm, other, "nanoOfDay")
+                - i64::from(zone_offset_seconds(vm, other_offset)) * 1_000_000_000;
+            if a != b {
+                return int(if a < b { -1 } else { 1 });
+            }
+            let local_a = read_long_field(vm, this, "nanoOfDay");
+            let local_b = read_long_field(vm, other, "nanoOfDay");
+            int(if local_a < local_b {
+                -1
+            } else if local_a > local_b {
+                1
+            } else {
+                0
+            })
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let nano = read_long_field(vm, this, "nanoOfDay");
+            let hour = nano / 3_600_000_000_000;
+            let minute = (nano / 60_000_000_000) % 60;
+            let second = (nano / 1_000_000_000) % 60;
+            let nanos = nano % 1_000_000_000;
+            let time_text = if second == 0 && nanos == 0 {
+                alloc::format!("{hour:02}:{minute:02}")
+            } else {
+                alloc::format!("{hour:02}:{minute:02}:{second:02}{}", nano_fraction(nanos))
+            };
+            let offset = vm
+                .read_ref_field(this, vm.class_of(this), "offset", "Ljava/time/ZoneOffset;")
+                .unwrap_or(ObjectRef::NULL);
+            let text = alloc::format!(
+                "{time_text}{}",
+                crate::lang::zone_offset_id(zone_offset_seconds(vm, offset))
+            );
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "format",
+        "(Ljava/time/format/DateTimeFormatter;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let formatter = ref_arg(args, 1);
+            if formatter.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let pattern = vm
+                .read_string_field(formatter, vm.class_of(formatter), "pattern")
+                .unwrap_or_default();
+            let millis = temporal_local_millis(vm, this)?;
+            object(vm.make_string(&crate::text::format_pattern(&pattern, millis))?)
+        },
+    ),
+    method(
+        "truncatedTo",
+        "(Ljava/time/temporal/TemporalUnit;)Ljava/time/OffsetTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let unit = ref_arg(args, 1);
+            if unit.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let nanos = crate::temporal::chrono_unit_nanos(vm, unit);
+            let day_nanos = 86_400_000_000_000i64;
+            let truncated = if nanos == day_nanos {
+                0
+            } else if nanos <= 0 || nanos > day_nanos {
+                return Err(vm.throw_new(
+                    "java/time/temporal/UnsupportedTemporalTypeException",
+                    Some("Unit is too large to be used for truncation"),
+                ));
+            } else if day_nanos % nanos != 0 {
+                return Err(vm.throw_new(
+                    "java/time/temporal/UnsupportedTemporalTypeException",
+                    Some("Unit must divide into a standard day without remainder"),
+                ));
+            } else {
+                read_long_field(vm, this, "nanoOfDay") / nanos * nanos
+            };
+            let offset = vm
+                .read_ref_field(this, vm.class_of(this), "offset", "Ljava/time/ZoneOffset;")
+                .unwrap_or(ObjectRef::NULL);
+            object(offset_time_new(vm, truncated, offset)?)
+        },
+    ),
+    method(
+        "plusHours",
+        "(J)Ljava/time/OffsetTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            offset_time_plus_nanos(
+                vm,
+                receiver(args),
+                crate::long_arg(args, 1).saturating_mul(3_600_000_000_000),
+            )
+        },
+    ),
+    method(
+        "plusMinutes",
+        "(J)Ljava/time/OffsetTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            offset_time_plus_nanos(
+                vm,
+                receiver(args),
+                crate::long_arg(args, 1).saturating_mul(60_000_000_000),
+            )
+        },
+    ),
+    method(
+        "plusSeconds",
+        "(J)Ljava/time/OffsetTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            offset_time_plus_nanos(
+                vm,
+                receiver(args),
+                crate::long_arg(args, 1).saturating_mul(1_000_000_000),
+            )
+        },
+    ),
+    method(
+        "plusNanos",
+        "(J)Ljava/time/OffsetTime;",
+        ACC_PUBLIC,
+        |vm, _, args| offset_time_plus_nanos(vm, receiver(args), crate::long_arg(args, 1)),
+    ),
+    method(
+        "minusHours",
+        "(J)Ljava/time/OffsetTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (class, method) = vm.resolve_virtual_method(
+                receiver(args),
+                "plusHours",
+                "(J)Ljava/time/OffsetTime;",
+            )?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![
+                    Value::Ref(receiver(args)),
+                    long(crate::long_arg(args, 1).wrapping_neg())?,
+                ],
+            )
+        },
+    ),
+    method(
+        "minusMinutes",
+        "(J)Ljava/time/OffsetTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (class, method) = vm.resolve_virtual_method(
+                receiver(args),
+                "plusMinutes",
+                "(J)Ljava/time/OffsetTime;",
+            )?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![
+                    Value::Ref(receiver(args)),
+                    long(crate::long_arg(args, 1).wrapping_neg())?,
+                ],
+            )
+        },
+    ),
+    method(
+        "minusSeconds",
+        "(J)Ljava/time/OffsetTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (class, method) = vm.resolve_virtual_method(
+                receiver(args),
+                "plusSeconds",
+                "(J)Ljava/time/OffsetTime;",
+            )?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![
+                    Value::Ref(receiver(args)),
+                    long(crate::long_arg(args, 1).wrapping_neg())?,
+                ],
+            )
+        },
+    ),
+    method(
+        "minusNanos",
+        "(J)Ljava/time/OffsetTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (class, method) = vm.resolve_virtual_method(
+                receiver(args),
+                "plusNanos",
+                "(J)Ljava/time/OffsetTime;",
+            )?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![
+                    Value::Ref(receiver(args)),
+                    long(crate::long_arg(args, 1).wrapping_neg())?,
+                ],
+            )
+        },
+    ),
+];
+
+pub(crate) const OFFSET_TIME: oxjvm_vm::NativeClass = class(
+    "java/time/OffsetTime",
+    Some("java/lang/Object"),
+    &[
+        "java/time/temporal/TemporalAccessor",
+        "java/time/temporal/Temporal",
+        "java/lang/Comparable",
+        "java/io/Serializable",
+    ],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("nanoOfDay", "J", ACC_PRIVATE | ACC_FINAL, None),
+        field(
+            "offset",
+            "Ljava/time/ZoneOffset;",
+            ACC_PRIVATE | ACC_FINAL,
+            None,
+        ),
+    ],
+    &OFFSET_TIME_METHODS,
+    None,
+);
+
 pub(crate) const YEAR_MONTH: oxjvm_vm::NativeClass = class(
     "java/time/YearMonth",
     Some("java/lang/Object"),
