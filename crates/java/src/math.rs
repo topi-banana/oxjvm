@@ -2868,6 +2868,9 @@ fn big_integer_binary(
     operation: fn(i128, i128) -> i128,
 ) -> Result<Value, VmError> {
     let this = receiver(args);
+    if ref_arg(args, 1).is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
     let a = parse_i128(&big_text(vm, this));
     let b = parse_i128(&big_text(vm, ref_arg(args, 1)));
     match (a, b) {
@@ -3167,6 +3170,9 @@ const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
         "(Ljava/math/BigInteger;)Ljava/math/BigInteger;",
         ACC_PUBLIC,
         |vm, _, args| {
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let a = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
             let b = parse_i128(&big_text(vm, ref_arg(args, 1))).unwrap_or(0);
             if b == 0 {
@@ -3180,6 +3186,9 @@ const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
         "(Ljava/math/BigInteger;)Ljava/math/BigInteger;",
         ACC_PUBLIC,
         |vm, _, args| {
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let a = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
             let b = parse_i128(&big_text(vm, ref_arg(args, 1))).unwrap_or(0);
             if b == 0 {
