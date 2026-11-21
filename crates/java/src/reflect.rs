@@ -3968,6 +3968,17 @@ fn array_component_descriptor(vm: &Vm<'_>, array: ObjectRef) -> &'static str {
     }
 }
 
+/// The number of array dimensions a class already carries (the leading `[`
+/// characters in its binary name); zero for non-array classes.
+fn array_dimension_count(vm: &Vm<'_>, class: ClassId) -> usize {
+    vm.classes
+        .get(class)
+        .name
+        .chars()
+        .take_while(|c| *c == '[')
+        .count()
+}
+
 fn array_new_instance(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
@@ -3980,6 +3991,9 @@ fn array_new_instance(
             "java/lang/NegativeArraySizeException",
             Some(&length.to_string()),
         ));
+    }
+    if array_dimension_count(vm, component) + 1 > 255 {
+        return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
     }
     let kind = vm.classes.get(component).kind;
     let array = if kind == oxjvm_vm::ClassKind::Primitive {
@@ -4000,6 +4014,9 @@ fn array_new_instance_dimensions(
     let component = class_argument(vm, ref_arg(args, 0))?;
     let dimensions = ref_arg(args, 1);
     let count = vm.array_length(dimensions)?;
+    if count == 0 || array_dimension_count(vm, component) + count > 255 {
+        return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+    }
     let mut values = Vec::with_capacity(count);
     for index in 0..count {
         let value = vm.array_get(dimensions, index as i32)?.as_int();
