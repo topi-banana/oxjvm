@@ -386,40 +386,79 @@ pub fn ulong_to_radix_string(mut value: u64, radix: u32) -> String {
     out
 }
 
+/// Strip the optional trailing `f`/`F`/`d`/`D` suffix that `Float.parseFloat`
+/// and `Double.parseDouble` accept on a decimal literal.
+fn strip_float_suffix(text: &str) -> &str {
+    match text.as_bytes().last() {
+        Some(b'f' | b'F' | b'd' | b'D') => &text[..text.len() - 1],
+        _ => text,
+    }
+}
+
+/// Whether `text` spells NaN or Infinity in a case the JDK does not accept.
+/// The exact `NaN`/`Infinity` spellings are matched by the caller; without this
+/// guard Rust's parser would accept case-insensitive nan/inf words.
+fn is_nan_inf_word(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    let body = lower.strip_prefix(['+', '-']).unwrap_or(&lower);
+    matches!(body, "nan" | "inf" | "infinity")
+}
+
+/// If `text` is a hex float literal (optional sign, `0x`/`0X`, mantissa, `p`
+/// exponent), return the body `parse_hex_float` expects: the sign followed by
+/// the mantissa and exponent, with the `0x` prefix removed.
+fn hex_float_body(text: &str) -> Option<String> {
+    let (sign, rest) = if let Some(rest) = text.strip_prefix('-') {
+        ("-", rest)
+    } else if let Some(rest) = text.strip_prefix('+') {
+        ("+", rest)
+    } else {
+        ("", text)
+    };
+    let hex = rest
+        .strip_prefix("0x")
+        .or_else(|| rest.strip_prefix("0X"))?;
+    Some(alloc::format!("{sign}{hex}"))
+}
+
 /// Parse a `float` like `Float.parseFloat`, including `NaN`, `Infinity`, and hex literals.
 #[must_use]
 pub fn parse_float(text: &str) -> Option<f32> {
     let trimmed = text.trim();
-    if let Some(hex) = trimmed
-        .strip_prefix("0x")
-        .or_else(|| trimmed.strip_prefix("0X"))
-    {
-        return parse_hex_float(hex).map(|value| value as f32);
+    if let Some(hex) = hex_float_body(trimmed) {
+        return parse_hex_float(&hex).map(|value| value as f32);
     }
     match trimmed {
-        "NaN" => Some(f32::NAN),
-        "Infinity" | "+Infinity" => Some(f32::INFINITY),
-        "-Infinity" => Some(f32::NEG_INFINITY),
-        _ => trimmed.to_ascii_lowercase().parse::<f32>().ok(),
+        "NaN" | "+NaN" | "-NaN" => return Some(f32::NAN),
+        "Infinity" | "+Infinity" => return Some(f32::INFINITY),
+        "-Infinity" => return Some(f32::NEG_INFINITY),
+        _ => {}
     }
+    let body = strip_float_suffix(trimmed);
+    if is_nan_inf_word(body) {
+        return None;
+    }
+    body.parse::<f32>().ok()
 }
 
 /// Parse a `double` like `Double.parseDouble`.
 #[must_use]
 pub fn parse_double(text: &str) -> Option<f64> {
     let trimmed = text.trim();
-    if let Some(hex) = trimmed
-        .strip_prefix("0x")
-        .or_else(|| trimmed.strip_prefix("0X"))
-    {
-        return parse_hex_float(hex);
+    if let Some(hex) = hex_float_body(trimmed) {
+        return parse_hex_float(&hex);
     }
     match trimmed {
-        "NaN" => Some(f64::NAN),
-        "Infinity" | "+Infinity" => Some(f64::INFINITY),
-        "-Infinity" => Some(f64::NEG_INFINITY),
-        _ => trimmed.to_ascii_lowercase().parse::<f64>().ok(),
+        "NaN" | "+NaN" | "-NaN" => return Some(f64::NAN),
+        "Infinity" | "+Infinity" => return Some(f64::INFINITY),
+        "-Infinity" => return Some(f64::NEG_INFINITY),
+        _ => {}
     }
+    let body = strip_float_suffix(trimmed);
+    if is_nan_inf_word(body) {
+        return None;
+    }
+    body.parse::<f64>().ok()
 }
 
 fn parse_hex_float(text: &str) -> Option<f64> {
