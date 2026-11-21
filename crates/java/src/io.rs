@@ -3655,6 +3655,9 @@ fn output_stream_writer_init(
     canonical: &str,
 ) -> Result<Value, VmError> {
     let this = receiver(args);
+    if ref_arg(args, 1).is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
     let class = vm.class_of(this);
     let (declaring, field) = vm.find_field(class, "out", "Ljava/io/OutputStream;")?;
     vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
@@ -3667,7 +3670,7 @@ fn output_stream_writer_init(
     void()
 }
 
-const OUTPUT_STREAM_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const OUTPUT_STREAM_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method(
         "<init>",
         "(Ljava/io/OutputStream;)V",
@@ -3745,6 +3748,7 @@ const OUTPUT_STREAM_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         let array = ref_arg(args, 1);
         let offset = int_arg(args, 2);
         let length = int_arg(args, 3);
+        reader_check_range(vm, array, offset, length)?;
         let mut units = Vec::new();
         for index in 0..length {
             units.push(vm.array_get(array, offset + index)?.as_int() as u16);
@@ -3752,6 +3756,28 @@ const OUTPUT_STREAM_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         let text = String::from_utf16_lossy(&units);
         output_stream_writer_write_text(vm, receiver(args), &text)
     }),
+    method(
+        "write",
+        "(Ljava/lang/String;II)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text_ref = ref_arg(args, 1);
+            if text_ref.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let offset = int_arg(args, 2);
+            let length = int_arg(args, 3);
+            let units = vm.string_utf16(text_ref).unwrap_or_default();
+            let total = units.len() as i32;
+            if offset < 0 || length < 0 || i64::from(offset) + i64::from(length) > i64::from(total)
+            {
+                return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+            }
+            let text =
+                String::from_utf16_lossy(&units[offset as usize..(offset + length) as usize]);
+            output_stream_writer_write_text(vm, receiver(args), &text)
+        },
+    ),
     method("flush", "()V", ACC_PUBLIC, |vm, _, args| {
         let out = output_stream_writer_out(vm, receiver(args));
         if !out.is_null() {
@@ -4831,17 +4857,18 @@ fn input_stream_reader_init(
 ) -> Result<Value, VmError> {
     let this = receiver(args);
     let stream = ref_arg(args, 1);
+    if stream.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
     let mut bytes: Vec<u8> = Vec::new();
-    if !stream.is_null() {
-        while let Ok((class, method)) = vm.resolve_virtual_method(stream, "read", "()I") {
-            let value = vm
-                .invoke_method(class, method, vec![Value::Ref(stream)])?
-                .as_int();
-            if value < 0 {
-                break;
-            }
-            bytes.push(value as u8);
+    while let Ok((class, method)) = vm.resolve_virtual_method(stream, "read", "()I") {
+        let value = vm
+            .invoke_method(class, method, vec![Value::Ref(stream)])?
+            .as_int();
+        if value < 0 {
+            break;
         }
+        bytes.push(value as u8);
     }
     let content = String::from_utf16_lossy(&crate::charset::decode(&bytes, canonical));
     let class = vm.class_of(this);
