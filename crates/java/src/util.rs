@@ -11701,8 +11701,11 @@ fn properties_map(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
 fn properties_load(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
     let this = receiver(args);
     let stream = ref_arg(args, 1);
+    if stream.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
     let mut bytes = Vec::new();
-    if !stream.is_null() {
+    {
         let (class, method) = vm.resolve_virtual_method(stream, "read", "()I")?;
         loop {
             let value = vm
@@ -12010,8 +12013,11 @@ fn properties_load_xml(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError
 fn properties_load_reader(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
     let this = receiver(args);
     let reader = ref_arg(args, 1);
+    if reader.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
     let mut text = String::new();
-    if !reader.is_null() {
+    {
         let (class, method) = vm.resolve_virtual_method(reader, "read", "()I")?;
         loop {
             let value = vm
@@ -12035,6 +12041,9 @@ fn properties_load_reader(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmEr
 fn properties_store(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
     let this = receiver(args);
     let stream = ref_arg(args, 1);
+    if stream.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
     let comment = vm.string_value(ref_arg(args, 2)).unwrap_or_default();
     let mut text = String::new();
     if !comment.is_empty() {
