@@ -4,6 +4,7 @@
 //! ISO-8859-1 and the UTF-16 family); `forName` and the `StandardCharsets`
 //! constants share one cache so lookups are identity-stable.
 
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use oxjvm_classfile::flags::*;
@@ -39,7 +40,7 @@ const CHARSETS: &[(&str, &[&str])] = &[
 
 /// Normalize a charset name the way the JDK does for lookups: case-insensitive,
 /// ignoring `-` and `_`.
-fn normalize(name: &str) -> alloc::string::String {
+fn normalize(name: &str) -> String {
     name.chars()
         .filter(|c| *c != '-' && *c != '_')
         .flat_map(char::to_lowercase)
@@ -82,6 +83,52 @@ pub(crate) fn encode(text: &str, canonical: &str) -> Vec<u8> {
     }
 }
 
+/// Encode UTF-16 `units`: the UTF-16 family keeps every unit verbatim, while
+/// the other charsets replace unpaired surrogates with `?` as the JDK does.
+pub(crate) fn encode_units(units: &[u16], canonical: &str) -> Vec<u8> {
+    match canonical {
+        "UTF-16" => {
+            let mut bytes = alloc::vec![0xFE, 0xFF];
+            for unit in units {
+                bytes.extend_from_slice(&unit.to_be_bytes());
+            }
+            bytes
+        }
+        "UTF-16BE" => units.iter().flat_map(|unit| unit.to_be_bytes()).collect(),
+        "UTF-16LE" => units.iter().flat_map(|unit| unit.to_le_bytes()).collect(),
+        _ => {
+            let mut text = String::new();
+            let mut index = 0;
+            while index < units.len() {
+                let unit = units[index];
+                if (0xD800..0xDC00).contains(&unit) {
+                    if let Some(&low) = units.get(index + 1) {
+                        if (0xDC00..0xE000).contains(&low) {
+                            let scalar = 0x1_0000
+                                + ((u32::from(unit) - 0xD800) << 10)
+                                + (u32::from(low) - 0xDC00);
+                            if let Some(ch) = char::from_u32(scalar) {
+                                text.push(ch);
+                                index += 2;
+                                continue;
+                            }
+                        }
+                    }
+                    text.push('?');
+                    index += 1;
+                } else if (0xDC00..0xE000).contains(&unit) {
+                    text.push('?');
+                    index += 1;
+                } else {
+                    text.push(char::from_u32(u32::from(unit)).unwrap_or('?'));
+                    index += 1;
+                }
+            }
+            encode(&text, canonical)
+        }
+    }
+}
+
 /// Decode `bytes` with the canonical charset `canonical` into UTF-16 units.
 pub(crate) fn decode(bytes: &[u8], canonical: &str) -> Vec<u16> {
     match canonical {
@@ -98,9 +145,7 @@ pub(crate) fn decode(bytes: &[u8], canonical: &str) -> Vec<u16> {
         }
         "UTF-16BE" => utf16_units(bytes, u16::from_be_bytes),
         "UTF-16LE" => utf16_units(bytes, u16::from_le_bytes),
-        _ => alloc::string::String::from_utf8_lossy(bytes)
-            .encode_utf16()
-            .collect(),
+        _ => String::from_utf8_lossy(bytes).encode_utf16().collect(),
     }
 }
 
@@ -112,9 +157,9 @@ fn utf16_units(bytes: &[u8], combine: fn([u8; 2]) -> u16) -> Vec<u16> {
 }
 
 /// The canonical name of a `Charset` object.
-pub(crate) fn name_of(vm: &Vm<'_>, charset: ObjectRef) -> alloc::string::String {
+pub(crate) fn name_of(vm: &Vm<'_>, charset: ObjectRef) -> String {
     if charset.is_null() {
-        return alloc::string::String::new();
+        return String::new();
     }
     vm.read_string_field(charset, vm.class_of(charset), "name")
         .unwrap_or_default()
@@ -431,7 +476,7 @@ const CHARSET_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         |vm, _, args| {
             let name = name_of(vm, receiver(args));
             let bytes = crate::buffer::byte_buffer_remaining_bytes(vm, ref_arg(args, 1))?;
-            let text = alloc::string::String::from_utf16_lossy(&decode(&bytes, &name));
+            let text = String::from_utf16_lossy(&decode(&bytes, &name));
             object(crate::buffer::char_buffer_from_text(vm, &text)?)
         },
     ),
@@ -779,7 +824,7 @@ const CHARSET_DECODER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
                 .read_string_field(receiver(args), vm.class_of(receiver(args)), "charset")
                 .unwrap_or_default();
             let bytes = crate::buffer::byte_buffer_remaining_bytes(vm, ref_arg(args, 1))?;
-            let text = alloc::string::String::from_utf16_lossy(&decode(&bytes, &name));
+            let text = String::from_utf16_lossy(&decode(&bytes, &name));
             object(crate::buffer::char_buffer_from_text(vm, &text)?)
         },
     ),
@@ -810,7 +855,7 @@ const CHARSET_DECODER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
                 .read_string_field(receiver(args), vm.class_of(receiver(args)), "charset")
                 .unwrap_or_default();
             let bytes = crate::buffer::byte_buffer_remaining_bytes(vm, ref_arg(args, 1))?;
-            let text = alloc::string::String::from_utf16_lossy(&decode(&bytes, &name));
+            let text = String::from_utf16_lossy(&decode(&bytes, &name));
             let target = ref_arg(args, 2);
             let (class, put) = vm.resolve_virtual_method(
                 target,

@@ -1368,7 +1368,9 @@ fn nibble_hex(value: u8) -> char {
         .to_ascii_uppercase()
 }
 
-fn url_decode(vm: &mut Vm<'_>, text: &str) -> Result<Option<String>, VmError> {
+/// Decode a URL-encoded string, reporting the JDK's exact error messages;
+/// malformed UTF-8 byte sequences become replacement characters, not errors.
+fn url_decode(text: &str) -> Result<String, String> {
     let bytes = text.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut index = 0;
@@ -1380,13 +1382,23 @@ fn url_decode(vm: &mut Vm<'_>, text: &str) -> Result<Option<String>, VmError> {
             }
             b'%' => {
                 if index + 2 >= bytes.len() {
-                    return Ok(None);
+                    return Err(String::from(
+                        "URLDecoder: Incomplete trailing escape (%) pattern",
+                    ));
                 }
-                let Some(high) = char::from(bytes[index + 1]).to_digit(16) else {
-                    return Ok(None);
-                };
-                let Some(low) = char::from(bytes[index + 2]).to_digit(16) else {
-                    return Ok(None);
+                let high = char::from(bytes[index + 1]).to_digit(16);
+                let low = char::from(bytes[index + 2]).to_digit(16);
+                let (Some(high), Some(low)) = (high, low) else {
+                    let bad = if high.is_none() {
+                        bytes[index + 1]
+                    } else {
+                        bytes[index + 2]
+                    };
+                    return Err(alloc::format!(
+                        "URLDecoder: Illegal hex characters in escape (%) pattern - not a hexadecimal digit: \"{}\" = {}",
+                        char::from(bad),
+                        u32::from(bad)
+                    ));
                 };
                 out.push(((high << 4) | low) as u8);
                 index += 3;
@@ -1397,13 +1409,7 @@ fn url_decode(vm: &mut Vm<'_>, text: &str) -> Result<Option<String>, VmError> {
             }
         }
     }
-    match core::str::from_utf8(&out) {
-        Ok(decoded) => Ok(Some(String::from(decoded))),
-        Err(_) => {
-            let _ = vm;
-            Ok(None)
-        }
-    }
+    Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
 const URL_ENCODER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
@@ -1461,12 +1467,11 @@ const URL_DECODER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
         |vm, _, args| {
             let text = string_arg(vm, args[0])
                 .map_err(|_| vm.throw_new("java/lang/NullPointerException", None))?;
-            match url_decode(vm, &text)? {
-                Some(decoded) => object(vm.make_string(&decoded)?),
-                None => Err(vm.throw_new(
-                    "java/lang/IllegalArgumentException",
-                    Some("URLDecoder: Illegal hex characters in escape (%) pattern"),
-                )),
+            match url_decode(&text) {
+                Ok(decoded) => object(vm.make_string(&decoded)?),
+                Err(message) => {
+                    Err(vm.throw_new("java/lang/IllegalArgumentException", Some(&message)))
+                }
             }
         },
     ),
@@ -1477,12 +1482,11 @@ const URL_DECODER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
         |vm, _, args| {
             let text = string_arg(vm, args[0])
                 .map_err(|_| vm.throw_new("java/lang/NullPointerException", None))?;
-            match url_decode(vm, &text)? {
-                Some(decoded) => object(vm.make_string(&decoded)?),
-                None => Err(vm.throw_new(
-                    "java/lang/IllegalArgumentException",
-                    Some("URLDecoder: Illegal hex characters in escape (%) pattern"),
-                )),
+            match url_decode(&text) {
+                Ok(decoded) => object(vm.make_string(&decoded)?),
+                Err(message) => {
+                    Err(vm.throw_new("java/lang/IllegalArgumentException", Some(&message)))
+                }
             }
         },
     ),
@@ -1496,12 +1500,11 @@ const URL_DECODER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
             if args[1].as_ref().is_null() {
                 return Err(vm.throw_new("java/lang/NullPointerException", Some("Charset")));
             }
-            match url_decode(vm, &text)? {
-                Some(decoded) => object(vm.make_string(&decoded)?),
-                None => Err(vm.throw_new(
-                    "java/lang/IllegalArgumentException",
-                    Some("URLDecoder: Illegal hex characters in escape (%) pattern"),
-                )),
+            match url_decode(&text) {
+                Ok(decoded) => object(vm.make_string(&decoded)?),
+                Err(message) => {
+                    Err(vm.throw_new("java/lang/IllegalArgumentException", Some(&message)))
+                }
             }
         },
     ),

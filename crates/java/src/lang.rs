@@ -2237,11 +2237,12 @@ fn string_get_bytes_charset(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let name = string_arg(vm, args[1])?;
-    let text = vm.string_or_empty(receiver(args));
-    let bytes = match crate::charset::canonical_name(&name) {
-        Some(canonical) => crate::charset::encode(&text, canonical),
-        None => text.into_bytes(),
-    };
+    let units = vm
+        .string_utf16(receiver(args))
+        .map(<[u16]>::to_vec)
+        .unwrap_or_default();
+    let canonical = crate::charset::canonical_name(&name).unwrap_or("UTF-8");
+    let bytes = crate::charset::encode_units(&units, canonical);
     object(byte_array_from(vm, &bytes)?)
 }
 
@@ -2252,11 +2253,12 @@ fn string_get_bytes_charset_object(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let name = crate::charset::name_of(vm, ref_arg(args, 1));
-    let text = vm.string_or_empty(receiver(args));
-    let bytes = match crate::charset::canonical_name(&name) {
-        Some(canonical) => crate::charset::encode(&text, canonical),
-        None => text.into_bytes(),
-    };
+    let units = vm
+        .string_utf16(receiver(args))
+        .map(<[u16]>::to_vec)
+        .unwrap_or_default();
+    let canonical = crate::charset::canonical_name(&name).unwrap_or("UTF-8");
+    let bytes = crate::charset::encode_units(&units, canonical);
     object(byte_array_from(vm, &bytes)?)
 }
 
@@ -3568,8 +3570,11 @@ fn string_get_bytes(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let text = vm.string_or_empty(receiver(args));
-    let bytes: Vec<u8> = text.into_bytes();
+    let units = vm
+        .string_utf16(receiver(args))
+        .map(<[u16]>::to_vec)
+        .unwrap_or_default();
+    let bytes = crate::charset::encode_units(&units, "UTF-8");
     let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, bytes.len())?;
     for (index, byte) in bytes.into_iter().enumerate() {
         vm.array_set(
@@ -3630,9 +3635,8 @@ fn string_value_of_char(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let unit = int_arg(args, 0) as u32 & 0xFFFF;
-    let text = char::from_u32(unit).map_or_else(String::new, |ch| ch.to_string());
-    object(vm.make_string(&text)?)
+    let unit = int_arg(args, 0) as u16;
+    object(vm.make_string_utf16(alloc::vec![unit])?)
 }
 
 fn string_value_of_int(
@@ -5280,11 +5284,11 @@ fn builder_append_string(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let text = match vm.string_value(ref_arg(args, 1)) {
-        Some(text) => text,
-        None => "null".into(),
+    let units: Vec<u16> = match vm.string_utf16(ref_arg(args, 1)) {
+        Some(units) => units.to_vec(),
+        None => "null".encode_utf16().collect(),
     };
-    builder_append_text(vm, receiver(args), &text)
+    builder_append_units(vm, receiver(args), &units)
 }
 
 /// Append raw UTF-16 units to the content, growing the backing array as needed.
@@ -5379,15 +5383,8 @@ fn builder_insert_char(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let unit = int_arg(args, 2) as u32 & 0xFFFF;
-    let ch = char::from_u32(unit).unwrap_or('\u{FFFD}');
-    let mut buf = [0u8; 4];
-    builder_insert_text(
-        vm,
-        receiver(args),
-        int_arg(args, 1),
-        ch.encode_utf8(&mut buf),
-    )
+    let unit = int_arg(args, 2) as u16;
+    builder_insert_units(vm, receiver(args), int_arg(args, 1), &[unit])
 }
 
 fn builder_insert_int(
@@ -5509,7 +5506,7 @@ fn builder_append_chars_range(
     let length = int_arg(args, 3);
     string_range_check(vm, offset, length, units.len())?;
     let slice = units[offset as usize..(offset + length) as usize].to_vec();
-    builder_append_text(vm, receiver(args), &String::from_utf16_lossy(&slice))
+    builder_append_units(vm, receiver(args), &slice)
 }
 
 fn builder_append_bool(
@@ -5529,10 +5526,8 @@ fn builder_append_char(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let unit = int_arg(args, 1) as u32 & 0xFFFF;
-    let ch = char::from_u32(unit).unwrap_or('\u{FFFD}');
-    let mut text = [0u8; 4];
-    builder_append_text(vm, receiver(args), ch.encode_utf8(&mut text))
+    let unit = int_arg(args, 1) as u16;
+    builder_append_units(vm, receiver(args), &[unit])
 }
 
 fn builder_append_int(
@@ -5672,6 +5667,18 @@ fn builder_reverse(
 ) -> Result<Value, VmError> {
     let (mut units, count) = builder_state(vm, receiver(args));
     units[..count].reverse();
+    // A reversed surrogate pair reads low-then-high; swap it back so the pair
+    // stays a valid code point, as the JDK's reverse does.
+    let mut index = 0;
+    while index + 1 < count {
+        if (0xDC00..0xE000).contains(&units[index]) && (0xD800..0xDC00).contains(&units[index + 1])
+        {
+            units.swap(index, index + 1);
+            index += 2;
+        } else {
+            index += 1;
+        }
+    }
     builder_store(vm, receiver(args), &units, count)?;
     object(receiver(args))
 }
@@ -5682,9 +5689,9 @@ fn builder_insert_string(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let offset = int_arg(args, 1);
-    let text = match vm.string_value(ref_arg(args, 2)) {
-        Some(text) => text,
-        None => "null".into(),
+    let inserted: Vec<u16> = match vm.string_utf16(ref_arg(args, 2)) {
+        Some(units) => units.to_vec(),
+        None => "null".encode_utf16().collect(),
     };
     let (units, count) = builder_state(vm, receiver(args));
     let offset = offset.max(0) as usize;
@@ -5695,7 +5702,6 @@ fn builder_insert_string(
         ));
     }
     let mut out: Vec<u16> = units[..count].to_vec();
-    let inserted: Vec<u16> = text.encode_utf16().collect();
     let mut tail = out.split_off(offset);
     out.extend_from_slice(&inserted);
     out.append(&mut tail);
@@ -6196,11 +6202,12 @@ fn builder_replace(
             )),
         ));
     }
-    let text = vm
-        .string_value(ref_arg(args, 3))
-        .ok_or_else(|| vm.throw_new("java/lang/NullPointerException", None))?;
+    let text = vm.string_utf16(ref_arg(args, 3)).map(<[u16]>::to_vec);
+    let Some(text) = text else {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    };
     let mut out: Vec<u16> = units[..count].to_vec();
-    out.splice(start as usize..end as usize, text.encode_utf16());
+    out.splice(start as usize..end as usize, text);
     builder_store(vm, receiver(args), &out, out.len())?;
     object(receiver(args))
 }

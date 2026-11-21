@@ -2269,9 +2269,8 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let unit = read_value_int(vm, receiver(args)) as u32 & 0xFFFF;
-            let text = char::from_u32(unit).map_or_else(String::new, |ch| ch.to_string());
-            object(vm.make_string(&text)?)
+            let unit = read_value_int(vm, receiver(args)) as u16;
+            object(vm.make_string_utf16(alloc::vec![unit])?)
         },
     ),
     method(
