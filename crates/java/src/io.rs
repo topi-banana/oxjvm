@@ -5483,6 +5483,107 @@ pub(crate) const STRING_READER: oxjvm_vm::NativeClass = class(
     None,
 );
 
+const STRING_BUFFER_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = ref_arg(args, 1);
+            if text.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "buffer", "Ljava/lang/String;")?;
+            vm.set_instance_ref(this, declaring, field, text);
+            let length = vm.string_utf16(text).map_or(0, |units| units.len()) as i32;
+            write_int_field(vm, this, "count", length);
+            void()
+        },
+    ),
+    method("read", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let pos = read_int_field(vm, this, "pos");
+        let count = read_int_field(vm, this, "count");
+        if pos >= count {
+            return int(-1);
+        }
+        let class = vm.class_of(this);
+        let text = vm
+            .read_ref_field(this, class, "buffer", "Ljava/lang/String;")
+            .unwrap_or(ObjectRef::NULL);
+        let Some(units) = vm.string_utf16(text) else {
+            return int(-1);
+        };
+        let unit = units[pos as usize];
+        write_int_field(vm, this, "pos", pos + 1);
+        int(i32::from(unit) & 0xFF)
+    }),
+    method("read", "([BII)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let array = ref_arg(args, 1);
+        let offset = int_arg(args, 2);
+        let length = int_arg(args, 3);
+        reader_check_range(vm, array, offset, length)?;
+        let pos = read_int_field(vm, this, "pos");
+        let count = read_int_field(vm, this, "count");
+        if pos >= count {
+            return int(-1);
+        }
+        let length = length.min(count - pos);
+        if length <= 0 {
+            return int(0);
+        }
+        let class = vm.class_of(this);
+        let text = vm
+            .read_ref_field(this, class, "buffer", "Ljava/lang/String;")
+            .unwrap_or(ObjectRef::NULL);
+        let Some(units) = vm.string_utf16(text) else {
+            return int(-1);
+        };
+        let bytes: Vec<i32> = (0..length)
+            .map(|index| i32::from(units[(pos + index) as usize]) & 0xFF)
+            .collect();
+        for (index, byte) in bytes.into_iter().enumerate() {
+            vm.array_set(array, offset + index as i32, Value::Int(byte), true)?;
+        }
+        write_int_field(vm, this, "pos", pos + length);
+        int(length)
+    }),
+    method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let pos = read_int_field(vm, this, "pos");
+        let count = read_int_field(vm, this, "count");
+        let requested = crate::long_arg(args, 1);
+        let skipped = requested.min(i64::from(count - pos)).max(0);
+        write_int_field(vm, this, "pos", pos + skipped as i32);
+        long(skipped)
+    }),
+    method("available", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        int(read_int_field(vm, this, "count") - read_int_field(vm, this, "pos"))
+    }),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
+        write_int_field(vm, receiver(args), "pos", 0);
+        void()
+    }),
+];
+
+pub(crate) const STRING_BUFFER_INPUT_STREAM: oxjvm_vm::NativeClass = class(
+    "java/io/StringBufferInputStream",
+    Some("java/io/InputStream"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("buffer", "Ljava/lang/String;", ACC_PROTECTED, None),
+        field("pos", "I", ACC_PROTECTED, None),
+        field("count", "I", ACC_PROTECTED, None),
+    ],
+    &STRING_BUFFER_INPUT_METHODS,
+    None,
+);
+
 fn pushback_reader_in(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
     vm.read_ref_field(this, vm.class_of(this), "in", "Ljava/io/Reader;")
         .unwrap_or(ObjectRef::NULL)
@@ -5981,8 +6082,9 @@ const RANDOM_ACCESS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
             let header = raf_read_n(vm, this, 2)?;
             let length = usize::from(be16(&header));
             let bytes = raf_read_n(vm, this, length)?;
-            let units = decode_modified_utf8(&bytes)
-                .map_err(|_| vm.throw_new("java/io/UTFDataFormatException", None))?;
+            let units = decode_modified_utf8(&bytes).map_err(|message| {
+                vm.throw_new("java/io/UTFDataFormatException", Some(&message))
+            })?;
             object(vm.make_string_utf16(units)?)
         },
     ),
@@ -6629,7 +6731,7 @@ pub(crate) fn modified_utf8(units: &[u16]) -> Vec<u8> {
 }
 
 /// Decode JDK "modified UTF-8" back into UTF-16 units.
-fn decode_modified_utf8(bytes: &[u8]) -> Result<Vec<u16>, VmError> {
+fn decode_modified_utf8(bytes: &[u8]) -> Result<Vec<u16>, String> {
     let mut out = Vec::new();
     let mut index = 0;
     while index < bytes.len() {
@@ -6639,14 +6741,20 @@ fn decode_modified_utf8(bytes: &[u8]) -> Result<Vec<u16>, VmError> {
             u32::from(b0)
         } else if b0 & 0xE0 == 0xC0 {
             if index + 1 >= bytes.len() {
-                return Err(VmError::internal("truncated modified UTF-8"));
+                return Err(alloc::format!("malformed input around byte {index}"));
+            }
+            if bytes[index + 1] & 0xC0 != 0x80 {
+                return Err(alloc::format!("malformed input around byte {index}"));
             }
             let value = ((u32::from(b0) & 0x1F) << 6) | (u32::from(bytes[index + 1]) & 0x3F);
             index += 2;
             value
         } else if b0 & 0xF0 == 0xE0 {
             if index + 2 >= bytes.len() {
-                return Err(VmError::internal("truncated modified UTF-8"));
+                return Err(alloc::format!("malformed input around byte {index}"));
+            }
+            if bytes[index + 1] & 0xC0 != 0x80 || bytes[index + 2] & 0xC0 != 0x80 {
+                return Err(alloc::format!("malformed input around byte {index}"));
             }
             let value = ((u32::from(b0) & 0x0F) << 12)
                 | ((u32::from(bytes[index + 1]) & 0x3F) << 6)
@@ -6654,7 +6762,7 @@ fn decode_modified_utf8(bytes: &[u8]) -> Result<Vec<u16>, VmError> {
             index += 3;
             value
         } else {
-            return Err(VmError::internal("invalid modified UTF-8 lead byte"));
+            return Err(alloc::format!("malformed input around byte {index}"));
         };
         out.push(ch as u16);
     }
@@ -6971,8 +7079,17 @@ const DATA_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
                 if byte == i32::from(b'\r') {
                     let next = data_read_byte(vm, stream)?;
                     if next >= 0 && next != i32::from(b'\n') {
-                        // A lone CR ends the line; the next byte belongs to the following line.
-                        // oxjvm streams cannot unread, so treat CR and CRLF alike here.
+                        // A lone CR ends the line; push the next byte back when
+                        // the underlying stream supports it, like the JDK does.
+                        if let Ok((unread_class, unread_method)) =
+                            vm.resolve_virtual_method(stream, "unread", "(I)V")
+                        {
+                            vm.invoke_method(
+                                unread_class,
+                                unread_method,
+                                vec![Value::Ref(stream), Value::Int(next)],
+                            )?;
+                        }
                     }
                     break;
                 }
@@ -6990,8 +7107,9 @@ const DATA_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
             let header = data_read_fully(vm, stream, 2)?;
             let length = usize::from(be16(&header));
             let bytes = data_read_fully(vm, stream, length)?;
-            let units = decode_modified_utf8(&bytes)
-                .map_err(|_| vm.throw_new("java/io/UTFDataFormatException", None))?;
+            let units = decode_modified_utf8(&bytes).map_err(|message| {
+                vm.throw_new("java/io/UTFDataFormatException", Some(&message))
+            })?;
             object(vm.make_string_utf16(units)?)
         },
     ),
@@ -7015,7 +7133,9 @@ fn data_output_stream(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
 fn data_output_count(vm: &mut Vm<'_>, this: ObjectRef, bytes: &[u8]) -> Result<(), VmError> {
     data_write_bytes(vm, data_output_stream(vm, this), bytes)?;
     let written = read_int_field(vm, this, "written");
-    write_int_field(vm, this, "written", written + bytes.len() as i32);
+    // The JDK saturates the counter at Integer.MAX_VALUE instead of wrapping.
+    let total = i64::from(written) + bytes.len() as i64;
+    write_int_field(vm, this, "written", total.min(i64::from(i32::MAX)) as i32);
     Ok(())
 }
 
@@ -7127,7 +7247,8 @@ const DATA_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
         },
     ),
     method("size", "()I", ACC_PUBLIC, |vm, _, args| {
-        int(read_int_field(vm, receiver(args), "written"))
+        let written = read_int_field(vm, receiver(args), "written");
+        int(if written > 0 { written } else { i32::MAX })
     }),
     method("flush", "()V", ACC_PUBLIC, |vm, _, args| {
         let out = data_output_stream(vm, receiver(args));
