@@ -946,6 +946,11 @@ fn math_floor_mod(vm: &mut Vm<'_>, x: i64, y: i64) -> Result<i64, VmError> {
     Ok(floor_mod(x, y))
 }
 
+fn math_ceil_mod(vm: &mut Vm<'_>, x: i64, y: i64) -> Result<i64, VmError> {
+    let quotient = math_ceil_div(vm, x, y)?;
+    Ok(x.wrapping_sub(quotient.wrapping_mul(y)))
+}
+
 fn math_add_exact_int(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
@@ -1670,6 +1675,41 @@ macro_rules! math_methods {
                 },
             ),
             method(
+                "ceilDiv",
+                "(JI)J",
+                ACC_PUBLIC | ACC_STATIC,
+                |vm, _, args| {
+                    math_ceil_div(vm, long_arg(args, 0), i64::from(int_arg(args, 1)))
+                        .map(Value::Long)
+                },
+            ),
+            method(
+                "ceilMod",
+                "(II)I",
+                ACC_PUBLIC | ACC_STATIC,
+                |vm, _, args| {
+                    math_ceil_mod(vm, i64::from(int_arg(args, 0)), i64::from(int_arg(args, 1)))
+                        .map(|v| Value::Int(v as i32))
+                },
+            ),
+            method(
+                "ceilMod",
+                "(JJ)J",
+                ACC_PUBLIC | ACC_STATIC,
+                |vm, _, args| {
+                    math_ceil_mod(vm, long_arg(args, 0), long_arg(args, 1)).map(Value::Long)
+                },
+            ),
+            method(
+                "ceilMod",
+                "(JI)I",
+                ACC_PUBLIC | ACC_STATIC,
+                |vm, _, args| {
+                    math_ceil_mod(vm, long_arg(args, 0), i64::from(int_arg(args, 1)))
+                        .map(|v| Value::Int(v as i32))
+                },
+            ),
+            method(
                 "ceilDivExact",
                 "(II)I",
                 ACC_PUBLIC | ACC_STATIC,
@@ -1931,8 +1971,8 @@ macro_rules! math_methods {
     }};
 }
 
-const MATH_METHODS: [oxjvm_vm::NativeMethodDef; 95] = math_methods!();
-const STRICT_MATH_METHODS: [oxjvm_vm::NativeMethodDef; 95] = math_methods!();
+const MATH_METHODS: [oxjvm_vm::NativeMethodDef; 99] = math_methods!();
+const STRICT_MATH_METHODS: [oxjvm_vm::NativeMethodDef; 99] = math_methods!();
 
 pub(crate) const MATH: oxjvm_vm::NativeClass = class(
     "java/lang/Math",
@@ -2904,21 +2944,10 @@ fn big_decimal_div_rem(vm: &mut Vm<'_>, args: &[Value], integral: bool) -> Resul
 }
 
 fn big_number_narrow(text: &str, bits: u32) -> i64 {
-    let value = text.parse::<f64>().unwrap_or_else(|_| {
-        if text.starts_with('-') {
-            f64::NEG_INFINITY
-        } else {
-            f64::INFINITY
-        }
-    });
-    // Narrowing casts truncate toward zero and saturate, matching a Java cast for the ranges
-    // the drivers exercise.
-    let narrowed = if value.is_nan() { 0 } else { value as i64 };
-    if bits == 32 {
-        i64::from((narrowed as u32) as i32)
-    } else {
-        narrowed
-    }
+    // BigDecimal.intValue/longValue truncate the fraction toward zero, then keep the low
+    // bits; a floating-point round trip would round values near 2^63 to the wrong integer.
+    let integer = text.split('.').next().unwrap_or("0");
+    big_integer_narrow(integer, bits)
 }
 
 /// The low `bits` bits of a decimal big-integer string as a signed narrowing
