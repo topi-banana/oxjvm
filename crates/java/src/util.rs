@@ -9255,7 +9255,7 @@ pub(crate) fn abstract_map_entries(
     }
 }
 
-const ABSTRACT_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const ABSTRACT_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let (class, method) = vm.resolve_virtual_method(this, "size", "()I")?;
@@ -9472,6 +9472,137 @@ const ABSTRACT_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
             }
             void()
         },
+    ),
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let (class, method) = vm.resolve_virtual_method(this, "entrySet", "()Ljava/util/Set;")?;
+        let set = vm
+            .invoke_method(class, method, vec![Value::Ref(this)])?
+            .as_ref();
+        let (size_class, size_method) = vm.resolve_virtual_method(set, "size", "()I")?;
+        let size = vm.invoke_method(size_class, size_method, vec![Value::Ref(set)])?;
+        Ok(size)
+    }),
+    method(
+        "get",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let key = ref_arg(args, 1);
+            for (entry_key, value) in abstract_map_entries(vm, this)? {
+                if objects_equals(vm, entry_key, key)? {
+                    return object(value);
+                }
+            }
+            object(ObjectRef::NULL)
+        },
+    ),
+    method(
+        "containsKey",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let key = ref_arg(args, 1);
+            for (entry_key, _) in abstract_map_entries(vm, this)? {
+                if objects_equals(vm, entry_key, key)? {
+                    return boolean(true);
+                }
+            }
+            boolean(false)
+        },
+    ),
+    method(
+        "containsValue",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let value = ref_arg(args, 1);
+            for (_, entry_value) in abstract_map_entries(vm, this)? {
+                if objects_equals(vm, entry_value, value)? {
+                    return boolean(true);
+                }
+            }
+            boolean(false)
+        },
+    ),
+    method(
+        "put",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method(
+        "remove",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let key = ref_arg(args, 1);
+            let (set_class, entry_set) =
+                vm.resolve_virtual_method(this, "entrySet", "()Ljava/util/Set;")?;
+            let set = vm
+                .invoke_method(set_class, entry_set, vec![Value::Ref(this)])?
+                .as_ref();
+            let (iterator_class, iterator_method) =
+                vm.resolve_virtual_method(set, "iterator", "()Ljava/util/Iterator;")?;
+            let iterator = vm
+                .invoke_method(iterator_class, iterator_method, vec![Value::Ref(set)])?
+                .as_ref();
+            let (has_next_class, has_next) =
+                vm.resolve_virtual_method(iterator, "hasNext", "()Z")?;
+            let (next_class, next) =
+                vm.resolve_virtual_method(iterator, "next", "()Ljava/lang/Object;")?;
+            loop {
+                if vm
+                    .invoke_method(has_next_class, has_next, vec![Value::Ref(iterator)])?
+                    .as_int()
+                    == 0
+                {
+                    return object(ObjectRef::NULL);
+                }
+                let entry = vm
+                    .invoke_method(next_class, next, vec![Value::Ref(iterator)])?
+                    .as_ref();
+                let (key_class, get_key) =
+                    vm.resolve_virtual_method(entry, "getKey", "()Ljava/lang/Object;")?;
+                let entry_key = vm
+                    .invoke_method(key_class, get_key, vec![Value::Ref(entry)])?
+                    .as_ref();
+                if objects_equals(vm, entry_key, key)? {
+                    let (value_class, get_value) =
+                        vm.resolve_virtual_method(entry, "getValue", "()Ljava/lang/Object;")?;
+                    let value = vm
+                        .invoke_method(value_class, get_value, vec![Value::Ref(entry)])?
+                        .as_ref();
+                    let (remove_class, remove_method) =
+                        vm.resolve_virtual_method(iterator, "remove", "()V")?;
+                    vm.invoke_method(remove_class, remove_method, vec![Value::Ref(iterator)])?;
+                    return object(value);
+                }
+            }
+        },
+    ),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let (class, method) = vm.resolve_virtual_method(this, "entrySet", "()Ljava/util/Set;")?;
+        let set = vm
+            .invoke_method(class, method, vec![Value::Ref(this)])?
+            .as_ref();
+        let (clear_class, clear_method) = vm.resolve_virtual_method(set, "clear", "()V")?;
+        vm.invoke_method(clear_class, clear_method, vec![Value::Ref(set)])?;
+        void()
+    }),
+    method("keySet", "()Ljava/util/Set;", ACC_PUBLIC, |vm, _, args| {
+        object(map_view_new(vm, receiver(args), 0, false)?)
+    }),
+    method(
+        "values",
+        "()Ljava/util/Collection;",
+        ACC_PUBLIC,
+        |vm, _, args| object(map_view_new(vm, receiver(args), 1, false)?),
     ),
 ];
 
