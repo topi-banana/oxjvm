@@ -5319,6 +5319,23 @@ fn arrays_as_list(
     object(list)
 }
 
+/// JDK `Arrays.equals(double[])` compares via `doubleToLongBits`: all NaNs are
+/// equal (canonical NaN) while -0.0 and 0.0 stay distinct.
+fn double_bits_equal(a: f64, b: f64) -> bool {
+    if a.is_nan() && b.is_nan() {
+        return true;
+    }
+    a.to_bits() == b.to_bits()
+}
+
+/// JDK `Arrays.equals(float[])` compares via `floatToIntBits`; see `double_bits_equal`.
+fn float_bits_equal(a: f32, b: f32) -> bool {
+    if a.is_nan() && b.is_nan() {
+        return true;
+    }
+    a.to_bits() == b.to_bits()
+}
+
 fn arrays_equal(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmError> {
     let (Some(left), Some(right)) = (
         vm.heap.get(a).map(|object| object.data.clone()),
@@ -5332,7 +5349,10 @@ fn arrays_equal(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmE
             Ok(x == y)
         }
         (ObjectData::Array(ArrayData::Double(x)), ObjectData::Array(ArrayData::Double(y))) => {
-            Ok(x == y)
+            Ok(x.len() == y.len()
+                && x.iter()
+                    .zip(y.iter())
+                    .all(|(a, b)| double_bits_equal(*a, *b)))
         }
         (ObjectData::Array(ArrayData::Byte(x)), ObjectData::Array(ArrayData::Byte(y))) => {
             Ok(x == y)
@@ -5344,7 +5364,10 @@ fn arrays_equal(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmE
             Ok(x == y)
         }
         (ObjectData::Array(ArrayData::Float(x)), ObjectData::Array(ArrayData::Float(y))) => {
-            Ok(x == y)
+            Ok(x.len() == y.len()
+                && x.iter()
+                    .zip(y.iter())
+                    .all(|(a, b)| float_bits_equal(*a, *b)))
         }
         (ObjectData::Array(ArrayData::Boolean(x)), ObjectData::Array(ArrayData::Boolean(y))) => {
             Ok(x == y)
@@ -5403,7 +5426,7 @@ fn arrays_equal_range(
         let equal = if is_ref {
             objects_equals(vm, left.as_ref(), right.as_ref())?
         } else {
-            left == right
+            array_values_equal(vm, left, right)?
         };
         if !equal {
             return Ok(false);
@@ -5643,8 +5666,8 @@ fn array_element_compare(
 fn array_values_equal(vm: &mut Vm<'_>, a: Value, b: Value) -> Result<bool, VmError> {
     match (a, b) {
         (Value::Ref(left), Value::Ref(right)) => objects_equals(vm, left, right),
-        (Value::Float(left), Value::Float(right)) => Ok(left.to_bits() == right.to_bits()),
-        (Value::Double(left), Value::Double(right)) => Ok(left.to_bits() == right.to_bits()),
+        (Value::Float(left), Value::Float(right)) => Ok(float_bits_equal(left, right)),
+        (Value::Double(left), Value::Double(right)) => Ok(double_bits_equal(left, right)),
         _ => Ok(a == b),
     }
 }
