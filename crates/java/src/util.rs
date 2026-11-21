@@ -10665,7 +10665,7 @@ fn hash_map_put(
         object(previous)
     } else {
         pairs.push((key, value));
-        hash_map_rehash_if_needed(vm, &mut pairs)?;
+        hash_map_rehash_if_needed(vm, this, &mut pairs)?;
         hash_map_store(vm, this, &pairs)?;
         object(ObjectRef::NULL)
     }
@@ -10679,8 +10679,16 @@ fn hash_map_put(
 /// (13, 25, 49, ... entries) and stable-sort by the new bucket index.
 fn hash_map_rehash_if_needed(
     vm: &mut Vm<'_>,
+    this: ObjectRef,
     pairs: &mut [(ObjectRef, ObjectRef)],
 ) -> Result<(), VmError> {
+    // `LinkedHashMap` (which backs `LinkedHashSet`) guarantees insertion order, so its
+    // entries must never be reordered into hash-bucket order.
+    if let Some(linked) = vm.resolve_class_lenient("java/util/LinkedHashMap") {
+        if vm.is_instance(this, linked) {
+            return Ok(());
+        }
+    }
     let len = pairs.len();
     if len <= 12 {
         return Ok(());
@@ -10795,7 +10803,7 @@ fn hash_map_compute_if_absent(
     if !value.is_null() {
         let mut pairs = pairs;
         pairs.push((key, value));
-        hash_map_rehash_if_needed(vm, &mut pairs)?;
+        hash_map_rehash_if_needed(vm, this, &mut pairs)?;
         hash_map_store(vm, this, &pairs)?;
     }
     object(value)
@@ -14351,7 +14359,7 @@ pub(crate) fn hash_set_present(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
     Ok(instance)
 }
 
-const HASH_SET_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
+const HASH_SET_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let map = new_hash_map(vm)?;
         let this = receiver(args);
@@ -14430,6 +14438,26 @@ const HASH_SET_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
                 &[Value::Ref(ref_arg(args, 1))],
             )?;
             boolean(!previous.as_ref().is_null())
+        },
+    ),
+    method(
+        "clone",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let clone = vm.clone_object(this)?;
+            // The backing map must be copied into a fresh instance: a shallow clone would
+            // share the map object, so mutating the clone would also mutate the original.
+            let map = hash_set_map(vm, this);
+            let map_class = vm.class_of(map);
+            let map_clone = vm.new_instance(map_class)?;
+            let pairs = hash_map_pairs(vm, map);
+            hash_map_store(vm, map_clone, &pairs)?;
+            let class = vm.class_of(clone);
+            let (declaring, field) = vm.find_field(class, "map", "Ljava/util/HashMap;")?;
+            vm.set_instance_ref(clone, declaring, field, map_clone);
+            object(clone)
         },
     ),
     method(
