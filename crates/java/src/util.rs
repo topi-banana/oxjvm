@@ -11369,7 +11369,7 @@ pub(crate) const SORTED_MAP: oxjvm_vm::NativeClass = class(
 // Properties
 // -------------------------------------------------------------------------------------------
 
-const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
+const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
     method("<init>", "()V", ACC_PUBLIC, properties_init),
     method(
         "<init>",
@@ -11648,12 +11648,40 @@ const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
             args,
         )
     }),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = properties_map(vm, receiver(args));
+            let entries = hash_map_pairs(vm, map);
+            boolean(map_equals_entries(vm, map, ref_arg(args, 1), entries)?)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let map = properties_map(vm, receiver(args));
+        let entries = hash_map_pairs(vm, map);
+        int(map_hash_entries(vm, entries)?)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = properties_map(vm, receiver(args));
+            hash_map_call(vm, map, "toString", "()Ljava/lang/String;", &[])
+        },
+    ),
 ];
 
 pub(crate) const PROPERTIES: oxjvm_vm::NativeClass = class(
     "java/util/Properties",
     Some("java/lang/Object"),
-    &[],
+    &[
+        "java/util/Map",
+        "java/lang/Cloneable",
+        "java/io/Serializable",
+    ],
     ACC_PUBLIC,
     &[
         field("map", "Ljava/util/HashMap;", ACC_PRIVATE, None),
@@ -11690,19 +11718,226 @@ fn properties_load(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
     properties_parse_text(vm, this, &text)
 }
 
-/// Parse `.properties` text lines into the map backing `this`.
-fn properties_parse_text(vm: &mut Vm<'_>, this: ObjectRef, text: &str) -> Result<Value, VmError> {
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('!') {
+/// Reads logical lines from `.properties` text, mirroring the JDK `LineReader`:
+/// leading white space is skipped, blank and comment lines are ignored, and a
+/// trailing odd backslash continues the logical line onto the next natural line.
+struct PropertiesLineReader {
+    chars: Vec<u16>,
+    pos: usize,
+}
+
+impl PropertiesLineReader {
+    fn read_line(&mut self) -> Option<Vec<u16>> {
+        let mut line: Vec<u16> = Vec::new();
+        let mut skip_white = true;
+        let mut appended_line_begin = false;
+        let mut preceding_backslash = false;
+        loop {
+            if self.pos >= self.chars.len() {
+                if line.is_empty() {
+                    return None;
+                }
+                if preceding_backslash {
+                    line.pop();
+                }
+                return Some(line);
+            }
+            let c = self.chars[self.pos];
+            self.pos += 1;
+            if skip_white {
+                if c == 0x20 || c == 0x09 || c == 0x0C {
+                    continue;
+                }
+                if !appended_line_begin && (c == 0x0D || c == 0x0A) {
+                    continue;
+                }
+                skip_white = false;
+                appended_line_begin = false;
+            }
+            if line.is_empty() && (c == u16::from(b'#') || c == u16::from(b'!')) {
+                while self.pos < self.chars.len() {
+                    let b = self.chars[self.pos];
+                    self.pos += 1;
+                    if b == 0x0D || b == 0x0A {
+                        break;
+                    }
+                }
+                skip_white = true;
+                continue;
+            }
+            if c != 0x0A && c != 0x0D {
+                line.push(c);
+                preceding_backslash = if c == u16::from(b'\\') {
+                    !preceding_backslash
+                } else {
+                    false
+                };
+            } else if line.is_empty() {
+                skip_white = true;
+                continue;
+            } else if preceding_backslash {
+                line.pop();
+                skip_white = true;
+                appended_line_begin = true;
+                preceding_backslash = false;
+                if c == 0x0D && self.pos < self.chars.len() && self.chars[self.pos] == 0x0A {
+                    self.pos += 1;
+                }
+            } else {
+                return Some(line);
+            }
+        }
+    }
+}
+
+/// Unescape a property key/value, mirroring the JDK `loadConvert`.
+fn properties_load_convert(vm: &mut Vm<'_>, input: &[u16]) -> Result<String, VmError> {
+    let mut out: Vec<u16> = Vec::new();
+    let mut i = 0;
+    while i < input.len() {
+        let c = input[i];
+        i += 1;
+        if c != u16::from(b'\\') {
+            out.push(c);
             continue;
         }
-        let (key, value) = match trimmed.split_once('=').or_else(|| trimmed.split_once(':')) {
-            Some((key, value)) => (key.trim_end(), value.trim_start()),
-            None => (trimmed, ""),
-        };
-        let key = vm.make_string(key)?;
-        let value = vm.make_string(value)?;
+        if i >= input.len() {
+            break;
+        }
+        let a = input[i];
+        i += 1;
+        if a == u16::from(b'u') {
+            if i + 4 > input.len() {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("Malformed \\uxxxx encoding."),
+                ));
+            }
+            let mut value: u32 = 0;
+            for _ in 0..4 {
+                let h = input[i];
+                i += 1;
+                let digit = match h {
+                    0x30..=0x39 => u32::from(h - 0x30),
+                    0x61..=0x66 => u32::from(h - 0x61) + 10,
+                    0x41..=0x46 => u32::from(h - 0x41) + 10,
+                    _ => {
+                        return Err(vm.throw_new(
+                            "java/lang/IllegalArgumentException",
+                            Some("Malformed \\uxxxx encoding."),
+                        ));
+                    }
+                };
+                value = (value << 4) + digit;
+            }
+            out.push(value as u16);
+        } else {
+            let mapped = match a {
+                0x74 => 0x09,
+                0x72 => 0x0D,
+                0x6E => 0x0A,
+                0x66 => 0x0C,
+                _ => a,
+            };
+            out.push(mapped);
+        }
+    }
+    Ok(String::from_utf16_lossy(&out))
+}
+
+/// Escape a property key/value for storage, mirroring the JDK `saveConvert`.
+fn properties_save_convert(text: &str, escape_space: bool, escape_unicode: bool) -> String {
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let mut out: Vec<u16> = Vec::new();
+    let backslash = u16::from(b'\\');
+    for (x, &u) in units.iter().enumerate() {
+        if u > 61 && u < 127 {
+            if u == backslash {
+                out.push(backslash);
+            }
+            out.push(u);
+            continue;
+        }
+        match u {
+            0x20 => {
+                if x == 0 || escape_space {
+                    out.push(backslash);
+                }
+                out.push(0x20);
+            }
+            0x09 => out.extend_from_slice(&[backslash, u16::from(b't')]),
+            0x0A => out.extend_from_slice(&[backslash, u16::from(b'n')]),
+            0x0D => out.extend_from_slice(&[backslash, u16::from(b'r')]),
+            0x0C => out.extend_from_slice(&[backslash, u16::from(b'f')]),
+            0x3D | 0x3A | 0x23 | 0x21 => {
+                out.push(backslash);
+                out.push(u);
+            }
+            _ => {
+                if !(0x20..=0x7E).contains(&u) && escape_unicode {
+                    out.extend_from_slice(&[backslash, u16::from(b'u')]);
+                    for shift in [12u32, 8, 4, 0] {
+                        let nib = ((u32::from(u) >> shift) & 0xF) as u8;
+                        let hex = if nib < 10 {
+                            b'0' + nib
+                        } else {
+                            b'A' + nib - 10
+                        };
+                        out.push(u16::from(hex));
+                    }
+                } else {
+                    out.push(u);
+                }
+            }
+        }
+    }
+    String::from_utf16_lossy(&out)
+}
+
+/// Parse `.properties` text into the map backing `this`, mirroring the JDK `load0`.
+fn properties_parse_text(vm: &mut Vm<'_>, this: ObjectRef, text: &str) -> Result<Value, VmError> {
+    let mut reader = PropertiesLineReader {
+        chars: text.encode_utf16().collect(),
+        pos: 0,
+    };
+    while let Some(line) = reader.read_line() {
+        let limit = line.len();
+        let mut key_len = 0;
+        let mut value_start = limit;
+        let mut has_sep = false;
+        let mut preceding_backslash = false;
+        while key_len < limit {
+            let c = line[key_len];
+            if (c == u16::from(b'=') || c == u16::from(b':')) && !preceding_backslash {
+                value_start = key_len + 1;
+                has_sep = true;
+                break;
+            } else if (c == 0x20 || c == 0x09 || c == 0x0C) && !preceding_backslash {
+                value_start = key_len + 1;
+                break;
+            }
+            preceding_backslash = if c == u16::from(b'\\') {
+                !preceding_backslash
+            } else {
+                false
+            };
+            key_len += 1;
+        }
+        while value_start < limit {
+            let c = line[value_start];
+            if c != 0x20 && c != 0x09 && c != 0x0C {
+                if !has_sep && (c == u16::from(b'=') || c == u16::from(b':')) {
+                    has_sep = true;
+                } else {
+                    break;
+                }
+            }
+            value_start += 1;
+        }
+        let key = properties_load_convert(vm, &line[..key_len])?;
+        let value = properties_load_convert(vm, &line[value_start..])?;
+        let key = vm.make_string(&key)?;
+        let value = vm.make_string(&value)?;
         properties_map_call(
             vm,
             this,
@@ -11811,18 +12046,23 @@ fn properties_store(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
     text.push('#');
     text.push_str(&date_to_string(vm.host.current_time_millis()));
     text.push('\n');
+    // The Writer path keeps Unicode as-is; the ISO-8859-1 byte path escapes it.
+    let writer_method = vm.find_method(vm.class_of(stream), "write", "(Ljava/lang/String;)V");
+    let escape_unicode = writer_method.is_none();
     let pairs = hash_map_pairs(vm, properties_map(vm, this));
-    for (key, value) in pairs {
-        let key = vm.string_or_empty(key);
-        let value = vm.string_or_empty(value);
-        text.push_str(&key);
+    let mut entries: Vec<(String, String)> = pairs
+        .iter()
+        .map(|(key, value)| (vm.string_or_empty(*key), vm.string_or_empty(*value)))
+        .collect();
+    // The JDK writes entries in the natural sort order of their keys.
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    for (key, value) in entries {
+        text.push_str(&properties_save_convert(&key, true, escape_unicode));
         text.push('=');
-        text.push_str(&value);
+        text.push_str(&properties_save_convert(&value, false, escape_unicode));
         text.push('\n');
     }
-    if let Some((declaring, method)) =
-        vm.find_method(vm.class_of(stream), "write", "(Ljava/lang/String;)V")
-    {
+    if let Some((declaring, method)) = writer_method {
         let string = vm.make_string(&text)?;
         return vm.invoke_method(
             declaring,
