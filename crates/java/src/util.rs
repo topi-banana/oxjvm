@@ -20414,6 +20414,10 @@ pub(crate) const OXJVM_REVERSE_SEQ_SET_ITERATOR: oxjvm_vm::NativeClass = class(
 // -------------------------------------------------------------------------------------------
 
 fn checked_type_check(vm: &mut Vm<'_>, obj: ObjectRef, ty: ObjectRef) -> Result<(), VmError> {
+    // The JDK only type-checks non-null elements; null is always permitted.
+    if obj.is_null() {
+        return Ok(());
+    }
     let (class, method) = vm.resolve_virtual_method(ty, "isInstance", "(Ljava/lang/Object;)Z")?;
     let ok = vm
         .invoke_method(class, method, vec![Value::Ref(ty), Value::Ref(obj)])?
