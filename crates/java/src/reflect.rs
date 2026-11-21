@@ -959,6 +959,9 @@ const FIELD_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
             let (name, descriptor, flags) = field_entry(vm, class, slot);
             let field_type = FieldType::parse(&descriptor)
                 .map_err(|_| VmError::internal("bad field descriptor"))?;
+            let signature = vm.classes.get(class).fields[slot as usize]
+                .signature
+                .clone();
             let mask = ACC_PUBLIC
                 | ACC_PROTECTED
                 | ACC_PRIVATE
@@ -967,12 +970,21 @@ const FIELD_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
                 | ACC_TRANSIENT
                 | ACC_VOLATILE;
             let modifiers = modifiers_text(flags & mask);
+            // toGenericString renders the declared generic signature (type variables
+            // and parameterized types) when present, falling back to the erased type.
+            let type_text = match signature {
+                Some(text) => match parse_field_signature(&text) {
+                    Ok(parsed) => parsed_type_name(&parsed),
+                    Err(_) => binary_name_for_field_type(vm, &field_type)?,
+                },
+                None => binary_name_for_field_type(vm, &field_type)?,
+            };
             let mut text = String::new();
             if !modifiers.is_empty() {
                 text.push_str(&modifiers);
                 text.push(' ');
             }
-            text.push_str(&binary_name_for_field_type(vm, &field_type)?);
+            text.push_str(&type_text);
             text.push(' ');
             text.push_str(&crate::binary_name(vm, class));
             text.push('.');
