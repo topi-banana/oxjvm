@@ -540,6 +540,29 @@ pub(crate) fn box_value(vm: &mut Vm<'_>, value: Value, descriptor: &str) -> Resu
         vm.set_static_value(class, name, "Ljava/lang/Boolean;", Value::Ref(instance));
         return object(instance);
     }
+    // Float and Double are stored as their raw bits and are never cached. The
+    // value may arrive either as a typed Float/Double (reflection) or already
+    // as its bit pattern in an Int/Long (var handles, streams, beans).
+    if descriptor == "F" {
+        let bits = match value {
+            Value::Float(f) => f.to_bits() as i32,
+            other => other.as_int(),
+        };
+        let class = vm.resolve_class(class_name)?;
+        let instance = vm.new_instance(class)?;
+        write_value_int(vm, instance, bits);
+        return object(instance);
+    }
+    if descriptor == "D" {
+        let bits = match value {
+            Value::Double(d) => d.to_bits() as i64,
+            other => other.as_long(),
+        };
+        let class = vm.resolve_class(class_name)?;
+        let instance = vm.new_instance(class)?;
+        write_value_long(vm, instance, bits);
+        return object(instance);
+    }
     let tag = descriptor.as_bytes()[0];
     let key = match descriptor {
         "J" | "D" => value.as_long(),
@@ -2371,6 +2394,9 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
     method("digit", "(CI)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
         let ch = int_arg(args, 0) as u32 & 0xFFFF;
         let radix = int_arg(args, 1);
+        if !(2..=36).contains(&radix) {
+            return int(-1);
+        }
         let value = char::from_u32(ch)
             .and_then(|c| c.to_digit(radix as u32))
             .map_or(-1, |d| d as i32);
@@ -2401,6 +2427,9 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
     method("digit", "(II)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
         let code_point = int_arg(args, 0) as u32;
         let radix = int_arg(args, 1);
+        if !(2..=36).contains(&radix) {
+            return int(-1);
+        }
         let value = char::from_u32(code_point)
             .and_then(|c| c.to_digit(radix as u32))
             .map_or(-1, |d| d as i32);
