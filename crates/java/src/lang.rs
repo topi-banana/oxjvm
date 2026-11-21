@@ -3324,6 +3324,39 @@ fn string_repeat(
 
 /// `Character.isWhitespace(int)`: Unicode space/line/paragraph separators and the
 /// ASCII control whitespace, but *not* the non-breaking spaces (U+00A0/U+2007/U+202F).
+/// Decimal digit value of a Unicode `Nd` character. Each block is ten contiguous
+/// code points; ASCII digits are handled separately by `char::to_digit`.
+pub(crate) fn unicode_decimal_digit(c: char) -> Option<u32> {
+    const ND_STARTS: &[u32] = &[
+        0x0660, 0x06F0, 0x07C0, 0x0966, 0x09E6, 0x0A66, 0x0AE6, 0x0B66, 0x0BE6, 0x0C66, 0x0CE6,
+        0x0D66, 0x0DE6, 0x0E50, 0x0ED0, 0x0F20, 0x1040, 0x17E0, 0x1810, 0x1946, 0x19D0, 0x1A80,
+        0x1A90, 0x1B50, 0x1BB0, 0x1C40, 0x1C50, 0xA620, 0xA8D0, 0xA900, 0xA9D0, 0xA9F0, 0xAA50,
+        0xABF0, 0xFF10, 0x104A0, 0x10D30, 0x11066, 0x110F0, 0x11136, 0x111D0, 0x112F0, 0x11450,
+        0x114D0, 0x11650, 0x116C0, 0x11730, 0x118E0, 0x11C50, 0x11D50, 0x11DA0, 0x16A60, 0x16AC0,
+        0x16B50, 0x1D7CE, 0x1D7D8, 0x1D7E2, 0x1D7EC, 0x1D7F6, 0x1E140, 0x1E2F0, 0x1E950, 0x1FBF0,
+    ];
+    let cp = c as u32;
+    for &start in ND_STARTS {
+        if cp >= start && cp < start + 10 {
+            return Some(cp - start);
+        }
+    }
+    None
+}
+
+/// `Character.digit` semantics: ASCII letters/digits plus Unicode decimal digits.
+pub(crate) fn java_digit(c: char, radix: u32) -> i32 {
+    if let Some(d) = c.to_digit(radix) {
+        return d as i32;
+    }
+    if let Some(d) = unicode_decimal_digit(c) {
+        if d < radix {
+            return d as i32;
+        }
+    }
+    -1
+}
+
 pub(crate) fn java_is_whitespace(unit: u16) -> bool {
     matches!(unit,
         0x0009..=0x000D

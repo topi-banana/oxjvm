@@ -2605,10 +2605,18 @@ fn big_integer_parse(text: &str) -> Option<String> {
         Some(rest) => (true, rest),
         None => (false, text.strip_prefix('+').unwrap_or(text)),
     };
-    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+    if digits.is_empty() {
         return None;
     }
-    let trimmed = digits.trim_start_matches('0');
+    // JDK accepts any Unicode decimal digit (Character.digit); normalise to ASCII.
+    let mut ascii = String::with_capacity(digits.len());
+    for c in digits.chars() {
+        let d = c
+            .to_digit(10)
+            .or_else(|| crate::lang::unicode_decimal_digit(c))?;
+        ascii.push((b'0' + d as u8) as char);
+    }
+    let trimmed = ascii.trim_start_matches('0');
     if trimmed.is_empty() {
         return Some(String::from("0"));
     }

@@ -2396,9 +2396,7 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 63] = [
         if !(2..=36).contains(&radix) {
             return int(-1);
         }
-        let value = char::from_u32(ch)
-            .and_then(|c| c.to_digit(radix as u32))
-            .map_or(-1, |d| d as i32);
+        let value = char::from_u32(ch).map_or(-1, |c| crate::lang::java_digit(c, radix as u32));
         int(value)
     }),
     method("isDigit", "(I)Z", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
@@ -2430,9 +2428,8 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 63] = [
         if !(2..=36).contains(&radix) {
             return int(-1);
         }
-        let value = char::from_u32(code_point)
-            .and_then(|c| c.to_digit(radix as u32))
-            .map_or(-1, |d| d as i32);
+        let value =
+            char::from_u32(code_point).map_or(-1, |c| crate::lang::java_digit(c, radix as u32));
         int(value)
     }),
     method(
