@@ -12154,6 +12154,9 @@ const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
                 .into_iter()
                 .map(|(key, _)| key)
                 .collect();
+            if keys.is_empty() {
+                return object(empty_enumeration(vm)?);
+            }
             object(new_enumeration(vm, &keys)?)
         },
     ),
@@ -12167,6 +12170,9 @@ const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
                 .into_iter()
                 .map(|(_, value)| value)
                 .collect();
+            if values.is_empty() {
+                return object(empty_enumeration(vm)?);
+            }
             object(new_enumeration(vm, &values)?)
         },
     ),
@@ -13041,19 +13047,19 @@ const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 70] = [
         "emptyList",
         "()Ljava/util/List;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| object(array_list_from(vm, &[])?),
+        |vm, _, _| object(empty_list(vm)?),
     ),
     method(
         "emptySet",
         "()Ljava/util/Set;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| object(set_of_values(vm, &[])?),
+        |vm, _, _| object(empty_set(vm)?),
     ),
     method(
         "emptyMap",
         "()Ljava/util/Map;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| object(new_hash_map(vm)?),
+        |vm, _, _| object(empty_map(vm)?),
     ),
     method(
         "singletonList",
@@ -13455,27 +13461,19 @@ const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 70] = [
         "emptyIterator",
         "()Ljava/util/Iterator;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| {
-            let list = array_list_from(vm, &[])?;
-            let (class, method) =
-                vm.resolve_virtual_method(list, "iterator", "()Ljava/util/Iterator;")?;
-            vm.invoke_method(class, method, vec![Value::Ref(list)])
-        },
+        |vm, _, _| object(empty_iterator(vm)?),
     ),
     method(
         "emptyListIterator",
         "()Ljava/util/ListIterator;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| {
-            let list = array_list_from(vm, &[])?;
-            list_iterator_new(vm, list, 0)
-        },
+        |vm, _, _| object(empty_list_iterator(vm)?),
     ),
     method(
         "emptyEnumeration",
         "()Ljava/util/Enumeration;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| object(new_enumeration(vm, &[])?),
+        |vm, _, _| object(empty_enumeration(vm)?),
     ),
     method(
         "enumeration",
@@ -14712,10 +14710,297 @@ pub(crate) const COLLECTIONS: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC,
-    &[],
+    &[
+        field(
+            "emptyIterator",
+            "Ljava/util/Iterator;",
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
+        field(
+            "emptyListIterator",
+            "Ljava/util/ListIterator;",
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
+        field(
+            "emptyEnumeration",
+            "Ljava/util/Enumeration;",
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
+        field(
+            "emptyList",
+            "Ljava/util/List;",
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
+        field(
+            "emptySet",
+            "Ljava/util/Set;",
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
+        field(
+            "emptyMap",
+            "Ljava/util/Map;",
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
+    ],
     &COLLECTIONS_METHODS,
     None,
 );
+
+/// Read a lazily-created singleton from a `Collections` static field, creating
+/// the first instance on demand. The static slot is a GC root, so the singleton
+/// survives collections for the lifetime of the VM, giving the identity
+/// guarantees `Collections.emptyIterator()` and friends promise (bug 5017904).
+fn collections_singleton(
+    vm: &mut Vm<'_>,
+    name: &str,
+    descriptor: &str,
+    class_name: &str,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/Collections")?;
+    let (declaring, index) = vm.find_field(class, name, descriptor)?;
+    let slot = vm.classes.get(declaring).fields[index as usize].slot as usize;
+    let existing = vm.classes.get(declaring).static_values[slot].as_ref();
+    if !existing.is_null() {
+        return Ok(existing);
+    }
+    let singleton_class = vm.resolve_class(class_name)?;
+    let instance = vm.new_instance(singleton_class)?;
+    vm.classes.get_mut(declaring).static_values[slot] = Value::Ref(instance);
+    Ok(instance)
+}
+
+/// The shared `Collections.emptyIterator()` instance.
+pub(crate) fn empty_iterator(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    collections_singleton(
+        vm,
+        "emptyIterator",
+        "Ljava/util/Iterator;",
+        "java/util/OxjvmEmptyIterator",
+    )
+}
+
+fn empty_list_iterator(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    collections_singleton(
+        vm,
+        "emptyListIterator",
+        "Ljava/util/ListIterator;",
+        "java/util/OxjvmEmptyListIterator",
+    )
+}
+
+fn empty_enumeration(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    collections_singleton(
+        vm,
+        "emptyEnumeration",
+        "Ljava/util/Enumeration;",
+        "java/util/OxjvmEmptyEnumeration",
+    )
+}
+
+fn empty_list(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    collections_singleton(
+        vm,
+        "emptyList",
+        "Ljava/util/List;",
+        "java/util/OxjvmEmptyList",
+    )
+}
+
+fn empty_set(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    collections_singleton(vm, "emptySet", "Ljava/util/Set;", "java/util/OxjvmEmptySet")
+}
+
+fn empty_map(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    collections_singleton(vm, "emptyMap", "Ljava/util/Map;", "java/util/OxjvmEmptyMap")
+}
+
+/// `Collections.EmptyIterator`: no elements, and every traversal fails.
+pub(crate) const EMPTY_ITERATOR: oxjvm_vm::NativeClass = class(
+    "java/util/OxjvmEmptyIterator",
+    Some("java/lang/Object"),
+    &["java/util/Iterator"],
+    ACC_PUBLIC,
+    &[],
+    &EMPTY_ITERATOR_METHODS,
+    None,
+);
+
+const EMPTY_ITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method("hasNext", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method("next", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/util/NoSuchElementException", None))
+    }),
+    method("remove", "()V", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/IllegalStateException", None))
+    }),
+    method(
+        "forEachRemaining",
+        "(Ljava/util/function/Consumer;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+];
+
+/// `Collections.EmptyListIterator`: the empty iterator plus list navigation.
+pub(crate) const EMPTY_LIST_ITERATOR: oxjvm_vm::NativeClass = class(
+    "java/util/OxjvmEmptyListIterator",
+    Some("java/util/OxjvmEmptyIterator"),
+    &["java/util/ListIterator"],
+    ACC_PUBLIC,
+    &[],
+    &EMPTY_LIST_ITERATOR_METHODS,
+    None,
+);
+
+const EMPTY_LIST_ITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method("hasPrevious", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method(
+        "previous",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/util/NoSuchElementException", None)),
+    ),
+    method("nextIndex", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method("previousIndex", "()I", ACC_PUBLIC, |_, _, _| int(-1)),
+    method("set", "(Ljava/lang/Object;)V", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/IllegalStateException", None))
+    }),
+    method("add", "(Ljava/lang/Object;)V", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/UnsupportedOperationException", None))
+    }),
+];
+
+/// `Collections.EmptyEnumeration`.
+pub(crate) const EMPTY_ENUMERATION: oxjvm_vm::NativeClass = class(
+    "java/util/OxjvmEmptyEnumeration",
+    Some("java/lang/Object"),
+    &["java/util/Enumeration"],
+    ACC_PUBLIC,
+    &[],
+    &EMPTY_ENUMERATION_METHODS,
+    None,
+);
+
+const EMPTY_ENUMERATION_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method("hasMoreElements", "()Z", ACC_PUBLIC, |_, _, _| {
+        boolean(false)
+    }),
+    method(
+        "nextElement",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/util/NoSuchElementException", None)),
+    ),
+];
+
+/// `Collections.EmptyList`: an immutable empty list whose iterators are the
+/// shared empty singletons.
+pub(crate) const EMPTY_LIST: oxjvm_vm::NativeClass = class(
+    "java/util/OxjvmEmptyList",
+    Some("java/util/AbstractList"),
+    &[
+        "java/util/List",
+        "java/util/RandomAccess",
+        "java/io/Serializable",
+    ],
+    ACC_PUBLIC,
+    &[],
+    &EMPTY_LIST_METHODS,
+    None,
+);
+
+const EMPTY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method("size", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method("get", "(I)Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        Err(vm.throw_new(
+            "java/lang/IndexOutOfBoundsException",
+            Some(&alloc::format!("Index: {}", int_arg(args, 1))),
+        ))
+    }),
+    method(
+        "iterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC,
+        |vm, _, _| object(empty_iterator(vm)?),
+    ),
+    method(
+        "listIterator",
+        "()Ljava/util/ListIterator;",
+        ACC_PUBLIC,
+        |vm, _, _| object(empty_list_iterator(vm)?),
+    ),
+    method(
+        "listIterator",
+        "(I)Ljava/util/ListIterator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            if int_arg(args, 1) != 0 {
+                return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+            }
+            object(empty_list_iterator(vm)?)
+        },
+    ),
+];
+
+/// `Collections.EmptySet`.
+pub(crate) const EMPTY_SET: oxjvm_vm::NativeClass = class(
+    "java/util/OxjvmEmptySet",
+    Some("java/util/AbstractSet"),
+    &["java/util/Set", "java/io/Serializable"],
+    ACC_PUBLIC,
+    &[],
+    &EMPTY_SET_METHODS,
+    None,
+);
+
+const EMPTY_SET_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method("size", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method(
+        "iterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC,
+        |vm, _, _| object(empty_iterator(vm)?),
+    ),
+    method(
+        "contains",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |_, _, _| boolean(false),
+    ),
+];
+
+/// `Collections.EmptyMap`: every view is the shared empty set.
+pub(crate) const EMPTY_MAP: oxjvm_vm::NativeClass = class(
+    "java/util/OxjvmEmptyMap",
+    Some("java/util/AbstractMap"),
+    &["java/util/Map", "java/io/Serializable"],
+    ACC_PUBLIC,
+    &[],
+    &EMPTY_MAP_METHODS,
+    None,
+);
+
+const EMPTY_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method("size", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method("entrySet", "()Ljava/util/Set;", ACC_PUBLIC, |vm, _, _| {
+        object(empty_set(vm)?)
+    }),
+    method("keySet", "()Ljava/util/Set;", ACC_PUBLIC, |vm, _, _| {
+        object(empty_set(vm)?)
+    }),
+    method(
+        "values",
+        "()Ljava/util/Collection;",
+        ACC_PUBLIC,
+        |vm, _, _| object(empty_set(vm)?),
+    ),
+];
 
 /// A `HashSet` with no elements (the backing map is installed explicitly).
 fn new_hash_set(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
@@ -16620,6 +16905,9 @@ const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         |vm, _, args| {
             let map = hashtable_map(vm, receiver(args));
             let keys = map_keys(vm, map);
+            if keys.is_empty() {
+                return object(empty_enumeration(vm)?);
+            }
             object(new_enumeration(vm, &keys)?)
         },
     ),
@@ -16630,6 +16918,9 @@ const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         |vm, _, args| {
             let map = hashtable_map(vm, receiver(args));
             let values = map_values(vm, map);
+            if values.is_empty() {
+                return object(empty_enumeration(vm)?);
+            }
             object(new_enumeration(vm, &values)?)
         },
     ),
@@ -19708,6 +19999,9 @@ const OXJVM_MAP_VIEW_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         |vm, _, args| {
             let this = receiver(args);
             let elements = map_view_elements(vm, this)?;
+            if elements.is_empty() {
+                return object(empty_iterator(vm)?);
+            }
             let class = vm.resolve_class("java/util/OxjvmMapIterator")?;
             let iterator = vm.new_instance(class)?;
             let (declaring, field) = vm.find_field(class, "backing", "Ljava/util/SequencedMap;")?;

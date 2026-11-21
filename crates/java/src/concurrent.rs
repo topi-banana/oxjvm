@@ -2655,6 +2655,49 @@ const BLOCKING_DEQUE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     ),
 ];
 
+/// `SynchronousQueue`: a zero-capacity hand-off queue. No element is ever
+/// stored, so the non-blocking paths always report empty/full and the
+/// iterator is the shared empty iterator; blocking put/take hand off through
+/// the monitor like the other concurrent queues.
+pub(crate) const SYNCHRONOUS_QUEUE: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/SynchronousQueue",
+    Some("java/util/AbstractQueue"),
+    &["java/util/concurrent/BlockingQueue", "java/io/Serializable"],
+    ACC_PUBLIC,
+    &[],
+    &SYNCHRONOUS_QUEUE_METHODS,
+    None,
+);
+
+const SYNCHRONOUS_QUEUE_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("<init>", "(Z)V", ACC_PUBLIC, |_, _, _| void()),
+    method("size", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method(
+        "iterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC,
+        |vm, _, _| object(crate::util::empty_iterator(vm)?),
+    ),
+    method(
+        "offer",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            boolean(false)
+        },
+    ),
+    method("poll", "()Ljava/lang/Object;", ACC_PUBLIC, |_, _, _| {
+        object(ObjectRef::NULL)
+    }),
+    method("peek", "()Ljava/lang/Object;", ACC_PUBLIC, |_, _, _| {
+        object(ObjectRef::NULL)
+    }),
+];
+
 /// `LinkedBlockingDeque`: a blocking double-ended queue backed by the `ArrayDeque` element
 /// array.  Blocking operations park on the deque monitor; mutations notify waiters.
 pub(crate) const LINKED_BLOCKING_DEQUE: oxjvm_vm::NativeClass = class(
