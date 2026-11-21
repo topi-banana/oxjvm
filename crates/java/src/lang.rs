@@ -319,7 +319,7 @@ const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 71] = [
     }),
     method("isEnum", "()Z", ACC_PUBLIC, |vm, _, args| {
         let class = class_argument(vm, receiver(args))?;
-        boolean(vm.classes.get(class).is_enum)
+        boolean(class_is_enum(vm, class))
     }),
     method(
         "getEnumConstants",
@@ -1213,13 +1213,24 @@ fn class_is_record(
 }
 
 /// `Class.getEnumConstants()`: a fresh copy of the enum's `$VALUES` array, or null.
+/// The JDK's `Class.isEnum`: an anonymous enum constant body carries
+/// `ACC_ENUM` but extends the enum itself rather than `java.lang.Enum`, so a
+/// class whose superclass is also an enum is not an enum type.
+pub(crate) fn class_is_enum(vm: &Vm<'_>, class: ClassId) -> bool {
+    let entry = vm.classes.get(class);
+    entry.is_enum
+        && !entry
+            .super_class
+            .is_some_and(|super_class| vm.classes.get(super_class).is_enum)
+}
+
 fn class_get_enum_constants(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
     let class = class_argument(vm, receiver(args))?;
-    if !vm.classes.get(class).is_enum {
+    if !class_is_enum(vm, class) {
         return object(ObjectRef::NULL);
     }
     vm.ensure_initialized(class)?;

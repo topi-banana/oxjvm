@@ -17599,30 +17599,136 @@ fn enum_map_init(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
     void()
 }
 
+/// Remember the key type of an `EnumMap` so that puts can be type-checked.
+fn enum_map_set_key_type(vm: &mut Vm<'_>, this: ObjectRef, key_type: ObjectRef) {
+    let class = vm.class_of(this);
+    if let Some((declaring, field)) = vm.find_field_opt(class, "keyType", "Ljava/lang/Class;") {
+        vm.set_instance_ref(this, declaring, field, key_type);
+    }
+}
+
+/// The key type of an `EnumMap`, when it is known.
+fn enum_map_key_type(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "keyType", "Ljava/lang/Class;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+/// The JDK's `EnumMap.typeCheck`: the key must be of the map's enum type or
+/// an anonymous constant body of it.
+fn enum_map_type_check(vm: &mut Vm<'_>, this: ObjectRef, key: ObjectRef) -> Result<(), VmError> {
+    let key_type = enum_map_key_type(vm, this);
+    if key_type.is_null() || key.is_null() {
+        return Ok(());
+    }
+    let type_class = crate::lang::class_argument(vm, key_type)?;
+    let key_class = vm.class_of(key);
+    if key_class == type_class {
+        return Ok(());
+    }
+    let matches = vm
+        .classes
+        .get(key_class)
+        .super_class
+        .is_some_and(|super_class| super_class == type_class);
+    if matches {
+        Ok(())
+    } else {
+        Err(vm.throw_new("java/lang/ClassCastException", None))
+    }
+}
+
+/// `EnumMap.putAll`: an `EnumMap` of a different key type is only acceptable
+/// when empty; other maps are copied key by key through the type check.
+fn enum_map_put_all(vm: &mut Vm<'_>, this: ObjectRef, source: ObjectRef) -> Result<Value, VmError> {
+    if source.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let enum_map_class = vm.resolve_class("java/util/EnumMap")?;
+    if vm.class_of(source) == enum_map_class {
+        let size = hash_map_call(vm, enum_map_map(vm, source), "size", "()I", &[])?;
+        if size.as_int() == 0 {
+            return void();
+        }
+        let source_type = enum_map_key_type(vm, source);
+        let key_type = enum_map_key_type(vm, this);
+        if !source_type.is_null() && !key_type.is_null() {
+            let source_class = crate::lang::class_argument(vm, source_type)?;
+            let key_class = crate::lang::class_argument(vm, key_type)?;
+            if source_class != key_class {
+                return Err(vm.throw_new("java/lang/ClassCastException", None));
+            }
+        }
+    }
+    let map = enum_map_map(vm, this);
+    let keys = concurrent_map_call(vm, source, "keySet", "()Ljava/util/Set;", &[])?;
+    for key in collection_elements(vm, keys.as_ref())? {
+        enum_map_type_check(vm, this, key)?;
+        let value = concurrent_map_call(
+            vm,
+            source,
+            "get",
+            "(Ljava/lang/Object;)Ljava/lang/Object;",
+            &[Value::Ref(key)],
+        )?;
+        concurrent_put(vm, map, key, value.as_ref())?;
+    }
+    void()
+}
+
 const ENUM_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
     method(
         "<init>",
         "(Ljava/lang/Class;)V",
         ACC_PUBLIC,
-        |vm, _, args| enum_map_init(vm, args),
+        |vm, _, args| {
+            enum_map_init(vm, args)?;
+            enum_map_set_key_type(vm, receiver(args), ref_arg(args, 1));
+            void()
+        },
     ),
     method(
         "<init>",
         "(Ljava/util/EnumMap;)V",
         ACC_PUBLIC,
-        |vm, _, args| enum_map_init(vm, args),
+        |vm, _, args| {
+            enum_map_init(vm, args)?;
+            let this = receiver(args);
+            let source = ref_arg(args, 1);
+            let key_type = enum_map_key_type(vm, source);
+            enum_map_set_key_type(vm, this, key_type);
+            enum_map_put_all(vm, this, source)
+        },
     ),
     method("<init>", "(Ljava/util/Map;)V", ACC_PUBLIC, |vm, _, args| {
         enum_map_init(vm, args)?;
         let this = receiver(args);
-        concurrent_put_all(vm, this, ref_arg(args, 1))
+        let source = ref_arg(args, 1);
+        let enum_map_class = vm.resolve_class("java/util/EnumMap")?;
+        if vm.class_of(source) == enum_map_class {
+            let key_type = enum_map_key_type(vm, source);
+            enum_map_set_key_type(vm, this, key_type);
+        } else {
+            let keys = concurrent_map_call(vm, source, "keySet", "()Ljava/util/Set;", &[])?;
+            let elements = collection_elements(vm, keys.as_ref())?;
+            let first = elements.first().copied().ok_or_else(|| {
+                vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("Specified map is empty"),
+                )
+            })?;
+            let key_type = vm.class_object(vm.class_of(first))?;
+            enum_map_set_key_type(vm, this, key_type);
+        }
+        enum_map_put_all(vm, this, source)
     }),
     method(
         "put",
         "(Ljava/lang/Enum;Ljava/lang/Object;)Ljava/lang/Object;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let map = enum_map_map(vm, receiver(args));
+            let this = receiver(args);
+            enum_map_type_check(vm, this, ref_arg(args, 1))?;
+            let map = enum_map_map(vm, this);
             concurrent_put(vm, map, ref_arg(args, 1), ref_arg(args, 2))
         },
     ),
@@ -17631,7 +17737,9 @@ const ENUM_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
         ACC_PUBLIC | ACC_BRIDGE | ACC_SYNTHETIC,
         |vm, _, args| {
-            let map = enum_map_map(vm, receiver(args));
+            let this = receiver(args);
+            enum_map_type_check(vm, this, ref_arg(args, 1))?;
+            let map = enum_map_map(vm, this);
             concurrent_put(vm, map, ref_arg(args, 1), ref_arg(args, 2))
         },
     ),
@@ -17640,9 +17748,11 @@ const ENUM_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
         ACC_PUBLIC,
         |vm, _, args| {
+            let this = receiver(args);
+            enum_map_type_check(vm, this, ref_arg(args, 1))?;
             map_put_if_absent(
                 vm,
-                enum_map_map(vm, receiver(args)),
+                enum_map_map(vm, this),
                 ref_arg(args, 1),
                 ref_arg(args, 2),
             )
@@ -17764,7 +17874,7 @@ const ENUM_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
         },
     ),
     method("putAll", "(Ljava/util/Map;)V", ACC_PUBLIC, |vm, _, args| {
-        concurrent_put_all(vm, receiver(args), ref_arg(args, 1))
+        enum_map_put_all(vm, receiver(args), ref_arg(args, 1))
     }),
     method(
         "entrySet",
@@ -17784,7 +17894,9 @@ const ENUM_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
             let class = vm.resolve_class("java/util/EnumMap")?;
             let clone = vm.new_instance(class)?;
             enum_map_init(vm, &[Value::Ref(clone)])?;
-            concurrent_put_all(vm, clone, this)?;
+            let key_type = enum_map_key_type(vm, this);
+            enum_map_set_key_type(vm, clone, key_type);
+            enum_map_put_all(vm, clone, this)?;
             object(clone)
         },
     ),
@@ -17795,7 +17907,10 @@ pub(crate) const ENUM_MAP: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &["java/util/Map", "java/io/Serializable"],
     ACC_PUBLIC,
-    &[field("map", "Ljava/util/HashMap;", ACC_PRIVATE, None)],
+    &[
+        field("map", "Ljava/util/HashMap;", ACC_PRIVATE, None),
+        field("keyType", "Ljava/lang/Class;", ACC_PRIVATE, None),
+    ],
     &ENUM_MAP_METHODS,
     None,
 );
@@ -25232,7 +25347,32 @@ fn enum_set_type(vm: &mut Vm<'_>, set: ObjectRef) -> ObjectRef {
         .unwrap_or(ObjectRef::NULL)
 }
 
+/// The JDK's `EnumSet.typeCheck`: the element must be of the set's enum type
+/// or an anonymous constant body of it.
+fn enum_set_type_check(vm: &mut Vm<'_>, set: ObjectRef, element: ObjectRef) -> Result<(), VmError> {
+    let element_type = enum_set_type(vm, set);
+    if element_type.is_null() || element.is_null() {
+        return Ok(());
+    }
+    let type_class = crate::lang::class_argument(vm, element_type)?;
+    let element_class = vm.class_of(element);
+    if element_class == type_class {
+        return Ok(());
+    }
+    let matches = vm
+        .classes
+        .get(element_class)
+        .super_class
+        .is_some_and(|super_class| super_class == type_class);
+    if matches {
+        Ok(())
+    } else {
+        Err(vm.throw_new("java/lang/ClassCastException", None))
+    }
+}
+
 fn enum_set_add(vm: &mut Vm<'_>, this: ObjectRef, element: ObjectRef) -> Result<Value, VmError> {
+    enum_set_type_check(vm, this, element)?;
     let map = enum_set_map(vm, this);
     let index = hash_map_index_of(vm, map, element)?;
     if index >= 0 {
@@ -25249,7 +25389,52 @@ fn enum_set_add(vm: &mut Vm<'_>, this: ObjectRef, element: ObjectRef) -> Result<
     boolean(true)
 }
 
-const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
+/// A fresh `EnumSet` holding the same constants and element type as `source`.
+fn enum_set_copy(vm: &mut Vm<'_>, source: ObjectRef) -> Result<ObjectRef, VmError> {
+    let set = new_enum_set(vm)?;
+    let element_type = enum_set_type(vm, source);
+    enum_set_set_type(vm, set, element_type);
+    let map = enum_set_map(vm, source);
+    let keys = hash_map_call(vm, map, "keySet", "()Ljava/util/Set;", &[])?;
+    for key in collection_elements(vm, keys.as_ref())? {
+        enum_set_add(vm, set, key)?;
+    }
+    Ok(set)
+}
+
+const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
+    method(
+        "copyOf",
+        "(Ljava/util/EnumSet;)Ljava/util/EnumSet;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| object(enum_set_copy(vm, ref_arg(args, 0))?),
+    ),
+    method(
+        "copyOf",
+        "(Ljava/util/Collection;)Ljava/util/EnumSet;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let source = ref_arg(args, 0);
+            let enum_set_class = vm.resolve_class("java/util/EnumSet")?;
+            if vm.class_of(source) == enum_set_class {
+                return object(enum_set_copy(vm, source)?);
+            }
+            let elements = collection_elements(vm, source)?;
+            if elements.is_empty() {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("Collection is empty"),
+                ));
+            }
+            let set = new_enum_set(vm)?;
+            let element_type = vm.class_object(vm.class_of(elements[0]))?;
+            enum_set_set_type(vm, set, element_type);
+            for element in elements {
+                enum_set_add(vm, set, element)?;
+            }
+            object(set)
+        },
+    ),
     method(
         "noneOf",
         "(Ljava/lang/Class;)Ljava/util/EnumSet;",
@@ -25433,7 +25618,10 @@ const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
         ACC_PUBLIC | ACC_STATIC | ACC_VARARGS,
         |vm, _, args| {
             let set = new_enum_set(vm)?;
-            enum_set_add(vm, set, ref_arg(args, 0))?;
+            let first = ref_arg(args, 0);
+            let element_type = vm.class_object(vm.class_of(first))?;
+            enum_set_set_type(vm, set, element_type);
+            enum_set_add(vm, set, first)?;
             let array = ref_arg(args, 1);
             if !array.is_null() {
                 let length = vm.array_length(array)?;
@@ -25453,6 +25641,20 @@ const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
         "(Ljava/lang/Object;)Z",
         ACC_PUBLIC | ACC_BRIDGE | ACC_SYNTHETIC,
         |vm, _, args| enum_set_add(vm, receiver(args), ref_arg(args, 1)),
+    ),
+    method(
+        "addAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let source = ref_arg(args, 1);
+            let mut changed = false;
+            for element in collection_elements(vm, source)? {
+                changed |= enum_set_add(vm, this, element)?.as_boolean();
+            }
+            boolean(changed)
+        },
     ),
     method(
         "remove",
