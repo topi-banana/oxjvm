@@ -6669,17 +6669,18 @@ fn raf_init(vm: &mut Vm<'_>, this: ObjectRef, path: &str, mode: &str) -> Result<
         ));
     }
     let writable = mode != "r";
-    let bytes = vm.host.filesystem().and_then(|fs| fs.read(path));
+    let path = crate::file::normalize_path(path);
+    let bytes = vm.host.filesystem().and_then(|fs| fs.read(&path));
     let bytes = match bytes {
         Some(bytes) => bytes,
         None if writable => Vec::new(),
         None => {
-            return Err(vm.throw_new("java/io/FileNotFoundException", Some(path)));
+            return Err(vm.throw_new("java/io/FileNotFoundException", Some(&path)));
         }
     };
     let class = vm.class_of(this);
     let (declaring, field) = vm.find_field(class, "path", "Ljava/lang/String;")?;
-    let text = vm.make_string(path)?;
+    let text = vm.make_string(&path)?;
     vm.set_instance_ref(this, declaring, field, text);
     raf_set_bytes(vm, this, &bytes)?;
     write_int_field(vm, this, "position", 0);

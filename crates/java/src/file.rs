@@ -771,7 +771,7 @@ fn file_init_path(vm: &mut Vm<'_>, this: ObjectRef, path: String) -> Result<Valu
 
 /// Unix path normalization: collapse repeated separators and drop trailing ones, keeping the
 /// root `/` and the empty path intact. Dots are left alone, as `UnixFileSystem.normalize` does.
-fn normalize_path(path: &str) -> String {
+pub(crate) fn normalize_path(path: &str) -> String {
     let mut out = String::with_capacity(path.len());
     let mut prev_slash = false;
     for ch in path.chars() {
@@ -1101,12 +1101,13 @@ fn file_input_init(vm: &mut Vm<'_>, this: ObjectRef, path: &str) -> Result<Value
     if path.contains('\0') {
         return Err(vm.throw_new("java/io/FileNotFoundException", Some("Invalid file path")));
     }
-    let Some(bytes) = vm.host.filesystem().and_then(|fs| fs.read(path)) else {
-        return Err(vm.throw_new("java/io/FileNotFoundException", Some(path)));
+    let path = normalize_path(path);
+    let Some(bytes) = vm.host.filesystem().and_then(|fs| fs.read(&path)) else {
+        return Err(vm.throw_new("java/io/FileNotFoundException", Some(&path)));
     };
     let class = vm.class_of(this);
     let (declaring, field) = vm.find_field(class, "path", "Ljava/lang/String;")?;
-    let text = vm.make_string(path)?;
+    let text = vm.make_string(&path)?;
     vm.set_instance_ref(this, declaring, field, text);
     let data = vm.allocate_array_of(ArrayComponent::Byte, bytes.len())?;
     for (index, byte) in bytes.iter().enumerate() {
@@ -1406,7 +1407,8 @@ fn file_output_init(
     if path.contains('\0') {
         return Err(vm.throw_new("java/io/FileNotFoundException", Some("Invalid file path")));
     }
-    if fs_metadata(vm, path).is_some_and(|metadata| metadata.kind == FileKind::Directory) {
+    let path = normalize_path(path);
+    if fs_metadata(vm, &path).is_some_and(|metadata| metadata.kind == FileKind::Directory) {
         return Err(vm.throw_new(
             "java/io/FileNotFoundException",
             Some(&alloc::format!("{path} (Is a directory)")),
@@ -1414,7 +1416,7 @@ fn file_output_init(
     }
     let class = vm.class_of(this);
     let (declaring, field) = vm.find_field(class, "path", "Ljava/lang/String;")?;
-    let text = vm.make_string(path)?;
+    let text = vm.make_string(&path)?;
     vm.set_instance_ref(this, declaring, field, text);
     write_z_field(vm, this, "append", append);
     write_z_field(vm, this, "opened", false);
