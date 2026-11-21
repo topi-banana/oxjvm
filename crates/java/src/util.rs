@@ -10321,12 +10321,20 @@ const LIST_ITR_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         let list = vm
             .read_ref_field(this, vm.class_of(this), "list", "Ljava/util/List;")
             .unwrap_or(ObjectRef::NULL);
-        let mut elements = array_list_elements(vm, list);
-        let index = (cursor.max(0) as usize).min(elements.len());
-        elements.insert(index, ref_arg(args, 1));
-        array_list_store(vm, list, &elements)?;
-        crate::lang::write_int_field(vm, this, "cursor", cursor + 1);
         crate::lang::write_int_field(vm, this, "lastReturned", -1);
+        // The JDK inserts through the list's virtual add(int, E) so a subclass
+        // override is honored; advance the cursor only once the insert succeeds.
+        let (class, method) = vm.resolve_virtual_method(list, "add", "(ILjava/lang/Object;)V")?;
+        vm.invoke_method(
+            class,
+            method,
+            vec![
+                Value::Ref(list),
+                Value::Int(cursor),
+                Value::Ref(ref_arg(args, 1)),
+            ],
+        )?;
+        crate::lang::write_int_field(vm, this, "cursor", cursor + 1);
         void()
     }),
 ];
