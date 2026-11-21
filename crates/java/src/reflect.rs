@@ -3735,6 +3735,95 @@ fn executable_descriptor(vm: &mut Vm<'_>, executable: ObjectRef) -> Result<Strin
     }
 }
 
+/// The declaring class and method slot behind a `Method` or `Constructor`.
+fn executable_parts(vm: &mut Vm<'_>, executable: ObjectRef) -> Result<(ClassId, u32), VmError> {
+    let method_class = vm.resolve_class("java/lang/reflect/Method")?;
+    Ok(if vm.class_of(executable) == method_class {
+        method_parts(vm, executable)
+    } else {
+        constructor_parts(vm, executable)
+    })
+}
+
+/// The declared parameter name, or the synthetic `argN` fallback the JDK uses
+/// when no `MethodParameters` name was recorded.
+fn parameter_name(vm: &Vm<'_>, class: ClassId, method_slot: u32, slot: usize) -> String {
+    vm.classes.get(class).methods[method_slot as usize]
+        .parameter_names
+        .get(slot)
+        .and_then(|name| name.clone())
+        .unwrap_or_else(|| alloc::format!("arg{slot}"))
+}
+
+/// The `MethodParameters` access flags of one parameter (zero when absent).
+fn parameter_flags(vm: &Vm<'_>, class: ClassId, method_slot: u32, slot: usize) -> u16 {
+    vm.classes.get(class).methods[method_slot as usize]
+        .parameter_flags
+        .get(slot)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// The erased declared type of one parameter as a `Class` object.
+fn erased_parameter_type(
+    vm: &mut Vm<'_>,
+    parsed: &MethodDescriptor,
+    slot: usize,
+) -> Result<ObjectRef, VmError> {
+    let parameter = parsed
+        .parameters
+        .get(slot)
+        .ok_or_else(|| VmError::internal("parameter index out of range"))?;
+    let descriptor = field_type_descriptor(parameter);
+    let class = crate::annotation::class_for_descriptor(vm, &descriptor)?;
+    vm.class_object(class)
+}
+
+/// The generic type of one parameter, following the JDK's
+/// `Executable.getAllGenericParameterTypes`: with `MethodParameters` data,
+/// synthetic/mandated parameters (such as an inner class constructor's
+/// enclosing instance) keep their erased type and are absent from the generic
+/// signature, so they do not consume a generic slot.
+fn parameter_generic_type(
+    vm: &mut Vm<'_>,
+    class: ClassId,
+    method_slot: u32,
+    slot: usize,
+) -> Result<ObjectRef, VmError> {
+    let method = &vm.classes.get(class).methods[method_slot as usize];
+    let descriptor = method.descriptor.clone();
+    let signature = method.signature.clone();
+    let flags = method.parameter_flags.clone();
+    let parsed = MethodDescriptor::parse(&descriptor)
+        .map_err(|_| VmError::internal("bad executable descriptor"))?;
+    let count = parsed.parameters.len();
+    let generic = signature.and_then(|text| parse_method_signature(&text).ok());
+    let generic_parameters = match generic {
+        Some((parameters, _)) => parameters,
+        None => return erased_parameter_type(vm, &parsed, slot),
+    };
+    let generic_index = if flags.len() == count {
+        let mask = ACC_SYNTHETIC | ACC_MANDATED;
+        if flags.get(slot).copied().unwrap_or(0) & mask != 0 {
+            return erased_parameter_type(vm, &parsed, slot);
+        }
+        (0..slot)
+            .filter(|index| flags.get(*index).copied().unwrap_or(0) & mask == 0)
+            .count()
+    } else {
+        // Without parameter data the indexes cannot be matched up; the JDK
+        // falls back to erased types unless the counts agree.
+        if generic_parameters.len() != count {
+            return erased_parameter_type(vm, &parsed, slot);
+        }
+        slot
+    };
+    match generic_parameters.get(generic_index) {
+        Some(parameter) => type_object(vm, parameter),
+        None => erased_parameter_type(vm, &parsed, slot),
+    }
+}
+
 fn parameter_annotations(vm: &mut Vm<'_>, this: ObjectRef) -> Result<ObjectRef, VmError> {
     let (executable, slot) = parameter_parts(vm, this);
     let method_class = vm.resolve_class("java/lang/reflect/Method")?;
@@ -3798,18 +3887,25 @@ fn parameter_annotations_by_type(
     crate::annotation::typed_annotation_array(vm, requested, &found)
 }
 
-const PARAMETER_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
+const PARAMETER_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
     method(
         "getName",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let (_, slot) = parameter_parts(vm, receiver(args));
-            let text = alloc::format!("arg{slot}");
+            let (executable, slot) = parameter_parts(vm, receiver(args));
+            let (class, method_slot) = executable_parts(vm, executable)?;
+            let text = parameter_name(vm, class, method_slot, slot);
             object(vm.make_string(&text)?)
         },
     ),
-    method("getModifiers", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method("getModifiers", "()I", ACC_PUBLIC, |vm, _, args| {
+        let (executable, slot) = parameter_parts(vm, receiver(args));
+        let (class, method_slot) = executable_parts(vm, executable)?;
+        let flags = parameter_flags(vm, class, method_slot, slot)
+            & (ACC_FINAL | ACC_SYNTHETIC | ACC_MANDATED);
+        int(i32::from(flags))
+    }),
     method(
         "accessFlags",
         "()Ljava/util/Set;",
@@ -3869,17 +3965,8 @@ const PARAMETER_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let (executable, slot) = parameter_parts(vm, receiver(args));
-            let descriptor = executable_descriptor(vm, executable)?;
-            let parsed = MethodDescriptor::parse(&descriptor)
-                .map_err(|_| VmError::internal("bad executable descriptor"))?;
-            let parameter = parsed
-                .parameters
-                .get(slot)
-                .ok_or_else(|| VmError::internal("parameter index out of range"))?;
-            let descriptor = field_type_descriptor(parameter);
-            let class = crate::annotation::class_for_descriptor(vm, &descriptor)?;
-            let class_object = vm.class_object(class)?;
-            object(class_object)
+            let (class, method_slot) = executable_parts(vm, executable)?;
+            object(parameter_generic_type(vm, class, method_slot, slot)?)
         },
     ),
     method(
@@ -3945,25 +4032,82 @@ const PARAMETER_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
             boolean(false)
         },
     ),
-    method("isNamePresent", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
-    method("isImplicit", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method("isNamePresent", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let (executable, slot) = parameter_parts(vm, receiver(args));
+        let (class, method_slot) = executable_parts(vm, executable)?;
+        let present = vm.classes.get(class).methods[method_slot as usize]
+            .parameter_names
+            .get(slot)
+            .is_some_and(|name| name.is_some());
+        boolean(present)
+    }),
+    method("isImplicit", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let (executable, slot) = parameter_parts(vm, receiver(args));
+        let (class, method_slot) = executable_parts(vm, executable)?;
+        boolean(parameter_flags(vm, class, method_slot, slot) & ACC_MANDATED != 0)
+    }),
+    method("isFinal", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let (executable, slot) = parameter_parts(vm, receiver(args));
+        let (class, method_slot) = executable_parts(vm, executable)?;
+        boolean(parameter_flags(vm, class, method_slot, slot) & ACC_FINAL != 0)
+    }),
+    method("isSynthetic", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let (executable, slot) = parameter_parts(vm, receiver(args));
+        let (class, method_slot) = executable_parts(vm, executable)?;
+        boolean(parameter_flags(vm, class, method_slot, slot) & ACC_SYNTHETIC != 0)
+    }),
+    method("isVarArgs", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let (executable, slot) = parameter_parts(vm, receiver(args));
+        let (class, method_slot) = executable_parts(vm, executable)?;
+        let (_, descriptor, flags) = method_entry(vm, class, method_slot);
+        if flags & ACC_VARARGS == 0 {
+            return boolean(false);
+        }
+        let parsed = MethodDescriptor::parse(&descriptor)
+            .map_err(|_| VmError::internal("bad executable descriptor"))?;
+        boolean(slot + 1 == parsed.parameters.len())
+    }),
     method(
         "toString",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
             let (executable, slot) = parameter_parts(vm, receiver(args));
-            let descriptor = executable_descriptor(vm, executable)?;
+            let (class, method_slot) = executable_parts(vm, executable)?;
+            // The JDK prints the generic parameterized type name, with a
+            // varargs parameter's trailing [] rendered as an ellipsis.
+            let type_object = parameter_generic_type(vm, class, method_slot, slot)?;
+            let (type_class, get_type_name) =
+                vm.resolve_virtual_method(type_object, "getTypeName", "()Ljava/lang/String;")?;
+            let name_value =
+                vm.invoke_method(type_class, get_type_name, vec![Value::Ref(type_object)])?;
+            let mut type_text = string_arg(vm, name_value)?;
+            let (_, descriptor, flags) = method_entry(vm, class, method_slot);
             let parsed = MethodDescriptor::parse(&descriptor)
                 .map_err(|_| VmError::internal("bad executable descriptor"))?;
-            let parameter = parsed
-                .parameters
-                .get(slot)
-                .ok_or_else(|| VmError::internal("parameter index out of range"))?;
-            let descriptor = field_type_descriptor(parameter);
-            let class = crate::annotation::class_for_descriptor(vm, &descriptor)?;
-            let text = crate::lang::canonical_name(vm, class)
-                .unwrap_or_else(|| crate::binary_name(vm, class));
+            if flags & ACC_VARARGS != 0 && slot + 1 == parsed.parameters.len() {
+                if let Some(stripped) = type_text.strip_suffix("[]") {
+                    type_text = alloc::format!("{stripped}...");
+                }
+            }
+            let param_flags = parameter_flags(vm, class, method_slot, slot)
+                & (ACC_FINAL | ACC_SYNTHETIC | ACC_MANDATED);
+            let mut modifiers = Vec::new();
+            if param_flags & ACC_FINAL != 0 {
+                modifiers.push("final");
+            }
+            if param_flags & ACC_SYNTHETIC != 0 {
+                modifiers.push("synthetic");
+            }
+            if param_flags & ACC_MANDATED != 0 {
+                modifiers.push("mandated");
+            }
+            let name = parameter_name(vm, class, method_slot, slot);
+            let text = if modifiers.is_empty() {
+                alloc::format!("{type_text} {name}")
+            } else {
+                alloc::format!("{} {type_text} {name}", modifiers.join(" "))
+            };
             object(vm.make_string(&text)?)
         },
     ),

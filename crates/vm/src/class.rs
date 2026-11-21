@@ -94,6 +94,8 @@ pub struct Method {
     pub exceptions: Vec<ClassId>,
     /// Parameter names from `MethodParameters`/`LocalVariableTable`, when present.
     pub parameter_names: Vec<Option<String>>,
+    /// Per-parameter access flags from `MethodParameters` (zero when absent).
+    pub parameter_flags: Vec<u16>,
     /// The generic `Signature` attribute, when present.
     pub signature: Option<String>,
     /// `RuntimeVisibleAnnotations`, kept unresolved against the declaring class's pool.

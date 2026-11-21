@@ -459,7 +459,8 @@ impl<'a> Vm<'a> {
                         .collect()
                 })
                 .unwrap_or_default();
-            let parameter_names = self.parameter_names(&descriptor, method);
+            let (parameter_names, parameter_flags) =
+                self.parameter_names(&descriptor, method, &parsed.constant_pool);
             methods.push(Method {
                 name: method_name.clone(),
                 descriptor: descriptor.clone(),
@@ -475,6 +476,7 @@ impl<'a> Vm<'a> {
                 },
                 exceptions,
                 parameter_names,
+                parameter_flags,
                 signature: signature_text(&method.attributes, &parsed.constant_pool),
                 annotations: visible_annotations(&method.attributes),
                 parameter_annotations: visible_parameter_annotations(&method.attributes),
@@ -698,24 +700,29 @@ impl<'a> Vm<'a> {
         &self,
         descriptor: &str,
         method: &oxjvm_classfile::MethodInfo,
-    ) -> Vec<Option<String>> {
+        pool: &ConstantPool,
+    ) -> (Vec<Option<String>>, Vec<u16>) {
         let parsed = MethodDescriptor::parse(descriptor).ok();
         let count = parsed.as_ref().map_or(0, |d| d.parameters.len());
         let mut names = vec![None; count];
+        let mut flags = vec![0u16; count];
         // MethodParameters is authoritative when present.
         for attribute in &method.attributes {
             if let AttributeData::MethodParameters(parameters) = &attribute.data {
                 if parameters.len() == count {
                     for (index, parameter) in parameters.iter().enumerate() {
+                        flags[index] = parameter.access_flags;
                         if parameter.name_index != 0 {
-                            names[index] = Some(format!("arg{index}"));
+                            if let Ok(name) = pool.utf8(parameter.name_index) {
+                                names[index] = Some(name.to_string());
+                            }
                         }
                     }
                 }
-                return names;
+                return (names, flags);
             }
         }
-        names
+        (names, flags)
     }
 
     // -----------------------------------------------------------------------------------------
@@ -791,6 +798,7 @@ impl<'a> Vm<'a> {
                 // class cannot recurse into its still-in-progress registration.
                 exceptions: Vec::new(),
                 parameter_names: Vec::new(),
+                parameter_flags: Vec::new(),
                 signature: None,
                 annotations: Vec::new(),
                 parameter_annotations: Vec::new(),
@@ -1922,6 +1930,7 @@ impl<'a> Vm<'a> {
             native: Some(lambda_constructor_native),
             exceptions: Vec::new(),
             parameter_names: Vec::new(),
+            parameter_flags: Vec::new(),
             signature: None,
             annotations: Vec::new(),
             parameter_annotations: Vec::new(),
@@ -1936,6 +1945,7 @@ impl<'a> Vm<'a> {
             native: Some(lambda_invoke_native),
             exceptions: Vec::new(),
             parameter_names: Vec::new(),
+            parameter_flags: Vec::new(),
             signature: None,
             annotations: Vec::new(),
             parameter_annotations: Vec::new(),

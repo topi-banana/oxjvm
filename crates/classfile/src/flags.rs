@@ -42,6 +42,8 @@ pub const ACC_ANNOTATION: u16 = 0x2000;
 pub const ACC_ENUM: u16 = 0x4000;
 /// `ACC_MODULE`.
 pub const ACC_MODULE: u16 = 0x8000;
+/// `ACC_MANDATED` (method parameters, 4.7.24); same bit as `ACC_MODULE`.
+pub const ACC_MANDATED: u16 = 0x8000;
 
 /// Render class access flags as the canonical `public final`-style words.
 #[must_use]
