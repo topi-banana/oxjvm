@@ -1626,8 +1626,13 @@ fn tree_remove_element(
 ) -> Result<bool, VmError> {
     match kind {
         0 => {
-            let removed = remove_key(vm, backing, element)?;
-            Ok(!removed.is_null())
+            // A key mapped to `null` still belongs to the key set, so report whether
+            // the key was present rather than whether its value was non-null.
+            let (_, found) = search_key(vm, backing, element)?;
+            if found {
+                remove_key(vm, backing, element)?;
+            }
+            Ok(found)
         }
         1 => {
             for (key, value) in entries(vm, backing) {
