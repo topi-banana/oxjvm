@@ -4315,7 +4315,19 @@ const BUFFERED_READER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
             return Err(vm.throw_new("java/lang/NullPointerException", None));
         }
         let length = vm.array_length(array)? as i32;
-        int(buffered_reader_read_chars(vm, this, array, 0, length)?)
+        // Dispatch through read(char[],int,int) so subclasses such as
+        // LineNumberReader see every character that is read.
+        let (class, method) = vm.resolve_virtual_method(this, "read", "([CII)I")?;
+        vm.invoke_method(
+            class,
+            method,
+            vec![
+                Value::Ref(this),
+                Value::Ref(array),
+                Value::Int(0),
+                Value::Int(length),
+            ],
+        )
     }),
     method("read", "([CII)I", ACC_PUBLIC, |vm, _, args| {
         int(buffered_reader_read_chars(
