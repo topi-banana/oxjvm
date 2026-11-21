@@ -2506,6 +2506,690 @@ pub(crate) const WRITER: oxjvm_vm::NativeClass = class(
 );
 
 // -------------------------------------------------------------------------------------------
+// StreamTokenizer: a syntax-table driven tokenizer over a Reader (or the
+// deprecated InputStream). The character class table lives in a byte[256]
+// instance field; nextToken is a faithful port of the JDK parser, reading one
+// character at a time so it never reads further ahead than necessary.
+// -------------------------------------------------------------------------------------------
+
+const ST_NEED_CHAR: i32 = i32::MAX;
+const ST_SKIP_LF: i32 = i32::MAX - 1;
+const ST_TT_EOF: i32 = -1;
+const ST_TT_EOL: i32 = 10;
+const ST_TT_NUMBER: i32 = -2;
+const ST_TT_WORD: i32 = -3;
+const ST_TT_NOTHING: i32 = -4;
+const ST_CT_WHITESPACE: u8 = 1;
+const ST_CT_DIGIT: u8 = 2;
+const ST_CT_ALPHA: u8 = 4;
+const ST_CT_QUOTE: u8 = 8;
+const ST_CT_COMMENT: u8 = 16;
+
+pub(crate) const STREAM_TOKENIZER: oxjvm_vm::NativeClass = class(
+    "java/io/StreamTokenizer",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("ttype", "I", ACC_PUBLIC, None),
+        field("sval", "Ljava/lang/String;", ACC_PUBLIC, None),
+        field("nval", "D", ACC_PUBLIC, None),
+        field("reader", "Ljava/io/Reader;", ACC_PRIVATE, None),
+        field("input", "Ljava/io/InputStream;", ACC_PRIVATE, None),
+        field("ctype", "[B", ACC_PRIVATE, None),
+        field("peekc", "I", ACC_PRIVATE, None),
+        field("pushedBack", "I", ACC_PRIVATE, None),
+        field("forceLower", "I", ACC_PRIVATE, None),
+        field("lineno", "I", ACC_PRIVATE, None),
+        field("eolIsSignificantP", "I", ACC_PRIVATE, None),
+        field("slashSlashCommentsP", "I", ACC_PRIVATE, None),
+        field("slashStarCommentsP", "I", ACC_PRIVATE, None),
+        field(
+            "TT_EOF",
+            "I",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            Some(oxjvm_vm::NativeConstant::Int(ST_TT_EOF)),
+        ),
+        field(
+            "TT_EOL",
+            "I",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            Some(oxjvm_vm::NativeConstant::Int(ST_TT_EOL)),
+        ),
+        field(
+            "TT_NUMBER",
+            "I",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            Some(oxjvm_vm::NativeConstant::Int(ST_TT_NUMBER)),
+        ),
+        field(
+            "TT_WORD",
+            "I",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            Some(oxjvm_vm::NativeConstant::Int(ST_TT_WORD)),
+        ),
+        field(
+            "TT_NOTHING",
+            "I",
+            ACC_PRIVATE | ACC_STATIC | ACC_FINAL,
+            Some(oxjvm_vm::NativeConstant::Int(ST_TT_NOTHING)),
+        ),
+    ],
+    &STREAM_TOKENIZER_METHODS,
+    None,
+);
+
+const STREAM_TOKENIZER_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+    method(
+        "<init>",
+        "(Ljava/io/Reader;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            st_init_syntax(vm, this)?;
+            let reader = ref_arg(args, 1);
+            if reader.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            st_store_ref(vm, this, "reader", "Ljava/io/Reader;", reader)?;
+            st_reset_state(vm, this);
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/InputStream;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            st_init_syntax(vm, this)?;
+            let input = ref_arg(args, 1);
+            if input.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            st_store_ref(vm, this, "input", "Ljava/io/InputStream;", input)?;
+            st_reset_state(vm, this);
+            void()
+        },
+    ),
+    method("resetSyntax", "()V", ACC_PUBLIC, |vm, _, args| {
+        st_ctype_range(vm, receiver(args), 0, 255, false, 0)?;
+        void()
+    }),
+    method("wordChars", "(II)V", ACC_PUBLIC, |vm, _, args| {
+        st_ctype_range(
+            vm,
+            receiver(args),
+            int_arg(args, 1),
+            int_arg(args, 2),
+            true,
+            ST_CT_ALPHA,
+        )?;
+        void()
+    }),
+    method("whitespaceChars", "(II)V", ACC_PUBLIC, |vm, _, args| {
+        st_ctype_range(
+            vm,
+            receiver(args),
+            int_arg(args, 1),
+            int_arg(args, 2),
+            false,
+            ST_CT_WHITESPACE,
+        )?;
+        void()
+    }),
+    method("ordinaryChars", "(II)V", ACC_PUBLIC, |vm, _, args| {
+        st_ctype_range(
+            vm,
+            receiver(args),
+            int_arg(args, 1),
+            int_arg(args, 2),
+            false,
+            0,
+        )?;
+        void()
+    }),
+    method("ordinaryChar", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let ch = int_arg(args, 1);
+        if (0..256).contains(&ch) {
+            st_ctype_range(vm, receiver(args), ch, ch, false, 0)?;
+        }
+        void()
+    }),
+    method("commentChar", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let ch = int_arg(args, 1);
+        if (0..256).contains(&ch) {
+            st_ctype_range(vm, receiver(args), ch, ch, false, ST_CT_COMMENT)?;
+        }
+        void()
+    }),
+    method("quoteChar", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let ch = int_arg(args, 1);
+        if (0..256).contains(&ch) {
+            st_ctype_range(vm, receiver(args), ch, ch, false, ST_CT_QUOTE)?;
+        }
+        void()
+    }),
+    method("parseNumbers", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        st_ctype_range(
+            vm,
+            this,
+            i32::from(b'0'),
+            i32::from(b'9'),
+            true,
+            ST_CT_DIGIT,
+        )?;
+        st_ctype_range(
+            vm,
+            this,
+            i32::from(b'.'),
+            i32::from(b'.'),
+            true,
+            ST_CT_DIGIT,
+        )?;
+        st_ctype_range(
+            vm,
+            this,
+            i32::from(b'-'),
+            i32::from(b'-'),
+            true,
+            ST_CT_DIGIT,
+        )?;
+        void()
+    }),
+    method("eolIsSignificant", "(Z)V", ACC_PUBLIC, |vm, _, args| {
+        write_int_field(vm, receiver(args), "eolIsSignificantP", int_arg(args, 1));
+        void()
+    }),
+    method("slashStarComments", "(Z)V", ACC_PUBLIC, |vm, _, args| {
+        write_int_field(vm, receiver(args), "slashStarCommentsP", int_arg(args, 1));
+        void()
+    }),
+    method("slashSlashComments", "(Z)V", ACC_PUBLIC, |vm, _, args| {
+        write_int_field(vm, receiver(args), "slashSlashCommentsP", int_arg(args, 1));
+        void()
+    }),
+    method("lowerCaseMode", "(Z)V", ACC_PUBLIC, |vm, _, args| {
+        write_int_field(vm, receiver(args), "forceLower", int_arg(args, 1));
+        void()
+    }),
+    method("nextToken", "()I", ACC_PUBLIC, |vm, _, args| {
+        st_next_token(vm, receiver(args))
+    }),
+    method("pushBack", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if read_int_field(vm, this, "ttype") != ST_TT_NOTHING {
+            write_int_field(vm, this, "pushedBack", 1);
+        }
+        void()
+    }),
+    method("lineno", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_int_field(vm, receiver(args), "lineno"))
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| st_to_string(vm, receiver(args)),
+    ),
+];
+
+/// Store a reference instance field by name/descriptor.
+fn st_store_ref(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    value: ObjectRef,
+) -> Result<(), VmError> {
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, name, descriptor)?;
+    vm.set_instance_ref(this, declaring, field, value);
+    Ok(())
+}
+
+/// Initialize the per-token state the JDK private constructor leaves behind.
+fn st_reset_state(vm: &mut Vm<'_>, this: ObjectRef) {
+    write_int_field(vm, this, "ttype", ST_TT_NOTHING);
+    write_int_field(vm, this, "peekc", ST_NEED_CHAR);
+    write_int_field(vm, this, "lineno", 1);
+}
+
+/// The byte[256] syntax table, allocating it on first use.
+fn st_ctype_array(vm: &mut Vm<'_>, this: ObjectRef) -> Result<ObjectRef, VmError> {
+    let class = vm.class_of(this);
+    if let Some(array) = vm
+        .read_ref_field(this, class, "ctype", "[B")
+        .filter(|array| !array.is_null())
+    {
+        return Ok(array);
+    }
+    let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, 256)?;
+    st_store_ref(vm, this, "ctype", "[B", array)?;
+    Ok(array)
+}
+
+/// Apply `bits` to every character in `[low, hi]`, either OR-ing (`or`) or
+/// replacing the class, clamping the range to the table like the JDK does.
+fn st_ctype_range(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    low: i32,
+    hi: i32,
+    or: bool,
+    bits: u8,
+) -> Result<(), VmError> {
+    let array = st_ctype_array(vm, this)?;
+    let mut lo = low.max(0);
+    let hi = hi.min(255);
+    while lo <= hi {
+        let current = vm.array_get(array, lo)?.as_int() as u8;
+        let next = if or { current | bits } else { bits };
+        vm.array_set(array, lo, Value::Int(i32::from(next)), false)?;
+        lo += 1;
+    }
+    Ok(())
+}
+
+/// Build the default syntax table the JDK private constructor installs.
+fn st_init_syntax(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    st_ctype_array(vm, this)?;
+    st_ctype_range(
+        vm,
+        this,
+        i32::from(b'a'),
+        i32::from(b'z'),
+        true,
+        ST_CT_ALPHA,
+    )?;
+    st_ctype_range(
+        vm,
+        this,
+        i32::from(b'A'),
+        i32::from(b'Z'),
+        true,
+        ST_CT_ALPHA,
+    )?;
+    st_ctype_range(vm, this, 128 + 32, 255, true, ST_CT_ALPHA)?;
+    st_ctype_range(vm, this, 0, i32::from(b' '), false, ST_CT_WHITESPACE)?;
+    st_ctype_range(
+        vm,
+        this,
+        i32::from(b'/'),
+        i32::from(b'/'),
+        false,
+        ST_CT_COMMENT,
+    )?;
+    st_ctype_range(
+        vm,
+        this,
+        i32::from(b'"'),
+        i32::from(b'"'),
+        false,
+        ST_CT_QUOTE,
+    )?;
+    st_ctype_range(
+        vm,
+        this,
+        i32::from(b'\''),
+        i32::from(b'\''),
+        false,
+        ST_CT_QUOTE,
+    )?;
+    st_ctype_range(
+        vm,
+        this,
+        i32::from(b'0'),
+        i32::from(b'9'),
+        true,
+        ST_CT_DIGIT,
+    )?;
+    st_ctype_range(
+        vm,
+        this,
+        i32::from(b'.'),
+        i32::from(b'.'),
+        true,
+        ST_CT_DIGIT,
+    )?;
+    st_ctype_range(
+        vm,
+        this,
+        i32::from(b'-'),
+        i32::from(b'-'),
+        true,
+        ST_CT_DIGIT,
+    )
+}
+
+/// Read one character from the reader (preferred) or the deprecated input
+/// stream, returning -1 at end of stream.
+fn st_read(vm: &mut Vm<'_>, this: ObjectRef) -> Result<i32, VmError> {
+    let class = vm.class_of(this);
+    let reader = vm
+        .read_ref_field(this, class, "reader", "Ljava/io/Reader;")
+        .unwrap_or(ObjectRef::NULL);
+    if !reader.is_null() {
+        let (declaring, method) = vm.resolve_virtual_method(reader, "read", "()I")?;
+        return Ok(vm
+            .invoke_method(declaring, method, vec![Value::Ref(reader)])?
+            .as_int());
+    }
+    let input = vm
+        .read_ref_field(this, class, "input", "Ljava/io/InputStream;")
+        .unwrap_or(ObjectRef::NULL);
+    if !input.is_null() {
+        let (declaring, method) = vm.resolve_virtual_method(input, "read", "()I")?;
+        return Ok(vm
+            .invoke_method(declaring, method, vec![Value::Ref(input)])?
+            .as_int());
+    }
+    Err(vm.throw_new("java/lang/IllegalStateException", None))
+}
+
+/// Set the public `sval` field from an optional token body.
+fn st_set_sval(vm: &mut Vm<'_>, this: ObjectRef, text: Option<String>) -> Result<(), VmError> {
+    let reference = match text {
+        Some(text) => vm.make_string(&text)?,
+        None => ObjectRef::NULL,
+    };
+    st_store_ref(vm, this, "sval", "Ljava/lang/String;", reference)
+}
+
+/// Set the public `nval` field.
+fn st_set_nval(vm: &mut Vm<'_>, this: ObjectRef, value: f64) {
+    let class = vm.class_of(this);
+    if let Some((declaring, field)) = vm.find_field_opt(class, "nval", "D") {
+        vm.set_instance_double(this, declaring, field, value);
+    }
+}
+
+/// Port of `StreamTokenizer.nextToken()`. Comments restart the scan via the
+/// outer loop, mirroring the JDK's tail recursion.
+fn st_next_token(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError> {
+    if read_int_field(vm, this, "pushedBack") != 0 {
+        write_int_field(vm, this, "pushedBack", 0);
+        return int(read_int_field(vm, this, "ttype"));
+    }
+    let array = st_ctype_array(vm, this)?;
+    let mut ct = [0u8; 256];
+    for (index, slot) in ct.iter_mut().enumerate() {
+        *slot = vm.array_get(array, index as i32)?.as_int() as u8;
+    }
+    let eol_significant = read_int_field(vm, this, "eolIsSignificantP") != 0;
+    let slash_slash = read_int_field(vm, this, "slashSlashCommentsP") != 0;
+    let slash_star = read_int_field(vm, this, "slashStarCommentsP") != 0;
+    let force_lower = read_int_field(vm, this, "forceLower") != 0;
+
+    let mut peekc = read_int_field(vm, this, "peekc");
+    let mut lineno = read_int_field(vm, this, "lineno");
+    let mut sval: Option<String>;
+    let mut nval = 0.0_f64;
+
+    let ttype: i32 = 'outer: loop {
+        sval = None;
+        let mut c = peekc;
+        if c < 0 {
+            c = ST_NEED_CHAR;
+        }
+        if c == ST_SKIP_LF {
+            c = st_read(vm, this)?;
+            if c < 0 {
+                break 'outer ST_TT_EOF;
+            }
+            if c == i32::from(b'\n') {
+                c = ST_NEED_CHAR;
+            }
+        }
+        if c == ST_NEED_CHAR {
+            c = st_read(vm, this)?;
+            if c < 0 {
+                break 'outer ST_TT_EOF;
+            }
+        }
+        peekc = ST_NEED_CHAR;
+        let mut cty = if c < 256 { ct[c as usize] } else { ST_CT_ALPHA };
+
+        while cty & ST_CT_WHITESPACE != 0 {
+            if c == i32::from(b'\r') {
+                lineno += 1;
+                if eol_significant {
+                    peekc = ST_SKIP_LF;
+                    break 'outer ST_TT_EOL;
+                }
+                c = st_read(vm, this)?;
+                if c == i32::from(b'\n') {
+                    c = st_read(vm, this)?;
+                }
+            } else {
+                if c == i32::from(b'\n') {
+                    lineno += 1;
+                    if eol_significant {
+                        break 'outer ST_TT_EOL;
+                    }
+                }
+                c = st_read(vm, this)?;
+            }
+            if c < 0 {
+                break 'outer ST_TT_EOF;
+            }
+            cty = if c < 256 { ct[c as usize] } else { ST_CT_ALPHA };
+        }
+
+        if cty & ST_CT_DIGIT != 0 {
+            let mut neg = false;
+            if c == i32::from(b'-') {
+                c = st_read(vm, this)?;
+                if c != i32::from(b'.') && !(i32::from(b'0')..=i32::from(b'9')).contains(&c) {
+                    peekc = c;
+                    break 'outer i32::from(b'-');
+                }
+                neg = true;
+            }
+            let mut v = 0.0_f64;
+            let mut decexp = 0_i32;
+            let mut seendot = 0_i32;
+            loop {
+                if c == i32::from(b'.') && seendot == 0 {
+                    seendot = 1;
+                } else if (i32::from(b'0')..=i32::from(b'9')).contains(&c) {
+                    v = v * 10.0 + f64::from(c - i32::from(b'0'));
+                    decexp += seendot;
+                } else {
+                    break;
+                }
+                c = st_read(vm, this)?;
+            }
+            peekc = c;
+            if decexp != 0 {
+                let mut denom = 10.0_f64;
+                decexp -= 1;
+                while decexp > 0 {
+                    denom *= 10.0;
+                    decexp -= 1;
+                }
+                v /= denom;
+            }
+            nval = if neg { -v } else { v };
+            break 'outer ST_TT_NUMBER;
+        }
+
+        if cty & ST_CT_ALPHA != 0 {
+            let mut buf: Vec<u16> = Vec::new();
+            loop {
+                buf.push(c as u16);
+                c = st_read(vm, this)?;
+                cty = if c < 0 {
+                    ST_CT_WHITESPACE
+                } else if c < 256 {
+                    ct[c as usize]
+                } else {
+                    ST_CT_ALPHA
+                };
+                if cty & (ST_CT_ALPHA | ST_CT_DIGIT) == 0 {
+                    break;
+                }
+            }
+            peekc = c;
+            let mut word = String::from_utf16_lossy(&buf);
+            if force_lower {
+                word = word.to_lowercase();
+            }
+            sval = Some(word);
+            break 'outer ST_TT_WORD;
+        }
+
+        if cty & ST_CT_QUOTE != 0 {
+            let quote = c;
+            let mut buf: Vec<u16> = Vec::new();
+            let mut d = st_read(vm, this)?;
+            while d >= 0 && d != quote && d != i32::from(b'\n') && d != i32::from(b'\r') {
+                let ch;
+                if d == i32::from(b'\\') {
+                    let mut cc = st_read(vm, this)?;
+                    let first = cc;
+                    if (i32::from(b'0')..=i32::from(b'7')).contains(&cc) {
+                        cc -= i32::from(b'0');
+                        let mut c2 = st_read(vm, this)?;
+                        if (i32::from(b'0')..=i32::from(b'7')).contains(&c2) {
+                            cc = (cc << 3) + (c2 - i32::from(b'0'));
+                            c2 = st_read(vm, this)?;
+                            if (i32::from(b'0')..=i32::from(b'7')).contains(&c2)
+                                && first <= i32::from(b'3')
+                            {
+                                cc = (cc << 3) + (c2 - i32::from(b'0'));
+                                d = st_read(vm, this)?;
+                            } else {
+                                d = c2;
+                            }
+                        } else {
+                            d = c2;
+                        }
+                    } else {
+                        cc = match cc {
+                            x if x == i32::from(b'a') => 0x7,
+                            x if x == i32::from(b'b') => 0x8,
+                            x if x == i32::from(b'f') => 0xC,
+                            x if x == i32::from(b'n') => 0xA,
+                            x if x == i32::from(b'r') => 0xD,
+                            x if x == i32::from(b't') => 0x9,
+                            x if x == i32::from(b'v') => 0xB,
+                            x => x,
+                        };
+                        d = st_read(vm, this)?;
+                    }
+                    ch = cc;
+                } else {
+                    ch = d;
+                    d = st_read(vm, this)?;
+                }
+                buf.push(ch as u16);
+            }
+            peekc = if d == quote { ST_NEED_CHAR } else { d };
+            sval = Some(String::from_utf16_lossy(&buf));
+            break 'outer quote;
+        }
+
+        if c == i32::from(b'/') && (slash_slash || slash_star) {
+            c = st_read(vm, this)?;
+            if c == i32::from(b'*') && slash_star {
+                let mut prevc = 0;
+                loop {
+                    c = st_read(vm, this)?;
+                    if c == i32::from(b'/') && prevc == i32::from(b'*') {
+                        break;
+                    }
+                    if c == i32::from(b'\r') {
+                        lineno += 1;
+                        c = st_read(vm, this)?;
+                        if c == i32::from(b'\n') {
+                            c = st_read(vm, this)?;
+                        }
+                    } else if c == i32::from(b'\n') {
+                        lineno += 1;
+                        c = st_read(vm, this)?;
+                    }
+                    if c < 0 {
+                        break 'outer ST_TT_EOF;
+                    }
+                    prevc = c;
+                }
+                continue 'outer;
+            } else if (c == i32::from(b'/') && slash_slash)
+                || ct[usize::from(b'/')] & ST_CT_COMMENT != 0
+            {
+                loop {
+                    c = st_read(vm, this)?;
+                    if c == i32::from(b'\n') || c == i32::from(b'\r') || c < 0 {
+                        break;
+                    }
+                }
+                peekc = c;
+                continue 'outer;
+            } else {
+                peekc = c;
+                break 'outer i32::from(b'/');
+            }
+        }
+
+        if cty & ST_CT_COMMENT != 0 {
+            loop {
+                c = st_read(vm, this)?;
+                if c == i32::from(b'\n') || c == i32::from(b'\r') || c < 0 {
+                    break;
+                }
+            }
+            peekc = c;
+            continue 'outer;
+        }
+
+        break 'outer c;
+    };
+
+    write_int_field(vm, this, "ttype", ttype);
+    write_int_field(vm, this, "peekc", peekc);
+    write_int_field(vm, this, "lineno", lineno);
+    st_set_sval(vm, this, sval)?;
+    st_set_nval(vm, this, nval);
+    int(ttype)
+}
+
+/// Port of `StreamTokenizer.toString()`.
+fn st_to_string(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError> {
+    let ttype = read_int_field(vm, this, "ttype");
+    let lineno = read_int_field(vm, this, "lineno");
+    let class = vm.class_of(this);
+    let sval = vm
+        .read_string_field(this, class, "sval")
+        .unwrap_or_default();
+    let ret = match ttype {
+        ST_TT_EOF => String::from("EOF"),
+        ST_TT_EOL => String::from("EOL"),
+        ST_TT_WORD => sval,
+        ST_TT_NUMBER => {
+            let nval = vm
+                .read_instance_double_named(this, class, "nval", "D")
+                .unwrap_or(0.0);
+            alloc::format!("n={nval}")
+        }
+        ST_TT_NOTHING => String::from("NOTHING"),
+        _ => {
+            let array = st_ctype_array(vm, this)?;
+            let is_quote = (0..256).contains(&ttype)
+                && vm.array_get(array, ttype)?.as_int() as u8 & ST_CT_QUOTE != 0;
+            if is_quote {
+                sval
+            } else {
+                let ch = char::from_u32(ttype as u32).unwrap_or('?');
+                alloc::format!("'{ch}'")
+            }
+        }
+    };
+    object(vm.make_string(&alloc::format!("Token[{ret}], line {lineno}"))?)
+}
+
+// -------------------------------------------------------------------------------------------
 // Null streams: InputStream.nullInputStream / OutputStream.nullOutputStream /
 // Reader.nullReader / Writer.nullWriter. Each discards or supplies nothing and
 // throws IOException once closed.
