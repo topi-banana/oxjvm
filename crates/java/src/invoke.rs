@@ -1983,7 +1983,7 @@ macro_rules! functional_interface {
 // Each interface carries the same shape; the dispatcher selects by descriptor, so a shared array
 // with one abstract method of each common descriptor is sufficient and lets a single class serve
 // every functional interface users link against.
-const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 63] = [
+const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 65] = [
     method(
         "apply",
         "(Ljava/lang/Object;)Ljava/lang/Object;",
@@ -2053,6 +2053,18 @@ const FUNCTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 63] = [
     method(
         "applyAsInt",
         "(II)I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "applyAsInt",
+        "(D)I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "applyAsLong",
+        "(D)J",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),

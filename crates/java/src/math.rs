@@ -463,6 +463,17 @@ pub(crate) fn pow(x: f64, y: f64) -> f64 {
     if x.is_nan() || y.is_nan() {
         return f64::NAN;
     }
+    // Exact small-integer exponents (fdlibm special cases): avoid the rounding
+    // error of exp(y*ln(x)) so e.g. pow(x, 1.0) returns x bit-for-bit.
+    if y == 1.0 {
+        return x;
+    }
+    if y == 2.0 {
+        return x * x;
+    }
+    if y == -1.0 {
+        return 1.0 / x;
+    }
     if y.is_infinite() {
         let magnitude = x.abs();
         return if magnitude > 1.0 {
@@ -473,13 +484,38 @@ pub(crate) fn pow(x: f64, y: f64) -> f64 {
             1.0
         };
     }
+    if x.is_infinite() {
+        // An infinite base only keeps its sign for odd integer exponents.
+        let odd = y.abs() < 9001111111140992.0 && (y - floor(y)) == 0.0 && (y as i64) % 2 != 0;
+        let negative = x < 0.0 && odd;
+        return if y > 0.0 {
+            if negative {
+                f64::NEG_INFINITY
+            } else {
+                f64::INFINITY
+            }
+        } else if negative {
+            -0.0
+        } else {
+            0.0
+        };
+    }
     if x == 0.0 {
-        return if y > 0.0 { 0.0 } else { f64::INFINITY };
+        // A zero base keeps its sign for odd integer exponents.
+        let odd = y.abs() < 9001111111140992.0 && (y - floor(y)) == 0.0 && (y as i64) % 2 != 0;
+        let negative = x.is_sign_negative() && odd;
+        return if y > 0.0 {
+            if negative { -0.0 } else { 0.0 }
+        } else if negative {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        };
     }
     if x < 0.0 && (y - floor(y)) != 0.0 {
         return f64::NAN;
     }
-    let negative = x < 0.0 && (y as i64) % 2 != 0;
+    let negative = x < 0.0 && y.abs() < 9001111111140992.0 && (y as i64) % 2 != 0;
     let result = exp(y * ln(x.abs()));
     if negative { -result } else { result }
 }
@@ -488,6 +524,9 @@ pub(crate) fn pow(x: f64, y: f64) -> f64 {
 pub(crate) fn atan(x: f64) -> f64 {
     if x.is_nan() {
         return f64::NAN;
+    }
+    if x == 0.0 {
+        return x;
     }
     let negative = x < 0.0;
     let x = x.abs();
@@ -549,6 +588,9 @@ pub(crate) fn atan2(y: f64, x: f64) -> f64 {
 pub(crate) fn asin(x: f64) -> f64 {
     if x.is_nan() || x.abs() > 1.0 {
         return f64::NAN;
+    }
+    if x == 0.0 {
+        return x;
     }
     if x == 1.0 {
         return core::f64::consts::FRAC_PI_2;
@@ -637,7 +679,35 @@ pub(crate) fn rint(x: f64) -> f64 {
 
 /// `Math.round(double)`.
 pub(crate) fn round(x: f64) -> i64 {
-    floor(x + 0.5) as i64
+    // JDK bit algorithm: floor(x + 0.5) computed without the rounding error of
+    // the addition itself (e.g. round(0.49999999999999994) must be 0).
+    let bits = x.to_bits() as i64;
+    let biased_exp = (bits & 0x7FF0_0000_0000_0000) >> 52;
+    let shift = 1074 - biased_exp;
+    if (shift & -64) == 0 {
+        let mut r = (bits & 0x000F_FFFF_FFFF_FFFF) | 0x0010_0000_0000_0000;
+        if bits < 0 {
+            r = -r;
+        }
+        ((r >> shift) + 1) >> 1
+    } else {
+        x as i64
+    }
+}
+
+pub(crate) fn round_f32(x: f32) -> i32 {
+    let bits = x.to_bits() as i32;
+    let biased_exp = (bits & 0x7F80_0000) >> 23;
+    let shift = 149 - biased_exp;
+    if (shift & -32) == 0 {
+        let mut r = (bits & 0x007F_FFFF) | 0x0080_0000;
+        if bits < 0 {
+            r = -r;
+        }
+        ((r >> shift) + 1) >> 1
+    } else {
+        x as i32
+    }
 }
 
 pub(crate) fn hypot(x: f64, y: f64) -> f64 {
@@ -683,7 +753,13 @@ pub(crate) fn ieee_remainder(x: f64, y: f64) -> f64 {
         return x;
     }
     let quotient = rint(x / y);
-    x - quotient * y
+    let remainder = x - quotient * y;
+    if remainder == 0.0 {
+        // A zero remainder carries the sign of the dividend.
+        copy_sign(0.0, x)
+    } else {
+        remainder
+    }
 }
 
 pub(crate) fn pow2(exponent: i32) -> f64 {
@@ -1347,7 +1423,7 @@ macro_rules! math_methods {
                 double(rint(double_arg(args, 0)))
             }),
             method("round", "(F)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
-                int(floor(f64::from(float_arg(args, 0)) + 0.5) as i32)
+                int(round_f32(float_arg(args, 0)))
             }),
             method("round", "(D)J", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
                 long(round(double_arg(args, 0)))

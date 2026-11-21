@@ -2476,18 +2476,41 @@ fn lambda_invoke_native(
                 (FieldType::Base(base), Some(FieldType::Object(_) | FieldType::Array(_))) => {
                     call_args[slot] = box_primitive(vm, *base, call_args[slot])?;
                 }
+                (FieldType::Base(_), Some(FieldType::Base(to))) => {
+                    call_args[slot] = widen_primitive(call_args[slot], *to);
+                }
                 _ => {}
             }
         }
         let result = vm.invoke_handle(&target, &call_args)?;
-        if let (Some(FieldType::Base(base)), Some(sam_return)) = (target_returns, &sam.returns) {
-            if matches!(sam_return, FieldType::Object(_) | FieldType::Array(_)) {
-                return box_primitive(vm, base, result);
+        return match (target_returns, sam.returns) {
+            (Some(FieldType::Base(base)), Some(FieldType::Object(_) | FieldType::Array(_))) => {
+                box_primitive(vm, base, result)
             }
-        }
-        return Ok(result);
+            (Some(FieldType::Object(_) | FieldType::Array(_)), Some(FieldType::Base(base))) => {
+                unbox_primitive(vm, base, result)
+            }
+            (Some(FieldType::Base(_)), Some(FieldType::Base(to))) => {
+                Ok(widen_primitive(result, to))
+            }
+            _ => Ok(result),
+        };
     }
     vm.invoke_handle(&target, &call_args)
+}
+
+/// JLS 5.1.2 widening primitive conversion, used by the LambdaMetafactory `asType`
+/// adaptation (e.g. `Math::round` as `DoubleUnaryOperator` widens long to double).
+fn widen_primitive(value: Value, to: BaseType) -> Value {
+    match (value, to) {
+        (Value::Int(i), BaseType::Long) => Value::Long(i64::from(i)),
+        (Value::Int(i), BaseType::Float) => Value::Float(i as f32),
+        (Value::Int(i), BaseType::Double) => Value::Double(f64::from(i)),
+        (Value::Long(l), BaseType::Float) => Value::Float(l as f32),
+        (Value::Long(l), BaseType::Double) => Value::Double(l as f64),
+        (Value::Float(f), BaseType::Double) => Value::Double(f64::from(f)),
+        (other, _) => other,
+    }
 }
 
 /// The field descriptor of a class (`I` for primitives, `Lname;` for references).
