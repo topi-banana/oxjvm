@@ -10498,10 +10498,7 @@ const HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            if vm
-                .resolve_class_lenient("java/util/HashMap")
-                .is_some_and(|class| vm.is_instance(this, class))
-            {
+            if is_pair_array_map(vm, this) {
                 return object(map_view_new(vm, this, 2, false)?);
             }
             map_entry_set(vm, this)
@@ -10971,6 +10968,16 @@ fn hash_map_remove(
     object(removed)
 }
 
+/// Pair-array maps whose entries can be read directly. Live views must not go
+/// through `entrySet` for these, since that would recurse back into the view.
+fn is_pair_array_map(vm: &mut Vm<'_>, map: ObjectRef) -> bool {
+    vm.resolve_class_lenient("java/util/HashMap")
+        .is_some_and(|class| vm.is_instance(map, class))
+        || vm
+            .resolve_class_lenient("java/util/IdentityHashMap")
+            .is_some_and(|class| vm.is_instance(map, class))
+}
+
 fn hash_map_key_set(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
@@ -10996,10 +11003,7 @@ fn hash_map_values(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let this = receiver(args);
-    if vm
-        .resolve_class_lenient("java/util/HashMap")
-        .is_some_and(|class| vm.is_instance(this, class))
-    {
+    if is_pair_array_map(vm, this) {
         return object(map_view_new(vm, this, 1, false)?);
     }
     let pairs = hash_map_pairs(vm, this);
@@ -11265,7 +11269,10 @@ const IDENTITY_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
         "entrySet",
         "()Ljava/util/Set;",
         ACC_PUBLIC,
-        |vm, _, args| map_entry_set(vm, receiver(args)),
+        |vm, _, args| {
+            let view = map_view_new(vm, receiver(args), 2, false)?;
+            object(view)
+        },
     ),
 ];
 
@@ -19123,10 +19130,7 @@ fn map_view_elements(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Vec<ObjectRef>,
     let backing = map_view_backing(vm, this);
     // Read HashMap-family pairs directly: going through `entrySet` would recurse
     // back into this view now that HashMap's entrySet is itself a live view.
-    let mut pairs = if vm
-        .resolve_class_lenient("java/util/HashMap")
-        .is_some_and(|class| vm.is_instance(backing, class))
-    {
+    let mut pairs = if is_pair_array_map(vm, backing) {
         hash_map_pairs(vm, backing)
     } else {
         abstract_map_entries(vm, backing)?
