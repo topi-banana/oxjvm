@@ -1179,7 +1179,10 @@ const FILE_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         file_output_write(vm, receiver(args), &slice)
     }),
     method("flush", "()V", ACC_PUBLIC, |_, _, _| void()),
-    method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        write_z_field(vm, receiver(args), "closed", true);
+        void()
+    }),
     method(
         "getChannel",
         "()Ljava/nio/channels/FileChannel;",
@@ -1213,6 +1216,7 @@ pub(crate) const FILE_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
         field("path", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("append", "Z", ACC_PRIVATE, None),
         field("opened", "Z", ACC_PRIVATE, None),
+        field("closed", "Z", ACC_PRIVATE, None),
     ],
     &FILE_OUTPUT_STREAM_METHODS,
     None,
@@ -1254,6 +1258,9 @@ fn read_z_field(vm: &Vm<'_>, this: ObjectRef, name: &str) -> bool {
 }
 
 fn file_output_write(vm: &mut Vm<'_>, this: ObjectRef, bytes: &[u8]) -> Result<Value, VmError> {
+    if read_z_field(vm, this, "closed") {
+        return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+    }
     let path = file_path(vm, this);
     let append = read_z_field(vm, this, "append") || read_z_field(vm, this, "opened");
     if !fs_write(vm, &path, bytes, append) {
