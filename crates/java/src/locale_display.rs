@@ -92,16 +92,13 @@ pub(crate) fn display_variant(
         return Ok(String::new());
     }
     let t = target_language(vm, target)?;
+    // The JDK shows a localized variant name when one exists for the target
+    // language, and otherwise the variant code itself (never an English fallback).
     Ok(DISPLAY_VARIANT
         .iter()
         .find(|(tl, v, _)| *tl == t && *v == code)
-        .or_else(|| {
-            DISPLAY_VARIANT
-                .iter()
-                .find(|(tl, v, _)| *tl == "en" && *v == code)
-        })
         .map(|(_, _, n)| (*n).to_string())
-        .unwrap_or_default())
+        .unwrap_or_else(|| code.clone()))
 }
 
 /// Compose a full display name: `language (country, variant)`.

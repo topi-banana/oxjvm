@@ -7494,7 +7494,7 @@ pub(crate) fn local_date_time_of_epoch_millis(
     local_date_time_new(vm, epoch_day, nano_of_day)
 }
 
-const ZONE_RULES_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
+const ZONE_RULES_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method(
         "getOffset",
         "(Ljava/time/Instant;)Ljava/time/ZoneOffset;",
@@ -7586,6 +7586,19 @@ const ZONE_RULES_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
             let instance = vm.new_instance(class)?;
             write_int_field(vm, instance, "totalSeconds", total);
             object(instance)
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let total = read_int_field(vm, receiver(args), "totalSeconds");
+            let text = alloc::format!(
+                "ZoneRules[currentStandardOffset={}]",
+                crate::lang::zone_offset_id(total)
+            );
+            object(vm.make_string(&text)?)
         },
     ),
 ];

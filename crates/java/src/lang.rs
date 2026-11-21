@@ -11508,6 +11508,10 @@ fn zone_id_new(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
         let message = alloc::format!("Unknown time-zone ID: {text}");
         return Err(vm.throw_new("java/time/zone/ZoneRulesException", Some(&message)));
     }
+    // Offset-style IDs (`Z`, `+09:00`, ...) yield a `ZoneOffset`, as the JDK does.
+    if let Some(total) = zone_offset_parse(&text) {
+        return object(zone_offset_new(vm, total)?);
+    }
     zone_id_with(vm, &text)
 }
 

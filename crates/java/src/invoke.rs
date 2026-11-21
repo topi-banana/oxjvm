@@ -962,7 +962,7 @@ pub(crate) const METHOD_HANDLES: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const LOOKUP_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const LOOKUP_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method(
         "findStatic",
         "(Ljava/lang/Class;Ljava/lang/String;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/MethodHandle;",
@@ -1122,6 +1122,34 @@ const LOOKUP_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
                 target: alloc::boxed::Box::new(target),
             };
             object(vm.make_method_handle(bound)?)
+        },
+    ),
+    method(
+        "defineClass",
+        "([B)Ljava/lang/Class;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let bytes = crate::lang::array_bytes(vm, ref_arg(args, 1))?;
+            let parsed = oxjvm_classfile::ClassFile::read(&bytes).map_err(|_| {
+                vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("invalid class bytes"),
+                )
+            })?;
+            let name = parsed
+                .constant_pool
+                .class_name(parsed.this_class)
+                .unwrap_or("java/lang/Object")
+                .to_string();
+            if vm.defined_class(&name).is_some() {
+                let message = alloc::format!(
+                    "attempted duplicate class definition for name: \"{}\"",
+                    name.replace('/', ".")
+                );
+                return Err(vm.throw_new("java/lang/LinkageError", Some(&message)));
+            }
+            let class = vm.define_class(&name, &bytes)?;
+            object(vm.class_object(class)?)
         },
     ),
 ];

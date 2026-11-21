@@ -200,6 +200,31 @@ fn class_desc_display_name(name: &str) -> String {
     display
 }
 
+/// `ClassDesc.toString()`: the JDK's `PrimitiveClassDesc[..]`, `ArrayClassDesc[.., n]`
+/// or `ClassOrInterfaceDesc[..]` debug form.
+fn class_desc_to_string(name: &str) -> String {
+    if matches!(
+        name,
+        "boolean" | "byte" | "char" | "double" | "float" | "int" | "long" | "short" | "void"
+    ) {
+        return alloc::format!("PrimitiveClassDesc[{name}]");
+    }
+    let mut dimensions = 0;
+    let mut base = name;
+    while let Some(stripped) = base.strip_suffix("[]") {
+        dimensions += 1;
+        base = stripped;
+    }
+    if dimensions > 0 {
+        return alloc::format!(
+            "ArrayClassDesc[{}, {dimensions}]",
+            class_desc_display_name(base)
+        );
+    }
+    let simple = base.rsplit('.').next().unwrap_or(base);
+    alloc::format!("ClassOrInterfaceDesc[{simple}]")
+}
+
 const CLASS_DESC_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
@@ -208,6 +233,13 @@ const CLASS_DESC_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let name = vm.string_or_empty(ref_arg(args, 0));
+            if name.is_empty() || name.starts_with('[') || name.contains(';') || name.contains('/')
+            {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some(&alloc::format!("Invalid class name: {name}")),
+                ));
+            }
             object(new_class_desc(vm, &name)?)
         },
     ),
@@ -334,7 +366,7 @@ const CLASS_DESC_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let name = string_field(vm, receiver(args), "name");
-            object(vm.make_string(&name)?)
+            object(vm.make_string(&class_desc_to_string(&name))?)
         },
     ),
     method(
@@ -395,6 +427,13 @@ const CLASS_DESC_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let name = vm.string_or_empty(ref_arg(args, 0));
+            if name.is_empty() || name.starts_with('[') || name.contains(';') || name.contains('/')
+            {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some(&alloc::format!("Invalid class name: {name}")),
+                ));
+            }
             object(new_class_desc(vm, &name)?)
         },
     ),

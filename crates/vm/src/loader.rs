@@ -301,6 +301,11 @@ impl<'a> Vm<'a> {
         self.resolve_class(name).ok()
     }
 
+    /// The already-defined class with this name, without loading or linking it.
+    pub fn defined_class(&self, name: &str) -> Option<ClassId> {
+        self.classes.by_name(name)
+    }
+
     /// Define and link a class from class-file bytes that are already in hand.
     ///
     /// # Errors
