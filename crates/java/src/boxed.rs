@@ -5463,7 +5463,7 @@ fn char_is_identifier_ignorable(cp: u32) -> bool {
     idx > 0 && IGNORABLE_RANGES[idx - 1].1 >= cp
 }
 
-const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 72] = [
+const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 76] = [
     method("<init>", "(C)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), int_arg(args, 1));
         void()
@@ -5525,6 +5525,14 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 72] = [
         },
     ),
     method(
+        "isUpperCase",
+        "(I)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            boolean(char::from_u32(int_arg(args, 0) as u32).is_some_and(char::is_uppercase))
+        },
+    ),
+    method(
         "isLowerCase",
         "(C)Z",
         ACC_PUBLIC | ACC_STATIC,
@@ -5532,6 +5540,14 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 72] = [
             boolean(
                 char::from_u32(int_arg(args, 0) as u32 & 0xFFFF).is_some_and(char::is_lowercase),
             )
+        },
+    ),
+    method(
+        "isLowerCase",
+        "(I)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            boolean(char::from_u32(int_arg(args, 0) as u32).is_some_and(char::is_lowercase))
         },
     ),
     method(
@@ -5861,6 +5877,19 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 72] = [
         },
     ),
     method(
+        "isJavaIdentifierStart",
+        "(I)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let cp = int_arg(args, 0) as u32;
+            boolean(
+                char_is_defined(cp)
+                    && char::from_u32(cp)
+                        .is_some_and(|ch| ch == '_' || ch == '$' || ch.is_alphabetic()),
+            )
+        },
+    ),
+    method(
         "isJavaIdentifierPart",
         "(C)Z",
         ACC_PUBLIC | ACC_STATIC,
@@ -5869,6 +5898,24 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 72] = [
             boolean(
                 char_is_defined(unit)
                     && char::from_u32(unit).is_some_and(|ch| {
+                        ch == '_'
+                            || ch == '$'
+                            || ch.is_alphanumeric()
+                            || ch == '\u{200c}'
+                            || ch == '\u{200d}'
+                    }),
+            )
+        },
+    ),
+    method(
+        "isJavaIdentifierPart",
+        "(I)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let cp = int_arg(args, 0) as u32;
+            boolean(
+                char_is_defined(cp)
+                    && char::from_u32(cp).is_some_and(|ch| {
                         ch == '_'
                             || ch == '$'
                             || ch.is_alphanumeric()
@@ -6391,6 +6438,9 @@ fn unicode_block_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
 }
 
 fn unicode_block_of(vm: &mut Vm<'_>, code_point: u32) -> Result<Value, VmError> {
+    if code_point > 0x10FFFF {
+        return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+    }
     let Some((name, _, _)) = UNICODE_BLOCKS
         .iter()
         .find(|(_, start, end)| (*start..=*end).contains(&code_point))
