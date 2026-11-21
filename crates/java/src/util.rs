@@ -3463,12 +3463,15 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 211] = [
             let from = int_arg(args, 1);
             let to = int_arg(args, 2);
             let comparator = ref_arg(args, 3);
-            if comparator.is_null() {
-                return Err(vm.throw_new("java/lang/NullPointerException", None));
-            }
             let length = vm.array_length(array)?;
             arrays_range_check(vm, from, to, length)?;
-            arrays_sort_objects_range(vm, array, from as usize, to as usize, Some(comparator))
+            // A null comparator means natural ordering, not an error.
+            let comparator = if comparator.is_null() {
+                None
+            } else {
+                Some(comparator)
+            };
+            arrays_sort_objects_range(vm, array, from as usize, to as usize, comparator)
         },
     ),
     method(
@@ -4195,12 +4198,15 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 211] = [
             let from = int_arg(args, 1);
             let to = int_arg(args, 2);
             let comparator = ref_arg(args, 3);
-            if comparator.is_null() {
-                return Err(vm.throw_new("java/lang/NullPointerException", None));
-            }
             let length = vm.array_length(array)?;
             arrays_range_check(vm, from, to, length)?;
-            arrays_sort_objects_range(vm, array, from as usize, to as usize, Some(comparator))
+            // A null comparator means natural ordering, not an error.
+            let comparator = if comparator.is_null() {
+                None
+            } else {
+                Some(comparator)
+            };
+            arrays_sort_objects_range(vm, array, from as usize, to as usize, comparator)
         },
     ),
     method(
@@ -4965,10 +4971,12 @@ fn arrays_sort_objects(
     }
     let comparator = if with_comparator {
         let comparator = ref_arg(args, 1);
+        // A null comparator means natural ordering, not an error.
         if comparator.is_null() {
-            return Err(vm.throw_new("java/lang/NullPointerException", None));
+            None
+        } else {
+            Some(comparator)
         }
-        Some(comparator)
     } else {
         None
     };
