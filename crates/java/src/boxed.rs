@@ -2345,10 +2345,9 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 63] = [
         "(C)Z",
         ACC_PUBLIC | ACC_STATIC,
         |_, _, args| {
-            boolean(
-                char::from_u32(int_arg(args, 0) as u32 & 0xFFFF)
-                    .is_some_and(|ch| ch.is_whitespace() || ch == '\u{00A0}' && false),
-            )
+            boolean(crate::lang::java_is_whitespace(
+                (int_arg(args, 0) & 0xFFFF) as u16,
+            ))
         },
     ),
     method(
@@ -2421,7 +2420,8 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 63] = [
         "(I)Z",
         ACC_PUBLIC | ACC_STATIC,
         |_, _, args| {
-            boolean(char::from_u32(int_arg(args, 0) as u32).is_some_and(char::is_whitespace))
+            let code_point = int_arg(args, 0) as u32;
+            boolean(code_point <= 0xFFFF && crate::lang::java_is_whitespace(code_point as u16))
         },
     ),
     method("digit", "(II)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
@@ -2751,7 +2751,7 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 63] = [
         ACC_PUBLIC | ACC_STATIC,
         |_, _, args| {
             let code_point = int_arg(args, 0) as u32;
-            boolean(char::from_u32(code_point).is_some_and(|ch| ch.is_whitespace()))
+            boolean(code_point <= 0xFFFF && crate::lang::java_is_whitespace(code_point as u16))
         },
     ),
     method(

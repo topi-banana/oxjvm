@@ -6772,6 +6772,9 @@ const CHAR_ARRAY_READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method("<init>", "([C)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let array = ref_arg(args, 1);
+        if array.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
         let class = vm.class_of(this);
         let length = vm.array_length(array)? as i32;
         let (declaring, field) = vm.find_field(class, "buf", "[C")?;
@@ -6784,15 +6787,25 @@ const CHAR_ARRAY_READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method("<init>", "([CII)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let array = ref_arg(args, 1);
+        if array.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
         let offset = int_arg(args, 2);
         let length = int_arg(args, 3);
-        reader_check_range(vm, array, offset, length)?;
+        let buf_len = vm.array_length(array)? as i32;
+        // The JDK allows offset+length past the buffer end (count is clamped)
+        // but rejects negative values and int overflow of the sum; unlike
+        // most range checks CharArrayReader reports IllegalArgumentException.
+        let end = i64::from(offset) + i64::from(length);
+        if offset < 0 || offset > buf_len || length < 0 || end > i64::from(i32::MAX) {
+            return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+        }
         let class = vm.class_of(this);
         let (declaring, field) = vm.find_field(class, "buf", "[C")?;
         vm.set_instance_ref(this, declaring, field, array);
         write_int_field(vm, this, "pos", offset);
         write_int_field(vm, this, "markedPos", offset);
-        write_int_field(vm, this, "count", offset + length);
+        write_int_field(vm, this, "count", end.min(i64::from(buf_len)) as i32);
         void()
     }),
     method("read", "()I", ACC_PUBLIC, |vm, _, args| {
@@ -6841,11 +6854,11 @@ const CHAR_ARRAY_READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         let this = receiver(args);
         let pos = read_int_field(vm, this, "pos");
         let count = read_int_field(vm, this, "count");
-        let available = (count - pos).max(0);
-        let requested = crate::long_arg(args, 1).max(0) as i32;
+        let available = i64::from((count - pos).max(0));
+        let requested = crate::long_arg(args, 1).max(0);
         let n = available.min(requested);
-        write_int_field(vm, this, "pos", pos + n);
-        long(i64::from(n))
+        write_int_field(vm, this, "pos", pos + n as i32);
+        long(n)
     }),
     method("ready", "()Z", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);

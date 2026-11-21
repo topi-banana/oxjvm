@@ -3324,7 +3324,7 @@ fn string_repeat(
 
 /// `Character.isWhitespace(int)`: Unicode space/line/paragraph separators and the
 /// ASCII control whitespace, but *not* the non-breaking spaces (U+00A0/U+2007/U+202F).
-fn java_is_whitespace(unit: u16) -> bool {
+pub(crate) fn java_is_whitespace(unit: u16) -> bool {
     matches!(unit,
         0x0009..=0x000D
         | 0x001C..=0x001F
