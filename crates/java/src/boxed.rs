@@ -8,8 +8,8 @@ use oxjvm_classfile::flags::*;
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError, format};
 
 use crate::{
-    bool_arg, boolean, class, double, field, float, int, int_arg, long, long_arg, method, object,
-    receiver, ref_arg, string_arg, void,
+    bool_arg, boolean, class, double, field, float, int, int_arg, long, long_arg, method,
+    method_throws, object, receiver, ref_arg, string_arg, void,
 };
 
 // -------------------------------------------------------------------------------------------
@@ -202,19 +202,21 @@ const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 52] = [
             object(vm.make_string(&text)?)
         },
     ),
-    method(
+    method_throws(
         "parseInt",
         "(Ljava/lang/String;)I",
         ACC_PUBLIC | ACC_STATIC,
         parse_int_10,
+        &["java/lang/NumberFormatException"],
     ),
-    method(
+    method_throws(
         "parseInt",
         "(Ljava/lang/String;I)I",
         ACC_PUBLIC | ACC_STATIC,
         parse_int_radix,
+        &["java/lang/NumberFormatException"],
     ),
-    method(
+    method_throws(
         "parseInt",
         "(Ljava/lang/CharSequence;III)I",
         ACC_PUBLIC | ACC_STATIC,
@@ -232,6 +234,7 @@ const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 52] = [
                 )),
             }
         },
+        &["java/lang/NumberFormatException"],
     ),
     method(
         "parseUnsignedInt",

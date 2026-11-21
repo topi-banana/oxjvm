@@ -786,11 +786,10 @@ impl<'a> Vm<'a> {
                 owner: ClassId(0),
                 code: None,
                 native: Some(method.native),
-                exceptions: method
-                    .exceptions
-                    .iter()
-                    .filter_map(|name| self.resolve_class_lenient(name))
-                    .collect(),
+                // Declared exceptions are resolved after the class is registered by name
+                // (see below), so an exception whose superclass chain leads back to this
+                // class cannot recurse into its still-in-progress registration.
+                exceptions: Vec::new(),
                 parameter_names: Vec::new(),
                 signature: None,
                 annotations: Vec::new(),
@@ -877,6 +876,21 @@ impl<'a> Vm<'a> {
             }
             class.static_values = static_values;
             class.instance_defaults = defaults;
+        }
+        // Resolve declared checked exceptions only now that the class is registered by
+        // name: an exception such as `InterruptedException` (declared by `Object.wait`)
+        // whose superclass chain leads back to this class resolves to the in-progress
+        // class instead of recursing into its registration and overflowing the stack.
+        for (slot, method) in definition.methods.iter().enumerate() {
+            if method.exceptions.is_empty() {
+                continue;
+            }
+            let resolved: Vec<ClassId> = method
+                .exceptions
+                .iter()
+                .filter_map(|name| self.resolve_class_lenient(name))
+                .collect();
+            self.classes.get_mut(id).methods[slot].exceptions = resolved;
         }
         Ok(id)
     }

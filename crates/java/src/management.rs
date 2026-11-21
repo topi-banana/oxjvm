@@ -11,7 +11,9 @@ use alloc::vec::Vec;
 use oxjvm_classfile::flags::*;
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
-use crate::{boolean, class, field, int, long, method, object, receiver, ref_arg, void};
+use crate::{
+    boolean, class, field, int, long, method, method_throws, object, receiver, ref_arg, void,
+};
 
 // -------------------------------------------------------------------------------------------
 // Helpers
@@ -6204,12 +6206,13 @@ fn immutable_descriptor_reject_name(vm: &mut Vm<'_>, name: ObjectRef) -> Result<
     Err(vm.throw_new_with_cause("javax/management/RuntimeOperationsException", cause))
 }
 
-const DESCRIPTOR_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
-    method(
+const DESCRIPTOR_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+    method_throws(
         "getFieldValue",
         "(Ljava/lang/String;)Ljava/lang/Object;",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
+        &["javax/management/RuntimeOperationsException"],
     ),
     method(
         "getFieldNames",
@@ -6223,17 +6226,19 @@ const DESCRIPTOR_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
-    method(
+    method_throws(
         "setField",
         "(Ljava/lang/String;Ljava/lang/Object;)V",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
+        &["javax/management/RuntimeOperationsException"],
     ),
-    method(
+    method_throws(
         "setFields",
         "([Ljava/lang/String;[Ljava/lang/Object;)V",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
+        &["javax/management/RuntimeOperationsException"],
     ),
     method(
         "removeField",
@@ -6241,23 +6246,19 @@ const DESCRIPTOR_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
     ),
-    method(
+    method_throws(
         "isValid",
         "()Z",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
+        &["javax/management/RuntimeOperationsException"],
     ),
-    method(
-        "isEmpty",
-        "()Z",
-        ACC_PUBLIC | ACC_ABSTRACT,
-        crate::lang::abstract_method_pub,
-    ),
-    method(
+    method_throws(
         "clone",
         "()Ljava/lang/Object;",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
+        &["javax/management/RuntimeOperationsException"],
     ),
     method(
         "equals",

@@ -2889,7 +2889,9 @@ fn binary_name_for_field_type(_vm: &Vm<'_>, field_type: &FieldType) -> Result<St
     Ok(match field_type {
         FieldType::Base(base) => base_type_name(*base).to_string(),
         FieldType::Object(name) => name.replace('/', "."),
-        FieldType::Array(_) => field_type_descriptor(field_type).replace('/', "."),
+        FieldType::Array(component) => {
+            alloc::format!("{}[]", binary_name_for_field_type(_vm, component)?)
+        }
     })
 }
 
@@ -2934,6 +2936,16 @@ fn method_signature_text(vm: &mut Vm<'_>, class: ClassId, slot: u32) -> Result<S
         "{return_type} {declaring}.{name}({})",
         parameters.join(",")
     ));
+    let exceptions = vm.classes.get(class).methods[slot as usize]
+        .exceptions
+        .clone();
+    if !exceptions.is_empty() {
+        let names: Vec<String> = exceptions
+            .iter()
+            .map(|exception| crate::binary_name(vm, *exception))
+            .collect();
+        text.push_str(&alloc::format!(" throws {}", names.join(",")));
+    }
     Ok(text)
 }
 
@@ -2959,6 +2971,16 @@ fn constructor_signature_text(
         text.push(' ');
     }
     text.push_str(&alloc::format!("{declaring}({})", parameters.join(",")));
+    let exceptions = vm.classes.get(class).methods[slot as usize]
+        .exceptions
+        .clone();
+    if !exceptions.is_empty() {
+        let names: Vec<String> = exceptions
+            .iter()
+            .map(|exception| crate::binary_name(vm, *exception))
+            .collect();
+        text.push_str(&alloc::format!(" throws {}", names.join(",")));
+    }
     Ok(text)
 }
 

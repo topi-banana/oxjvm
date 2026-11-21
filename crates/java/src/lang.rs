@@ -57,15 +57,26 @@ const OBJECT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         ACC_PUBLIC | ACC_FINAL,
         object_notify_all,
     ),
-    method("wait", "()V", ACC_PUBLIC | ACC_FINAL, |vm, _, args| {
-        object_wait(vm, args, None)
-    }),
-    method("wait", "(J)V", ACC_PUBLIC | ACC_FINAL, object_wait_timeout),
-    method(
+    method_throws(
+        "wait",
+        "()V",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| object_wait(vm, args, None),
+        &["java/lang/InterruptedException"],
+    ),
+    method_throws(
+        "wait",
+        "(J)V",
+        ACC_PUBLIC | ACC_FINAL,
+        object_wait_timeout,
+        &["java/lang/InterruptedException"],
+    ),
+    method_throws(
         "wait",
         "(JI)V",
         ACC_PUBLIC | ACC_FINAL,
         object_wait_timeout_nanos,
+        &["java/lang/InterruptedException"],
     ),
     method("finalize", "()V", ACC_PROTECTED, |_, _, _| void()),
 ];
@@ -7964,35 +7975,47 @@ const THREAD_METHODS: [oxjvm_vm::NativeMethodDef; 51] = [
         vm.join_thread(receiver(args), total);
         void()
     }),
-    method("sleep", "(J)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
-        let millis = long_arg(args, 0);
-        if millis < 0 {
-            return Err(vm.throw_new(
-                "java/lang/IllegalArgumentException",
-                Some("timeout value is negative"),
-            ));
-        }
-        vm.sleep_current(millis);
-        void()
-    }),
-    method("sleep", "(JI)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
-        let millis = long_arg(args, 0);
-        let nanos = int_arg(args, 1);
-        if millis < 0 {
-            return Err(vm.throw_new(
-                "java/lang/IllegalArgumentException",
-                Some("timeout value is negative"),
-            ));
-        }
-        if !(0..=999_999).contains(&nanos) {
-            return Err(vm.throw_new(
-                "java/lang/IllegalArgumentException",
-                Some("nanosecond timeout value out of range"),
-            ));
-        }
-        vm.sleep_current(millis + i64::from(nanos > 0));
-        void()
-    }),
+    method_throws(
+        "sleep",
+        "(J)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let millis = long_arg(args, 0);
+            if millis < 0 {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("timeout value is negative"),
+                ));
+            }
+            vm.sleep_current(millis);
+            void()
+        },
+        &["java/lang/InterruptedException"],
+    ),
+    method_throws(
+        "sleep",
+        "(JI)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let millis = long_arg(args, 0);
+            let nanos = int_arg(args, 1);
+            if millis < 0 {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("timeout value is negative"),
+                ));
+            }
+            if !(0..=999_999).contains(&nanos) {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("nanosecond timeout value out of range"),
+                ));
+            }
+            vm.sleep_current(millis + i64::from(nanos > 0));
+            void()
+        },
+        &["java/lang/InterruptedException"],
+    ),
     method("yield", "()V", ACC_PUBLIC | ACC_STATIC, |vm, _, _| {
         vm.yield_current();
         void()
