@@ -234,6 +234,10 @@ pub struct Vm<'a> {
     pub(crate) primitive_classes: BTreeMap<oxjvm_classfile::BaseType, ClassId>,
     /// Guest-set system properties (`System.setProperty`), checked before the defaults/host.
     pub(crate) properties: BTreeMap<String, String>,
+    /// The `user.dir` captured at first file-system use, mirroring the JDK's
+    /// `UnixFileSystem.userDir`: later `System.setProperty("user.dir", …)`
+    /// changes do not affect relative path resolution (bug 8194154).
+    pub file_user_dir: Option<String>,
     /// Whether the boot sequence has completed.
     pub(crate) booted: bool,
     /// Cached boxed primitives, keyed by wrapper tag and value, so the wrapper classes can keep
@@ -300,6 +304,7 @@ impl<'a> Vm<'a> {
             trace: false,
             primitive_classes: BTreeMap::new(),
             properties: BTreeMap::new(),
+            file_user_dir: None,
             booted: false,
             boxed_cache: BTreeMap::new(),
         };

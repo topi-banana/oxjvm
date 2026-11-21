@@ -883,7 +883,16 @@ pub(crate) fn absolute_of_path(vm: &mut Vm<'_>, path: &str) -> String {
     if path.starts_with('/') {
         return path.to_string();
     }
-    let cwd = crate::lang::system_property(vm, "user.dir").unwrap_or_else(|| "/".into());
+    // The JDK captures user.dir once at file-system initialization; resolve
+    // against that snapshot, not the live property (bug 8194154).
+    let cwd = match vm.file_user_dir.clone() {
+        Some(dir) => dir,
+        None => {
+            let dir = crate::lang::system_property(vm, "user.dir").unwrap_or_else(|| "/".into());
+            vm.file_user_dir = Some(dir.clone());
+            dir
+        }
+    };
     let cwd = cwd.trim_end_matches('/');
     if path.is_empty() {
         if cwd.is_empty() {
