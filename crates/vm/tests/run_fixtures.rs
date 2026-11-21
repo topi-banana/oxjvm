@@ -804,19 +804,15 @@ fn parses_boolean_system_properties() {
         assert_eq!(value.as_int(), expected, "{text:?}");
     }
 
-    // A null key throws NullPointerException.
+    // A null key yields false: Boolean.getBoolean catches the NullPointerException
+    // raised by System.getProperty(null) and returns false (matching the JDK).
     let (declaring, null_key) = vm
         .find_method(class, "getBooleanNullKey", "()Z")
         .expect("getBooleanNullKey");
-    let result = vm.invoke_method(declaring, null_key, Vec::new());
-    let Err(error) = result else {
-        panic!("expected a Java exception")
-    };
-    let VmError::Thrown(exception) = error else {
-        panic!("expected a Java exception");
-    };
-    let thrown = vm.class_of(exception);
-    assert_eq!(vm.class_name(thrown), "java/lang/NullPointerException");
+    let value = vm
+        .invoke_method(declaring, null_key, Vec::new())
+        .expect("getBooleanNullKey");
+    assert_eq!(value.as_int(), 0);
 }
 
 #[test]

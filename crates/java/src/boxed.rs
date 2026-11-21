@@ -1,6 +1,6 @@
 //! The boxed primitive classes and `Number`.
 
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -500,6 +500,11 @@ const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 52] = [
 
 /// `Integer.getInteger`: the system property parsed as an int, or the default.
 fn integer_get_integer(vm: &mut Vm<'_>, args: &[Value], default: Value) -> Result<Value, VmError> {
+    // The JDK catches NullPointerException from System.getProperty and returns
+    // the default, so a null name yields the default rather than throwing.
+    if args[0].as_ref().is_null() {
+        return Ok(default);
+    }
     let key = string_arg(vm, args[0])?;
     if let Some(text) = crate::lang::system_property(vm, &key) {
         if let Some(value) = format::parse_int(&text) {
@@ -1499,6 +1504,11 @@ const LONG_METHODS: [oxjvm_vm::NativeMethodDef; 51] = [
 
 /// `Long.getLong`: the system property parsed as a long, or the default when unset/unparseable.
 fn long_get_long(vm: &mut Vm<'_>, args: &[Value], default: Value) -> Result<Value, VmError> {
+    // The JDK catches NullPointerException from System.getProperty and returns
+    // the default, so a null name yields the default rather than throwing.
+    if args[0].as_ref().is_null() {
+        return Ok(default);
+    }
     let key = string_arg(vm, args[0])?;
     if let Some(text) = crate::lang::system_property(vm, &key) {
         if let Some(value) = format::parse_long(&text) {
@@ -1634,7 +1644,7 @@ pub(crate) const LONG: oxjvm_vm::NativeClass = class(
 // Short / Byte / Boolean / Character / Float / Double / Void
 // -------------------------------------------------------------------------------------------
 
-const SHORT_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const SHORT_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method("<init>", "(S)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), int_arg(args, 1));
         void()
@@ -1660,6 +1670,9 @@ const SHORT_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         ACC_PUBLIC | ACC_STATIC,
         |_, _, args| int(i32::from(int_arg(args, 0) as i16 as u16)),
     ),
+    method("compare", "(SS)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        int(int_arg(args, 0) as i16 as i32 - int_arg(args, 1) as i16 as i32)
+    }),
     method(
         "toString",
         "()Ljava/lang/String;",
@@ -1716,10 +1729,8 @@ const SHORT_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         "(Ljava/lang/Short;)I",
         ACC_PUBLIC,
         |vm, _, args| {
-            int(compare_ints(
-                read_value_int(vm, receiver(args)),
-                read_value_int(vm, ref_arg(args, 1)),
-            ))
+            int(read_value_int(vm, receiver(args)) as i16 as i32
+                - read_value_int(vm, ref_arg(args, 1)) as i16 as i32)
         },
     ),
     method(
@@ -1776,7 +1787,7 @@ pub(crate) const SHORT: oxjvm_vm::NativeClass = class(
     Some(short_clinit),
 );
 
-const BYTE_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+const BYTE_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
     method("<init>", "(B)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), int_arg(args, 1));
         void()
@@ -1799,6 +1810,9 @@ const BYTE_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
         ACC_PUBLIC | ACC_STATIC,
         |_, _, args| int(i32::from(int_arg(args, 0) as i8 as u8)),
     ),
+    method("compare", "(BB)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+        int(int_arg(args, 0) as i8 as i32 - int_arg(args, 1) as i8 as i32)
+    }),
     method(
         "toString",
         "()Ljava/lang/String;",
@@ -1840,10 +1854,8 @@ const BYTE_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
         "(Ljava/lang/Byte;)I",
         ACC_PUBLIC,
         |vm, _, args| {
-            int(compare_ints(
-                read_value_int(vm, receiver(args)),
-                read_value_int(vm, ref_arg(args, 1)),
-            ))
+            int(read_value_int(vm, receiver(args)) as i8 as i32
+                - read_value_int(vm, ref_arg(args, 1)) as i8 as i32)
         },
     ),
     method(
@@ -2081,6 +2093,11 @@ fn boolean_get_boolean(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
+    // The JDK catches NullPointerException from System.getProperty and returns
+    // false, so a null name yields false rather than throwing.
+    if args[0].as_ref().is_null() {
+        return boolean(false);
+    }
     let key = string_arg(vm, args[0])?;
     boolean(parse_boolean(
         crate::lang::system_property(vm, &key).as_deref(),
@@ -2425,9 +2442,10 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
         "(C)Ljava/lang/String;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            let unit = int_arg(args, 0) as u32 & 0xFFFF;
-            let text = char::from_u32(unit).map_or_else(String::new, |ch| ch.to_string());
-            object(vm.make_string(&text)?)
+            let unit = int_arg(args, 0) as u16;
+            // A char is always a single UTF-16 unit, even a lone surrogate, so
+            // build the string from the raw unit rather than a scalar value.
+            object(vm.make_string_utf16(alloc::vec![unit])?)
         },
     ),
     method(
@@ -2435,10 +2453,8 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
         "(Ljava/lang/Character;)I",
         ACC_PUBLIC,
         |vm, _, args| {
-            int(compare_ints(
-                read_value_int(vm, receiver(args)),
-                read_value_int(vm, ref_arg(args, 1)),
-            ))
+            int(read_value_int(vm, receiver(args)) as u16 as i32
+                - read_value_int(vm, ref_arg(args, 1)) as u16 as i32)
         },
     ),
     method(

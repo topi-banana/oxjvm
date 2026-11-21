@@ -37,7 +37,8 @@ public class SystemProperties {
         return Boolean.getBoolean(key);
     }
 
-    // A null key throws NullPointerException, just like System.getProperty.
+    // A null key yields false: Boolean.getBoolean catches the NullPointerException
+    // from System.getProperty(null), matching the JDK.
     public static boolean getBooleanNullKey() {
         return Boolean.getBoolean(null);
     }
