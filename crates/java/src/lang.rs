@@ -1900,9 +1900,14 @@ const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 73] = [
         "(Ljava/util/Locale;)Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let text = vm.string_or_empty(receiver(args));
+            let this = receiver(args);
+            let text = vm.string_or_empty(this);
             let language = locale_language(vm, ref_arg(args, 1))?;
-            object(vm.make_string(&localized_case(&text, &language, true))?)
+            let converted = localized_case(&text, &language, true);
+            if converted == text && !this.is_null() {
+                return object(this);
+            }
+            object(vm.make_string(&converted)?)
         },
     ),
     method(
@@ -1910,9 +1915,14 @@ const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 73] = [
         "(Ljava/util/Locale;)Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let text = vm.string_or_empty(receiver(args));
+            let this = receiver(args);
+            let text = vm.string_or_empty(this);
             let language = locale_language(vm, ref_arg(args, 1))?;
-            object(vm.make_string(&localized_case(&text, &language, false))?)
+            let converted = localized_case(&text, &language, false);
+            if converted == text && !this.is_null() {
+                return object(this);
+            }
+            object(vm.make_string(&converted)?)
         },
     ),
     method("getBytes", "()[B", ACC_PUBLIC, string_get_bytes),
@@ -3526,9 +3536,13 @@ fn string_to_upper(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let text = vm.string_or_empty(receiver(args));
+    let this = receiver(args);
+    let text = vm.string_or_empty(this);
     let language = crate::locale::locale_default_language(vm);
     let converted = localized_case(&text, &language, true);
+    if converted == text && !this.is_null() {
+        return object(this);
+    }
     object(vm.make_string(&converted)?)
 }
 
@@ -3537,9 +3551,13 @@ fn string_to_lower(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let text = vm.string_or_empty(receiver(args));
+    let this = receiver(args);
+    let text = vm.string_or_empty(this);
     let language = crate::locale::locale_default_language(vm);
     let converted = localized_case(&text, &language, false);
+    if converted == text && !this.is_null() {
+        return object(this);
+    }
     object(vm.make_string(&converted)?)
 }
 
