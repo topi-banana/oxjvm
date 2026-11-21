@@ -6,8 +6,8 @@
 //! payload keeps the entries in that order. So `firstKey`, `keySet` and the rest walk the map in
 //! the order the JDK promises, and the collector never has to ask the guest a question.
 //!
-//! The range views (`headMap`, `tailMap`, `subMap`, and the `Set` views) hand back a copy rather
-//! than a live view, and the sorted views are snapshots as well.
+//! The `TreeSet` range views (`headSet`, `tailSet`, `subSet`) are live views of the backing set;
+//! the `TreeMap` range views and the sorted views are snapshots.
 
 use alloc::string::String;
 use alloc::vec;
@@ -21,7 +21,7 @@ use crate::util::{
     collection_to_array_into, hash_set_present, keys_equal, new_entry, new_entry_immutable,
     object_hash, seq_map_view_new, value_to_string,
 };
-use crate::{boolean, class, field, int, method, object, receiver, ref_arg, void};
+use crate::{boolean, class, field, int, int_arg, method, object, receiver, ref_arg, void};
 
 // -------------------------------------------------------------------------------------------
 // Shared helpers
@@ -2473,37 +2473,504 @@ fn tree_set_lower(
     object(element)
 }
 
-/// A copy of the set holding the elements before `element` (`headSet`), from `element` on
-/// (`tailSet`), or between two elements (`subSet`).
-fn tree_set_range(
+// -------------------------------------------------------------------------------------------
+// Live TreeSet range views (headSet/tailSet/subSet): mutations reach the backing set.
+// -------------------------------------------------------------------------------------------
+
+fn range_view_backing(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "backing", "Ljava/util/TreeSet;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn range_view_bounds(vm: &Vm<'_>, this: ObjectRef) -> (ObjectRef, bool, ObjectRef, bool) {
+    let class = vm.class_of(this);
+    let from = vm
+        .read_ref_field(this, class, "from", "Ljava/lang/Object;")
+        .unwrap_or(ObjectRef::NULL);
+    let to = vm
+        .read_ref_field(this, class, "to", "Ljava/lang/Object;")
+        .unwrap_or(ObjectRef::NULL);
+    let from_inclusive = vm
+        .read_instance_int_named(this, class, "fromInclusive", "Z")
+        .unwrap_or(0)
+        != 0;
+    let to_inclusive = vm
+        .read_instance_int_named(this, class, "toInclusive", "Z")
+        .unwrap_or(0)
+        != 0;
+    (from, from_inclusive, to, to_inclusive)
+}
+
+/// Whether `element` lies within the range bounds.
+fn range_view_in(
     vm: &mut Vm<'_>,
-    this: ObjectRef,
+    ordering: ObjectRef,
+    from: ObjectRef,
+    from_inclusive: bool,
+    to: ObjectRef,
+    to_inclusive: bool,
+    element: ObjectRef,
+) -> Result<bool, VmError> {
+    if !from.is_null() {
+        let cmp = compare_keys(vm, ordering, element, from)?;
+        if cmp < 0 || (cmp == 0 && !from_inclusive) {
+            return Ok(false);
+        }
+    }
+    if !to.is_null() {
+        let cmp = compare_keys(vm, ordering, element, to)?;
+        if cmp > 0 || (cmp == 0 && !to_inclusive) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn range_view_elements(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Vec<ObjectRef>, VmError> {
+    let backing = range_view_backing(vm, this);
+    let ordering = ordering_of(vm, backing);
+    let (from, from_inclusive, to, to_inclusive) = range_view_bounds(vm, this);
+    let mut out = Vec::new();
+    for element in keys(vm, backing) {
+        if range_view_in(
+            vm,
+            ordering,
+            from,
+            from_inclusive,
+            to,
+            to_inclusive,
+            element,
+        )? {
+            out.push(element);
+        }
+    }
+    Ok(out)
+}
+
+fn range_view_new(
+    vm: &mut Vm<'_>,
+    backing: ObjectRef,
     from: Option<ObjectRef>,
+    from_inclusive: bool,
     to: Option<ObjectRef>,
+    to_inclusive: bool,
 ) -> Result<ObjectRef, VmError> {
-    let ordering = ordering_of(vm, this);
+    let ordering = ordering_of(vm, backing);
     if let Some(from) = from {
         check_range_bound(vm, ordering, from)?;
     }
     if let Some(to) = to {
         check_range_bound(vm, ordering, to)?;
     }
-    let range = new_sorted_map(vm, "java/util/TreeSet", ordering)?;
-    let present = hash_set_present(vm)?;
-    for element in keys(vm, this) {
-        if let Some(from) = from {
-            if compare_keys(vm, ordering, element, from)? < 0 {
-                continue;
-            }
-        }
-        if let Some(to) = to {
-            if compare_keys(vm, ordering, element, to)? >= 0 {
-                continue;
-            }
-        }
-        put_value(vm, range, element, present)?;
+    let class = vm.resolve_class("java/util/OxjvmTreeSetRangeView")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "backing", "Ljava/util/TreeSet;")?;
+    vm.set_instance_ref(instance, declaring, field, backing);
+    for (name, value) in [
+        ("from", from.unwrap_or(ObjectRef::NULL)),
+        ("to", to.unwrap_or(ObjectRef::NULL)),
+    ] {
+        let (declaring, field) = vm.find_field(class, name, "Ljava/lang/Object;")?;
+        vm.set_instance_ref(instance, declaring, field, value);
     }
-    Ok(range)
+    for (name, value) in [
+        ("fromInclusive", from_inclusive),
+        ("toInclusive", to_inclusive),
+    ] {
+        if let Some((declaring, field)) = vm.find_field_opt(class, name, "Z") {
+            vm.set_instance_int(instance, declaring, field, i32::from(value));
+        }
+    }
+    Ok(instance)
+}
+
+/// A sub-range of a range view: the new bounds must lie inside the view's own.
+fn range_view_sub(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    from: Option<ObjectRef>,
+    from_inclusive: bool,
+    to: Option<ObjectRef>,
+    to_inclusive: bool,
+) -> Result<ObjectRef, VmError> {
+    let backing = range_view_backing(vm, this);
+    let ordering = ordering_of(vm, backing);
+    let (view_from, view_from_inclusive, view_to, view_to_inclusive) = range_view_bounds(vm, this);
+    if let Some(from) = from {
+        if !view_from.is_null() {
+            let cmp = compare_keys(vm, ordering, from, view_from)?;
+            if cmp < 0 || (cmp == 0 && !from_inclusive && view_from_inclusive) {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+        }
+    }
+    if let Some(to) = to {
+        if !view_to.is_null() {
+            let cmp = compare_keys(vm, ordering, to, view_to)?;
+            if cmp > 0 || (cmp == 0 && !to_inclusive && view_to_inclusive) {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+        }
+    }
+    range_view_new(vm, backing, from, from_inclusive, to, to_inclusive)
+}
+
+const TREE_SET_RANGE_VIEW_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(range_view_elements(vm, receiver(args))?.len() as i32)
+    }),
+    method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(range_view_elements(vm, receiver(args))?.is_empty())
+    }),
+    method(
+        "contains",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let backing = range_view_backing(vm, this);
+            let ordering = ordering_of(vm, backing);
+            let (from, from_inclusive, to, to_inclusive) = range_view_bounds(vm, this);
+            let element = ref_arg(args, 1);
+            if !range_view_in(
+                vm,
+                ordering,
+                from,
+                from_inclusive,
+                to,
+                to_inclusive,
+                element,
+            )? {
+                return boolean(false);
+            }
+            let (_, found) = search_key(vm, backing, element)?;
+            boolean(found)
+        },
+    ),
+    method(
+        "iterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let elements = range_view_elements(vm, this)?;
+            let class = vm.resolve_class("java/util/OxjvmTreeMapIterator")?;
+            let iterator = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "backing", "Ljava/util/TreeMap;")?;
+            vm.set_instance_ref(iterator, declaring, field, range_view_backing(vm, this));
+            crate::lang::write_int_field(vm, iterator, "kind", 0);
+            let object_class = vm.resolve_class("java/lang/Object")?;
+            let array = vm.allocate_object_array(object_class, elements.len())?;
+            for (index, element) in elements.iter().enumerate() {
+                vm.array_set_ref(array, index, *element)?;
+            }
+            let (declaring, field) = vm.find_field(class, "elements", "[Ljava/lang/Object;")?;
+            vm.set_instance_ref(iterator, declaring, field, array);
+            crate::lang::write_int_field(vm, iterator, "cursor", 0);
+            crate::lang::write_int_field(vm, iterator, "last", -1);
+            object(iterator)
+        },
+    ),
+    method(
+        "toArray",
+        "()[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = range_view_elements(vm, receiver(args))?;
+            let object_class = vm.resolve_class("java/lang/Object")?;
+            let array = vm.allocate_object_array(object_class, elements.len())?;
+            for (index, element) in elements.iter().enumerate() {
+                vm.array_set_ref(array, index, *element)?;
+            }
+            object(array)
+        },
+    ),
+    method(
+        "toArray",
+        "([Ljava/lang/Object;)[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = range_view_elements(vm, receiver(args))?;
+            collection_to_array_into(vm, &elements, ref_arg(args, 1))
+        },
+    ),
+    method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let backing = range_view_backing(vm, this);
+        let ordering = ordering_of(vm, backing);
+        let (from, from_inclusive, to, to_inclusive) = range_view_bounds(vm, this);
+        let element = ref_arg(args, 1);
+        if !range_view_in(
+            vm,
+            ordering,
+            from,
+            from_inclusive,
+            to,
+            to_inclusive,
+            element,
+        )? {
+            return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+        }
+        let (_, found) = search_key(vm, backing, element)?;
+        if found {
+            return boolean(false);
+        }
+        let present = hash_set_present(vm)?;
+        put_value(vm, backing, element, present)?;
+        boolean(true)
+    }),
+    method(
+        "remove",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let backing = range_view_backing(vm, this);
+            let ordering = ordering_of(vm, backing);
+            let (from, from_inclusive, to, to_inclusive) = range_view_bounds(vm, this);
+            let element = ref_arg(args, 1);
+            if !range_view_in(
+                vm,
+                ordering,
+                from,
+                from_inclusive,
+                to,
+                to_inclusive,
+                element,
+            )? {
+                return boolean(false);
+            }
+            let (_, found) = search_key(vm, backing, element)?;
+            if found {
+                remove_key(vm, backing, element)?;
+            }
+            boolean(found)
+        },
+    ),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let backing = range_view_backing(vm, this);
+        for element in range_view_elements(vm, this)? {
+            remove_key(vm, backing, element)?;
+        }
+        void()
+    }),
+    method(
+        "first",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let elements = range_view_elements(vm, receiver(args))?;
+            let Some(first) = elements.first() else {
+                return Err(vm.throw_new("java/util/NoSuchElementException", None));
+            };
+            object(*first)
+        },
+    ),
+    method("last", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let elements = range_view_elements(vm, receiver(args))?;
+        let Some(last) = elements.last() else {
+            return Err(vm.throw_new("java/util/NoSuchElementException", None));
+        };
+        object(*last)
+    }),
+    method(
+        "comparator",
+        "()Ljava/util/Comparator;",
+        ACC_PUBLIC,
+        |vm, _, args| object(ordering_of(vm, range_view_backing(vm, receiver(args)))),
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let mut text = String::from("[");
+            for (index, element) in range_view_elements(vm, receiver(args))?.iter().enumerate() {
+                if index > 0 {
+                    text.push_str(", ");
+                }
+                text.push_str(&value_to_string(vm, *element)?);
+            }
+            text.push(']');
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if other.is_null() {
+                return boolean(false);
+            }
+            let set_class = vm.resolve_class("java/util/Set")?;
+            if !vm.is_instance(other, set_class) {
+                return boolean(false);
+            }
+            let elements = range_view_elements(vm, this)?;
+            let other_size = call(vm, other, "size", "()I", &[])?.as_int();
+            if other_size != elements.len() as i32 {
+                return boolean(false);
+            }
+            for element in elements {
+                if call(
+                    vm,
+                    other,
+                    "contains",
+                    "(Ljava/lang/Object;)Z",
+                    &[Value::Ref(element)],
+                )?
+                .as_int()
+                    == 0
+                {
+                    return boolean(false);
+                }
+            }
+            boolean(true)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let mut sum = 0i32;
+        for element in range_view_elements(vm, receiver(args))? {
+            sum = sum.wrapping_add(object_hash(vm, element)?);
+        }
+        int(sum)
+    }),
+    method(
+        "headSet",
+        "(Ljava/lang/Object;)Ljava/util/SortedSet;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (from, from_inclusive, _, _) = range_view_bounds(vm, this);
+            let from = (!from.is_null()).then_some(from);
+            object(range_view_sub(
+                vm,
+                this,
+                from,
+                from_inclusive,
+                Some(ref_arg(args, 1)),
+                false,
+            )?)
+        },
+    ),
+    method(
+        "headSet",
+        "(Ljava/lang/Object;Z)Ljava/util/NavigableSet;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (from, from_inclusive, _, _) = range_view_bounds(vm, this);
+            let from = (!from.is_null()).then_some(from);
+            object(range_view_sub(
+                vm,
+                this,
+                from,
+                from_inclusive,
+                Some(ref_arg(args, 1)),
+                int_arg(args, 2) != 0,
+            )?)
+        },
+    ),
+    method(
+        "tailSet",
+        "(Ljava/lang/Object;)Ljava/util/SortedSet;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (_, _, to, to_inclusive) = range_view_bounds(vm, this);
+            let to = (!to.is_null()).then_some(to);
+            object(range_view_sub(
+                vm,
+                this,
+                Some(ref_arg(args, 1)),
+                true,
+                to,
+                to_inclusive,
+            )?)
+        },
+    ),
+    method(
+        "tailSet",
+        "(Ljava/lang/Object;Z)Ljava/util/NavigableSet;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (_, _, to, to_inclusive) = range_view_bounds(vm, this);
+            let to = (!to.is_null()).then_some(to);
+            object(range_view_sub(
+                vm,
+                this,
+                Some(ref_arg(args, 1)),
+                int_arg(args, 2) != 0,
+                to,
+                to_inclusive,
+            )?)
+        },
+    ),
+    method(
+        "subSet",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/SortedSet;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(range_view_sub(
+                vm,
+                receiver(args),
+                Some(ref_arg(args, 1)),
+                true,
+                Some(ref_arg(args, 2)),
+                false,
+            )?)
+        },
+    ),
+    method(
+        "subSet",
+        "(Ljava/lang/Object;ZLjava/lang/Object;Z)Ljava/util/NavigableSet;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(range_view_sub(
+                vm,
+                receiver(args),
+                Some(ref_arg(args, 1)),
+                int_arg(args, 2) != 0,
+                Some(ref_arg(args, 3)),
+                int_arg(args, 4) != 0,
+            )?)
+        },
+    ),
+];
+
+pub(crate) const TREE_SET_RANGE_VIEW: oxjvm_vm::NativeClass = class(
+    "java/util/OxjvmTreeSetRangeView",
+    Some("java/lang/Object"),
+    &[
+        "java/util/Collection",
+        "java/util/Set",
+        "java/util/SortedSet",
+        "java/util/NavigableSet",
+    ],
+    ACC_PUBLIC,
+    &[
+        field("backing", "Ljava/util/TreeSet;", ACC_PRIVATE, None),
+        field("from", "Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("to", "Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("fromInclusive", "Z", ACC_PRIVATE, None),
+        field("toInclusive", "Z", ACC_PRIVATE, None),
+    ],
+    &TREE_SET_RANGE_VIEW_METHODS,
+    None,
+);
+
+fn tree_set_range(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    from: Option<ObjectRef>,
+    to: Option<ObjectRef>,
+) -> Result<ObjectRef, VmError> {
+    range_view_new(vm, this, from, true, to, false)
 }
 
 /// `TreeSet.headSet(Object)`.
@@ -2550,31 +3017,7 @@ fn tree_set_range_flags(
     to: Option<ObjectRef>,
     to_inclusive: bool,
 ) -> Result<ObjectRef, VmError> {
-    let ordering = ordering_of(vm, this);
-    if let Some(from) = from {
-        check_range_bound(vm, ordering, from)?;
-    }
-    if let Some(to) = to {
-        check_range_bound(vm, ordering, to)?;
-    }
-    let range = new_sorted_map(vm, "java/util/TreeSet", ordering)?;
-    let present = hash_set_present(vm)?;
-    for element in keys(vm, this) {
-        if let Some(from) = from {
-            let cmp = compare_keys(vm, ordering, element, from)?;
-            if cmp < 0 || (cmp == 0 && !from_inclusive) {
-                continue;
-            }
-        }
-        if let Some(to) = to {
-            let cmp = compare_keys(vm, ordering, element, to)?;
-            if cmp > 0 || (cmp == 0 && !to_inclusive) {
-                continue;
-            }
-        }
-        put_value(vm, range, element, present)?;
-    }
-    Ok(range)
+    range_view_new(vm, this, from, from_inclusive, to, to_inclusive)
 }
 
 /// `TreeSet.subSet(Object, boolean, Object, boolean)`.
@@ -2587,9 +3030,9 @@ fn tree_set_sub_set_flags(
         vm,
         receiver(args),
         Some(ref_arg(args, 1)),
-        crate::int_arg(args, 2) != 0,
+        int_arg(args, 2) != 0,
         Some(ref_arg(args, 3)),
-        crate::int_arg(args, 4) != 0,
+        int_arg(args, 4) != 0,
     )?;
     object(range)
 }
@@ -2606,7 +3049,7 @@ fn tree_set_head_set_flags(
         None,
         false,
         Some(ref_arg(args, 1)),
-        crate::int_arg(args, 2) != 0,
+        int_arg(args, 2) != 0,
     )?;
     object(range)
 }
@@ -2621,7 +3064,7 @@ fn tree_set_tail_set_flags(
         vm,
         receiver(args),
         Some(ref_arg(args, 1)),
-        crate::int_arg(args, 2) != 0,
+        int_arg(args, 2) != 0,
         None,
         false,
     )?;
