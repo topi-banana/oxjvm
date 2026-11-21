@@ -7161,11 +7161,78 @@ fn array_list_to_array_into(
 
 /// `Collection.toArray(T[])`: reuse `target` when it is large enough, otherwise allocate an
 /// array with `target`'s runtime component type, and null-terminate as the JDK does.
+/// The iterator of a collection, for the iterator-driven `toArray` algorithms.
+fn collection_iterator(vm: &mut Vm<'_>, collection: ObjectRef) -> Result<ObjectRef, VmError> {
+    let (class, method) =
+        vm.resolve_virtual_method(collection, "iterator", "()Ljava/util/Iterator;")?;
+    Ok(vm
+        .invoke_method(class, method, vec![Value::Ref(collection)])?
+        .as_ref())
+}
+
+fn iterator_has_next(vm: &mut Vm<'_>, iterator: ObjectRef) -> Result<bool, VmError> {
+    let (class, method) = vm.resolve_virtual_method(iterator, "hasNext", "()Z")?;
+    Ok(vm
+        .invoke_method(class, method, vec![Value::Ref(iterator)])?
+        .as_int()
+        != 0)
+}
+
+fn iterator_next(vm: &mut Vm<'_>, iterator: ObjectRef) -> Result<ObjectRef, VmError> {
+    let (class, method) = vm.resolve_virtual_method(iterator, "next", "()Ljava/lang/Object;")?;
+    Ok(vm
+        .invoke_method(class, method, vec![Value::Ref(iterator)])?
+        .as_ref())
+}
+
+/// `Arrays.copyOf` for object arrays, keeping the component type.
+fn copy_object_array(
+    vm: &mut Vm<'_>,
+    source: ObjectRef,
+    length: usize,
+) -> Result<ObjectRef, VmError> {
+    let array = vm.allocate_array(vm.class_of(source), length)?;
+    let copied = vm.array_length(source)?.min(length);
+    for index in 0..copied {
+        let element = vm.array_get(source, index as i32)?.as_ref();
+        vm.array_set_ref(array, index, element)?;
+    }
+    Ok(array)
+}
+
+/// `AbstractCollection.finishToArray`: the collection grew while copying, so keep
+/// draining the iterator into a growing array and trim it to the final size.
+fn collection_finish_to_array(
+    vm: &mut Vm<'_>,
+    mut array: ObjectRef,
+    iterator: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    let mut index = vm.array_length(array)?;
+    while iterator_has_next(vm, iterator)? {
+        let capacity = vm.array_length(array)?;
+        if index == capacity {
+            let new_capacity = capacity + (capacity >> 1) + 1;
+            array = copy_object_array(vm, array, new_capacity)?;
+        }
+        let element = iterator_next(vm, iterator)?;
+        vm.array_set_ref(array, index, element)?;
+        index += 1;
+    }
+    if index == vm.array_length(array)? {
+        Ok(array)
+    } else {
+        copy_object_array(vm, array, index)
+    }
+}
+
 pub(crate) fn collection_to_array_into(
     vm: &mut Vm<'_>,
     elements: &[ObjectRef],
     target: ObjectRef,
 ) -> Result<Value, VmError> {
+    if target.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
     let length = vm.array_length(target)?;
     let array = if length >= elements.len() {
         target
@@ -9448,11 +9515,22 @@ const ABSTRACT_SET_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         "()[Ljava/lang/Object;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let elements = collection_elements(vm, receiver(args))?;
+            let this = receiver(args);
+            let size = invoke_int(vm, this, "size")?.max(0) as usize;
             let object_class = vm.resolve_class("java/lang/Object")?;
-            let array = vm.allocate_object_array(object_class, elements.len())?;
-            for (index, element) in elements.iter().enumerate() {
-                vm.array_set_ref(array, index, *element)?;
+            let mut array = vm.allocate_object_array(object_class, size)?;
+            let iterator = collection_iterator(vm, this)?;
+            let mut index = 0;
+            while index < vm.array_length(array)? {
+                if !iterator_has_next(vm, iterator)? {
+                    return object(copy_object_array(vm, array, index)?);
+                }
+                let element = iterator_next(vm, iterator)?;
+                vm.array_set_ref(array, index, element)?;
+                index += 1;
+            }
+            if iterator_has_next(vm, iterator)? {
+                array = collection_finish_to_array(vm, array, iterator)?;
             }
             object(array)
         },
@@ -9462,8 +9540,49 @@ const ABSTRACT_SET_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         "([Ljava/lang/Object;)[Ljava/lang/Object;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let elements = collection_elements(vm, receiver(args))?;
-            collection_to_array_into(vm, &elements, ref_arg(args, 1))
+            let this = receiver(args);
+            let target = ref_arg(args, 1);
+            if target.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let size = invoke_int(vm, this, "size")?.max(0) as usize;
+            let target_len = vm.array_length(target)?;
+            let mut array = if target_len >= size {
+                target
+            } else {
+                vm.allocate_array(vm.class_of(target), size)?
+            };
+            let iterator = collection_iterator(vm, this)?;
+            let array_len = vm.array_length(array)?;
+            let mut index = 0;
+            while index < array_len {
+                if !iterator_has_next(vm, iterator)? {
+                    // Fewer elements than size() promised.
+                    if target == array {
+                        vm.array_set_ref(array, index, ObjectRef::NULL)?;
+                        return object(array);
+                    }
+                    if target_len < index {
+                        return object(copy_object_array(vm, array, index)?);
+                    }
+                    for slot in 0..index {
+                        let element = vm.array_get(array, slot as i32)?.as_ref();
+                        vm.array_set_ref(target, slot, element)?;
+                    }
+                    if target_len > index {
+                        vm.array_set_ref(target, index, ObjectRef::NULL)?;
+                    }
+                    return object(target);
+                }
+                let element = iterator_next(vm, iterator)?;
+                vm.array_set_ref(array, index, element)?;
+                index += 1;
+            }
+            // More elements than size() promised: grow while the iterator lasts.
+            if iterator_has_next(vm, iterator)? {
+                array = collection_finish_to_array(vm, array, iterator)?;
+            }
+            object(array)
         },
     ),
 ];
@@ -9515,11 +9634,22 @@ const ABSTRACT_COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         "()[Ljava/lang/Object;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let elements = collection_elements(vm, receiver(args))?;
+            let this = receiver(args);
+            let size = invoke_int(vm, this, "size")?.max(0) as usize;
             let object_class = vm.resolve_class("java/lang/Object")?;
-            let array = vm.allocate_object_array(object_class, elements.len())?;
-            for (index, element) in elements.iter().enumerate() {
-                vm.array_set_ref(array, index, *element)?;
+            let mut array = vm.allocate_object_array(object_class, size)?;
+            let iterator = collection_iterator(vm, this)?;
+            let mut index = 0;
+            while index < vm.array_length(array)? {
+                if !iterator_has_next(vm, iterator)? {
+                    return object(copy_object_array(vm, array, index)?);
+                }
+                let element = iterator_next(vm, iterator)?;
+                vm.array_set_ref(array, index, element)?;
+                index += 1;
+            }
+            if iterator_has_next(vm, iterator)? {
+                array = collection_finish_to_array(vm, array, iterator)?;
             }
             object(array)
         },
@@ -9529,8 +9659,49 @@ const ABSTRACT_COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         "([Ljava/lang/Object;)[Ljava/lang/Object;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let elements = collection_elements(vm, receiver(args))?;
-            collection_to_array_into(vm, &elements, ref_arg(args, 1))
+            let this = receiver(args);
+            let target = ref_arg(args, 1);
+            if target.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let size = invoke_int(vm, this, "size")?.max(0) as usize;
+            let target_len = vm.array_length(target)?;
+            let mut array = if target_len >= size {
+                target
+            } else {
+                vm.allocate_array(vm.class_of(target), size)?
+            };
+            let iterator = collection_iterator(vm, this)?;
+            let array_len = vm.array_length(array)?;
+            let mut index = 0;
+            while index < array_len {
+                if !iterator_has_next(vm, iterator)? {
+                    // Fewer elements than size() promised.
+                    if target == array {
+                        vm.array_set_ref(array, index, ObjectRef::NULL)?;
+                        return object(array);
+                    }
+                    if target_len < index {
+                        return object(copy_object_array(vm, array, index)?);
+                    }
+                    for slot in 0..index {
+                        let element = vm.array_get(array, slot as i32)?.as_ref();
+                        vm.array_set_ref(target, slot, element)?;
+                    }
+                    if target_len > index {
+                        vm.array_set_ref(target, index, ObjectRef::NULL)?;
+                    }
+                    return object(target);
+                }
+                let element = iterator_next(vm, iterator)?;
+                vm.array_set_ref(array, index, element)?;
+                index += 1;
+            }
+            // More elements than size() promised: grow while the iterator lasts.
+            if iterator_has_next(vm, iterator)? {
+                array = collection_finish_to_array(vm, array, iterator)?;
+            }
+            object(array)
         },
     ),
     method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, |vm, _, _| {
@@ -9820,11 +9991,22 @@ const ABSTRACT_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         "()[Ljava/lang/Object;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let elements = collection_elements(vm, receiver(args))?;
+            let this = receiver(args);
+            let size = invoke_int(vm, this, "size")?.max(0) as usize;
             let object_class = vm.resolve_class("java/lang/Object")?;
-            let array = vm.allocate_object_array(object_class, elements.len())?;
-            for (index, element) in elements.iter().enumerate() {
-                vm.array_set_ref(array, index, *element)?;
+            let mut array = vm.allocate_object_array(object_class, size)?;
+            let iterator = collection_iterator(vm, this)?;
+            let mut index = 0;
+            while index < vm.array_length(array)? {
+                if !iterator_has_next(vm, iterator)? {
+                    return object(copy_object_array(vm, array, index)?);
+                }
+                let element = iterator_next(vm, iterator)?;
+                vm.array_set_ref(array, index, element)?;
+                index += 1;
+            }
+            if iterator_has_next(vm, iterator)? {
+                array = collection_finish_to_array(vm, array, iterator)?;
             }
             object(array)
         },
@@ -9834,8 +10016,49 @@ const ABSTRACT_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         "([Ljava/lang/Object;)[Ljava/lang/Object;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let elements = collection_elements(vm, receiver(args))?;
-            collection_to_array_into(vm, &elements, ref_arg(args, 1))
+            let this = receiver(args);
+            let target = ref_arg(args, 1);
+            if target.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let size = invoke_int(vm, this, "size")?.max(0) as usize;
+            let target_len = vm.array_length(target)?;
+            let mut array = if target_len >= size {
+                target
+            } else {
+                vm.allocate_array(vm.class_of(target), size)?
+            };
+            let iterator = collection_iterator(vm, this)?;
+            let array_len = vm.array_length(array)?;
+            let mut index = 0;
+            while index < array_len {
+                if !iterator_has_next(vm, iterator)? {
+                    // Fewer elements than size() promised.
+                    if target == array {
+                        vm.array_set_ref(array, index, ObjectRef::NULL)?;
+                        return object(array);
+                    }
+                    if target_len < index {
+                        return object(copy_object_array(vm, array, index)?);
+                    }
+                    for slot in 0..index {
+                        let element = vm.array_get(array, slot as i32)?.as_ref();
+                        vm.array_set_ref(target, slot, element)?;
+                    }
+                    if target_len > index {
+                        vm.array_set_ref(target, index, ObjectRef::NULL)?;
+                    }
+                    return object(target);
+                }
+                let element = iterator_next(vm, iterator)?;
+                vm.array_set_ref(array, index, element)?;
+                index += 1;
+            }
+            // More elements than size() promised: grow while the iterator lasts.
+            if iterator_has_next(vm, iterator)? {
+                array = collection_finish_to_array(vm, array, iterator)?;
+            }
+            object(array)
         },
     ),
     method(
