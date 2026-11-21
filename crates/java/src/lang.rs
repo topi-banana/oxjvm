@@ -3268,9 +3268,19 @@ fn string_strip(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let text = vm.string_or_empty(receiver(args));
-    let stripped: String = text.trim().to_string();
-    object(vm.make_string(&stripped)?)
+    let units = vm
+        .string_utf16(receiver(args))
+        .map(<[u16]>::to_vec)
+        .unwrap_or_default();
+    let start = units
+        .iter()
+        .position(|unit| !java_is_whitespace(*unit))
+        .unwrap_or(units.len());
+    let end = units
+        .iter()
+        .rposition(|unit| !java_is_whitespace(*unit))
+        .map_or(start, |index| index + 1);
+    object(vm.make_string_utf16(units[start..end].to_vec())?)
 }
 
 fn string_strip_leading(
@@ -3278,9 +3288,15 @@ fn string_strip_leading(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let text = vm.string_or_empty(receiver(args));
-    let stripped: String = text.trim_start().to_string();
-    object(vm.make_string(&stripped)?)
+    let units = vm
+        .string_utf16(receiver(args))
+        .map(<[u16]>::to_vec)
+        .unwrap_or_default();
+    let start = units
+        .iter()
+        .position(|unit| !java_is_whitespace(*unit))
+        .unwrap_or(units.len());
+    object(vm.make_string_utf16(units[start..].to_vec())?)
 }
 
 fn string_strip_trailing(
@@ -3288,9 +3304,15 @@ fn string_strip_trailing(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let text = vm.string_or_empty(receiver(args));
-    let stripped: String = text.trim_end().to_string();
-    object(vm.make_string(&stripped)?)
+    let units = vm
+        .string_utf16(receiver(args))
+        .map(<[u16]>::to_vec)
+        .unwrap_or_default();
+    let end = units
+        .iter()
+        .rposition(|unit| !java_is_whitespace(*unit))
+        .map_or(0, |index| index + 1);
+    object(vm.make_string_utf16(units[..end].to_vec())?)
 }
 
 fn string_is_blank(
@@ -3298,8 +3320,9 @@ fn string_is_blank(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let text = vm.string_or_empty(receiver(args));
-    boolean(text.chars().all(char::is_whitespace))
+    let units = vm.string_utf16(receiver(args)).unwrap_or_default();
+    let blank = units.iter().all(|unit| java_is_whitespace(*unit));
+    boolean(blank)
 }
 
 fn string_repeat(

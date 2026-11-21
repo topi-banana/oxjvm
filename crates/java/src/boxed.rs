@@ -2299,7 +2299,51 @@ fn char_numeric_value(unit: u32) -> i32 {
     }
 }
 
-const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 63] = [
+/// Simple (single-character) uppercase mapping used by `Character.toUpperCase`:
+/// full mappings that expand to several characters (ß → SS, ﬁ → FI) have no
+/// simple form, so the character is returned unchanged.
+fn char_simple_upper(c: char) -> char {
+    // Greek letters with ypogegrammeni: the full uppercase expands to capital + Ι,
+    // but the simple mapping is the precomposed capital with prosgegrammeni.
+    match c {
+        '\u{1F80}'..='\u{1F87}' | '\u{1F90}'..='\u{1F97}' | '\u{1FA0}'..='\u{1FA7}' => {
+            return char::from_u32(c as u32 + 8).unwrap_or(c);
+        }
+        '\u{1FB3}' => return '\u{1FBC}',
+        '\u{1FC3}' => return '\u{1FCC}',
+        '\u{1FF3}' => return '\u{1FFC}',
+        _ => {}
+    }
+    let mut upper = c.to_uppercase();
+    let first = upper.next().unwrap_or(c);
+    if upper.next().is_some() { c } else { first }
+}
+
+/// Simple lowercase mapping; U+0130 is the one character whose full lowercase
+/// expands (i + combining dot) but whose simple mapping is a single character.
+fn char_simple_lower(c: char) -> char {
+    if c == '\u{0130}' {
+        return 'i';
+    }
+    let mut lower = c.to_lowercase();
+    let first = lower.next().unwrap_or(c);
+    if lower.next().is_some() { c } else { first }
+}
+
+/// Titlecase differs from uppercase only for the digraph characters; everything
+/// else uses the simple uppercase mapping.
+fn char_to_titlecase(c: char) -> char {
+    match c {
+        '\u{01C4}' | '\u{01C6}' => '\u{01C5}',
+        '\u{01C7}' | '\u{01C9}' => '\u{01C8}',
+        '\u{01CA}' | '\u{01CC}' => '\u{01CB}',
+        '\u{01F1}' | '\u{01F3}' => '\u{01F2}',
+        '\u{01C5}' | '\u{01C8}' | '\u{01CB}' | '\u{01F2}' => c,
+        _ => char_simple_upper(c),
+    }
+}
+
+const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 67] = [
     method("<init>", "(C)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), int_arg(args, 1));
         void()
@@ -2375,9 +2419,8 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 63] = [
         "(C)C",
         ACC_PUBLIC | ACC_STATIC,
         |_, _, args| {
-            let ch = char::from_u32(int_arg(args, 0) as u32 & 0xFFFF).unwrap_or('\u{FFFD}');
-            let upper: String = ch.to_uppercase().collect();
-            int(upper.chars().next().map_or(0, |c| c as i32))
+            let ch = int_arg(args, 0) as u32 & 0xFFFF;
+            int(char::from_u32(ch).map_or(ch as i32, |c| char_simple_upper(c) as i32))
         },
     ),
     method(
@@ -2385,9 +2428,44 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 63] = [
         "(C)C",
         ACC_PUBLIC | ACC_STATIC,
         |_, _, args| {
-            let ch = char::from_u32(int_arg(args, 0) as u32 & 0xFFFF).unwrap_or('\u{FFFD}');
-            let lower: String = ch.to_lowercase().collect();
-            int(lower.chars().next().map_or(0, |c| c as i32))
+            let ch = int_arg(args, 0) as u32 & 0xFFFF;
+            int(char::from_u32(ch).map_or(ch as i32, |c| char_simple_lower(c) as i32))
+        },
+    ),
+    method(
+        "toTitleCase",
+        "(C)C",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let ch = int_arg(args, 0) as u32 & 0xFFFF;
+            int(char::from_u32(ch).map_or(ch as i32, |c| char_to_titlecase(c) as i32))
+        },
+    ),
+    method(
+        "toUpperCase",
+        "(I)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let cp = int_arg(args, 0) as u32;
+            int(char::from_u32(cp).map_or(cp as i32, |c| char_simple_upper(c) as i32))
+        },
+    ),
+    method(
+        "toLowerCase",
+        "(I)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let cp = int_arg(args, 0) as u32;
+            int(char::from_u32(cp).map_or(cp as i32, |c| char_simple_lower(c) as i32))
+        },
+    ),
+    method(
+        "toTitleCase",
+        "(I)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let cp = int_arg(args, 0) as u32;
+            int(char::from_u32(cp).map_or(cp as i32, |c| char_to_titlecase(c) as i32))
         },
     ),
     method("digit", "(CI)I", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
