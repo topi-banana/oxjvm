@@ -278,6 +278,26 @@ fn tree_map_init_map(
     tree_map_put_all(vm, this, ref_arg(args, 1))
 }
 
+/// `TreeMap.<init>(SortedMap)`: like the Map constructor, but preserves the
+/// source's comparator (the JDK copies `m.comparator()`), so a null-tolerant
+/// ordering survives the copy.
+fn tree_map_init_sorted_map(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let source = ref_arg(args, 1);
+    if source.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let comparator = call(vm, source, "comparator", "()Ljava/util/Comparator;", &[])?;
+    let mut map = oxjvm_vm::SortedMap::new();
+    map.set_ordering(comparator.as_ref());
+    vm.set_sorted_map(this, map);
+    tree_map_put_all(vm, this, source)
+}
+
 /// `TreeMap.putAll(Map)`: copy the entries of `source` into the map.
 ///
 /// The source is walked through its own `keySet` and `get`, so any `Map` implementation works.
@@ -1200,7 +1220,7 @@ const TREE_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 66] = [
         "<init>",
         "(Ljava/util/SortedMap;)V",
         ACC_PUBLIC,
-        tree_map_init_map,
+        tree_map_init_sorted_map,
     ),
     method(
         "put",
