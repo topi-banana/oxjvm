@@ -97,12 +97,12 @@ fn compare_keys(
     left: ObjectRef,
     right: ObjectRef,
 ) -> Result<i32, VmError> {
-    if left == right {
-        return Ok(0);
-    }
     if ordering.is_null() {
         if left.is_null() || right.is_null() {
             return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        if left == right {
+            return Ok(0);
         }
         let Some((class, method)) = find_compare_to(vm, left) else {
             return Err(vm.throw_new("java/lang/ClassCastException", None));
@@ -111,6 +111,8 @@ fn compare_keys(
             .invoke_method(class, method, vec![Value::Ref(left), Value::Ref(right)])?
             .as_int())
     } else {
+        // Delegate to the comparator even for identical or null references so it
+        // can reject null, matching TreeMap.compare (no identity short-circuit).
         let (class, method) = vm.resolve_virtual_method(
             ordering,
             "compare",
@@ -153,13 +155,19 @@ fn put_value(
     value: ObjectRef,
 ) -> Result<ObjectRef, VmError> {
     // The first insertion type-checks the key the way `TreeMap.put` does with
-    // `compare(key, key)`: natural order rejects null and non-Comparable keys.
-    if vm.sorted_map(this).map_or(0, |map| map.len()) == 0 && ordering_of(vm, this).is_null() {
-        if key.is_null() {
-            return Err(vm.throw_new("java/lang/NullPointerException", None));
-        }
-        if find_compare_to(vm, key).is_none() {
-            return Err(vm.throw_new("java/lang/ClassCastException", None));
+    // `compare(key, key)`: natural order rejects null and non-Comparable keys,
+    // and a comparator gets to reject null itself.
+    if vm.sorted_map(this).map_or(0, |map| map.len()) == 0 {
+        let ordering = ordering_of(vm, this);
+        if ordering.is_null() {
+            if key.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            if find_compare_to(vm, key).is_none() {
+                return Err(vm.throw_new("java/lang/ClassCastException", None));
+            }
+        } else {
+            compare_keys(vm, ordering, key, key)?;
         }
     }
     let (index, found) = search_key(vm, this, key)?;

@@ -4437,11 +4437,16 @@ const CASE_INSENSITIVE_COMPARATOR_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [met
     |vm, _, args| {
         let first = ref_arg(args, 1);
         let second = ref_arg(args, 2);
-        if first.is_null() {
-            return int(-1);
+        // The JDK CaseInsensitiveComparator dereferences both strings, so a null
+        // argument throws NullPointerException rather than ordering null low.
+        if first.is_null() || second.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
         }
-        if second.is_null() {
-            return int(1);
+        // The bridge method casts both arguments to String; a non-String key is
+        // a ClassCastException, not a missing compareToIgnoreCase method.
+        let string_class = vm.resolve_class("java/lang/String")?;
+        if !vm.is_instance(first, string_class) || !vm.is_instance(second, string_class) {
+            return Err(vm.throw_new("java/lang/ClassCastException", None));
         }
         let (class, method) =
             vm.resolve_virtual_method(first, "compareToIgnoreCase", "(Ljava/lang/String;)I")?;
