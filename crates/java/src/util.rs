@@ -2212,7 +2212,7 @@ const OBJECTS_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
         |vm, _, args| {
             let array = ref_arg(args, 0);
             if array.is_null() {
-                return int(1);
+                return int(0);
             }
             let elements: Vec<ObjectRef> = match vm.heap.get(array).map(|object| &object.data) {
                 Some(ObjectData::Array(ArrayData::Reference(elements))) => elements.clone(),
@@ -2317,7 +2317,7 @@ const OBJECTS_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
             }
             let default = ref_arg(args, 1);
             if default.is_null() {
-                return Err(vm.throw_new("java/lang/NullPointerException", None));
+                return Err(vm.throw_new("java/lang/NullPointerException", Some("defaultObj")));
             }
             object(default)
         },
@@ -2333,7 +2333,7 @@ const OBJECTS_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
             }
             let supplier = ref_arg(args, 1);
             if supplier.is_null() {
-                return Err(vm.throw_new("java/lang/NullPointerException", None));
+                return Err(vm.throw_new("java/lang/NullPointerException", Some("supplier")));
             }
             let (class, method) =
                 vm.resolve_virtual_method(supplier, "get", "()Ljava/lang/Object;")?;
@@ -2341,7 +2341,7 @@ const OBJECTS_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
                 .invoke_method(class, method, vec![Value::Ref(supplier)])?
                 .as_ref();
             if value.is_null() {
-                return Err(vm.throw_new("java/lang/NullPointerException", None));
+                return Err(vm.throw_new("java/lang/NullPointerException", Some("supplier.get()")));
             }
             object(value)
         },
@@ -2489,8 +2489,7 @@ const OBJECTS_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
         |vm, _, args| {
             let reference = ref_arg(args, 0);
             if reference.is_null() {
-                let text = vm.make_string("null")?;
-                return object(text);
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
             let name = vm.class_name(vm.class_of(reference)).replace('/', ".");
             let hash = vm.heap.get(reference).map_or(0, |object| object.hash);
