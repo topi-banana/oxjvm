@@ -18349,12 +18349,23 @@ fn map_view_remove_element(
     element: ObjectRef,
 ) -> Result<bool, VmError> {
     let remove = |vm: &mut Vm<'_>, key: ObjectRef| -> Result<bool, VmError> {
-        let (class, method) =
-            vm.resolve_virtual_method(backing, "remove", "(Ljava/lang/Object;)Ljava/lang/Object;")?;
-        let removed = vm
-            .invoke_method(class, method, vec![Value::Ref(backing), Value::Ref(key)])?
-            .as_ref();
-        Ok(!removed.is_null())
+        // A key mapped to `null` is still a member of the key set: report whether
+        // the key was present, not whether the removed value was non-null.
+        let (cc, cm) =
+            vm.resolve_virtual_method(backing, "containsKey", "(Ljava/lang/Object;)Z")?;
+        let present = vm
+            .invoke_method(cc, cm, vec![Value::Ref(backing), Value::Ref(key)])?
+            .as_int()
+            != 0;
+        if present {
+            let (class, method) = vm.resolve_virtual_method(
+                backing,
+                "remove",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+            )?;
+            vm.invoke_method(class, method, vec![Value::Ref(backing), Value::Ref(key)])?;
+        }
+        Ok(present)
     };
     match kind {
         0 => remove(vm, element),
