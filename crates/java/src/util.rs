@@ -14010,16 +14010,30 @@ pub(crate) fn collection_remove_all(
 ) -> Result<Value, VmError> {
     let this = receiver(args);
     check_mutable(vm, this)?;
-    let others = collection_elements(vm, ref_arg(args, 1))?;
+    let other = ref_arg(args, 1);
+    // Mirror AbstractCollection.removeAll: walk `this` and drop every element
+    // the other collection contains. Iterating `this` (rather than `other`)
+    // keeps `other.contains` side effects and duplicate handling JDK-correct,
+    // symmetric with collection_retain_all below.
+    let elements = collection_elements(vm, this)?;
     let mut changed = false;
-    for element in others {
-        changed |= invoke_virtual_bool(
+    for element in elements {
+        let removes = invoke_virtual_bool(
             vm,
-            this,
-            "remove",
+            other,
+            "contains",
             "(Ljava/lang/Object;)Z",
             &[Value::Ref(element)],
         )?;
+        if removes {
+            changed |= invoke_virtual_bool(
+                vm,
+                this,
+                "remove",
+                "(Ljava/lang/Object;)Z",
+                &[Value::Ref(element)],
+            )?;
+        }
     }
     boolean(changed)
 }
