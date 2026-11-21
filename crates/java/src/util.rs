@@ -7186,20 +7186,14 @@ fn array_list_to_string(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let elements = array_list_elements(vm, receiver(args));
+    let this = receiver(args);
+    let elements = array_list_elements(vm, this);
     let mut text = String::from("[");
     for (index, element) in elements.iter().enumerate() {
         if index > 0 {
             text.push_str(", ");
         }
-        if element.is_null() {
-            text.push_str("null");
-        } else {
-            let (class, method) =
-                vm.resolve_virtual_method(*element, "toString", "()Ljava/lang/String;")?;
-            let string = vm.invoke_method(class, method, vec![Value::Ref(*element)])?;
-            text.push_str(&vm.string_or_empty(string.as_ref()));
-        }
+        text.push_str(&collection_element_string(vm, this, *element)?);
     }
     text.push(']');
     object(vm.make_string(&text)?)
@@ -9158,9 +9152,9 @@ const ABSTRACT_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
                 if index > 0 {
                     text.push_str(", ");
                 }
-                text.push_str(&value_to_string(vm, *key)?);
+                text.push_str(&map_entry_string(vm, this, *key)?);
                 text.push('=');
-                text.push_str(&value_to_string(vm, *value)?);
+                text.push_str(&map_entry_string(vm, this, *value)?);
             }
             text.push('}');
             object(vm.make_string(&text)?)
@@ -9373,13 +9367,14 @@ const ABSTRACT_SET_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let elements = collection_elements(vm, receiver(args))?;
+            let this = receiver(args);
+            let elements = collection_elements(vm, this)?;
             let mut text = String::from("[");
             for (index, element) in elements.iter().enumerate() {
                 if index > 0 {
                     text.push_str(", ");
                 }
-                text.push_str(&value_to_string(vm, *element)?);
+                text.push_str(&collection_element_string(vm, this, *element)?);
             }
             text.push(']');
             object(vm.make_string(&text)?)
@@ -9659,13 +9654,14 @@ const ABSTRACT_COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let elements = collection_elements(vm, receiver(args))?;
+            let this = receiver(args);
+            let elements = collection_elements(vm, this)?;
             let mut text = String::from("[");
             for (index, element) in elements.iter().enumerate() {
                 if index > 0 {
                     text.push_str(", ");
                 }
-                text.push_str(&value_to_string(vm, *element)?);
+                text.push_str(&collection_element_string(vm, this, *element)?);
             }
             text.push(']');
             object(vm.make_string(&text)?)
@@ -11059,18 +11055,52 @@ fn hash_map_to_string(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let pairs = hash_map_pairs(vm, receiver(args));
+    map_to_string_guarded(vm, receiver(args), receiver(args))
+}
+
+/// `AbstractMap.toString` with an explicit identity for the "(this Map)" guard:
+/// wrapper maps delegate to an internal HashMap but must compare against themselves.
+fn map_to_string_guarded(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    map: ObjectRef,
+) -> Result<Value, VmError> {
+    let pairs = hash_map_pairs(vm, map);
     let mut text = String::from("{");
     for (index, (key, value)) in pairs.iter().enumerate() {
         if index > 0 {
             text.push_str(", ");
         }
-        text.push_str(&value_to_string(vm, *key)?);
+        text.push_str(&map_entry_string(vm, this, *key)?);
         text.push('=');
-        text.push_str(&value_to_string(vm, *value)?);
+        text.push_str(&map_entry_string(vm, this, *value)?);
     }
     text.push('}');
     object(vm.make_string(&text)?)
+}
+
+/// A self-referential key or value prints as "(this Map)" instead of recursing.
+fn map_entry_string(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    reference: ObjectRef,
+) -> Result<String, VmError> {
+    if reference == this {
+        return Ok(String::from("(this Map)"));
+    }
+    value_to_string(vm, reference)
+}
+
+/// A self-referential element prints as "(this Collection)" instead of recursing.
+fn collection_element_string(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    element: ObjectRef,
+) -> Result<String, VmError> {
+    if element == this {
+        return Ok(String::from("(this Collection)"));
+    }
+    value_to_string(vm, element)
 }
 
 pub(crate) fn value_to_string(vm: &mut Vm<'_>, reference: ObjectRef) -> Result<String, VmError> {
@@ -11849,7 +11879,7 @@ const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let map = properties_map(vm, receiver(args));
-            hash_map_call(vm, map, "toString", "()Ljava/lang/String;", &[])
+            map_to_string_guarded(vm, receiver(args), map)
         },
     ),
 ];
@@ -15013,14 +15043,15 @@ const HASH_SET_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let map = hash_set_map(vm, receiver(args));
+            let this = receiver(args);
+            let map = hash_set_map(vm, this);
             let keys = map_keys(vm, map);
             let mut text = String::from("[");
             for (index, key) in keys.iter().enumerate() {
                 if index > 0 {
                     text.push_str(", ");
                 }
-                text.push_str(&value_to_string(vm, *key)?);
+                text.push_str(&collection_element_string(vm, this, *key)?);
             }
             text.push(']');
             object(vm.make_string(&text)?)
@@ -16207,7 +16238,7 @@ const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let map = hashtable_map(vm, receiver(args));
-            hash_map_call(vm, map, "toString", "()Ljava/lang/String;", &[])
+            map_to_string_guarded(vm, receiver(args), map)
         },
     ),
     method(
@@ -17577,7 +17608,7 @@ const CONCURRENT_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let map = concurrent_map(vm, receiver(args));
-            concurrent_map_call(vm, map, "toString", "()Ljava/lang/String;", &[])
+            map_to_string_guarded(vm, receiver(args), map)
         },
     ),
     method("putAll", "(Ljava/util/Map;)V", ACC_PUBLIC, |vm, _, args| {
@@ -18035,7 +18066,7 @@ const ENUM_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let map = enum_map_map(vm, receiver(args));
-            hash_map_call(vm, map, "toString", "()Ljava/lang/String;", &[])
+            map_to_string_guarded(vm, receiver(args), map)
         },
     ),
     method("putAll", "(Ljava/util/Map;)V", ACC_PUBLIC, |vm, _, args| {
@@ -18792,15 +18823,16 @@ const REVERSE_SEQ_MAP_VIEW_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let pairs = reverse_view_pairs(vm, receiver(args))?;
+            let this = receiver(args);
+            let pairs = reverse_view_pairs(vm, this)?;
             let mut text = String::from("{");
             for (index, (key, value)) in pairs.iter().enumerate() {
                 if index > 0 {
                     text.push_str(", ");
                 }
-                text.push_str(&value_to_string(vm, *key)?);
+                text.push_str(&map_entry_string(vm, this, *key)?);
                 text.push('=');
-                text.push_str(&value_to_string(vm, *value)?);
+                text.push_str(&map_entry_string(vm, this, *value)?);
             }
             text.push('}');
             object(vm.make_string(&text)?)
@@ -19494,13 +19526,14 @@ const OXJVM_MAP_VIEW_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let elements = map_view_elements(vm, receiver(args))?;
+            let this = receiver(args);
+            let elements = map_view_elements(vm, this)?;
             let mut text = String::from("[");
             for (index, element) in elements.iter().enumerate() {
                 if index > 0 {
                     text.push_str(", ");
                 }
-                text.push_str(&value_to_string(vm, *element)?);
+                text.push_str(&collection_element_string(vm, this, *element)?);
             }
             text.push(']');
             object(vm.make_string(&text)?)
@@ -20208,13 +20241,14 @@ const OXJVM_REVERSE_LIST_VIEW_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let elements = rev_list_elements(vm, receiver(args))?;
+            let this = receiver(args);
+            let elements = rev_list_elements(vm, this)?;
             let mut text = String::from("[");
             for (index, element) in elements.iter().enumerate() {
                 if index > 0 {
                     text.push_str(", ");
                 }
-                text.push_str(&value_to_string(vm, *element)?);
+                text.push_str(&collection_element_string(vm, this, *element)?);
             }
             text.push(']');
             object(vm.make_string(&text)?)
@@ -20807,13 +20841,14 @@ const OXJVM_REVERSE_SEQ_SET_VIEW_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let elements = rev_set_elements(vm, receiver(args))?;
+            let this = receiver(args);
+            let elements = rev_set_elements(vm, this)?;
             let mut text = String::from("[");
             for (index, element) in elements.iter().enumerate() {
                 if index > 0 {
                     text.push_str(", ");
                 }
-                text.push_str(&value_to_string(vm, *element)?);
+                text.push_str(&collection_element_string(vm, this, *element)?);
             }
             text.push(']');
             object(vm.make_string(&text)?)
@@ -22037,13 +22072,14 @@ const OXJVM_REVERSE_DEQUE_VIEW_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let elements = rev_deque_elements(vm, receiver(args))?;
+            let this = receiver(args);
+            let elements = rev_deque_elements(vm, this)?;
             let mut text = String::from("[");
             for (index, element) in elements.iter().enumerate() {
                 if index > 0 {
                     text.push_str(", ");
                 }
-                text.push_str(&value_to_string(vm, *element)?);
+                text.push_str(&collection_element_string(vm, this, *element)?);
             }
             text.push(']');
             object(vm.make_string(&text)?)
@@ -22518,13 +22554,14 @@ const OXJVM_REVERSE_SORTED_SET_VIEW_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let elements = rev_sset_elements(vm, receiver(args))?;
+            let this = receiver(args);
+            let elements = rev_sset_elements(vm, this)?;
             let mut text = String::from("[");
             for (index, element) in elements.iter().enumerate() {
                 if index > 0 {
                     text.push_str(", ");
                 }
-                text.push_str(&value_to_string(vm, *element)?);
+                text.push_str(&collection_element_string(vm, this, *element)?);
             }
             text.push(']');
             object(vm.make_string(&text)?)
@@ -25885,14 +25922,15 @@ const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
         ACC_PUBLIC,
         |vm, _, args| {
             // A set prints its elements between brackets, not as a map.
-            let map = enum_set_map(vm, receiver(args));
+            let this = receiver(args);
+            let map = enum_set_map(vm, this);
             let mut text = String::from("[");
             let pairs = hash_map_pairs(vm, map);
             for (index, (element, _)) in pairs.iter().enumerate() {
                 if index > 0 {
                     text.push_str(", ");
                 }
-                text.push_str(&value_to_string(vm, *element)?);
+                text.push_str(&collection_element_string(vm, this, *element)?);
             }
             text.push(']');
             object(vm.make_string(&text)?)
