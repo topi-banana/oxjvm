@@ -6554,80 +6554,117 @@ pub(crate) const FILTER_INPUT_STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const BUFFERED_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const BUFFERED_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method(
         "<init>",
         "(Ljava/io/InputStream;)V",
         ACC_PUBLIC,
-        |vm, _, args| {
-            let this = receiver(args);
-            let (declaring, field) =
-                vm.find_field(vm.class_of(this), "in", "Ljava/io/InputStream;")?;
-            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
-            void()
-        },
+        |vm, _, args| buffered_input_init(vm, receiver(args), ref_arg(args, 1), 8192),
     ),
     method(
         "<init>",
         "(Ljava/io/InputStream;I)V",
         ACC_PUBLIC,
         |vm, _, args| {
-            let this = receiver(args);
-            if int_arg(args, 2) <= 0 {
+            let size = int_arg(args, 2);
+            if size <= 0 {
                 return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("size <= 0")));
             }
-            let (declaring, field) =
-                vm.find_field(vm.class_of(this), "in", "Ljava/io/InputStream;")?;
-            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
-            void()
+            buffered_input_init(vm, receiver(args), ref_arg(args, 1), size)
         },
     ),
     method("read", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         buffered_input_check_open(vm, this)?;
-        delegate_input(
-            vm,
-            this,
-            "read",
-            "()I",
-            vec![Value::Ref(filter_input_stream_in(vm, this))],
-        )
+        if read_int_field(vm, this, "pos") >= read_int_field(vm, this, "count") {
+            buffered_input_fill(vm, this)?;
+        }
+        let pos = read_int_field(vm, this, "pos");
+        if pos >= read_int_field(vm, this, "count") {
+            return int(-1);
+        }
+        let buf = buffered_input_buf(vm, this);
+        let byte = vm.array_get(buf, pos)?.as_int() & 0xff;
+        write_int_field(vm, this, "pos", pos + 1);
+        int(byte)
     }),
     method("read", "([B)I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        buffered_input_check_open(vm, this)?;
-        delegate_input(
-            vm,
-            this,
-            "read",
-            "([B)I",
-            vec![
-                Value::Ref(filter_input_stream_in(vm, this)),
-                Value::Ref(ref_arg(args, 1)),
-            ],
-        )
+        let target = ref_arg(args, 1);
+        let len = vm.array_length_or_throw(target)? as i32;
+        buffered_input_read_bytes(vm, this, target, 0, len)
     }),
     method("read", "([BII)I", ACC_PUBLIC, |vm, _, args| {
-        let this = receiver(args);
-        buffered_input_check_open(vm, this)?;
-        // Bounds are validated even for a zero-length request.
-        reader_check_range(vm, ref_arg(args, 1), int_arg(args, 2), int_arg(args, 3))?;
-        if int_arg(args, 3) == 0 {
-            return int(0);
-        }
-        delegate_input(
+        buffered_input_read_bytes(
             vm,
-            this,
-            "read",
-            "([BII)I",
-            vec![
-                Value::Ref(filter_input_stream_in(vm, this)),
-                Value::Ref(ref_arg(args, 1)),
-                Value::Int(int_arg(args, 2)),
-                Value::Int(int_arg(args, 3)),
-            ],
+            receiver(args),
+            ref_arg(args, 1),
+            int_arg(args, 2),
+            int_arg(args, 3),
         )
     }),
+    method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        buffered_input_check_open(vm, this)?;
+        let requested = crate::long_arg(args, 1);
+        if requested <= 0 {
+            return long(0);
+        }
+        let mut avail =
+            i64::from(read_int_field(vm, this, "count") - read_int_field(vm, this, "pos"));
+        if avail <= 0 {
+            if read_int_field(vm, this, "markpos") < 0 {
+                return delegate_input(
+                    vm,
+                    this,
+                    "skip",
+                    "(J)J",
+                    vec![
+                        Value::Ref(filter_input_stream_in(vm, this)),
+                        Value::Long(requested),
+                    ],
+                );
+            }
+            buffered_input_fill(vm, this)?;
+            avail = i64::from(read_int_field(vm, this, "count") - read_int_field(vm, this, "pos"));
+            if avail <= 0 {
+                return long(0);
+            }
+        }
+        let skipped = avail.min(requested);
+        let pos = read_int_field(vm, this, "pos");
+        write_int_field(vm, this, "pos", pos + skipped as i32);
+        long(skipped)
+    }),
+    method("available", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        buffered_input_check_open(vm, this)?;
+        let buffered = read_int_field(vm, this, "count") - read_int_field(vm, this, "pos");
+        let stream = filter_input_stream_in(vm, this);
+        let (class, method) = vm.resolve_virtual_method(stream, "available", "()I")?;
+        let underlying = vm
+            .invoke_method(class, method, vec![Value::Ref(stream)])?
+            .as_int();
+        int(buffered.saturating_add(underlying))
+    }),
+    method("mark", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        buffered_input_check_open(vm, this)?;
+        write_int_field(vm, this, "marklimit", int_arg(args, 1));
+        write_int_field(vm, this, "markpos", read_int_field(vm, this, "pos"));
+        void()
+    }),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        buffered_input_check_open(vm, this)?;
+        let markpos = read_int_field(vm, this, "markpos");
+        if markpos < 0 {
+            return Err(vm.throw_new("java/io/IOException", Some("Resetting to invalid mark")));
+        }
+        write_int_field(vm, this, "pos", markpos);
+        void()
+    }),
+    method("markSupported", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
     method("close", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         if read_int_field(vm, this, "closed") != 0 {
@@ -6651,12 +6688,187 @@ fn buffered_input_check_open(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmE
     Ok(())
 }
 
+fn buffered_input_buf(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "buf", "[B")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn buffered_input_init(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    stream: ObjectRef,
+    size: i32,
+) -> Result<Value, VmError> {
+    let (declaring, field) = vm.find_field(vm.class_of(this), "in", "Ljava/io/InputStream;")?;
+    vm.set_instance_ref(this, declaring, field, stream);
+    let buf = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, size as usize)?;
+    let (declaring, field) = vm.find_field(vm.class_of(this), "buf", "[B")?;
+    vm.set_instance_ref(this, declaring, field, buf);
+    write_int_field(vm, this, "pos", 0);
+    write_int_field(vm, this, "count", 0);
+    write_int_field(vm, this, "markpos", -1);
+    write_int_field(vm, this, "marklimit", 0);
+    void()
+}
+
+fn copy_array_bytes(
+    vm: &mut Vm<'_>,
+    src: ObjectRef,
+    src_off: i32,
+    dst: ObjectRef,
+    dst_off: i32,
+    len: i32,
+) -> Result<(), VmError> {
+    for index in 0..len {
+        let byte = vm.array_get(src, src_off + index)?;
+        vm.array_set(dst, dst_off + index, byte, false)?;
+    }
+    Ok(())
+}
+
+/// Refill the buffer, compacting or growing it around a live mark the way the JDK does.
+fn buffered_input_fill(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    let mut buf = buffered_input_buf(vm, this);
+    let mut pos = read_int_field(vm, this, "pos");
+    let markpos = read_int_field(vm, this, "markpos");
+    let marklimit = read_int_field(vm, this, "marklimit");
+    let mut buf_len = vm.array_length(buf)? as i32;
+    if markpos < 0 {
+        pos = 0;
+    } else if pos >= buf_len {
+        if markpos > 0 {
+            let size = pos - markpos;
+            copy_array_bytes(vm, buf, markpos, buf, 0, size)?;
+            pos = size;
+            write_int_field(vm, this, "markpos", 0);
+        } else if buf_len >= marklimit {
+            write_int_field(vm, this, "markpos", -1);
+            pos = 0;
+        } else {
+            // Grow up to the mark limit so marked data survives the refill.
+            let mut new_len = (i64::from(pos) * 2).min(i64::from(i32::MAX) - 8) as i32;
+            if new_len > marklimit {
+                new_len = marklimit;
+            }
+            let grown = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, new_len as usize)?;
+            copy_array_bytes(vm, buf, 0, grown, 0, pos)?;
+            buf = grown;
+            buf_len = new_len;
+            let (declaring, field) = vm.find_field(vm.class_of(this), "buf", "[B")?;
+            vm.set_instance_ref(this, declaring, field, buf);
+        }
+    }
+    write_int_field(vm, this, "pos", pos);
+    write_int_field(vm, this, "count", pos);
+    let stream = filter_input_stream_in(vm, this);
+    let (class, method) = vm.resolve_virtual_method(stream, "read", "([BII)I")?;
+    let read = vm
+        .invoke_method(
+            class,
+            method,
+            vec![
+                Value::Ref(stream),
+                Value::Ref(buf),
+                Value::Int(pos),
+                Value::Int(buf_len - pos),
+            ],
+        )?
+        .as_int();
+    if read > 0 {
+        write_int_field(vm, this, "count", pos + read);
+    }
+    Ok(())
+}
+
+/// One buffered read step: serve from the buffer, bypassing it for large unmarked reads.
+fn buffered_input_read1(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    target: ObjectRef,
+    off: i32,
+    len: i32,
+) -> Result<i32, VmError> {
+    let mut avail = read_int_field(vm, this, "count") - read_int_field(vm, this, "pos");
+    if avail <= 0 {
+        let buf_len = vm.array_length(buffered_input_buf(vm, this))? as i32;
+        if len >= buf_len && read_int_field(vm, this, "markpos") < 0 {
+            let stream = filter_input_stream_in(vm, this);
+            let (class, method) = vm.resolve_virtual_method(stream, "read", "([BII)I")?;
+            return Ok(vm
+                .invoke_method(
+                    class,
+                    method,
+                    vec![
+                        Value::Ref(stream),
+                        Value::Ref(target),
+                        Value::Int(off),
+                        Value::Int(len),
+                    ],
+                )?
+                .as_int());
+        }
+        buffered_input_fill(vm, this)?;
+        avail = read_int_field(vm, this, "count") - read_int_field(vm, this, "pos");
+        if avail <= 0 {
+            return Ok(-1);
+        }
+    }
+    let count = avail.min(len);
+    let pos = read_int_field(vm, this, "pos");
+    copy_array_bytes(vm, buffered_input_buf(vm, this), pos, target, off, count)?;
+    write_int_field(vm, this, "pos", pos + count);
+    Ok(count)
+}
+
+fn buffered_input_read_bytes(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    target: ObjectRef,
+    off: i32,
+    len: i32,
+) -> Result<Value, VmError> {
+    buffered_input_check_open(vm, this)?;
+    // Bounds are validated even for a zero-length request.
+    reader_check_range(vm, target, off, len)?;
+    if len == 0 {
+        return int(0);
+    }
+    let mut total = 0;
+    loop {
+        let read = buffered_input_read1(vm, this, target, off + total, len - total)?;
+        if read <= 0 {
+            return int(if total == 0 { read } else { total });
+        }
+        total += read;
+        if total >= len {
+            return int(total);
+        }
+        // Stop early when the source has nothing more ready, like the JDK.
+        let stream = filter_input_stream_in(vm, this);
+        let (class, method) = vm.resolve_virtual_method(stream, "available", "()I")?;
+        if vm
+            .invoke_method(class, method, vec![Value::Ref(stream)])?
+            .as_int()
+            <= 0
+        {
+            return int(total);
+        }
+    }
+}
+
 pub(crate) const BUFFERED_INPUT_STREAM: oxjvm_vm::NativeClass = class(
     "java/io/BufferedInputStream",
     Some("java/io/FilterInputStream"),
     &[],
     ACC_PUBLIC,
-    &[field("closed", "I", ACC_PRIVATE, None)],
+    &[
+        field("closed", "I", ACC_PRIVATE, None),
+        field("buf", "[B", ACC_PRIVATE, None),
+        field("pos", "I", ACC_PRIVATE, None),
+        field("count", "I", ACC_PRIVATE, None),
+        field("markpos", "I", ACC_PRIVATE, None),
+        field("marklimit", "I", ACC_PRIVATE, None),
+    ],
     &BUFFERED_INPUT_STREAM_METHODS,
     None,
 );
