@@ -2309,7 +2309,26 @@ pub(crate) const READER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        writer_set_lock(vm, this, this);
+        void()
+    }),
+    method(
+        "<init>",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let lock = ref_arg(args, 1);
+            if lock.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            writer_set_lock(vm, this, lock);
+            void()
+        },
+    ),
     method(
         "write",
         "(I)V",
@@ -2481,7 +2500,7 @@ pub(crate) const WRITER: oxjvm_vm::NativeClass = class(
         "java/lang/Appendable",
     ],
     ACC_PUBLIC | ACC_ABSTRACT,
-    &[],
+    &[field("lock", "Ljava/lang/Object;", ACC_PROTECTED, None)],
     &WRITER_METHODS,
     None,
 );
@@ -3193,6 +3212,8 @@ const STRING_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
             if text.is_null() {
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
+            let offset = int_arg(args, 2);
+            let length = int_arg(args, 3);
             let (class, method) =
                 vm.resolve_virtual_method(text, "substring", "(II)Ljava/lang/String;")?;
             let slice = vm.invoke_method(
@@ -3200,8 +3221,8 @@ const STRING_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
                 method,
                 vec![
                     Value::Ref(text),
-                    Value::Int(int_arg(args, 2)),
-                    Value::Int(int_arg(args, 3)),
+                    Value::Int(offset),
+                    Value::Int(offset.wrapping_add(length)),
                 ],
             )?;
             string_writer_append(vm, receiver(args), slice.as_ref())
@@ -3334,7 +3355,17 @@ fn string_writer_init(
     let class = vm.class_of(this);
     let (declaring, field) = vm.find_field(class, "buf", "Ljava/lang/StringBuffer;")?;
     vm.set_instance_ref(this, declaring, field, buffer);
+    writer_set_lock(vm, this, buffer);
     void()
+}
+
+/// Point a writer's protected `lock` monitor at the given object.
+fn writer_set_lock(vm: &mut Vm<'_>, this: ObjectRef, lock: ObjectRef) {
+    if let Some((declaring, field)) =
+        vm.find_field_opt(vm.class_of(this), "lock", "Ljava/lang/Object;")
+    {
+        vm.set_instance_ref(this, declaring, field, lock);
+    }
 }
 
 fn string_writer_buffer(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
