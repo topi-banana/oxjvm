@@ -47,13 +47,14 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
         "(Ljava/lang/String;Ljava/lang/String;)V",
         ACC_PUBLIC,
         |vm, _, args| {
-            let parent = if ref_arg(args, 1).is_null() {
-                String::new()
-            } else {
-                string_arg(vm, args[1])?
-            };
             let child = string_arg(vm, args[2])?;
-            file_init_path(vm, receiver(args), join_paths(&parent, &child))
+            let path = if ref_arg(args, 1).is_null() {
+                child
+            } else {
+                let parent = string_arg(vm, args[1])?;
+                resolve_paths(&parent, &child)
+            };
+            file_init_path(vm, receiver(args), path)
         },
     ),
     method(
@@ -61,13 +62,14 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
         "(Ljava/io/File;Ljava/lang/String;)V",
         ACC_PUBLIC,
         |vm, _, args| {
-            let parent = if ref_arg(args, 1).is_null() {
-                String::new()
-            } else {
-                file_path(vm, ref_arg(args, 1))
-            };
             let child = string_arg(vm, args[2])?;
-            file_init_path(vm, receiver(args), join_paths(&parent, &child))
+            let path = if ref_arg(args, 1).is_null() {
+                child
+            } else {
+                let parent = file_path(vm, ref_arg(args, 1));
+                resolve_paths(&parent, &child)
+            };
+            file_init_path(vm, receiver(args), path)
         },
     ),
     method("<init>", "(Ljava/net/URI;)V", ACC_PUBLIC, |vm, _, args| {
@@ -258,6 +260,9 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let from = file_path(vm, receiver(args));
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let to = file_path(vm, ref_arg(args, 1));
             boolean(fs_rename(vm, &from, &to))
         },
@@ -454,6 +459,9 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let a = file_path(vm, receiver(args));
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let b = file_path(vm, ref_arg(args, 1));
             int(match a.cmp(&b) {
                 core::cmp::Ordering::Less => -1,
@@ -726,9 +734,39 @@ fn file_space(vm: &mut Vm<'_>, this: ObjectRef, index: usize) -> Result<Value, V
 fn file_init_path(vm: &mut Vm<'_>, this: ObjectRef, path: String) -> Result<Value, VmError> {
     let class = vm.class_of(this);
     let (declaring, field) = vm.find_field(class, "path", "Ljava/lang/String;")?;
-    let text = vm.make_string(&path)?;
+    let text = vm.make_string(&normalize_path(&path))?;
     vm.set_instance_ref(this, declaring, field, text);
     void()
+}
+
+/// Unix path normalization: collapse repeated separators and drop trailing ones, keeping the
+/// root `/` and the empty path intact. Dots are left alone, as `UnixFileSystem.normalize` does.
+fn normalize_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    let mut prev_slash = false;
+    for ch in path.chars() {
+        if ch == '/' {
+            if !prev_slash {
+                out.push(ch);
+            }
+            prev_slash = true;
+        } else {
+            out.push(ch);
+            prev_slash = false;
+        }
+    }
+    while out.len() > 1 && out.ends_with('/') {
+        out.pop();
+    }
+    out
+}
+
+/// `File(parent, child)` resolution: an empty (but non-null) parent means the root directory.
+fn resolve_paths(parent: &str, child: &str) -> String {
+    if parent.is_empty() {
+        return alloc::format!("/{child}");
+    }
+    join_paths(parent, child)
 }
 
 pub(crate) fn new_file(vm: &mut Vm<'_>, path: &str) -> Result<Value, VmError> {
@@ -817,7 +855,13 @@ pub(crate) fn absolute_of_path(vm: &mut Vm<'_>, path: &str) -> String {
     }
     let cwd = crate::lang::system_property(vm, "user.dir").unwrap_or_else(|| "/".into());
     let cwd = cwd.trim_end_matches('/');
-    if cwd.is_empty() {
+    if path.is_empty() {
+        if cwd.is_empty() {
+            String::from("/")
+        } else {
+            cwd.to_string()
+        }
+    } else if cwd.is_empty() {
         alloc::format!("/{path}")
     } else {
         alloc::format!("{cwd}/{path}")
