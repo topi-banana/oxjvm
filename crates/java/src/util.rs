@@ -5897,9 +5897,17 @@ const RANDOM_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         let this = receiver(args);
         let array = ref_arg(args, 1);
         let length = vm.array_length(array)?;
-        for index in 0..length {
-            let value = next_random_int(vm, this, 8, &[])?.as_int() as i8;
-            vm.array_set(array, index as i32, Value::Int(i32::from(value)), false)?;
+        // The JDK draws one 32-bit value per four bytes and stores them
+        // least-significant byte first.
+        let mut index = 0usize;
+        while index < length {
+            let mut rnd = next_random_int(vm, this, 32, &[])?.as_int();
+            let count = (length - index).min(4);
+            for _ in 0..count {
+                vm.array_set(array, index as i32, Value::Int(i32::from(rnd as i8)), false)?;
+                rnd >>= 8;
+                index += 1;
+            }
         }
         void()
     }),
@@ -6024,13 +6032,29 @@ const RANDOM_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
     ),
 ];
 
+/// The JDK's global seed uniquifier: an LCG advanced on every no-arg Random()
+/// construction so instances created in the same nanosecond still differ.
+fn random_seed_uniquifier() -> i64 {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    static UNIQUIFIER: AtomicU64 = AtomicU64::new(8682522807148012);
+    let mut current = UNIQUIFIER.load(Ordering::Relaxed);
+    loop {
+        let next = current.wrapping_mul(1181783497276652981);
+        match UNIQUIFIER.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed)
+        {
+            Ok(_) => return next as i64,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
 fn random_init(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let now = vm.host_time_millis();
-    set_random_seed(vm, receiver(args), now);
+    let seed = random_seed_uniquifier() ^ vm.host_nano_time();
+    set_random_seed(vm, receiver(args), seed);
     void()
 }
 
