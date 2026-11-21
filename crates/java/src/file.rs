@@ -923,11 +923,14 @@ const FILE_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     }),
     method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let (length, position) = file_input_state(vm, this)?;
-        let requested = long_arg(args, 1).max(0) as usize;
-        let next = (position + requested).min(length);
+        let (_, position) = file_input_state(vm, this)?;
+        let requested = long_arg(args, 1);
+        // The JDK seeks by the signed delta clamped at zero; skipping past
+        // EOF is allowed and available() reports zero there.
+        let next = (position as i64).saturating_add(requested).max(0) as usize;
+        let next = next.min(i32::MAX as usize);
         write_file_position(vm, this, next);
-        long((next - position) as i64)
+        long(next as i64 - position as i64)
     }),
     method(
         "transferTo",

@@ -1336,8 +1336,12 @@ const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 66] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let dir = path_string(vm, ref_arg(args, 0));
-            let prefix = string_arg(vm, args[1])?;
-            let suffix = vm.string_or_empty(ref_arg(args, 2));
+            let prefix = vm.string_or_empty(ref_arg(args, 1));
+            let suffix = if ref_arg(args, 2).is_null() {
+                String::from(".tmp")
+            } else {
+                vm.string_or_empty(ref_arg(args, 2))
+            };
             let seed = vm.host.random_seed();
             let path = alloc::format!("{dir}/{prefix}{seed:016x}{suffix}");
             if !fs_write(vm, &path, &[], false) {
@@ -1381,8 +1385,12 @@ const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 66] = [
         "(Ljava/lang/String;Ljava/lang/String;[Ljava/nio/file/attribute/FileAttribute;)Ljava/nio/file/Path;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            let prefix = string_arg(vm, args[0])?;
-            let suffix = vm.string_or_empty(ref_arg(args, 1));
+            let prefix = vm.string_or_empty(ref_arg(args, 0));
+            let suffix = if ref_arg(args, 1).is_null() {
+                String::from(".tmp")
+            } else {
+                vm.string_or_empty(ref_arg(args, 1))
+            };
             let dir = crate::lang::system_property(vm, "java.io.tmpdir")
                 .unwrap_or_else(|| String::from("/tmp"));
             let seed = vm.host.random_seed();
