@@ -10403,7 +10403,16 @@ const HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         "entrySet",
         "()Ljava/util/Set;",
         ACC_PUBLIC,
-        |vm, _, args| map_entry_set(vm, receiver(args)),
+        |vm, _, args| {
+            let this = receiver(args);
+            if vm
+                .resolve_class_lenient("java/util/HashMap")
+                .is_some_and(|class| vm.is_instance(this, class))
+            {
+                return object(map_view_new(vm, this, 2, false)?);
+            }
+            map_entry_set(vm, this)
+        },
     ),
     method(
         "replace",
@@ -10844,7 +10853,16 @@ fn hash_map_key_set(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let pairs = hash_map_pairs(vm, receiver(args));
+    let this = receiver(args);
+    // HashMap/LinkedHashMap expose a live view: mutations through the set reach
+    // the map. Other pair-array maps keep the historical detached copy.
+    if vm
+        .resolve_class_lenient("java/util/HashMap")
+        .is_some_and(|class| vm.is_instance(this, class))
+    {
+        return object(map_view_new(vm, this, 0, false)?);
+    }
+    let pairs = hash_map_pairs(vm, this);
     let keys = pairs.iter().map(|(key, _)| *key).collect::<Vec<_>>();
     object(hash_set_from(vm, &keys)?)
 }
@@ -10854,7 +10872,14 @@ fn hash_map_values(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let pairs = hash_map_pairs(vm, receiver(args));
+    let this = receiver(args);
+    if vm
+        .resolve_class_lenient("java/util/HashMap")
+        .is_some_and(|class| vm.is_instance(this, class))
+    {
+        return object(map_view_new(vm, this, 1, false)?);
+    }
+    let pairs = hash_map_pairs(vm, this);
     let list = array_list_from(
         vm,
         &pairs.iter().map(|(_, value)| *value).collect::<Vec<_>>(),
@@ -18554,7 +18579,16 @@ fn map_view_new(
 
 fn map_view_elements(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Vec<ObjectRef>, VmError> {
     let backing = map_view_backing(vm, this);
-    let mut pairs = abstract_map_entries(vm, backing)?;
+    // Read HashMap-family pairs directly: going through `entrySet` would recurse
+    // back into this view now that HashMap's entrySet is itself a live view.
+    let mut pairs = if vm
+        .resolve_class_lenient("java/util/HashMap")
+        .is_some_and(|class| vm.is_instance(backing, class))
+    {
+        hash_map_pairs(vm, backing)
+    } else {
+        abstract_map_entries(vm, backing)?
+    };
     if crate::lang::read_int_field(vm, this, "reversed") != 0 {
         pairs.reverse();
     }
