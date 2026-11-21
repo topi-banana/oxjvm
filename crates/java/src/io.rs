@@ -8,6 +8,7 @@ use alloc::vec::Vec;
 use oxjvm_classfile::flags::*;
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError, format};
 
+use crate::lang::{read_int_field, write_int_field};
 use crate::{boolean, class, field, int, int_arg, long, method, object, receiver, ref_arg, void};
 
 // -------------------------------------------------------------------------------------------
@@ -566,7 +567,7 @@ fn print_stream_init_kind(
 }
 
 fn stream_of(vm: &Vm<'_>, print_stream: ObjectRef) -> oxjvm_platform::Stream {
-    let kind = crate::lang::read_int_field(vm, print_stream, "kind");
+    let kind = read_int_field(vm, print_stream, "kind");
     if kind == 2 {
         oxjvm_platform::Stream::Stderr
     } else {
@@ -1125,7 +1126,7 @@ fn pushback_buffer(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
 }
 
 fn pushback_pos(vm: &Vm<'_>, this: ObjectRef) -> i32 {
-    crate::lang::read_int_field(vm, this, "pos")
+    read_int_field(vm, this, "pos")
 }
 
 fn pushback_in(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
@@ -1156,7 +1157,7 @@ const PUSHBACK_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
             let buf = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, 1)?;
             let (declaring, field) = vm.find_field(vm.class_of(this), "buf", "[B")?;
             vm.set_instance_ref(this, declaring, field, buf);
-            crate::lang::write_int_field(vm, this, "pos", 1);
+            write_int_field(vm, this, "pos", 1);
             void()
         },
     ),
@@ -1176,7 +1177,7 @@ const PUSHBACK_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
             let buf = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, size as usize)?;
             let (declaring, field) = vm.find_field(vm.class_of(this), "buf", "[B")?;
             vm.set_instance_ref(this, declaring, field, buf);
-            crate::lang::write_int_field(vm, this, "pos", size);
+            write_int_field(vm, this, "pos", size);
             void()
         },
     ),
@@ -1187,7 +1188,7 @@ const PUSHBACK_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         let length = vm.array_length(buf)? as i32;
         if pos < length {
             let value = vm.array_get(buf, pos)?.as_int() & 0xff;
-            crate::lang::write_int_field(vm, this, "pos", pos + 1);
+            write_int_field(vm, this, "pos", pos + 1);
             return int(value);
         }
         int(stream_read_byte(vm, pushback_in(vm, this))?)
@@ -1219,7 +1220,7 @@ const PUSHBACK_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
             length -= 1;
             count += 1;
         }
-        crate::lang::write_int_field(vm, this, "pos", pos);
+        write_int_field(vm, this, "pos", pos);
         if length > 0 {
             let stream = pushback_in(vm, this);
             let (class, method) = vm.resolve_virtual_method(stream, "read", "([BII)I")?;
@@ -1251,7 +1252,7 @@ const PUSHBACK_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         }
         let buf = pushback_buffer(vm, this);
         vm.array_set(buf, pos - 1, Value::Int(int_arg(args, 1)), true)?;
-        crate::lang::write_int_field(vm, this, "pos", pos - 1);
+        write_int_field(vm, this, "pos", pos - 1);
         void()
     }),
     method("unread", "([B)V", ACC_PUBLIC, |vm, _, args| {
@@ -1267,7 +1268,7 @@ const PUSHBACK_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
             let value = vm.array_get(src, index)?.as_int();
             vm.array_set(buf, pos - length + index, Value::Int(value), true)?;
         }
-        crate::lang::write_int_field(vm, this, "pos", pos - length);
+        write_int_field(vm, this, "pos", pos - length);
         void()
     }),
     method("unread", "([BII)V", ACC_PUBLIC, |vm, _, args| {
@@ -1284,7 +1285,7 @@ const PUSHBACK_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
             let value = vm.array_get(src, offset + index)?.as_int();
             vm.array_set(buf, pos - length + index, Value::Int(value), true)?;
         }
-        crate::lang::write_int_field(vm, this, "pos", pos - length);
+        write_int_field(vm, this, "pos", pos - length);
         void()
     }),
     method("available", "()I", ACC_PUBLIC, |vm, _, args| {
@@ -1314,7 +1315,7 @@ const PUSHBACK_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
             remaining -= 1;
             skipped += 1;
         }
-        crate::lang::write_int_field(vm, this, "pos", pos);
+        write_int_field(vm, this, "pos", pos);
         if remaining > 0 {
             let stream = pushback_in(vm, this);
             let (class, method) = vm.resolve_virtual_method(stream, "skip", "(J)J")?;
@@ -1359,7 +1360,7 @@ fn sequence_streams(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
 
 fn sequence_current(vm: &mut Vm<'_>, this: ObjectRef) -> Result<ObjectRef, VmError> {
     let streams = sequence_streams(vm, this);
-    let index = crate::lang::read_int_field(vm, this, "index");
+    let index = read_int_field(vm, this, "index");
     let (class, method) = vm.resolve_virtual_method(streams, "size", "()I")?;
     let size = vm
         .invoke_method(class, method, vec![Value::Ref(streams)])?
@@ -1379,12 +1380,7 @@ fn sequence_advance(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
         let (class, method) = vm.resolve_virtual_method(current, "close", "()V")?;
         vm.invoke_method(class, method, vec![Value::Ref(current)])?;
     }
-    crate::lang::write_int_field(
-        vm,
-        this,
-        "index",
-        crate::lang::read_int_field(vm, this, "index") + 1,
-    );
+    write_int_field(vm, this, "index", read_int_field(vm, this, "index") + 1);
     Ok(())
 }
 
@@ -1404,7 +1400,7 @@ const SEQUENCE_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
             let (declaring, field) =
                 vm.find_field(vm.class_of(this), "streams", "Ljava/util/ArrayList;")?;
             vm.set_instance_ref(this, declaring, field, list);
-            crate::lang::write_int_field(vm, this, "index", 0);
+            write_int_field(vm, this, "index", 0);
             void()
         },
     ),
@@ -1441,7 +1437,7 @@ const SEQUENCE_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
             let (declaring, field) =
                 vm.find_field(vm.class_of(this), "streams", "Ljava/util/ArrayList;")?;
             vm.set_instance_ref(this, declaring, field, list);
-            crate::lang::write_int_field(vm, this, "index", 0);
+            write_int_field(vm, this, "index", 0);
             void()
         },
     ),
@@ -1510,7 +1506,7 @@ const SEQUENCE_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         let size = vm
             .invoke_method(class, method, vec![Value::Ref(streams)])?
             .as_int();
-        let start = crate::lang::read_int_field(vm, this, "index");
+        let start = read_int_field(vm, this, "index");
         for index in start..size {
             let (class, method) =
                 vm.resolve_virtual_method(streams, "get", "(I)Ljava/lang/Object;")?;
@@ -1522,7 +1518,7 @@ const SEQUENCE_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
                 vm.invoke_method(class, method, vec![Value::Ref(stream)])?;
             }
         }
-        crate::lang::write_int_field(vm, this, "index", size);
+        write_int_field(vm, this, "index", size);
         void()
     }),
 ];
@@ -1573,7 +1569,7 @@ const BYTE_ARRAY_OUTPUT_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
     method("toByteArray", "()[B", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let count = crate::lang::read_int_field(vm, this, "count");
+        let count = read_int_field(vm, this, "count");
         let buffer = vm
             .read_ref_field(this, vm.class_of(this), "buf", "[B")
             .unwrap_or(ObjectRef::NULL);
@@ -1588,7 +1584,7 @@ const BYTE_ARRAY_OUTPUT_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
         object(array)
     }),
     method("size", "()I", ACC_PUBLIC, |vm, _, args| {
-        int(crate::lang::read_int_field(vm, receiver(args), "count"))
+        int(read_int_field(vm, receiver(args), "count"))
     }),
     method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
@@ -1675,7 +1671,7 @@ const BYTE_ARRAY_OUTPUT_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
 
 /// The bytes a `ByteArrayOutputStream` has collected so far.
 fn byte_array_output_bytes(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Vec<u8>, VmError> {
-    let count = crate::lang::read_int_field(vm, this, "count").max(0);
+    let count = read_int_field(vm, this, "count").max(0);
     let buffer = vm
         .read_ref_field(this, vm.class_of(this), "buf", "[B")
         .unwrap_or(ObjectRef::NULL);
@@ -1708,7 +1704,7 @@ fn byte_array_output_write(
 ) -> Result<Value, VmError> {
     let this = receiver(args);
     let byte = int_arg(args, 1);
-    let count = crate::lang::read_int_field(vm, this, "count");
+    let count = read_int_field(vm, this, "count");
     let mut buffer = vm
         .read_ref_field(this, vm.class_of(this), "buf", "[B")
         .unwrap_or(ObjectRef::NULL);
@@ -1725,7 +1721,7 @@ fn byte_array_output_write(
         buffer = resized;
     }
     vm.array_set(buffer, count, Value::Int(byte as i8 as i32), false)?;
-    crate::lang::write_int_field(vm, this, "count", count + 1);
+    write_int_field(vm, this, "count", count + 1);
     void()
 }
 
@@ -1931,17 +1927,37 @@ const READER_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let remaining = crate::long_arg(args, 1);
-        if remaining <= 0 {
+        if remaining < 0 {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("skip value is negative"),
+            ));
+        }
+        if remaining == 0 {
             return long(0);
         }
+        let chunk = remaining.min(8192) as usize;
+        let buffer = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Char, chunk)?;
+        let (class, method) = vm.resolve_virtual_method(this, "read", "([CII)I")?;
         let mut skipped = 0i64;
         while skipped < remaining {
-            let (class, method) = vm.resolve_virtual_method(this, "read", "()I")?;
-            let value = vm.invoke_method(class, method, vec![Value::Ref(this)])?;
-            if value.as_int() < 0 {
+            let want = (remaining - skipped).min(chunk as i64) as i32;
+            let count = vm
+                .invoke_method(
+                    class,
+                    method,
+                    vec![
+                        Value::Ref(this),
+                        Value::Ref(buffer),
+                        Value::Int(0),
+                        Value::Int(want),
+                    ],
+                )?
+                .as_int();
+            if count <= 0 {
                 break;
             }
-            skipped += 1;
+            skipped += i64::from(count);
         }
         long(skipped)
     }),
@@ -2234,14 +2250,14 @@ pub(crate) const WRITER: oxjvm_vm::NativeClass = class(
 // -------------------------------------------------------------------------------------------
 
 fn null_stream_ensure_open(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
-    if crate::lang::read_int_field(vm, this, "closed") != 0 {
+    if read_int_field(vm, this, "closed") != 0 {
         return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
     }
     Ok(())
 }
 
 fn null_stream_close(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError> {
-    crate::lang::write_int_field(vm, this, "closed", 1);
+    write_int_field(vm, this, "closed", 1);
     void()
 }
 
@@ -3007,7 +3023,7 @@ fn file_writer_write_text(vm: &mut Vm<'_>, this: ObjectRef, text: &str) -> Resul
     let path = vm
         .read_string_field(this, class, "path")
         .unwrap_or_default();
-    let append = crate::lang::read_int_field(vm, this, "append") != 0;
+    let append = read_int_field(vm, this, "append") != 0;
     let written = vm
         .host
         .filesystem()
@@ -3016,7 +3032,7 @@ fn file_writer_write_text(vm: &mut Vm<'_>, this: ObjectRef, text: &str) -> Resul
     if !written {
         return Err(vm.throw_new("java/io/IOException", Some(&path)));
     }
-    crate::lang::write_int_field(vm, this, "append", 1);
+    write_int_field(vm, this, "append", 1);
     void()
 }
 
@@ -3029,7 +3045,7 @@ const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
             let this = receiver(args);
             let path = crate::string_arg(vm, args[1])?;
             vm.set_string_field(this, vm.class_of(this), "path", &path)?;
-            crate::lang::write_int_field(vm, this, "append", 0);
+            write_int_field(vm, this, "append", 0);
             void()
         },
     ),
@@ -3041,7 +3057,7 @@ const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
             let this = receiver(args);
             let path = crate::string_arg(vm, args[1])?;
             vm.set_string_field(this, vm.class_of(this), "path", &path)?;
-            crate::lang::write_int_field(vm, this, "append", i32::from(crate::bool_arg(args, 2)));
+            write_int_field(vm, this, "append", i32::from(crate::bool_arg(args, 2)));
             void()
         },
     ),
@@ -3052,7 +3068,7 @@ const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
             .read_string_field(file, vm.class_of(file), "path")
             .unwrap_or_default();
         vm.set_string_field(this, vm.class_of(this), "path", &path)?;
-        crate::lang::write_int_field(vm, this, "append", 0);
+        write_int_field(vm, this, "append", 0);
         void()
     }),
     method("<init>", "(Ljava/io/File;Z)V", ACC_PUBLIC, |vm, _, args| {
@@ -3062,7 +3078,7 @@ const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
             .read_string_field(file, vm.class_of(file), "path")
             .unwrap_or_default();
         vm.set_string_field(this, vm.class_of(this), "path", &path)?;
-        crate::lang::write_int_field(vm, this, "append", i32::from(crate::bool_arg(args, 2)));
+        write_int_field(vm, this, "append", i32::from(crate::bool_arg(args, 2)));
         void()
     }),
     method(
@@ -3073,7 +3089,7 @@ const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
             let this = receiver(args);
             let path = crate::string_arg(vm, args[1])?;
             vm.set_string_field(this, vm.class_of(this), "path", &path)?;
-            crate::lang::write_int_field(vm, this, "append", 0);
+            write_int_field(vm, this, "append", 0);
             void()
         },
     ),
@@ -3088,7 +3104,7 @@ const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
                 .read_string_field(file, vm.class_of(file), "path")
                 .unwrap_or_default();
             vm.set_string_field(this, vm.class_of(this), "path", &path)?;
-            crate::lang::write_int_field(vm, this, "append", 0);
+            write_int_field(vm, this, "append", 0);
             void()
         },
     ),
@@ -3100,7 +3116,7 @@ const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
             let this = receiver(args);
             let path = crate::string_arg(vm, args[1])?;
             vm.set_string_field(this, vm.class_of(this), "path", &path)?;
-            crate::lang::write_int_field(vm, this, "append", i32::from(crate::bool_arg(args, 3)));
+            write_int_field(vm, this, "append", i32::from(crate::bool_arg(args, 3)));
             void()
         },
     ),
@@ -3115,7 +3131,7 @@ const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
                 .read_string_field(file, vm.class_of(file), "path")
                 .unwrap_or_default();
             vm.set_string_field(this, vm.class_of(this), "path", &path)?;
-            crate::lang::write_int_field(vm, this, "append", i32::from(crate::bool_arg(args, 3)));
+            write_int_field(vm, this, "append", i32::from(crate::bool_arg(args, 3)));
             void()
         },
     ),
@@ -3470,7 +3486,7 @@ fn file_reader_init(vm: &mut Vm<'_>, args: &[Value], canonical: &str) -> Result<
     let (declaring, field) = vm.find_field(class, "content", "Ljava/lang/String;")?;
     let value = vm.make_string(&content)?;
     vm.set_instance_ref(this, declaring, field, value);
-    crate::lang::write_int_field(vm, this, "pos", 0);
+    write_int_field(vm, this, "pos", 0);
     let _ = path;
     void()
 }
@@ -3542,19 +3558,19 @@ const FILE_READER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method("read", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let content = file_reader_content(vm, this);
-        let pos = crate::lang::read_int_field(vm, this, "pos");
+        let pos = read_int_field(vm, this, "pos");
         let units: Vec<u16> = content.encode_utf16().collect();
         if pos < 0 || pos as usize >= units.len() {
             return int(-1);
         }
-        crate::lang::write_int_field(vm, this, "pos", pos + 1);
+        write_int_field(vm, this, "pos", pos + 1);
         int(i32::from(units[pos as usize]))
     }),
     method("read", "([CII)I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let content = file_reader_content(vm, this);
         let units: Vec<u16> = content.encode_utf16().collect();
-        let mut pos = crate::lang::read_int_field(vm, this, "pos");
+        let mut pos = read_int_field(vm, this, "pos");
         let offset = int_arg(args, 2);
         let length = int_arg(args, 3);
         let array = ref_arg(args, 1);
@@ -3570,14 +3586,14 @@ const FILE_READER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
             pos += 1;
             count += 1;
         }
-        crate::lang::write_int_field(vm, this, "pos", pos);
+        write_int_field(vm, this, "pos", pos);
         if count == 0 { int(-1) } else { int(count) }
     }),
     method("read", "([C)I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let content = file_reader_content(vm, this);
         let units: Vec<u16> = content.encode_utf16().collect();
-        let mut pos = crate::lang::read_int_field(vm, this, "pos");
+        let mut pos = read_int_field(vm, this, "pos");
         let array = ref_arg(args, 1);
         let length = vm.array_length(array)? as i32;
         let mut count = 0;
@@ -3591,7 +3607,7 @@ const FILE_READER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
             pos += 1;
             count += 1;
         }
-        crate::lang::write_int_field(vm, this, "pos", pos);
+        write_int_field(vm, this, "pos", pos);
         if count == 0 { int(-1) } else { int(count) }
     }),
     method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
@@ -3620,26 +3636,315 @@ fn buffered_reader_in(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
         .unwrap_or(ObjectRef::NULL)
 }
 
-fn buffered_reader_read_char(vm: &mut Vm<'_>, this: ObjectRef) -> Result<i32, VmError> {
-    let reader = buffered_reader_in(vm, this);
-    if reader.is_null() {
-        return Ok(-1);
-    }
-    let (class, method) = vm.resolve_virtual_method(reader, "read", "()I")?;
-    Ok(vm
-        .invoke_method(class, method, vec![Value::Ref(reader)])?
-        .as_int())
+fn buffered_reader_cb(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "cb", "[C")
+        .unwrap_or(ObjectRef::NULL)
 }
 
-const BUFFERED_READER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+fn buffered_reader_ensure_open(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    if read_int_field(vm, this, "closed") != 0 {
+        return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+    }
+    Ok(())
+}
+
+fn buffered_reader_ctor(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    reader: ObjectRef,
+    size: i32,
+) -> Result<(), VmError> {
+    if reader.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    if size <= 0 {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("Buffer size <= 0"),
+        ));
+    }
+    let (declaring, field) = vm.find_field(vm.class_of(this), "in", "Ljava/io/Reader;")?;
+    vm.set_instance_ref(this, declaring, field, reader);
+    let cb = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Char, size as usize)?;
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, "cb", "[C")?;
+    vm.set_instance_ref(this, declaring, field, cb);
+    write_int_field(vm, this, "markedChar", -1);
+    Ok(())
+}
+
+/// Whether the underlying reader has input available without blocking.
+fn buffered_reader_in_ready(vm: &mut Vm<'_>, this: ObjectRef) -> Result<bool, VmError> {
+    let reader = buffered_reader_in(vm, this);
+    if reader.is_null() {
+        return Ok(false);
+    }
+    let (class, method) = vm.resolve_virtual_method(reader, "ready", "()Z")?;
+    let value = vm.invoke_method(class, method, vec![Value::Ref(reader)])?;
+    Ok(value.as_int() != 0)
+}
+
+/// Refill the internal buffer, honoring an active mark the way the JDK does:
+/// compact marked data to the front (growing the buffer when the read-ahead
+/// limit demands it) and retry reads that return zero.
+fn buffered_reader_fill(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    let mut cb = buffered_reader_cb(vm, this);
+    let mut n_chars = read_int_field(vm, this, "nChars");
+    let mut next_char = read_int_field(vm, this, "nextChar");
+    let marked = read_int_field(vm, this, "markedChar");
+    let limit = read_int_field(vm, this, "readAheadLimit");
+    let dst;
+    if marked < 0 {
+        dst = 0;
+    } else {
+        let delta = next_char - marked;
+        if delta >= limit {
+            write_int_field(vm, this, "markedChar", -2);
+            write_int_field(vm, this, "readAheadLimit", 0);
+            dst = 0;
+        } else {
+            let capacity = vm.array_length(cb)? as i32;
+            if limit > capacity {
+                let new_cb =
+                    vm.allocate_array_of(oxjvm_vm::ArrayComponent::Char, limit as usize)?;
+                for index in 0..delta {
+                    let unit = vm.array_get(cb, marked + index)?;
+                    vm.array_set(new_cb, index, unit, false)?;
+                }
+                cb = new_cb;
+                let class = vm.class_of(this);
+                let (declaring, field) = vm.find_field(class, "cb", "[C")?;
+                vm.set_instance_ref(this, declaring, field, cb);
+            } else if marked > 0 {
+                for index in 0..delta {
+                    let unit = vm.array_get(cb, marked + index)?;
+                    vm.array_set(cb, index, unit, false)?;
+                }
+            }
+            write_int_field(vm, this, "markedChar", 0);
+            n_chars = delta;
+            next_char = delta;
+            dst = delta;
+        }
+    }
+    let reader = buffered_reader_in(vm, this);
+    if !reader.is_null() {
+        let capacity = vm.array_length(cb)? as i32;
+        let (class, method) = vm.resolve_virtual_method(reader, "read", "([CII)I")?;
+        let count = loop {
+            let n = vm
+                .invoke_method(
+                    class,
+                    method,
+                    vec![
+                        Value::Ref(reader),
+                        Value::Ref(cb),
+                        Value::Int(dst),
+                        Value::Int(capacity - dst),
+                    ],
+                )?
+                .as_int();
+            if n != 0 {
+                break n;
+            }
+        };
+        if count > 0 {
+            n_chars = dst + count;
+            next_char = dst;
+        }
+    }
+    write_int_field(vm, this, "nChars", n_chars);
+    write_int_field(vm, this, "nextChar", next_char);
+    Ok(())
+}
+
+/// Single-character read over the internal buffer, skipping a `\n` left over
+/// from a `\r\n` terminator when `skipLF` is set.
+fn buffered_reader_read_char(vm: &mut Vm<'_>, this: ObjectRef) -> Result<i32, VmError> {
+    buffered_reader_ensure_open(vm, this)?;
+    loop {
+        let mut next = read_int_field(vm, this, "nextChar");
+        if next >= read_int_field(vm, this, "nChars") {
+            buffered_reader_fill(vm, this)?;
+            next = read_int_field(vm, this, "nextChar");
+            if next >= read_int_field(vm, this, "nChars") {
+                return Ok(-1);
+            }
+        }
+        let cb = buffered_reader_cb(vm, this);
+        if read_int_field(vm, this, "skipLF") != 0 {
+            write_int_field(vm, this, "skipLF", 0);
+            if vm.array_get(cb, next)?.as_int() == i32::from(b'\n') {
+                write_int_field(vm, this, "nextChar", next + 1);
+                continue;
+            }
+        }
+        let unit = vm.array_get(cb, next)?.as_int();
+        write_int_field(vm, this, "nextChar", next + 1);
+        return Ok(unit);
+    }
+}
+
+/// One underlying read into the caller's array, bypassing the buffer for
+/// large unmarked requests exactly like the JDK's `read1`.
+fn buffered_reader_read1(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    array: ObjectRef,
+    off: i32,
+    len: i32,
+) -> Result<i32, VmError> {
+    let mut next = read_int_field(vm, this, "nextChar");
+    let mut n_chars = read_int_field(vm, this, "nChars");
+    if next >= n_chars {
+        let capacity = vm.array_length(buffered_reader_cb(vm, this))? as i32;
+        if len >= capacity
+            && read_int_field(vm, this, "markedChar") < 0
+            && read_int_field(vm, this, "skipLF") == 0
+        {
+            let reader = buffered_reader_in(vm, this);
+            if reader.is_null() {
+                return Ok(-1);
+            }
+            let (class, method) = vm.resolve_virtual_method(reader, "read", "([CII)I")?;
+            return Ok(vm
+                .invoke_method(
+                    class,
+                    method,
+                    vec![
+                        Value::Ref(reader),
+                        Value::Ref(array),
+                        Value::Int(off),
+                        Value::Int(len),
+                    ],
+                )?
+                .as_int());
+        }
+        buffered_reader_fill(vm, this)?;
+        next = read_int_field(vm, this, "nextChar");
+        n_chars = read_int_field(vm, this, "nChars");
+    }
+    if next >= n_chars {
+        return Ok(-1);
+    }
+    let cb = buffered_reader_cb(vm, this);
+    if read_int_field(vm, this, "skipLF") != 0 {
+        write_int_field(vm, this, "skipLF", 0);
+        if vm.array_get(cb, next)?.as_int() == i32::from(b'\n') {
+            next += 1;
+            write_int_field(vm, this, "nextChar", next);
+            if next >= n_chars {
+                buffered_reader_fill(vm, this)?;
+                next = read_int_field(vm, this, "nextChar");
+                n_chars = read_int_field(vm, this, "nChars");
+                if next >= n_chars {
+                    return Ok(-1);
+                }
+            }
+        }
+    }
+    let count = len.min(n_chars - next);
+    for index in 0..count {
+        let unit = vm.array_get(cb, next + index)?;
+        vm.array_set(array, off + index, unit, false)?;
+    }
+    write_int_field(vm, this, "nextChar", next + count);
+    Ok(count)
+}
+
+fn buffered_reader_read_chars(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    array: ObjectRef,
+    off: i32,
+    len: i32,
+) -> Result<i32, VmError> {
+    buffered_reader_ensure_open(vm, this)?;
+    reader_check_range(vm, array, off, len)?;
+    if len == 0 {
+        return Ok(0);
+    }
+    let mut count = buffered_reader_read1(vm, this, array, off, len)?;
+    if count <= 0 {
+        return Ok(count);
+    }
+    let reader = buffered_reader_in(vm, this);
+    while count < len && !reader.is_null() {
+        let (ready_class, ready_method) = vm.resolve_virtual_method(reader, "ready", "()Z")?;
+        let ready = vm
+            .invoke_method(ready_class, ready_method, vec![Value::Ref(reader)])?
+            .as_int()
+            != 0;
+        if !ready {
+            break;
+        }
+        let more = buffered_reader_read1(vm, this, array, off + count, len - count)?;
+        if more <= 0 {
+            break;
+        }
+        count += more;
+    }
+    Ok(count)
+}
+
+/// Line-oriented read over the buffer; a trailing `\r` sets `skipLF` so the
+/// next read consumes a paired `\n` without touching the underlying reader.
+fn buffered_reader_read_line(vm: &mut Vm<'_>, this: ObjectRef) -> Result<ObjectRef, VmError> {
+    buffered_reader_ensure_open(vm, this)?;
+    let mut units: Vec<u16> = Vec::new();
+    let mut omit_lf = read_int_field(vm, this, "skipLF") != 0;
+    loop {
+        let mut next = read_int_field(vm, this, "nextChar");
+        let mut n_chars = read_int_field(vm, this, "nChars");
+        if next >= n_chars {
+            buffered_reader_fill(vm, this)?;
+            next = read_int_field(vm, this, "nextChar");
+            n_chars = read_int_field(vm, this, "nChars");
+        }
+        if next >= n_chars {
+            if units.is_empty() {
+                return Ok(ObjectRef::NULL);
+            }
+            return vm.make_string_utf16(units);
+        }
+        let cb = buffered_reader_cb(vm, this);
+        if omit_lf && vm.array_get(cb, next)?.as_int() == i32::from(b'\n') {
+            next += 1;
+            write_int_field(vm, this, "nextChar", next);
+        }
+        write_int_field(vm, this, "skipLF", 0);
+        omit_lf = false;
+        let mut end = next;
+        let mut terminator = 0;
+        while end < n_chars {
+            let unit = vm.array_get(cb, end)?.as_int();
+            if unit == i32::from(b'\n') || unit == i32::from(b'\r') {
+                terminator = unit;
+                break;
+            }
+            end += 1;
+        }
+        for index in next..end {
+            units.push(vm.array_get(cb, index)?.as_int() as u16);
+        }
+        write_int_field(vm, this, "nextChar", end);
+        if terminator != 0 {
+            write_int_field(vm, this, "nextChar", end + 1);
+            if terminator == i32::from(b'\r') {
+                write_int_field(vm, this, "skipLF", 1);
+            }
+            return vm.make_string_utf16(units);
+        }
+    }
+}
+
+const BUFFERED_READER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     method(
         "<init>",
         "(Ljava/io/Reader;)V",
         ACC_PUBLIC,
         |vm, _, args| {
-            let this = receiver(args);
-            let (declaring, field) = vm.find_field(vm.class_of(this), "in", "Ljava/io/Reader;")?;
-            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            buffered_reader_ctor(vm, receiver(args), ref_arg(args, 1), 8192)?;
             void()
         },
     ),
@@ -3648,61 +3953,38 @@ const BUFFERED_READER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         "(Ljava/io/Reader;I)V",
         ACC_PUBLIC,
         |vm, _, args| {
-            let this = receiver(args);
-            let (declaring, field) = vm.find_field(vm.class_of(this), "in", "Ljava/io/Reader;")?;
-            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            buffered_reader_ctor(vm, receiver(args), ref_arg(args, 1), int_arg(args, 2))?;
             void()
         },
     ),
     method("read", "()I", ACC_PUBLIC, |vm, _, args| {
         int(buffered_reader_read_char(vm, receiver(args))?)
     }),
-    method("read", "([CII)I", ACC_PUBLIC, |vm, _, args| {
+    method("read", "([C)I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let array = ref_arg(args, 1);
-        let offset = int_arg(args, 2);
-        let length = int_arg(args, 3);
-        reader_check_range(vm, array, offset, length)?;
-        if length == 0 {
-            return int(0);
+        if array.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
         }
-        let mut count = 0;
-        while count < length {
-            let value = buffered_reader_read_char(vm, this)?;
-            if value < 0 {
-                break;
-            }
-            vm.array_set(array, offset + count, Value::Int(value), false)?;
-            count += 1;
-        }
-        if count == 0 { int(-1) } else { int(count) }
+        let length = vm.array_length(array)? as i32;
+        int(buffered_reader_read_chars(vm, this, array, 0, length)?)
+    }),
+    method("read", "([CII)I", ACC_PUBLIC, |vm, _, args| {
+        int(buffered_reader_read_chars(
+            vm,
+            receiver(args),
+            ref_arg(args, 1),
+            int_arg(args, 2),
+            int_arg(args, 3),
+        )?)
     }),
     method(
         "readLine",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let this = receiver(args);
-            let mut line = String::new();
-            let mut read_any = false;
-            loop {
-                let value = buffered_reader_read_char(vm, this)?;
-                if value < 0 {
-                    break;
-                }
-                read_any = true;
-                if value == i32::from(b'\n') {
-                    break;
-                }
-                if value == i32::from(b'\r') {
-                    continue;
-                }
-                line.push(char::from_u32(value as u32).unwrap_or('\u{FFFD}'));
-            }
-            if !read_any {
-                return object(ObjectRef::NULL);
-            }
-            object(vm.make_string(&line)?)
+            let line = buffered_reader_read_line(vm, receiver(args))?;
+            object(line)
         },
     ),
     method(
@@ -3727,38 +4009,115 @@ const BUFFERED_READER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         },
     ),
     method("close", "()V", ACC_PUBLIC, |vm, _, args| {
-        let reader = buffered_reader_in(vm, receiver(args));
+        let this = receiver(args);
+        if read_int_field(vm, this, "closed") != 0 {
+            return void();
+        }
+        write_int_field(vm, this, "closed", 1);
+        let reader = buffered_reader_in(vm, this);
         if !reader.is_null() {
             let (class, method) = vm.resolve_virtual_method(reader, "close", "()V")?;
             vm.invoke_method(class, method, vec![Value::Ref(reader)])?;
         }
         void()
     }),
-    method("ready", "()Z", ACC_PUBLIC, |_, _, _| Ok(Value::Int(1))),
-    method("mark", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        let reader = buffered_reader_in(vm, receiver(args));
-        if !reader.is_null() {
-            let (class, method) = vm.resolve_virtual_method(reader, "mark", "(I)V")?;
-            vm.invoke_method(class, method, vec![Value::Ref(reader), args[1]])?;
+    method("ready", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        buffered_reader_ensure_open(vm, this)?;
+        // A pending `\r\n` skip is resolved here so ready() reports EOF
+        // without forcing a read that a bounded source would reject.
+        if read_int_field(vm, this, "skipLF") != 0 {
+            let mut next = read_int_field(vm, this, "nextChar");
+            if next >= read_int_field(vm, this, "nChars") && buffered_reader_in_ready(vm, this)? {
+                buffered_reader_fill(vm, this)?;
+                next = read_int_field(vm, this, "nextChar");
+            }
+            if next < read_int_field(vm, this, "nChars") {
+                let cb = buffered_reader_cb(vm, this);
+                if vm.array_get(cb, next)?.as_int() == i32::from(b'\n') {
+                    write_int_field(vm, this, "nextChar", next + 1);
+                }
+                write_int_field(vm, this, "skipLF", 0);
+            }
         }
+        if read_int_field(vm, this, "nextChar") < read_int_field(vm, this, "nChars") {
+            return boolean(true);
+        }
+        boolean(buffered_reader_in_ready(vm, this)?)
+    }),
+    method("mark", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        buffered_reader_ensure_open(vm, this)?;
+        let limit = int_arg(args, 1);
+        if limit < 0 {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("Read-ahead limit < 0"),
+            ));
+        }
+        write_int_field(vm, this, "readAheadLimit", limit);
+        write_int_field(vm, this, "markedChar", read_int_field(vm, this, "nextChar"));
+        write_int_field(vm, this, "markedSkipLF", read_int_field(vm, this, "skipLF"));
         void()
     }),
     method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
-        let reader = buffered_reader_in(vm, receiver(args));
-        if !reader.is_null() {
-            let (class, method) = vm.resolve_virtual_method(reader, "reset", "()V")?;
-            vm.invoke_method(class, method, vec![Value::Ref(reader)])?;
+        let this = receiver(args);
+        buffered_reader_ensure_open(vm, this)?;
+        let marked = read_int_field(vm, this, "markedChar");
+        if marked < 0 {
+            let message = if marked == -2 {
+                "Mark invalid"
+            } else {
+                "Stream not marked"
+            };
+            return Err(vm.throw_new("java/io/IOException", Some(message)));
         }
+        write_int_field(vm, this, "nextChar", marked);
+        let marked_skip = read_int_field(vm, this, "markedSkipLF");
+        write_int_field(vm, this, "skipLF", marked_skip);
         void()
     }),
-    method("markSupported", "()Z", ACC_PUBLIC, |vm, _, args| {
-        let reader = buffered_reader_in(vm, receiver(args));
-        if reader.is_null() {
-            return boolean(false);
+    method("markSupported", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
+    method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let n = crate::long_arg(args, 1);
+        if n < 0 {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("skip value is negative"),
+            ));
         }
-        let (class, method) = vm.resolve_virtual_method(reader, "markSupported", "()Z")?;
-        let value = vm.invoke_method(class, method, vec![Value::Ref(reader)])?;
-        boolean(value.as_int() != 0)
+        buffered_reader_ensure_open(vm, this)?;
+        let mut remaining = n;
+        while remaining > 0 {
+            let mut next = read_int_field(vm, this, "nextChar");
+            let mut n_chars = read_int_field(vm, this, "nChars");
+            if next >= n_chars {
+                buffered_reader_fill(vm, this)?;
+                next = read_int_field(vm, this, "nextChar");
+                n_chars = read_int_field(vm, this, "nChars");
+            }
+            if next >= n_chars {
+                break;
+            }
+            if read_int_field(vm, this, "skipLF") != 0 {
+                write_int_field(vm, this, "skipLF", 0);
+                let cb = buffered_reader_cb(vm, this);
+                if vm.array_get(cb, next)?.as_int() == i32::from(b'\n') {
+                    next += 1;
+                    write_int_field(vm, this, "nextChar", next);
+                }
+            }
+            let available = i64::from(n_chars - next);
+            if remaining <= available {
+                write_int_field(vm, this, "nextChar", next + remaining as i32);
+                remaining = 0;
+                break;
+            }
+            remaining -= available;
+            write_int_field(vm, this, "nextChar", n_chars);
+        }
+        long(n - remaining)
     }),
 ];
 
@@ -3767,7 +4126,17 @@ pub(crate) const BUFFERED_READER: oxjvm_vm::NativeClass = class(
     Some("java/io/Reader"),
     &[],
     ACC_PUBLIC,
-    &[field("in", "Ljava/io/Reader;", ACC_PRIVATE, None)],
+    &[
+        field("in", "Ljava/io/Reader;", ACC_PRIVATE, None),
+        field("cb", "[C", ACC_PRIVATE, None),
+        field("nChars", "I", ACC_PRIVATE, None),
+        field("nextChar", "I", ACC_PRIVATE, None),
+        field("markedChar", "I", ACC_PRIVATE, None),
+        field("readAheadLimit", "I", ACC_PRIVATE, None),
+        field("markedSkipLF", "I", ACC_PRIVATE, None),
+        field("skipLF", "I", ACC_PRIVATE, None),
+        field("closed", "I", ACC_PRIVATE, None),
+    ],
     &BUFFERED_READER_METHODS,
     None,
 );
@@ -3795,16 +4164,16 @@ fn line_number_set_flag(vm: &mut Vm<'_>, this: ObjectRef, name: &str, value: boo
 }
 
 fn line_number_prev(vm: &Vm<'_>, this: ObjectRef) -> i32 {
-    crate::lang::read_int_field(vm, this, "prevChar")
+    read_int_field(vm, this, "prevChar")
 }
 
 fn line_number_set_prev(vm: &mut Vm<'_>, this: ObjectRef, value: i32) {
-    crate::lang::write_int_field(vm, this, "prevChar", value);
+    write_int_field(vm, this, "prevChar", value);
 }
 
 fn line_number_bump(vm: &mut Vm<'_>, this: ObjectRef) {
-    let line = crate::lang::read_int_field(vm, this, "lineNumber");
-    crate::lang::write_int_field(vm, this, "lineNumber", line + 1);
+    let line = read_int_field(vm, this, "lineNumber");
+    write_int_field(vm, this, "lineNumber", line + 1);
 }
 
 /// `LineNumberReader.read()`: normalizes `\r` and `\r\n` to `\n` and counts lines.
@@ -3903,9 +4272,7 @@ const LINE_NUMBER_READER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         "(Ljava/io/Reader;)V",
         ACC_PUBLIC,
         |vm, _, args| {
-            let this = receiver(args);
-            let (declaring, field) = vm.find_field(vm.class_of(this), "in", "Ljava/io/Reader;")?;
-            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            buffered_reader_ctor(vm, receiver(args), ref_arg(args, 1), 8192)?;
             void()
         },
     ),
@@ -3914,22 +4281,16 @@ const LINE_NUMBER_READER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         "(Ljava/io/Reader;I)V",
         ACC_PUBLIC,
         |vm, _, args| {
-            let this = receiver(args);
-            let (declaring, field) = vm.find_field(vm.class_of(this), "in", "Ljava/io/Reader;")?;
-            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            buffered_reader_ctor(vm, receiver(args), ref_arg(args, 1), int_arg(args, 2))?;
             void()
         },
     ),
     method("setLineNumber", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        crate::lang::write_int_field(vm, receiver(args), "lineNumber", int_arg(args, 1));
+        write_int_field(vm, receiver(args), "lineNumber", int_arg(args, 1));
         void()
     }),
     method("getLineNumber", "()I", ACC_PUBLIC, |vm, _, args| {
-        int(crate::lang::read_int_field(
-            vm,
-            receiver(args),
-            "lineNumber",
-        ))
+        int(read_int_field(vm, receiver(args), "lineNumber"))
     }),
     method("read", "()I", ACC_PUBLIC, |vm, _, args| {
         int(line_number_reader_read(vm, receiver(args))?)
@@ -4043,8 +4404,8 @@ const LINE_NUMBER_READER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
             .find_method(super_class, "mark", "(I)V")
             .ok_or_else(|| VmError::internal("BufferedReader.mark missing"))?;
         vm.invoke_method(declaring, method, vec![Value::Ref(this), Value::Int(limit)])?;
-        let line = crate::lang::read_int_field(vm, this, "lineNumber");
-        crate::lang::write_int_field(vm, this, "markedLineNumber", line);
+        let line = read_int_field(vm, this, "lineNumber");
+        write_int_field(vm, this, "markedLineNumber", line);
         let skip = line_number_flag(vm, this, "skipLF");
         line_number_set_flag(vm, this, "markedSkipLF", skip);
         void()
@@ -4056,8 +4417,8 @@ const LINE_NUMBER_READER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
             .find_method(super_class, "reset", "()V")
             .ok_or_else(|| VmError::internal("BufferedReader.reset missing"))?;
         vm.invoke_method(declaring, method, vec![Value::Ref(this)])?;
-        let marked = crate::lang::read_int_field(vm, this, "markedLineNumber");
-        crate::lang::write_int_field(vm, this, "lineNumber", marked);
+        let marked = read_int_field(vm, this, "markedLineNumber");
+        write_int_field(vm, this, "lineNumber", marked);
         let skip = line_number_flag(vm, this, "markedSkipLF");
         line_number_set_flag(vm, this, "skipLF", skip);
         void()
@@ -4130,7 +4491,7 @@ fn input_stream_reader_init(
     let encoding = vm.make_string(historical_encoding(canonical))?;
     let (declaring, field) = vm.find_field(class, "encoding", "Ljava/lang/String;")?;
     vm.set_instance_ref(this, declaring, field, encoding);
-    crate::lang::write_int_field(vm, this, "pos", 0);
+    write_int_field(vm, this, "pos", 0);
     void()
 }
 
@@ -4208,19 +4569,19 @@ const INPUT_STREAM_READER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method("read", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let content = input_stream_reader_content(vm, this);
-        let pos = crate::lang::read_int_field(vm, this, "pos");
+        let pos = read_int_field(vm, this, "pos");
         let units: Vec<u16> = content.encode_utf16().collect();
         if pos < 0 || pos as usize >= units.len() {
             return int(-1);
         }
-        crate::lang::write_int_field(vm, this, "pos", pos + 1);
+        write_int_field(vm, this, "pos", pos + 1);
         int(i32::from(units[pos as usize]))
     }),
     method("read", "([CII)I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let content = input_stream_reader_content(vm, this);
         let units: Vec<u16> = content.encode_utf16().collect();
-        let mut pos = crate::lang::read_int_field(vm, this, "pos");
+        let mut pos = read_int_field(vm, this, "pos");
         let offset = int_arg(args, 2);
         let length = int_arg(args, 3);
         let array = ref_arg(args, 1);
@@ -4236,7 +4597,7 @@ const INPUT_STREAM_READER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
             pos += 1;
             count += 1;
         }
-        crate::lang::write_int_field(vm, this, "pos", pos);
+        write_int_field(vm, this, "pos", pos);
         if count == 0 { int(-1) } else { int(count) }
     }),
     method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
@@ -4553,7 +4914,7 @@ const OBJECT_STREAM_FIELD_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
             vm.set_string_field(this, class, "name", &name)?;
             let (declaring, field) = vm.find_field(class, "type", "Ljava/lang/Class;")?;
             vm.set_instance_ref(this, declaring, field, ref_arg(args, 2));
-            crate::lang::write_int_field(vm, this, "primitive", 0);
+            write_int_field(vm, this, "primitive", 0);
             void()
         },
     ),
@@ -4568,7 +4929,7 @@ const OBJECT_STREAM_FIELD_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
             vm.set_string_field(this, class, "name", &name)?;
             let (declaring, field) = vm.find_field(class, "type", "Ljava/lang/Class;")?;
             vm.set_instance_ref(this, declaring, field, ref_arg(args, 2));
-            crate::lang::write_int_field(vm, this, "primitive", int_arg(args, 3));
+            write_int_field(vm, this, "primitive", int_arg(args, 3));
             void()
         },
     ),
@@ -4606,7 +4967,7 @@ const OBJECT_STREAM_FIELD_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         },
     ),
     method("isPrimitive", "()Z", ACC_PUBLIC, |vm, _, args| {
-        boolean(crate::lang::read_int_field(vm, receiver(args), "primitive") != 0)
+        boolean(read_int_field(vm, receiver(args), "primitive") != 0)
     }),
     method(
         "compareTo",
@@ -4651,7 +5012,7 @@ const STRING_READER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     method("read", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let class = vm.class_of(this);
-        let next = crate::lang::read_int_field(vm, this, "next");
+        let next = read_int_field(vm, this, "next");
         let text = vm
             .read_ref_field(this, class, "str", "Ljava/lang/String;")
             .unwrap_or(ObjectRef::NULL);
@@ -4662,7 +5023,7 @@ const STRING_READER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
             return int(-1);
         }
         let unit = units[next as usize];
-        crate::lang::write_int_field(vm, this, "next", next + 1);
+        write_int_field(vm, this, "next", next + 1);
         int(i32::from(unit))
     }),
     method("read", "([CII)I", ACC_PUBLIC, |vm, _, args| {
@@ -4675,7 +5036,7 @@ const STRING_READER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         if length == 0 {
             return int(0);
         }
-        let next = crate::lang::read_int_field(vm, this, "next");
+        let next = read_int_field(vm, this, "next");
         let text = vm
             .read_ref_field(this, class, "str", "Ljava/lang/String;")
             .unwrap_or(ObjectRef::NULL);
@@ -4691,20 +5052,20 @@ const STRING_READER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
             let value = Value::Int(i32::from(units[next as usize + index]));
             vm.array_set(array, offset + index as i32, value, false)?;
         }
-        crate::lang::write_int_field(vm, this, "next", next + count as i32);
+        write_int_field(vm, this, "next", next + count as i32);
         int(count as i32)
     }),
     method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
     method("mark", "(I)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let next = crate::lang::read_int_field(vm, this, "next");
-        crate::lang::write_int_field(vm, this, "mark", next);
+        let next = read_int_field(vm, this, "next");
+        write_int_field(vm, this, "mark", next);
         void()
     }),
     method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let mark = crate::lang::read_int_field(vm, this, "mark");
-        crate::lang::write_int_field(vm, this, "next", mark);
+        let mark = read_int_field(vm, this, "mark");
+        write_int_field(vm, this, "next", mark);
         void()
     }),
     method("markSupported", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
@@ -4749,19 +5110,19 @@ fn pushback_reader_ctor(
     let buf = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Int, size as usize)?;
     let (declaring, field) = vm.find_field(vm.class_of(this), "buf", "[I")?;
     vm.set_instance_ref(this, declaring, field, buf);
-    crate::lang::write_int_field(vm, this, "count", 0);
+    write_int_field(vm, this, "count", 0);
     Ok(())
 }
 
 fn pushback_reader_unread_int(vm: &mut Vm<'_>, this: ObjectRef, ch: i32) -> Result<(), VmError> {
     let buf = pushback_reader_buf(vm, this);
-    let count = crate::lang::read_int_field(vm, this, "count");
+    let count = read_int_field(vm, this, "count");
     let capacity = vm.array_length(buf)? as i32;
     if count >= capacity {
         return Err(vm.throw_new("java/io/IOException", Some("Pushback buffer overflow")));
     }
     vm.array_set(buf, count, Value::Int(ch), true)?;
-    crate::lang::write_int_field(vm, this, "count", count + 1);
+    write_int_field(vm, this, "count", count + 1);
     Ok(())
 }
 
@@ -4786,11 +5147,11 @@ const PUSHBACK_READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     ),
     method("read", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let count = crate::lang::read_int_field(vm, this, "count");
+        let count = read_int_field(vm, this, "count");
         if count > 0 {
             let buf = pushback_reader_buf(vm, this);
             let ch = vm.array_get(buf, count - 1)?.as_int();
-            crate::lang::write_int_field(vm, this, "count", count - 1);
+            write_int_field(vm, this, "count", count - 1);
             int(ch)
         } else {
             let input = pushback_reader_in(vm, this);
@@ -4832,7 +5193,7 @@ const PUSHBACK_READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
             return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
         }
         let buf = pushback_reader_buf(vm, this);
-        let count = crate::lang::read_int_field(vm, this, "count");
+        let count = read_int_field(vm, this, "count");
         let buf_capacity = vm.array_length(buf)? as i32;
         if count + length > buf_capacity {
             return Err(vm.throw_new("java/io/IOException", Some("Pushback buffer overflow")));
@@ -4851,7 +5212,7 @@ const PUSHBACK_READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     }),
     method("ready", "()Z", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        if crate::lang::read_int_field(vm, this, "count") > 0 {
+        if read_int_field(vm, this, "count") > 0 {
             return boolean(true);
         }
         let input = pushback_reader_in(vm, this);
@@ -4955,7 +5316,7 @@ fn raf_init(vm: &mut Vm<'_>, this: ObjectRef, path: &str, mode: &str) -> Result<
     let text = vm.make_string(path)?;
     vm.set_instance_ref(this, declaring, field, text);
     raf_set_bytes(vm, this, &bytes)?;
-    crate::lang::write_int_field(vm, this, "position", 0);
+    write_int_field(vm, this, "position", 0);
     if let Some((declaring, field)) = vm.find_field_opt(class, "writable", "Z") {
         vm.set_instance_int(this, declaring, field, i32::from(writable));
     }
@@ -4974,7 +5335,7 @@ fn raf_write(vm: &mut Vm<'_>, this: ObjectRef, bytes: &[u8]) -> Result<Value, Vm
     if !writable {
         return Err(vm.throw_new("java/io/IOException", Some("Bad file descriptor")));
     }
-    let position = crate::lang::read_int_field(vm, this, "position") as usize;
+    let position = read_int_field(vm, this, "position") as usize;
     let mut data = raf_bytes(vm, this)?;
     let end = position + bytes.len();
     if end > data.len() {
@@ -4982,7 +5343,7 @@ fn raf_write(vm: &mut Vm<'_>, this: ObjectRef, bytes: &[u8]) -> Result<Value, Vm
     }
     data[position..end].copy_from_slice(bytes);
     raf_set_bytes(vm, this, &data)?;
-    crate::lang::write_int_field(vm, this, "position", end as i32);
+    write_int_field(vm, this, "position", end as i32);
     raf_flush(vm, this)?;
     void()
 }
@@ -5012,28 +5373,24 @@ const RANDOM_ACCESS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
         long(raf_bytes(vm, receiver(args))?.len() as i64)
     }),
     method("getFilePointer", "()J", ACC_PUBLIC, |vm, _, args| {
-        long(i64::from(crate::lang::read_int_field(
-            vm,
-            receiver(args),
-            "position",
-        )))
+        long(i64::from(read_int_field(vm, receiver(args), "position")))
     }),
     method("seek", "(J)V", ACC_PUBLIC, |vm, _, args| {
         let pos = crate::long_arg(args, 1);
         if pos < 0 {
             return Err(vm.throw_new("java/io/IOException", Some("Negative seek offset")));
         }
-        crate::lang::write_int_field(vm, receiver(args), "position", pos as i32);
+        write_int_field(vm, receiver(args), "position", pos as i32);
         void()
     }),
     method("read", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let position = crate::lang::read_int_field(vm, this, "position") as usize;
+        let position = read_int_field(vm, this, "position") as usize;
         let data = raf_bytes(vm, this)?;
         if position >= data.len() {
             return int(-1);
         }
-        crate::lang::write_int_field(vm, this, "position", (position + 1) as i32);
+        write_int_field(vm, this, "position", (position + 1) as i32);
         int(i32::from(data[position]))
     }),
     method("read", "([B)I", ACC_PUBLIC, |vm, _, args| {
@@ -5067,10 +5424,10 @@ const RANDOM_ACCESS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
     method("skipBytes", "(I)I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let n = int_arg(args, 1).max(0) as usize;
-        let position = crate::lang::read_int_field(vm, this, "position") as usize;
+        let position = read_int_field(vm, this, "position") as usize;
         let length = raf_bytes(vm, this)?.len();
         let next = (position + n).min(length);
-        crate::lang::write_int_field(vm, this, "position", next as i32);
+        write_int_field(vm, this, "position", next as i32);
         int((next - position) as i32)
     }),
     method("write", "(I)V", ACC_PUBLIC, |vm, _, args| {
@@ -5129,7 +5486,7 @@ const RANDOM_ACCESS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            let mut position = crate::lang::read_int_field(vm, this, "position") as usize;
+            let mut position = read_int_field(vm, this, "position") as usize;
             let data = raf_bytes(vm, this)?;
             if position >= data.len() {
                 return object(ObjectRef::NULL);
@@ -5149,7 +5506,7 @@ const RANDOM_ACCESS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
                 }
                 line.push(c as char);
             }
-            crate::lang::write_int_field(vm, this, "position", position as i32);
+            write_int_field(vm, this, "position", position as i32);
             object(vm.make_string(&line)?)
         },
     ),
@@ -5308,7 +5665,7 @@ fn raf_read_into(
     if length == 0 {
         return int(0);
     }
-    let position = crate::lang::read_int_field(vm, this, "position") as usize;
+    let position = read_int_field(vm, this, "position") as usize;
     let data = raf_bytes(vm, this)?;
     if position >= data.len() {
         return int(-1);
@@ -5322,7 +5679,7 @@ fn raf_read_into(
             false,
         )?;
     }
-    crate::lang::write_int_field(vm, this, "position", (position + count) as i32);
+    write_int_field(vm, this, "position", (position + count) as i32);
     int(count as i32)
 }
 
@@ -5342,13 +5699,13 @@ fn raf_read_fully(
 
 /// Read exactly `count` bytes at the file pointer, advancing it; `EOFException` if short.
 fn raf_read_n(vm: &mut Vm<'_>, this: ObjectRef, count: usize) -> Result<Vec<u8>, VmError> {
-    let position = crate::lang::read_int_field(vm, this, "position") as usize;
+    let position = read_int_field(vm, this, "position") as usize;
     let data = raf_bytes(vm, this)?;
     if position + count > data.len() {
         return Err(vm.throw_new("java/io/EOFException", None));
     }
     let bytes = data[position..position + count].to_vec();
-    crate::lang::write_int_field(vm, this, "position", (position + count) as i32);
+    write_int_field(vm, this, "position", (position + count) as i32);
     Ok(bytes)
 }
 
@@ -5503,7 +5860,7 @@ pub(crate) const FILTER_INPUT_STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const BUFFERED_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+const BUFFERED_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     method(
         "<init>",
         "(Ljava/io/InputStream;)V",
@@ -5531,14 +5888,79 @@ const BUFFERED_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
             void()
         },
     ),
+    method("read", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        buffered_input_check_open(vm, this)?;
+        delegate_input(
+            vm,
+            this,
+            "read",
+            "()I",
+            vec![Value::Ref(filter_input_stream_in(vm, this))],
+        )
+    }),
+    method("read", "([B)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        buffered_input_check_open(vm, this)?;
+        delegate_input(
+            vm,
+            this,
+            "read",
+            "([B)I",
+            vec![
+                Value::Ref(filter_input_stream_in(vm, this)),
+                Value::Ref(ref_arg(args, 1)),
+            ],
+        )
+    }),
+    method("read", "([BII)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        buffered_input_check_open(vm, this)?;
+        if int_arg(args, 3) == 0 {
+            return int(0);
+        }
+        delegate_input(
+            vm,
+            this,
+            "read",
+            "([BII)I",
+            vec![
+                Value::Ref(filter_input_stream_in(vm, this)),
+                Value::Ref(ref_arg(args, 1)),
+                Value::Int(int_arg(args, 2)),
+                Value::Int(int_arg(args, 3)),
+            ],
+        )
+    }),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if read_int_field(vm, this, "closed") != 0 {
+            return void();
+        }
+        write_int_field(vm, this, "closed", 1);
+        let stream = filter_input_stream_in(vm, this);
+        if !stream.is_null() {
+            let (class, method) = vm.resolve_virtual_method(stream, "close", "()V")?;
+            vm.invoke_method(class, method, vec![Value::Ref(stream)])?;
+        }
+        void()
+    }),
 ];
+
+/// `BufferedInputStream` rejects reads once closed, even zero-length ones.
+fn buffered_input_check_open(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    if read_int_field(vm, this, "closed") != 0 {
+        return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+    }
+    Ok(())
+}
 
 pub(crate) const BUFFERED_INPUT_STREAM: oxjvm_vm::NativeClass = class(
     "java/io/BufferedInputStream",
     Some("java/io/FilterInputStream"),
     &[],
     ACC_PUBLIC,
-    &[],
+    &[field("closed", "I", ACC_PRIVATE, None)],
     &BUFFERED_INPUT_STREAM_METHODS,
     None,
 );
@@ -6102,8 +6524,8 @@ fn data_output_stream(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
 
 fn data_output_count(vm: &mut Vm<'_>, this: ObjectRef, bytes: &[u8]) -> Result<(), VmError> {
     data_write_bytes(vm, data_output_stream(vm, this), bytes)?;
-    let written = crate::lang::read_int_field(vm, this, "written");
-    crate::lang::write_int_field(vm, this, "written", written + bytes.len() as i32);
+    let written = read_int_field(vm, this, "written");
+    write_int_field(vm, this, "written", written + bytes.len() as i32);
     Ok(())
 }
 
@@ -6215,7 +6637,7 @@ const DATA_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
         },
     ),
     method("size", "()I", ACC_PUBLIC, |vm, _, args| {
-        int(crate::lang::read_int_field(vm, receiver(args), "written"))
+        int(read_int_field(vm, receiver(args), "written"))
     }),
     method("flush", "()V", ACC_PUBLIC, |vm, _, args| {
         let out = data_output_stream(vm, receiver(args));
@@ -6265,9 +6687,9 @@ const CHAR_ARRAY_READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         let length = vm.array_length(array)? as i32;
         let (declaring, field) = vm.find_field(class, "buf", "[C")?;
         vm.set_instance_ref(this, declaring, field, array);
-        crate::lang::write_int_field(vm, this, "pos", 0);
-        crate::lang::write_int_field(vm, this, "markedPos", 0);
-        crate::lang::write_int_field(vm, this, "count", length);
+        write_int_field(vm, this, "pos", 0);
+        write_int_field(vm, this, "markedPos", 0);
+        write_int_field(vm, this, "count", length);
         void()
     }),
     method("<init>", "([CII)V", ACC_PUBLIC, |vm, _, args| {
@@ -6279,16 +6701,16 @@ const CHAR_ARRAY_READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         let class = vm.class_of(this);
         let (declaring, field) = vm.find_field(class, "buf", "[C")?;
         vm.set_instance_ref(this, declaring, field, array);
-        crate::lang::write_int_field(vm, this, "pos", offset);
-        crate::lang::write_int_field(vm, this, "markedPos", offset);
-        crate::lang::write_int_field(vm, this, "count", offset + length);
+        write_int_field(vm, this, "pos", offset);
+        write_int_field(vm, this, "markedPos", offset);
+        write_int_field(vm, this, "count", offset + length);
         void()
     }),
     method("read", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let class = vm.class_of(this);
-        let pos = crate::lang::read_int_field(vm, this, "pos");
-        let count = crate::lang::read_int_field(vm, this, "count");
+        let pos = read_int_field(vm, this, "pos");
+        let count = read_int_field(vm, this, "count");
         if pos >= count {
             return int(-1);
         }
@@ -6296,7 +6718,7 @@ const CHAR_ARRAY_READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
             .read_ref_field(this, class, "buf", "[C")
             .unwrap_or(ObjectRef::NULL);
         let value = vm.array_get(buf, pos)?.as_int();
-        crate::lang::write_int_field(vm, this, "pos", pos + 1);
+        write_int_field(vm, this, "pos", pos + 1);
         int(value)
     }),
     method("read", "([CII)I", ACC_PUBLIC, |vm, _, args| {
@@ -6309,8 +6731,8 @@ const CHAR_ARRAY_READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         if length == 0 {
             return int(0);
         }
-        let pos = crate::lang::read_int_field(vm, this, "pos");
-        let count = crate::lang::read_int_field(vm, this, "count");
+        let pos = read_int_field(vm, this, "pos");
+        let count = read_int_field(vm, this, "count");
         if pos >= count {
             return int(-1);
         }
@@ -6323,36 +6745,36 @@ const CHAR_ARRAY_READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
             let value = vm.array_get(buf, pos + index)?;
             vm.array_set(target, offset + index, value, false)?;
         }
-        crate::lang::write_int_field(vm, this, "pos", pos + n);
+        write_int_field(vm, this, "pos", pos + n);
         int(n)
     }),
     method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let pos = crate::lang::read_int_field(vm, this, "pos");
-        let count = crate::lang::read_int_field(vm, this, "count");
+        let pos = read_int_field(vm, this, "pos");
+        let count = read_int_field(vm, this, "count");
         let available = (count - pos).max(0);
         let requested = crate::long_arg(args, 1).max(0) as i32;
         let n = available.min(requested);
-        crate::lang::write_int_field(vm, this, "pos", pos + n);
+        write_int_field(vm, this, "pos", pos + n);
         long(i64::from(n))
     }),
     method("ready", "()Z", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let pos = crate::lang::read_int_field(vm, this, "pos");
-        let count = crate::lang::read_int_field(vm, this, "count");
+        let pos = read_int_field(vm, this, "pos");
+        let count = read_int_field(vm, this, "count");
         boolean(pos < count)
     }),
     method("markSupported", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
     method("mark", "(I)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let pos = crate::lang::read_int_field(vm, this, "pos");
-        crate::lang::write_int_field(vm, this, "markedPos", pos);
+        let pos = read_int_field(vm, this, "pos");
+        write_int_field(vm, this, "markedPos", pos);
         void()
     }),
     method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let marked = crate::lang::read_int_field(vm, this, "markedPos");
-        crate::lang::write_int_field(vm, this, "pos", marked);
+        let marked = read_int_field(vm, this, "markedPos");
+        write_int_field(vm, this, "pos", marked);
         void()
     }),
 ];
@@ -6377,7 +6799,7 @@ fn char_array_writer_units(vm: &mut Vm<'_>, this: ObjectRef) -> Vec<u16> {
     let buf = vm
         .read_ref_field(this, class, "buf", "[C")
         .unwrap_or(ObjectRef::NULL);
-    let count = crate::lang::read_int_field(vm, this, "count").max(0) as usize;
+    let count = read_int_field(vm, this, "count").max(0) as usize;
     let mut units = Vec::with_capacity(count);
     for index in 0..count {
         if let Ok(value) = vm.array_get(buf, index as i32) {
@@ -6395,7 +6817,7 @@ fn char_array_writer_set(vm: &mut Vm<'_>, this: ObjectRef, units: &[u16]) -> Res
     let class = vm.class_of(this);
     let (declaring, field) = vm.find_field(class, "buf", "[C")?;
     vm.set_instance_ref(this, declaring, field, array);
-    crate::lang::write_int_field(vm, this, "count", units.len() as i32);
+    write_int_field(vm, this, "count", units.len() as i32);
     Ok(())
 }
 
@@ -6476,7 +6898,7 @@ const CHAR_ARRAY_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         object(array)
     }),
     method("size", "()I", ACC_PUBLIC, |vm, _, args| {
-        int(crate::lang::read_int_field(vm, receiver(args), "count"))
+        int(read_int_field(vm, receiver(args), "count"))
     }),
     method(
         "toString",
