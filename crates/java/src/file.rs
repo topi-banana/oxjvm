@@ -1157,6 +1157,12 @@ fn write_file_position(vm: &mut Vm<'_>, this: ObjectRef, position: usize) {
     }
 }
 
+/// Shorten a name component by `excess`, but never below `min` (JDK `shortenSubName`).
+fn shorten_sub_name(length: usize, excess: usize, min: usize) -> usize {
+    let shortened = length.saturating_sub(excess).max(min);
+    shortened.min(length)
+}
+
 fn file_create_temp_file(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
     let prefix = string_arg(vm, args[0])?;
     if prefix.chars().count() < 3 {
@@ -1166,32 +1172,70 @@ fn file_create_temp_file(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmErr
     }
     let suffix = match args.get(1).copied() {
         Some(Value::Ref(reference)) if !reference.is_null() => vm.string_or_empty(reference),
-        _ => String::new(),
+        _ => String::from(".tmp"),
     };
     let dir = match args.get(2).copied() {
         Some(Value::Ref(reference)) if !reference.is_null() => file_path(vm, reference),
         _ => crate::lang::system_property(vm, "java.io.tmpdir").unwrap_or_else(|| "/tmp".into()),
     };
-    let seed = vm.host.random_seed();
-    if prefix.contains('\0') || suffix.contains('\0') || dir.contains('\0') {
+    if dir.contains('\0') {
         return Err(vm.throw_new(
             "java/io/IOException",
             Some("Unable to create temporary file"),
         ));
     }
-    let path = alloc::format!("{dir}/{prefix}{seed:016x}{suffix}");
-    let created = vm
-        .host
-        .filesystem()
-        .map(|fs| fs.write(&path, &[], false))
-        .unwrap_or(false);
-    if !created {
-        return Err(vm.throw_new(
-            "java/io/IOException",
-            Some("Unable to create temporary file"),
-        ));
+    // Only the file name of the prefix is used, as `new File(prefix).getName()`.
+    let prefix = name_of(&normalize_path(&prefix));
+    let prefix_chars: Vec<char> = prefix.chars().collect();
+    let suffix_chars: Vec<char> = suffix.chars().collect();
+    let name_max = 255usize;
+    loop {
+        let seed = vm.host.random_seed();
+        let nus = alloc::format!("{seed}");
+        let nus_chars: Vec<char> = nus.chars().collect();
+        let mut prefix_len = prefix_chars.len();
+        let mut nus_len = nus_chars.len();
+        let mut suffix_len = suffix_chars.len();
+        let total = prefix_len + nus_len + suffix_len;
+        if total > name_max {
+            let mut excess = total - name_max;
+            prefix_len = shorten_sub_name(prefix_len, excess, 3);
+            excess = prefix_len + nus_len + suffix_len - name_max;
+            if excess > 0 {
+                let min = if suffix.starts_with('.') { 4 } else { 0 };
+                suffix_len = shorten_sub_name(suffix_len, excess, min);
+                suffix_len = shorten_sub_name(suffix_len, excess, 3);
+                excess = prefix_len + nus_len + suffix_len - name_max;
+            }
+            if excess > 0 && excess + 5 <= nus_len {
+                nus_len = shorten_sub_name(nus_len, excess, 5);
+            }
+        }
+        let mut name: String = prefix_chars[..prefix_len].iter().collect();
+        name.extend(nus_chars[..nus_len].iter());
+        name.extend(suffix_chars[..suffix_len].iter());
+        let name = normalize_path(&name);
+        if name.contains('\0') || name != name_of(&name) {
+            let message = alloc::format!("Unable to create temporary file, {name}");
+            return Err(vm.throw_new("java/io/IOException", Some(&message)));
+        }
+        let path = join_paths(&dir, &name);
+        if fs_metadata(vm, &path).is_some() {
+            continue;
+        }
+        let created = vm
+            .host
+            .filesystem()
+            .map(|fs| fs.write(&path, &[], false))
+            .unwrap_or(false);
+        if !created {
+            return Err(vm.throw_new(
+                "java/io/IOException",
+                Some("Unable to create temporary file"),
+            ));
+        }
+        return new_file(vm, &path);
     }
-    new_file(vm, &path)
 }
 
 fn file_input_read(
