@@ -5944,6 +5944,9 @@ fn raf_flush(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
 }
 
 fn raf_init(vm: &mut Vm<'_>, this: ObjectRef, path: &str, mode: &str) -> Result<Value, VmError> {
+    if path.contains('\0') {
+        return Err(vm.throw_new("java/io/FileNotFoundException", Some("Invalid file path")));
+    }
     if !matches!(mode, "r" | "rw" | "rws" | "rwd") {
         return Err(vm.throw_new(
             "java/lang/IllegalArgumentException",

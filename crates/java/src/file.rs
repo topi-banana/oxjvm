@@ -152,6 +152,9 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let path = file_path(vm, receiver(args));
+            if path.contains('\0') {
+                return Err(vm.throw_new("java/io/IOException", Some("Invalid file path")));
+            }
             let canonical = canonical_of(vm, &path);
             object(vm.make_string(&canonical)?)
         },
@@ -162,6 +165,9 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let path = file_path(vm, receiver(args));
+            if path.contains('\0') {
+                return Err(vm.throw_new("java/io/IOException", Some("Invalid file path")));
+            }
             let canonical = canonical_of(vm, &path);
             new_file(vm, &canonical)
         },
@@ -201,6 +207,9 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
     method("setLastModified", "(J)Z", ACC_PUBLIC, |vm, _, args| {
         let path = file_path(vm, receiver(args));
         let millis = long_arg(args, 1);
+        if millis < 0 {
+            return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("Negative time")));
+        }
         let ok = fs_set_modified(vm, &path, millis);
         boolean(ok)
     }),
@@ -218,6 +227,9 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
     }),
     method("createNewFile", "()Z", ACC_PUBLIC, |vm, _, args| {
         let path = file_path(vm, receiver(args));
+        if path.contains('\0') {
+            return Err(vm.throw_new("java/io/IOException", Some("Invalid file path")));
+        }
         if fs_metadata(vm, &path).is_some() {
             return boolean(false);
         }
@@ -285,15 +297,15 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let filter = ref_arg(args, 1);
-            if filter.is_null() {
-                return Err(vm.throw_new("java/lang/NullPointerException", None));
-            }
             let path = file_path(vm, receiver(args));
             let Some(names) = fs_list(vm, &path) else {
                 return object(ObjectRef::NULL);
             };
             let directory = new_file(vm, &path)?;
             let accepted = filter_names(vm, &names, |vm, name| {
+                if filter.is_null() {
+                    return Ok(true);
+                }
                 let text = vm.make_string(name)?;
                 let (declaring, method) = vm.resolve_virtual_method(
                     filter,
@@ -318,14 +330,14 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let filter = ref_arg(args, 1);
-            if filter.is_null() {
-                return Err(vm.throw_new("java/lang/NullPointerException", None));
-            }
             let path = file_path(vm, receiver(args));
             let Some(names) = fs_list(vm, &path) else {
                 return object(ObjectRef::NULL);
             };
             let accepted = filter_names(vm, &names, |vm, name| {
+                if filter.is_null() {
+                    return Ok(true);
+                }
                 let full = join_paths(&path, name);
                 let entry = new_file(vm, &full)?;
                 let (declaring, method) =
@@ -367,15 +379,15 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let filter = ref_arg(args, 1);
-            if filter.is_null() {
-                return Err(vm.throw_new("java/lang/NullPointerException", None));
-            }
             let path = file_path(vm, receiver(args));
             let Some(names) = fs_list(vm, &path) else {
                 return object(ObjectRef::NULL);
             };
             let directory = new_file(vm, &path)?;
             let accepted = filter_names(vm, &names, |vm, name| {
+                if filter.is_null() {
+                    return Ok(true);
+                }
                 let text = vm.make_string(name)?;
                 let (declaring, method) = vm.resolve_virtual_method(
                     filter,
@@ -400,14 +412,14 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let filter = ref_arg(args, 1);
-            if filter.is_null() {
-                return Err(vm.throw_new("java/lang/NullPointerException", None));
-            }
             let path = file_path(vm, receiver(args));
             let Some(names) = fs_list(vm, &path) else {
                 return object(ObjectRef::NULL);
             };
             let accepted = filter_names(vm, &names, |vm, name| {
+                if filter.is_null() {
+                    return Ok(true);
+                }
                 let full = join_paths(&path, name);
                 let entry = new_file(vm, &full)?;
                 let (declaring, method) =
@@ -505,28 +517,29 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
     }),
     method("toURL", "()Ljava/net/URL;", ACC_PUBLIC, |vm, _, args| {
         let path = file_path(vm, receiver(args));
-        let text = if path.starts_with('/') {
-            alloc::format!("file:{path}")
-        } else {
-            alloc::format!("file:/{path}")
-        };
+        if path.contains('\0') {
+            return Err(vm.throw_new("java/net/MalformedURLException", Some("Invalid file path")));
+        }
+        let absolute = absolute_of_path(vm, &path);
+        let text = alloc::format!("file:{absolute}");
         object(crate::net::new_url(vm, &text)?)
     }),
     method("toURI", "()Ljava/net/URI;", ACC_PUBLIC, |vm, _, args| {
         let path = file_path(vm, receiver(args));
+        let absolute = absolute_of_path(vm, &path);
         let is_dir = vm
             .host
             .filesystem()
-            .and_then(|fs| fs.metadata(&path))
+            .and_then(|fs| fs.metadata(&absolute))
             .map(|m| m.kind == FileKind::Directory)
             .unwrap_or(false);
-        let suffix = if is_dir { "/" } else { "" };
-        let encoded = uri_encode_path(&path);
-        let text = if path.starts_with('/') {
-            alloc::format!("file:{encoded}{suffix}")
+        let suffix = if is_dir && !absolute.ends_with('/') {
+            "/"
         } else {
-            alloc::format!("file:/{encoded}{suffix}")
+            ""
         };
+        let encoded = uri_encode_path(&absolute);
+        let text = alloc::format!("file:{encoded}{suffix}");
         crate::uri::new_uri(vm, &text)
     }),
     method(
@@ -535,6 +548,23 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let path = file_path(vm, receiver(args));
+            if path.contains('\0') {
+                let class = vm.resolve_class("java/nio/file/InvalidPathException")?;
+                let (ctor_class, ctor) = vm
+                    .find_method(class, "<init>", "(Ljava/lang/String;Ljava/lang/String;)V")
+                    .ok_or_else(|| {
+                        VmError::internal("InvalidPathException lacks its constructor")
+                    })?;
+                let instance = vm.new_instance(class)?;
+                let input = vm.make_string(&path)?;
+                let reason = vm.make_string("Invalid file path")?;
+                vm.invoke_method(
+                    ctor_class,
+                    ctor,
+                    vec![Value::Ref(instance), Value::Ref(input), Value::Ref(reason)],
+                )?;
+                return Err(VmError::Thrown(instance));
+            }
             crate::nio::new_path(vm, &path)
         },
     ),
@@ -1059,6 +1089,9 @@ pub(crate) const FILE_INPUT_STREAM: oxjvm_vm::NativeClass = class(
 );
 
 fn file_input_init(vm: &mut Vm<'_>, this: ObjectRef, path: &str) -> Result<Value, VmError> {
+    if path.contains('\0') {
+        return Err(vm.throw_new("java/io/FileNotFoundException", Some("Invalid file path")));
+    }
     let Some(bytes) = vm.host.filesystem().and_then(|fs| fs.read(path)) else {
         return Err(vm.throw_new("java/io/FileNotFoundException", Some(path)));
     };
@@ -1140,6 +1173,12 @@ fn file_create_temp_file(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmErr
         _ => crate::lang::system_property(vm, "java.io.tmpdir").unwrap_or_else(|| "/tmp".into()),
     };
     let seed = vm.host.random_seed();
+    if prefix.contains('\0') || suffix.contains('\0') || dir.contains('\0') {
+        return Err(vm.throw_new(
+            "java/io/IOException",
+            Some("Unable to create temporary file"),
+        ));
+    }
     let path = alloc::format!("{dir}/{prefix}{seed:016x}{suffix}");
     let created = vm
         .host
@@ -1147,7 +1186,10 @@ fn file_create_temp_file(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmErr
         .map(|fs| fs.write(&path, &[], false))
         .unwrap_or(false);
     if !created {
-        return Err(vm.throw_new("java/io/IOException", Some(&path)));
+        return Err(vm.throw_new(
+            "java/io/IOException",
+            Some("Unable to create temporary file"),
+        ));
     }
     new_file(vm, &path)
 }
@@ -1308,6 +1350,9 @@ fn file_output_init(
     path: &str,
     append: bool,
 ) -> Result<Value, VmError> {
+    if path.contains('\0') {
+        return Err(vm.throw_new("java/io/FileNotFoundException", Some("Invalid file path")));
+    }
     if fs_metadata(vm, path).is_some_and(|metadata| metadata.kind == FileKind::Directory) {
         return Err(vm.throw_new(
             "java/io/FileNotFoundException",

@@ -714,6 +714,90 @@ pub(crate) const PATHS: oxjvm_vm::NativeClass = class(
     None,
 );
 
+fn invalid_path_ctor(
+    vm: &mut Vm<'_>,
+    context: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let input = string_arg(vm, args[1])?;
+    let reason = string_arg(vm, args[2])?;
+    let index = if vm.classes.get(context.class).methods[context.method as usize].descriptor
+        == "(Ljava/lang/String;Ljava/lang/String;I)V"
+    {
+        crate::int_arg(args, 3)
+    } else {
+        -1
+    };
+    for (name, value) in [("input", input.as_str()), ("reason", reason.as_str())] {
+        let text = vm.make_string(value)?;
+        let (declaring, field) = vm.find_field(context.class, name, "Ljava/lang/String;")?;
+        vm.set_instance_ref(this, declaring, field, text);
+    }
+    let (declaring, field) = vm.find_field(context.class, "index", "I")?;
+    vm.set_instance_int(this, declaring, field, index);
+    let message = vm.make_string(&alloc::format!("{reason}: {input}"))?;
+    let (declaring, field) = vm.find_field(context.class, "detailMessage", "Ljava/lang/String;")?;
+    vm.set_instance_ref(this, declaring, field, message);
+    vm.capture_backtrace(this);
+    void()
+}
+
+/// `java.nio.file.InvalidPathException`.
+pub(crate) const INVALID_PATH_EXCEPTION: oxjvm_vm::NativeClass = class(
+    "java/nio/file/InvalidPathException",
+    Some("java/lang/IllegalArgumentException"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("input", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("reason", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("index", "I", ACC_PRIVATE, None),
+    ],
+    &[
+        method(
+            "<init>",
+            "(Ljava/lang/String;Ljava/lang/String;)V",
+            ACC_PUBLIC,
+            invalid_path_ctor,
+        ),
+        method(
+            "<init>",
+            "(Ljava/lang/String;Ljava/lang/String;I)V",
+            ACC_PUBLIC,
+            invalid_path_ctor,
+        ),
+        method(
+            "getInput",
+            "()Ljava/lang/String;",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let this = receiver(args);
+                object(
+                    vm.read_ref_field(this, vm.class_of(this), "input", "Ljava/lang/String;")
+                        .unwrap_or(ObjectRef::NULL),
+                )
+            },
+        ),
+        method(
+            "getReason",
+            "()Ljava/lang/String;",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let this = receiver(args);
+                object(
+                    vm.read_ref_field(this, vm.class_of(this), "reason", "Ljava/lang/String;")
+                        .unwrap_or(ObjectRef::NULL),
+                )
+            },
+        ),
+        method("getIndex", "()I", ACC_PUBLIC, |vm, _, args| {
+            int(crate::lang::read_int_field(vm, receiver(args), "index"))
+        }),
+    ],
+    None,
+);
+
 pub(crate) fn path_string(vm: &Vm<'_>, path: ObjectRef) -> String {
     if path.is_null() {
         return String::new();
