@@ -9762,7 +9762,6 @@ fn enum_value_of(
     if class_object.is_null() {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
-    let name = string_arg(vm, args[1])?;
     let enum_class = class_argument(vm, class_object)?;
     if !vm.classes.get(enum_class).is_enum {
         return Err(vm.throw_new(
@@ -9774,16 +9773,25 @@ fn enum_value_of(
         ));
     }
     vm.ensure_initialized(enum_class)?;
+    // The JDK checks the enum type before the name, and reports a null name with
+    // a dedicated NullPointerException message.
+    if ref_arg(args, 1).is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", Some("Name is null")));
+    }
+    let name = string_arg(vm, args[1])?;
     let class_name = vm.class_name(enum_class).to_string();
     let descriptor = alloc::format!("L{class_name};");
     if let Some(value) = vm.read_static_ref_if_set(enum_class, &name, &descriptor) {
         return object(value);
     }
+    // The JDK reports the canonical class name (nested classes use '.', not '$')
+    // followed by the requested constant name.
     Err(vm.throw_new(
         "java/lang/IllegalArgumentException",
         Some(&alloc::format!(
-            "No enum constant {}",
-            class_name.replace('/', ".")
+            "No enum constant {}.{}",
+            class_name.replace(['/', '$'], "."),
+            name
         )),
     ))
 }
