@@ -3151,11 +3151,78 @@ fn method_signature_text(
     Ok(text)
 }
 
+/// `Constructor.toGenericString`: renders the generic Signature (type
+/// parameters with bounds, generic parameter types, and throws clause) when
+/// present. Returns None so the caller can fall back to the erased text.
+fn constructor_generic_signature_text(
+    vm: &mut Vm<'_>,
+    class: ClassId,
+    slot: u32,
+) -> Result<Option<String>, VmError> {
+    let signature = vm.classes.get(class).methods[slot as usize]
+        .signature
+        .clone();
+    let signature = match signature {
+        Some(text) => text,
+        None => return Ok(None),
+    };
+    let GenericMethodSignature {
+        type_parameters,
+        parameters,
+        throws,
+        ..
+    } = match parse_method_signature_full(&signature) {
+        Ok(parsed) => parsed,
+        Err(_) => return Ok(None),
+    };
+    let (_, _, flags) = method_entry(vm, class, slot);
+    let modifiers = modifiers_text(flags & (ACC_PUBLIC | ACC_PROTECTED | ACC_PRIVATE | ACC_FINAL));
+    let mut parameter_names: Vec<String> = parameters.iter().map(parsed_type_name).collect();
+    if flags & ACC_VARARGS != 0 {
+        if let Some(last) = parameter_names.last_mut() {
+            *last = varargs_parameter_text(last.clone());
+        }
+    }
+    let declaring = crate::binary_name(vm, class);
+    let mut text = String::new();
+    if !modifiers.is_empty() {
+        text.push_str(&modifiers);
+        text.push(' ');
+    }
+    if !type_parameters.is_empty() {
+        let parts: Vec<String> = type_parameters
+            .iter()
+            .map(|(name, bounds)| type_parameter_text(name, bounds))
+            .collect();
+        text.push('<');
+        text.push_str(&parts.join(","));
+        text.push_str("> ");
+    }
+    text.push_str(&alloc::format!(
+        "{declaring}({})",
+        parameter_names.join(",")
+    ));
+    let exception_names: Vec<String> = if throws.is_empty() {
+        vm.classes.get(class).methods[slot as usize]
+            .exceptions
+            .iter()
+            .map(|exception| crate::binary_name(vm, *exception))
+            .collect()
+    } else {
+        throws.iter().map(parsed_type_name).collect()
+    };
+    if !exception_names.is_empty() {
+        text.push_str(&alloc::format!(" throws {}", exception_names.join(",")));
+    }
+    Ok(Some(text))
+}
+
 /// The JDK-style signature text of a constructor (`Constructor.toGenericString`).
 fn constructor_signature_text(
     vm: &mut Vm<'_>,
     class: ClassId,
     slot: u32,
+    varargs_ellipsis: bool,
 ) -> Result<String, VmError> {
     let (_, descriptor, flags) = method_entry(vm, class, slot);
     let parsed = MethodDescriptor::parse(&descriptor)
@@ -3165,6 +3232,11 @@ fn constructor_signature_text(
     let mut parameters = Vec::new();
     for parameter in &parsed.parameters {
         parameters.push(binary_name_for_field_type(vm, parameter)?);
+    }
+    if varargs_ellipsis && flags & ACC_VARARGS != 0 {
+        if let Some(last) = parameters.last_mut() {
+            *last = varargs_parameter_text(last.clone());
+        }
     }
     let declaring = crate::binary_name(vm, class);
     let mut text = String::new();
@@ -3341,10 +3413,11 @@ const CONSTRUCTOR_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let (class, slot) = constructor_parts(vm, receiver(args));
-            {
-                let text = constructor_signature_text(vm, class, slot)?;
-                object(vm.make_string(&text)?)
-            }
+            let text = match constructor_generic_signature_text(vm, class, slot)? {
+                Some(text) => text,
+                None => constructor_signature_text(vm, class, slot, true)?,
+            };
+            object(vm.make_string(&text)?)
         },
     ),
     method(
@@ -3504,7 +3577,17 @@ const CONSTRUCTOR_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
             }
             let modifiers = modifiers_text(flags & (ACC_PUBLIC | ACC_PROTECTED | ACC_PRIVATE));
             let name = crate::binary_name(vm, class);
-            let text = alloc::format!("{modifiers} {name}({})", parameters.join(","));
+            let mut text = alloc::format!("{modifiers} {name}({})", parameters.join(","));
+            let exceptions = vm.classes.get(class).methods[slot as usize]
+                .exceptions
+                .clone();
+            if !exceptions.is_empty() {
+                let names: Vec<String> = exceptions
+                    .iter()
+                    .map(|exception| crate::binary_name(vm, *exception))
+                    .collect();
+                text.push_str(&alloc::format!(" throws {}", names.join(",")));
+            }
             object(vm.make_string(text.trim())?)
         },
     ),
