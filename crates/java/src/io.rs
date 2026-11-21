@@ -5858,13 +5858,13 @@ fn raf_flush(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
 }
 
 fn raf_init(vm: &mut Vm<'_>, this: ObjectRef, path: &str, mode: &str) -> Result<Value, VmError> {
-    let writable = mode != "r";
-    if !writable && mode != "r" {
+    if !matches!(mode, "r" | "rw" | "rws" | "rwd") {
         return Err(vm.throw_new(
             "java/lang/IllegalArgumentException",
             Some(&alloc::format!("Illegal mode \"{mode}\"")),
         ));
     }
+    let writable = mode != "r";
     let bytes = vm.host.filesystem().and_then(|fs| fs.read(path));
     let bytes = match bytes {
         Some(bytes) => bytes,
@@ -5910,7 +5910,7 @@ fn raf_write(vm: &mut Vm<'_>, this: ObjectRef, bytes: &[u8]) -> Result<Value, Vm
     void()
 }
 
-const RANDOM_ACCESS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
+const RANDOM_ACCESS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
     method(
         "<init>",
         "(Ljava/io/File;Ljava/lang/String;)V",
@@ -6085,7 +6085,17 @@ const RANDOM_ACCESS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
         void()
     }),
     method("close", "()V", ACC_PUBLIC, |vm, _, args| {
-        raf_flush(vm, receiver(args))?;
+        let this = receiver(args);
+        raf_flush(vm, this)?;
+        // Closing the file also closes the channel handed out by getChannel.
+        let class = vm.class_of(this);
+        let channel = vm
+            .read_ref_field(this, class, "channel", "Ljava/nio/channels/FileChannel;")
+            .unwrap_or(ObjectRef::NULL);
+        if !channel.is_null() {
+            let (ch_class, ch_method) = vm.resolve_virtual_method(channel, "close", "()V")?;
+            vm.invoke_method(ch_class, ch_method, vec![Value::Ref(channel)])?;
+        }
         void()
     }),
     method(
@@ -6095,6 +6105,32 @@ const RANDOM_ACCESS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
         |vm, _, _| {
             let class = vm.resolve_class("java/io/FileDescriptor")?;
             object(vm.new_instance(class)?)
+        },
+    ),
+    method(
+        "getChannel",
+        "()Ljava/nio/channels/FileChannel;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let existing = vm
+                .read_ref_field(this, class, "channel", "Ljava/nio/channels/FileChannel;")
+                .unwrap_or(ObjectRef::NULL);
+            if !existing.is_null() {
+                return object(existing);
+            }
+            let path = vm
+                .read_string_field(this, class, "path")
+                .unwrap_or_default();
+            let writable = read_int_field(vm, this, "writable") != 0;
+            let channel = crate::nio::new_file_channel(vm, &path, 0, writable)?;
+            if let Some((declaring, field)) =
+                vm.find_field_opt(class, "channel", "Ljava/nio/channels/FileChannel;")
+            {
+                vm.set_instance_ref(this, declaring, field, channel);
+            }
+            object(channel)
         },
     ),
     method("readBoolean", "()Z", ACC_PUBLIC, |vm, _, args| {
@@ -6286,6 +6322,12 @@ pub(crate) const RANDOM_ACCESS_FILE: oxjvm_vm::NativeClass = class(
         field("data", "[B", ACC_PRIVATE, None),
         field("position", "I", ACC_PRIVATE, None),
         field("writable", "Z", ACC_PRIVATE, None),
+        field(
+            "channel",
+            "Ljava/nio/channels/FileChannel;",
+            ACC_PRIVATE,
+            None,
+        ),
     ],
     &RANDOM_ACCESS_FILE_METHODS,
     None,

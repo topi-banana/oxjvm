@@ -3961,7 +3961,7 @@ fn file_channel_write(
     Ok(bytes.len() as i32)
 }
 
-const FILE_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const FILE_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     method(
         "open",
         "(Ljava/nio/file/Path;[Ljava/nio/file/OpenOption;)Ljava/nio/channels/FileChannel;",
@@ -4085,6 +4085,9 @@ const FILE_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         },
     ),
     method("force", "(Z)V", ACC_PUBLIC, |_, _, _| void()),
+    method("isOpen", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "open") != 0)
+    }),
     method("close", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         crate::lang::write_int_field(vm, this, "open", 0);
