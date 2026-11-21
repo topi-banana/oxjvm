@@ -1045,8 +1045,31 @@ fn file_input_state(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(usize, usize), 
     let data = vm
         .read_ref_field(this, class, "data", "[B")
         .unwrap_or(ObjectRef::NULL);
-    let length = vm.array_length(data).unwrap_or(0);
+    let mut length = vm.array_length(data).unwrap_or(0);
     let position = crate::lang::read_int_field(vm, this, "position").max(0) as usize;
+    // The JDK reads through the live descriptor, so bytes appended after the
+    // stream was opened become visible; refresh the cached snapshot at EOF.
+    if position >= length {
+        let path = vm
+            .read_string_field(this, class, "path")
+            .unwrap_or_default();
+        if let Some(bytes) = vm.host.filesystem().and_then(|fs| fs.read(&path)) {
+            if bytes.len() > length {
+                let data = vm.allocate_array_of(ArrayComponent::Byte, bytes.len())?;
+                for (index, byte) in bytes.iter().enumerate() {
+                    vm.array_set(
+                        data,
+                        index as i32,
+                        Value::Int(i32::from(*byte as i8)),
+                        false,
+                    )?;
+                }
+                let (declaring, field) = vm.find_field(class, "data", "[B")?;
+                vm.set_instance_ref(this, declaring, field, data);
+                length = bytes.len();
+            }
+        }
+    }
     Ok((length, position))
 }
 

@@ -4838,6 +4838,42 @@ fn input_stream_reader_content(vm: &Vm<'_>, this: ObjectRef) -> String {
         .unwrap_or_default()
 }
 
+/// Pull any bytes appended to the underlying stream since the last read and
+/// merge them into the cached content, so growth after EOF becomes visible.
+fn input_stream_reader_refresh(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    let class = vm.class_of(this);
+    let stream = vm
+        .read_ref_field(this, class, "in", "Ljava/io/InputStream;")
+        .unwrap_or(ObjectRef::NULL);
+    if stream.is_null() {
+        return Ok(());
+    }
+    let mut bytes: Vec<u8> = Vec::new();
+    while let Ok((read_class, read_method)) = vm.resolve_virtual_method(stream, "read", "()I") {
+        let value = vm
+            .invoke_method(read_class, read_method, vec![Value::Ref(stream)])?
+            .as_int();
+        if value < 0 {
+            break;
+        }
+        bytes.push(value as u8);
+    }
+    if bytes.is_empty() {
+        return Ok(());
+    }
+    let encoding = vm
+        .read_string_field(this, class, "encoding")
+        .unwrap_or_default();
+    let canonical = crate::charset::canonical_name(&encoding).unwrap_or("UTF-8");
+    let extra = String::from_utf16_lossy(&crate::charset::decode(&bytes, canonical));
+    let content = input_stream_reader_content(vm, this);
+    let merged = alloc::format!("{content}{extra}");
+    let value = vm.make_string(&merged)?;
+    let (declaring, field) = vm.find_field(class, "content", "Ljava/lang/String;")?;
+    vm.set_instance_ref(this, declaring, field, value);
+    Ok(())
+}
+
 /// Historical encoding names reported by `InputStreamReader.getEncoding`.
 fn historical_encoding(canonical: &str) -> &'static str {
     match canonical {
@@ -4872,6 +4908,8 @@ fn input_stream_reader_init(
     }
     let content = String::from_utf16_lossy(&crate::charset::decode(&bytes, canonical));
     let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, "in", "Ljava/io/InputStream;")?;
+    vm.set_instance_ref(this, declaring, field, stream);
     let (declaring, field) = vm.find_field(class, "content", "Ljava/lang/String;")?;
     let value = vm.make_string(&content)?;
     vm.set_instance_ref(this, declaring, field, value);
@@ -4955,24 +4993,34 @@ const INPUT_STREAM_READER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     ),
     method("read", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let content = input_stream_reader_content(vm, this);
-        let pos = read_int_field(vm, this, "pos");
-        let units: Vec<u16> = content.encode_utf16().collect();
+        let mut content = input_stream_reader_content(vm, this);
+        let mut pos = read_int_field(vm, this, "pos");
+        let mut units: Vec<u16> = content.encode_utf16().collect();
         if pos < 0 || pos as usize >= units.len() {
-            return int(-1);
+            input_stream_reader_refresh(vm, this)?;
+            content = input_stream_reader_content(vm, this);
+            units = content.encode_utf16().collect();
+            if pos < 0 || pos as usize >= units.len() {
+                return int(-1);
+            }
         }
         write_int_field(vm, this, "pos", pos + 1);
         int(i32::from(units[pos as usize]))
     }),
     method("read", "([CII)I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let content = input_stream_reader_content(vm, this);
-        let units: Vec<u16> = content.encode_utf16().collect();
+        let mut content = input_stream_reader_content(vm, this);
+        let mut units: Vec<u16> = content.encode_utf16().collect();
         let mut pos = read_int_field(vm, this, "pos");
         let offset = int_arg(args, 2);
         let length = int_arg(args, 3);
         let array = ref_arg(args, 1);
         reader_check_range(vm, array, offset, length)?;
+        if pos as usize >= units.len() {
+            input_stream_reader_refresh(vm, this)?;
+            content = input_stream_reader_content(vm, this);
+            units = content.encode_utf16().collect();
+        }
         let mut count = 0;
         while count < length && (pos as usize) < units.len() {
             vm.array_set(
@@ -4987,7 +5035,17 @@ const INPUT_STREAM_READER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         write_int_field(vm, this, "pos", pos);
         if count == 0 { int(-1) } else { int(count) }
     }),
-    method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let stream = vm
+            .read_ref_field(this, vm.class_of(this), "in", "Ljava/io/InputStream;")
+            .unwrap_or(ObjectRef::NULL);
+        if !stream.is_null() {
+            let (class, method) = vm.resolve_virtual_method(stream, "close", "()V")?;
+            vm.invoke_method(class, method, vec![Value::Ref(stream)])?;
+        }
+        void()
+    }),
 ];
 
 pub(crate) const INPUT_STREAM_READER: oxjvm_vm::NativeClass = class(
@@ -4999,6 +5057,7 @@ pub(crate) const INPUT_STREAM_READER: oxjvm_vm::NativeClass = class(
         field("content", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("pos", "I", ACC_PRIVATE, None),
         field("encoding", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("in", "Ljava/io/InputStream;", ACC_PRIVATE, None),
     ],
     &INPUT_STREAM_READER_METHODS,
     None,
