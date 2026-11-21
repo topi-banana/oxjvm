@@ -376,6 +376,9 @@ const ZIP_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         |vm, _, args| {
             let this = receiver(args);
             let entry = ref_arg(args, 1);
+            if read_int_field(vm, this, "closed") != 0 {
+                return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+            }
             if entry.is_null() {
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
@@ -415,10 +418,17 @@ const ZIP_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         zip_close_entry(vm, receiver(args))
     }),
     method("finish", "()V", ACC_PUBLIC, |vm, _, args| {
-        zip_finish(vm, receiver(args))
+        let this = receiver(args);
+        if read_int_field(vm, this, "closed") != 0 {
+            return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+        }
+        zip_finish(vm, this)
     }),
     method("close", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        if read_int_field(vm, this, "closed") != 0 {
+            return void();
+        }
         zip_finish(vm, this)?;
         if let Some(target) = read_ref_field(vm, this, "target", "Ljava/io/OutputStream;") {
             if !target.is_null() {
@@ -426,6 +436,7 @@ const ZIP_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
                 vm.invoke_method(class, close, vec![Value::Ref(target)])?;
             }
         }
+        write_int_field_named(vm, this, "closed", 1);
         void()
     }),
     method("flush", "()V", ACC_PUBLIC, |vm, _, args| {
@@ -459,6 +470,7 @@ pub(crate) const ZIP_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
         field("entryOffset", "J", ACC_PRIVATE, None),
         field("charset", "Ljava/nio/charset/Charset;", ACC_PRIVATE, None),
         field("comment", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("closed", "I", ACC_PRIVATE, None),
     ],
     &ZIP_OUTPUT_STREAM_METHODS,
     None,
@@ -478,6 +490,9 @@ fn new_array_list(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
 }
 
 fn zip_buffer_write(vm: &mut Vm<'_>, this: ObjectRef, bytes: &[u8]) -> Result<Value, VmError> {
+    if read_int_field(vm, this, "closed") != 0 {
+        return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+    }
     let Some(buffer) = read_ref_field(vm, this, "buffer", "Ljava/io/ByteArrayOutputStream;") else {
         return Err(vm.throw_new("java/io/IOException", Some("No current entry")));
     };
@@ -508,6 +523,9 @@ fn zip_buffer_write(vm: &mut Vm<'_>, this: ObjectRef, bytes: &[u8]) -> Result<Va
 }
 
 fn zip_close_entry(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError> {
+    if read_int_field(vm, this, "closed") != 0 {
+        return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+    }
     let Some(entry) = read_ref_field(vm, this, "entry", "Ljava/util/zip/ZipEntry;") else {
         return void();
     };
@@ -693,9 +711,7 @@ const CRC32_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         let bytes = crate::lang::array_bytes(vm, ref_arg(args, 1))?;
         let offset = crate::int_arg(args, 2);
         let count = crate::int_arg(args, 3);
-        if offset < 0 || count < 0 || (offset + count) as usize > bytes.len() {
-            return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
-        }
+        check_byte_range(vm, bytes.len(), offset, count)?;
         crc32_update(
             vm,
             receiver(args),
@@ -883,9 +899,7 @@ const CRC32C_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         let bytes = crate::lang::array_bytes(vm, ref_arg(args, 1))?;
         let offset = crate::int_arg(args, 2);
         let count = crate::int_arg(args, 3);
-        if offset < 0 || count < 0 || (offset + count) as usize > bytes.len() {
-            return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
-        }
+        check_byte_range(vm, bytes.len(), offset, count)?;
         crc32c_update(
             vm,
             receiver(args),
@@ -931,9 +945,7 @@ const ADLER32_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         let bytes = crate::lang::array_bytes(vm, ref_arg(args, 1))?;
         let offset = crate::int_arg(args, 2);
         let count = crate::int_arg(args, 3);
-        if offset < 0 || count < 0 || (offset + count) as usize > bytes.len() {
-            return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
-        }
+        check_byte_range(vm, bytes.len(), offset, count)?;
         adler32_update(
             vm,
             receiver(args),
@@ -1395,6 +1407,15 @@ fn append_input(vm: &mut Vm<'_>, this: ObjectRef, bytes: &[u8]) -> Result<(), Vm
     write_buf_field(vm, this, "buf", &buf)
 }
 
+/// The JDK's zip bounds check: overflow-safe, and it throws
+/// `ArrayIndexOutOfBoundsException` rather than the generic index exception.
+fn check_byte_range(vm: &mut Vm<'_>, len: usize, off: i32, count: i32) -> Result<(), VmError> {
+    if off < 0 || count < 0 || i64::from(off) + i64::from(count) > len as i64 {
+        return Err(vm.throw_new("java/lang/ArrayIndexOutOfBoundsException", None));
+    }
+    Ok(())
+}
+
 fn copy_pending(
     vm: &mut Vm<'_>,
     this: ObjectRef,
@@ -1470,6 +1491,7 @@ fn inflater_do_inflate(
     off: i32,
     len: i32,
 ) -> Result<Value, VmError> {
+    check_byte_range(vm, vm.array_length(out)?, off, len)?;
     let n = copy_pending(vm, this, out, off, len)?;
     if n > 0 {
         return int(n);
@@ -1620,6 +1642,7 @@ fn deflater_do_deflate(
     off: i32,
     len: i32,
 ) -> Result<Value, VmError> {
+    check_byte_range(vm, vm.array_length(out)?, off, len)?;
     let n = copy_pending(vm, this, out, off, len)?;
     if n > 0 {
         return int(n);
@@ -1667,7 +1690,7 @@ fn deflater_do_deflate(
     int(n)
 }
 
-const DEFLATER_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+const DEFLATER_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         write_int_field_named(vm, this, "level", -1);
@@ -1722,6 +1745,24 @@ const DEFLATER_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     }),
     method("finish", "()V", ACC_PUBLIC, |vm, _, args| {
         write_int_field_named(vm, receiver(args), "finish", 1);
+        void()
+    }),
+    method("setDictionary", "([B)V", ACC_PUBLIC, |vm, _, args| {
+        let bytes = crate::lang::array_bytes(vm, ref_arg(args, 1))?;
+        write_buf_field(vm, receiver(args), "dict", &bytes)?;
+        void()
+    }),
+    method("setDictionary", "([BII)V", ACC_PUBLIC, |vm, _, args| {
+        let bytes = crate::lang::array_bytes(vm, ref_arg(args, 1))?;
+        let off = crate::int_arg(args, 2);
+        let len = crate::int_arg(args, 3);
+        check_byte_range(vm, bytes.len(), off, len)?;
+        write_buf_field(
+            vm,
+            receiver(args),
+            "dict",
+            &bytes[off as usize..(off + len) as usize],
+        )?;
         void()
     }),
     method("finished", "()Z", ACC_PUBLIC, |vm, _, args| {
@@ -1784,6 +1825,7 @@ pub(crate) const DEFLATER: oxjvm_vm::NativeClass = class(
         field("adler", "J", ACC_PRIVATE, None),
         field("totalIn", "J", ACC_PRIVATE, None),
         field("totalOut", "J", ACC_PRIVATE, None),
+        field("dict", "[B", ACC_PRIVATE, None),
     ],
     &DEFLATER_METHODS,
     None,
@@ -1976,6 +2018,9 @@ fn inflater_stream_read(
     off: i32,
     len: i32,
 ) -> Result<Value, VmError> {
+    if read_int_field(vm, this, "closed") != 0 {
+        return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+    }
     ensure_decompressed(vm, this)?;
     serve_dbuf(vm, this, out, off, len)
 }
@@ -1987,6 +2032,9 @@ fn inflater_stream_ctor(
     inf: ObjectRef,
     gzip: bool,
 ) -> Result<(), VmError> {
+    if input.is_null() || inf.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
     let (declaring, field) = vm.find_field(vm.class_of(this), "in", "Ljava/io/InputStream;")?;
     vm.set_instance_ref(this, declaring, field, input);
     write_ref_field(vm, this, "inf", "Ljava/util/zip/Inflater;", inf);
@@ -2070,7 +2118,9 @@ const INFLATER_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         int(i32::from(dpos < dbuf.len()))
     }),
     method("close", "()V", ACC_PUBLIC, |vm, _, args| {
-        let input = filter_in(vm, receiver(args));
+        let this = receiver(args);
+        write_int_field_named(vm, this, "closed", 1);
+        let input = filter_in(vm, this);
         if !input.is_null() {
             let (class, method) = vm.resolve_virtual_method(input, "close", "()V")?;
             vm.invoke_method(class, method, vec![Value::Ref(input)])?;
@@ -2113,6 +2163,7 @@ pub(crate) const INFLATER_INPUT_STREAM: oxjvm_vm::NativeClass = class(
         field("dpos", "I", ACC_PRIVATE, None),
         field("filled", "I", ACC_PRIVATE, None),
         field("gzip", "I", ACC_PRIVATE, None),
+        field("closed", "I", ACC_PRIVATE, None),
     ],
     &INFLATER_INPUT_STREAM_METHODS,
     None,
@@ -2157,6 +2208,45 @@ pub(crate) const GZIP_INPUT_STREAM: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC,
     &[],
     &GZIP_INPUT_STREAM_METHODS,
+    None,
+);
+
+const ZIP_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "<init>",
+        "(Ljava/io/InputStream;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let inf = new_instance(vm, "java/util/zip/Inflater")?;
+            let (class, method) = vm.resolve_virtual_method(inf, "<init>", "(Z)V")?;
+            vm.invoke_method(class, method, vec![Value::Ref(inf), Value::Int(1)])?;
+            inflater_stream_ctor(vm, this, ref_arg(args, 1), inf, false)?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/InputStream;Ljava/nio/charset/Charset;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let inf = new_instance(vm, "java/util/zip/Inflater")?;
+            let (class, method) = vm.resolve_virtual_method(inf, "<init>", "(Z)V")?;
+            vm.invoke_method(class, method, vec![Value::Ref(inf), Value::Int(1)])?;
+            inflater_stream_ctor(vm, this, ref_arg(args, 1), inf, false)?;
+            void()
+        },
+    ),
+];
+
+pub(crate) const ZIP_INPUT_STREAM: oxjvm_vm::NativeClass = class(
+    "java/util/zip/ZipInputStream",
+    Some("java/util/zip/InflaterInputStream"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &ZIP_INPUT_STREAM_METHODS,
     None,
 );
 
@@ -2206,6 +2296,9 @@ fn deflater_output_ctor(
     def: ObjectRef,
     gzip: bool,
 ) -> Result<(), VmError> {
+    if out.is_null() || def.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
     let (declaring, field) = vm.find_field(vm.class_of(this), "out", "Ljava/io/OutputStream;")?;
     vm.set_instance_ref(this, declaring, field, out);
     write_ref_field(vm, this, "def", "Ljava/util/zip/Deflater;", def);
@@ -2216,7 +2309,7 @@ fn deflater_output_ctor(
     Ok(())
 }
 
-const DEFLATER_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const DEFLATER_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method(
         "<init>",
         "(Ljava/io/OutputStream;)V",
@@ -2236,6 +2329,72 @@ const DEFLATER_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
             let this = receiver(args);
             let def = new_instance(vm, "java/util/zip/Deflater")?;
             deflater_output_ctor(vm, this, ref_arg(args, 1), def, false)?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;Ljava/util/zip/Deflater;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            deflater_output_ctor(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                false,
+            )?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;Ljava/util/zip/Deflater;Z)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            deflater_output_ctor(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                false,
+            )?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;Ljava/util/zip/Deflater;I)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            if crate::int_arg(args, 3) <= 0 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("size <= 0")));
+            }
+            deflater_output_ctor(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                false,
+            )?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;Ljava/util/zip/Deflater;IZ)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            if crate::int_arg(args, 3) <= 0 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("size <= 0")));
+            }
+            deflater_output_ctor(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                false,
+            )?;
             void()
         },
     ),
