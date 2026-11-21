@@ -16462,7 +16462,7 @@ fn new_entry_comparator(
     object(instance)
 }
 
-const SIMPLE_IMMUTABLE_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+const SIMPLE_IMMUTABLE_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     method(
         "<init>",
         "(Ljava/lang/Object;Ljava/lang/Object;)V",
@@ -16494,6 +16494,32 @@ const SIMPLE_IMMUTABLE_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         "(Ljava/lang/Object;)Ljava/lang/Object;",
         ACC_PUBLIC,
         |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = ref_arg(args, 1);
+            boolean(map_entry_equals(vm, receiver(args), other)?)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let key = object_hash(vm, entry_field(vm, this, "key"))?;
+        let value = object_hash(vm, entry_field(vm, this, "value"))?;
+        int(key ^ value)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let key = value_to_string(vm, entry_field(vm, this, "key"))?;
+            let value = value_to_string(vm, entry_field(vm, this, "value"))?;
+            object(vm.make_string(&alloc::format!("{key}={value}"))?)
+        },
     ),
 ];
 
@@ -16528,6 +16554,32 @@ pub(crate) fn object_hash(vm: &mut Vm<'_>, reference: ObjectRef) -> Result<i32, 
 
 fn values_equal(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmError> {
     keys_equal(vm, a, b)
+}
+
+/// Read a `Map.Entry` component through the interface so any entry implementation
+/// (not just our own field-backed ones) can be compared.
+fn entry_component(vm: &mut Vm<'_>, entry: ObjectRef, name: &str) -> Result<ObjectRef, VmError> {
+    let (class, method) = vm.resolve_virtual_method(entry, name, "()Ljava/lang/Object;")?;
+    Ok(vm
+        .invoke_method(class, method, vec![Value::Ref(entry)])?
+        .as_ref())
+}
+
+/// The `Map.Entry.equals` contract: another `Map.Entry` with equal key and value,
+/// regardless of the concrete entry class.
+fn map_entry_equals(vm: &mut Vm<'_>, this: ObjectRef, other: ObjectRef) -> Result<bool, VmError> {
+    let entry_class = vm.resolve_class("java/util/Map$Entry")?;
+    if other.is_null() || !vm.is_instance(other, entry_class) {
+        return Ok(false);
+    }
+    let this_key = entry_component(vm, this, "getKey")?;
+    let other_key = entry_component(vm, other, "getKey")?;
+    if !values_equal(vm, this_key, other_key)? {
+        return Ok(false);
+    }
+    let this_value = entry_component(vm, this, "getValue")?;
+    let other_value = entry_component(vm, other, "getValue")?;
+    values_equal(vm, this_value, other_value)
 }
 
 /// The map's entries as a `HashSet` of `Map.Entry` snapshots.
@@ -16611,22 +16663,7 @@ const OJVM_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let other = ref_arg(args, 1);
-            if other.is_null() || vm.class_of(receiver(args)) != vm.class_of(other) {
-                return boolean(false);
-            }
-            let keys = values_equal(
-                vm,
-                entry_field(vm, receiver(args), "key"),
-                entry_field(vm, other, "key"),
-            )?;
-            if !keys {
-                return boolean(false);
-            }
-            boolean(values_equal(
-                vm,
-                entry_field(vm, receiver(args), "value"),
-                entry_field(vm, other, "value"),
-            )?)
+            boolean(map_entry_equals(vm, receiver(args), other)?)
         },
     ),
     method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
