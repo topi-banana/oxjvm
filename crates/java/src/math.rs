@@ -582,7 +582,9 @@ pub(crate) fn cbrt(x: f64) -> f64 {
 
 /// `floor`, including signed zero and infinities.
 pub(crate) fn floor(x: f64) -> f64 {
-    if !x.is_finite() || x == 0.0 {
+    // Beyond 2^63 the `as i64` cast would saturate; such doubles are already
+    // integral, so return them unchanged. Below 2^63 the cast truncates exactly.
+    if !x.is_finite() || x == 0.0 || x.abs() >= 9221111111111175808.0 {
         return x;
     }
     let truncated = x as i64 as f64;
@@ -595,14 +597,20 @@ pub(crate) fn floor(x: f64) -> f64 {
 
 /// `ceil`.
 pub(crate) fn ceil(x: f64) -> f64 {
-    if !x.is_finite() || x == 0.0 {
+    if !x.is_finite() || x == 0.0 || x.abs() >= 9221111111111175808.0 {
         return x;
     }
     let truncated = x as i64 as f64;
-    if x > 0.0 && truncated != x {
+    let result = if x > 0.0 && truncated != x {
         truncated + 1.0
     } else {
         truncated
+    };
+    // A zero result keeps the sign of the input (ceil(-0.5) is -0.0).
+    if result == 0.0 {
+        copy_sign(0.0, x)
+    } else {
+        result
     }
 }
 
@@ -614,10 +622,16 @@ pub(crate) fn rint(x: f64) -> f64 {
     let lower = floor(x);
     let fraction = x - lower;
     let even = (lower / 2.0) - floor(lower / 2.0) == 0.0;
-    if fraction > 0.5 || (fraction == 0.5 && !even) {
+    let result = if fraction > 0.5 || (fraction == 0.5 && !even) {
         lower + 1.0
     } else {
         lower
+    };
+    // A zero result keeps the sign of the input (rint(-0.25) is -0.0).
+    if result == 0.0 {
+        copy_sign(0.0, x)
+    } else {
+        result
     }
 }
 
@@ -1407,6 +1421,15 @@ macro_rules! math_methods {
                 },
             ),
             method(
+                "floorDiv",
+                "(JI)J",
+                ACC_PUBLIC | ACC_STATIC,
+                |vm, _, args| {
+                    math_floor_div(vm, long_arg(args, 0), i64::from(int_arg(args, 1)))
+                        .map(Value::Long)
+                },
+            ),
+            method(
                 "floorMod",
                 "(II)I",
                 ACC_PUBLIC | ACC_STATIC,
@@ -1421,6 +1444,15 @@ macro_rules! math_methods {
                 ACC_PUBLIC | ACC_STATIC,
                 |vm, _, args| {
                     math_floor_mod(vm, long_arg(args, 0), long_arg(args, 1)).map(Value::Long)
+                },
+            ),
+            method(
+                "floorMod",
+                "(JI)I",
+                ACC_PUBLIC | ACC_STATIC,
+                |vm, _, args| {
+                    math_floor_mod(vm, long_arg(args, 0), i64::from(int_arg(args, 1)))
+                        .map(|v| Value::Int(v as i32))
                 },
             ),
             method(
@@ -1823,8 +1855,8 @@ macro_rules! math_methods {
     }};
 }
 
-const MATH_METHODS: [oxjvm_vm::NativeMethodDef; 93] = math_methods!();
-const STRICT_MATH_METHODS: [oxjvm_vm::NativeMethodDef; 93] = math_methods!();
+const MATH_METHODS: [oxjvm_vm::NativeMethodDef; 95] = math_methods!();
+const STRICT_MATH_METHODS: [oxjvm_vm::NativeMethodDef; 95] = math_methods!();
 
 pub(crate) const MATH: oxjvm_vm::NativeClass = class(
     "java/lang/Math",
@@ -3904,7 +3936,7 @@ fn big_decimal_set_scale(
     create_big_number(vm, "java/math/BigDecimal", &result)
 }
 
-const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
+const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -4172,6 +4204,22 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 46] = [
                 }
             }
             create_big_number(vm, "java/math/BigDecimal", &result)
+        },
+    ),
+    method(
+        "divide",
+        "(Ljava/math/BigDecimal;Ljava/math/RoundingMode;)Ljava/math/BigDecimal;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let scale = decimal_scale(&big_text(vm, this));
+            let scaled_args = [
+                Value::Ref(this),
+                Value::Ref(ref_arg(args, 1)),
+                Value::Int(scale),
+                Value::Ref(ref_arg(args, 2)),
+            ];
+            big_decimal_divide_scaled(vm, &scaled_args)
         },
     ),
     method(
