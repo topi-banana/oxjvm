@@ -4338,7 +4338,7 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 211] = [
             int_arg(args, 2),
         )
     }),
-    method("sort", "([JJJ)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+    method("sort", "([JII)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
         arrays_sort_primitive_range(
             vm,
             ref_arg(args, 0),
@@ -4347,7 +4347,7 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 211] = [
             int_arg(args, 2),
         )
     }),
-    method("sort", "([SSS)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+    method("sort", "([SII)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
         arrays_sort_primitive_range(
             vm,
             ref_arg(args, 0),
@@ -4356,7 +4356,7 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 211] = [
             int_arg(args, 2),
         )
     }),
-    method("sort", "([CCC)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+    method("sort", "([CII)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
         arrays_sort_primitive_range(
             vm,
             ref_arg(args, 0),
@@ -4365,7 +4365,7 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 211] = [
             int_arg(args, 2),
         )
     }),
-    method("sort", "([BBB)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+    method("sort", "([BII)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
         arrays_sort_primitive_range(
             vm,
             ref_arg(args, 0),
@@ -4374,7 +4374,7 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 211] = [
             int_arg(args, 2),
         )
     }),
-    method("sort", "([FFF)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+    method("sort", "([FII)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
         arrays_sort_primitive_range(
             vm,
             ref_arg(args, 0),
@@ -4383,7 +4383,7 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 211] = [
             int_arg(args, 2),
         )
     }),
-    method("sort", "([DDD)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
+    method("sort", "([DII)V", ACC_PUBLIC | ACC_STATIC, |vm, _, args| {
         arrays_sort_primitive_range(
             vm,
             ref_arg(args, 0),
