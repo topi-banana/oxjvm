@@ -9,7 +9,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use oxjvm_classfile::flags::*;
-use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
+use oxjvm_vm::{ArrayComponent, ObjectRef, Value, Vm, VmError};
 
 use crate::{boolean, class, double, field, int, long, method, object, receiver, ref_arg};
 
@@ -371,7 +371,7 @@ fn byte_buffer_allocate(vm: &mut Vm<'_>, length: i32) -> Result<Value, VmError> 
             Some("negative capacity"),
         ));
     }
-    let bytes = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, length as usize)?;
+    let bytes = vm.allocate_array_of(ArrayComponent::Byte, length as usize)?;
     let order = default_byte_order(vm)?;
     let buffer = new_byte_buffer(vm, bytes, 0, length, 0, length, order, false)?;
     object(buffer)
@@ -587,7 +587,7 @@ fn byte_buffer_put_at(
     Ok(())
 }
 
-const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 61] = [
+const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
     method(
         "allocate",
         "(I)Ljava/nio/ByteBuffer;",
@@ -1072,6 +1072,45 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 61] = [
         int(byte_buffer_offset(vm, this))
     }),
     method(
+        "asLongBuffer",
+        "()Ljava/nio/LongBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let remaining = buffer_remaining(vm, this);
+            let count = remaining / 8;
+            let little = byte_order_little(vm, byte_buffer_order(vm, this));
+            let base = byte_buffer_offset(vm, this) + buffer_position(vm, this);
+            let bytes = byte_buffer_bytes(vm, this);
+            let longs = vm.allocate_array_of(ArrayComponent::Long, count as usize)?;
+            for index in 0..count {
+                let mut value = 0u64;
+                for byte_index in 0..8 {
+                    let byte = u64::from(byte_at(
+                        vm,
+                        bytes,
+                        (base + index * 8 + byte_index) as usize,
+                    )?);
+                    value |= if little {
+                        byte << (8 * byte_index)
+                    } else {
+                        byte << (8 * (7 - byte_index))
+                    };
+                }
+                vm.array_set(longs, index, Value::Long(value as i64), false)?;
+            }
+            object(new_long_buffer(
+                vm,
+                longs,
+                0,
+                count,
+                0,
+                count,
+                byte_buffer_read_only(vm, this),
+            )?)
+        },
+    ),
+    method(
         "slice",
         "()Ljava/nio/ByteBuffer;",
         ACC_PUBLIC,
@@ -1163,7 +1202,7 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 61] = [
             let position = buffer_position(vm, this);
             let limit = buffer_limit(vm, this);
             let count = ((limit - position).max(0) / 2) as usize;
-            let chars = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Char, count)?;
+            let chars = vm.allocate_array_of(ArrayComponent::Char, count)?;
             for index in 0..count {
                 let high = vm
                     .array_get(bytes, offset + position + index as i32 * 2)?
@@ -1378,7 +1417,7 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 61] = [
             let limit = buffer_limit(vm, this);
             let little = byte_order_little(vm, byte_buffer_order(vm, this));
             let count = ((limit - position).max(0) / 4) as usize;
-            let ints = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Int, count)?;
+            let ints = vm.allocate_array_of(ArrayComponent::Int, count)?;
             for index in 0..count {
                 let base = offset + position + index as i32 * 4;
                 let mut value = 0u32;
@@ -1471,7 +1510,7 @@ fn char_buffer_allocate(vm: &mut Vm<'_>, length: i32) -> Result<Value, VmError> 
     if length < 0 {
         return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
     }
-    let chars = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Char, length as usize)?;
+    let chars = vm.allocate_array_of(ArrayComponent::Char, length as usize)?;
     object(new_char_buffer(vm, chars, 0, length, 0, length, false)?)
 }
 
@@ -1665,7 +1704,7 @@ pub(crate) fn char_buffer_from_text(vm: &mut Vm<'_>, text: &str) -> Result<Objec
 /// Wrap raw UTF-16 units in a `CharBuffer`, preserving lone surrogates that a
 /// lossy Rust `String` conversion would replace.
 fn char_buffer_from_units(vm: &mut Vm<'_>, units: Vec<u16>) -> Result<ObjectRef, VmError> {
-    let chars = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Char, units.len())?;
+    let chars = vm.allocate_array_of(ArrayComponent::Char, units.len())?;
     for (index, unit) in units.iter().enumerate() {
         put_char_at(vm, chars, index, *unit)?;
     }
@@ -2271,7 +2310,7 @@ const INT_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
             if length < 0 {
                 return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
             }
-            let ints = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Int, length as usize)?;
+            let ints = vm.allocate_array_of(ArrayComponent::Int, length as usize)?;
             object(new_int_buffer(vm, ints, 0, length, 0, length, false)?)
         },
     ),
@@ -2798,7 +2837,7 @@ const LONG_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
             if length < 0 {
                 return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
             }
-            let ints = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Long, length as usize)?;
+            let ints = vm.allocate_array_of(ArrayComponent::Long, length as usize)?;
             object(new_long_buffer(vm, ints, 0, length, 0, length, false)?)
         },
     ),
@@ -3326,7 +3365,7 @@ const DOUBLE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
             if length < 0 {
                 return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
             }
-            let ints = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Double, length as usize)?;
+            let ints = vm.allocate_array_of(ArrayComponent::Double, length as usize)?;
             object(new_double_buffer(vm, ints, 0, length, 0, length, false)?)
         },
     ),
@@ -3736,7 +3775,7 @@ pub(crate) fn byte_buffer_remaining_bytes(
 
 /// Build a fresh `ByteBuffer` over `bytes`.
 pub(crate) fn byte_buffer_from_bytes(vm: &mut Vm<'_>, bytes: &[u8]) -> Result<ObjectRef, VmError> {
-    let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, bytes.len())?;
+    let array = vm.allocate_array_of(ArrayComponent::Byte, bytes.len())?;
     for (index, byte) in bytes.iter().enumerate() {
         put_byte_at(vm, array, index, *byte)?;
     }

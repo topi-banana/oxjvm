@@ -4994,7 +4994,7 @@ const INPUT_STREAM_READER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method("read", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let mut content = input_stream_reader_content(vm, this);
-        let mut pos = read_int_field(vm, this, "pos");
+        let pos = read_int_field(vm, this, "pos");
         let mut units: Vec<u16> = content.encode_utf16().collect();
         if pos < 0 || pos as usize >= units.len() {
             input_stream_reader_refresh(vm, this)?;

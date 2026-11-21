@@ -15336,6 +15336,11 @@ fn bitset_store(
     words: &[u64],
     min_bits: usize,
 ) -> Result<(), VmError> {
+    let class = vm.class_of(this);
+    let existing = vm
+        .read_ref_field(this, class, "words", "[J")
+        .and_then(|array| vm.array_length(array).ok())
+        .unwrap_or(0);
     let mut length = min_bits.div_ceil(64);
     length = length.max(
         words
@@ -15343,14 +15348,56 @@ fn bitset_store(
             .rposition(|word| *word != 0)
             .map_or(0, |i| i + 1),
     );
-    let class = vm.class_of(this);
+    // The JDK keeps the capacity once grown; only clone/serialization trim it.
+    length = length.max(existing);
     let (declaring, field) = vm.find_field(class, "words", "[J")?;
     let array = vm.allocate_array_of(ArrayComponent::Long, length)?;
     for (index, word) in words.iter().take(length).enumerate() {
         vm.array_set(array, index as i32, Value::Long(*word as i64), false)?;
     }
     vm.set_instance_ref(this, declaring, field, array);
+    if length > existing {
+        // Growing beyond the initial capacity makes the size non-sticky.
+        crate::lang::write_int_field(vm, this, "sticky", 0);
+    }
     Ok(())
+}
+
+/// JDK `wordsInUse`: one past the last non-zero word.
+fn bitset_in_use(words: &[u64]) -> usize {
+    words
+        .iter()
+        .rposition(|word| *word != 0)
+        .map_or(0, |i| i + 1)
+}
+
+/// JDK `trimToSize`: shrink the backing array to the words actually in use.
+fn bitset_trim_to_size(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    let words = bitset_words(vm, this);
+    let in_use = bitset_in_use(&words);
+    if in_use != words.len() {
+        let class = vm.class_of(this);
+        let (declaring, field) = vm.find_field(class, "words", "[J")?;
+        let array = words_from_u64(vm, &words[..in_use])?;
+        vm.set_instance_ref(this, declaring, field, array);
+    }
+    Ok(())
+}
+
+/// Build a BitSet from little-endian bytes (JDK `valueOf(byte[])` semantics).
+fn bitset_from_bytes(vm: &mut Vm<'_>, bytes: &[u8]) -> Result<Value, VmError> {
+    let mut n = bytes.len();
+    while n > 0 && bytes[n - 1] == 0 {
+        n -= 1;
+    }
+    let mut words = vec![0u64; n.div_ceil(8)];
+    for (index, byte) in bytes.iter().take(n).enumerate() {
+        words[index / 8] |= u64::from(*byte) << (8 * (index % 8));
+    }
+    let class = vm.resolve_class("java/util/BitSet")?;
+    let instance = vm.new_instance(class)?;
+    bitset_store(vm, instance, &words, 0)?;
+    object(instance)
 }
 
 fn bit_set_range(
@@ -15411,14 +15458,22 @@ fn bitset_check_range(vm: &mut Vm<'_>, from: i32, to: i32) -> Result<(usize, usi
     Ok((from as usize, to as usize))
 }
 
-const BITSET_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
+const BITSET_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
-        bitset_store(vm, receiver(args), &[], 0)?;
+        bitset_store(vm, receiver(args), &[], 64)?;
         void()
     }),
     method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        let size = int_arg(args, 1).max(0) as usize;
-        bitset_store(vm, receiver(args), &[], size)?;
+        let size = int_arg(args, 1);
+        if size < 0 {
+            return Err(vm.throw_new(
+                "java/lang/NegativeArraySizeException",
+                Some(&alloc::format!("nbits < 0: {size}")),
+            ));
+        }
+        let this = receiver(args);
+        bitset_store(vm, this, &[], size as usize)?;
+        crate::lang::write_int_field(vm, this, "sticky", 1);
         void()
     }),
     method("get", "(I)Z", ACC_PUBLIC, |vm, _, args| {
@@ -15713,8 +15768,111 @@ const BITSET_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
     ),
     method("toLongArray", "()[J", ACC_PUBLIC, |vm, _, args| {
         let words = bitset_words(vm, receiver(args));
-        object(words_from_u64(vm, &words)?)
+        let in_use = bitset_in_use(&words);
+        object(words_from_u64(vm, &words[..in_use])?)
     }),
+    method("toByteArray", "()[B", ACC_PUBLIC, |vm, _, args| {
+        let words = bitset_words(vm, receiver(args));
+        let n = bitset_in_use(&words);
+        let mut len = 8 * n.saturating_sub(1);
+        if n > 0 {
+            let mut x = words[n - 1];
+            while x != 0 {
+                len += 1;
+                x >>= 8;
+            }
+        }
+        let array = vm.allocate_array_of(ArrayComponent::Byte, len)?;
+        let mut index = 0i32;
+        for word in words.iter().take(n.saturating_sub(1)) {
+            for shift in 0..8 {
+                vm.array_set(
+                    array,
+                    index,
+                    Value::Int(i32::from(((word >> (8 * shift)) & 0xff) as u8 as i8)),
+                    false,
+                )?;
+                index += 1;
+            }
+        }
+        if n > 0 {
+            let mut x = words[n - 1];
+            while x != 0 {
+                vm.array_set(
+                    array,
+                    index,
+                    Value::Int(i32::from((x & 0xff) as u8 as i8)),
+                    false,
+                )?;
+                index += 1;
+                x >>= 8;
+            }
+        }
+        object(array)
+    }),
+    method(
+        "valueOf",
+        "([B)Ljava/util/BitSet;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            let length = vm.array_length(array)?;
+            let mut bytes = Vec::with_capacity(length);
+            for index in 0..length {
+                bytes.push(vm.array_get(array, index as i32)?.as_int() as u8);
+            }
+            bitset_from_bytes(vm, &bytes)
+        },
+    ),
+    method(
+        "valueOf",
+        "(Ljava/nio/ByteBuffer;)Ljava/util/BitSet;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let buffer = ref_arg(args, 0);
+            if buffer.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let class = vm.class_of(buffer);
+            let bytes_ref = vm
+                .read_ref_field(buffer, class, "bytes", "[B")
+                .unwrap_or(ObjectRef::NULL);
+            let offset = crate::lang::read_int_field(vm, buffer, "offset");
+            let position = crate::lang::read_int_field(vm, buffer, "position");
+            let limit = crate::lang::read_int_field(vm, buffer, "limit");
+            let mut bytes = Vec::new();
+            for index in (offset + position)..(offset + limit) {
+                bytes.push(vm.array_get(bytes_ref, index)?.as_int() as u8);
+            }
+            bitset_from_bytes(vm, &bytes)
+        },
+    ),
+    method(
+        "valueOf",
+        "(Ljava/nio/LongBuffer;)Ljava/util/BitSet;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let buffer = ref_arg(args, 0);
+            if buffer.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let class = vm.class_of(buffer);
+            let longs_ref = vm
+                .read_ref_field(buffer, class, "longs", "[J")
+                .unwrap_or(ObjectRef::NULL);
+            let offset = crate::lang::read_int_field(vm, buffer, "offset");
+            let position = crate::lang::read_int_field(vm, buffer, "position");
+            let limit = crate::lang::read_int_field(vm, buffer, "limit");
+            let mut words = Vec::new();
+            for index in (offset + position)..(offset + limit) {
+                words.push(vm.array_get(longs_ref, index)?.as_long() as u64);
+            }
+            let class = vm.resolve_class("java/util/BitSet")?;
+            let instance = vm.new_instance(class)?;
+            bitset_store(vm, instance, &words, 0)?;
+            object(instance)
+        },
+    ),
     method(
         "valueOf",
         "([J)Ljava/util/BitSet;",
@@ -15794,6 +15952,10 @@ const BITSET_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
+            // The JDK trims the *original* before cloning a non-sticky set.
+            if crate::lang::read_int_field(vm, this, "sticky") == 0 {
+                bitset_trim_to_size(vm, this)?;
+            }
             let words = bitset_words(vm, this);
             let clone = vm.clone_object(this)?;
             let array = words_from_u64(vm, &words)?;
@@ -15836,7 +15998,10 @@ pub(crate) const BIT_SET: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &["java/lang/Cloneable", "java/io/Serializable"],
     ACC_PUBLIC,
-    &[field("words", "[J", ACC_PRIVATE, None)],
+    &[
+        field("words", "[J", ACC_PRIVATE, None),
+        field("sticky", "I", ACC_PRIVATE, None),
+    ],
     &BITSET_METHODS,
     None,
 );
