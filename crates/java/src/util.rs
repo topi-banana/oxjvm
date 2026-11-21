@@ -27815,6 +27815,72 @@ fn calendar_day_of_year(time: i64) -> i64 {
     days - first + 1
 }
 
+/// First day of week and minimal days in the first week for a locale, matching
+/// the CLDR data the JDK uses (1 = Sunday .. 7 = Saturday).
+fn locale_week_params(language: &str, country: &str) -> (i32, i32) {
+    match (language, country) {
+        ("en", "GB") => return (2, 4),
+        ("en", "AU") | ("en", "NZ") => return (2, 1),
+        ("pt", "BR") => return (1, 1),
+        ("es", "MX") | ("es", "US") => return (1, 1),
+        ("fr", "CA") => return (1, 1),
+        _ => {}
+    }
+    match language {
+        "de" | "fr" | "it" | "es" | "nl" | "da" | "sv" | "no" | "nb" | "nn" | "fi" | "pl"
+        | "ru" | "el" | "cs" | "hu" | "bg" | "sk" | "ca" | "et" | "lt" | "ga" | "cy" | "eu"
+        | "gl" | "fo" | "lb" | "rm" | "fy" | "br" | "co" | "oc" | "an" | "ast" | "wa" | "li"
+        | "se" | "smn" | "sms" | "dsb" | "hsb" => (2, 4),
+        "tr" | "ro" | "hr" | "sl" | "uk" | "sr" | "lv" | "vi" | "ms" | "si" | "ka" | "hy"
+        | "az" | "kk" | "uz" | "mn" | "sq" | "mk" | "bs" | "be" | "kl" | "zh" => (2, 1),
+        "pt" | "is" => (1, 4),
+        "fa" => (7, 1),
+        _ => (1, 1),
+    }
+}
+
+/// Week parameters of a given locale, falling back to Sunday/1.
+fn locale_week_params_of(vm: &mut Vm<'_>, locale: ObjectRef) -> (i32, i32) {
+    if locale.is_null() {
+        return (1, 1);
+    }
+    let lc = vm.class_of(locale);
+    let language = vm
+        .read_ref_field(locale, lc, "language", "Ljava/lang/String;")
+        .unwrap_or(ObjectRef::NULL);
+    let country = vm
+        .read_ref_field(locale, lc, "country", "Ljava/lang/String;")
+        .unwrap_or(ObjectRef::NULL);
+    let language = vm.string_or_empty(language);
+    let country = vm.string_or_empty(country);
+    locale_week_params(&language, &country)
+}
+
+/// Week parameters of the current default locale, falling back to Sunday/1.
+fn calendar_default_week_params(vm: &mut Vm<'_>) -> (i32, i32) {
+    let Some(class) = vm.resolve_class_lenient_pub("java/util/Locale") else {
+        return (1, 1);
+    };
+    let locale = vm
+        .read_static_ref_if_set(class, "defaultLocale", "Ljava/util/Locale;")
+        .or_else(|| vm.read_static_ref_if_set(class, "US", "Ljava/util/Locale;"))
+        .unwrap_or(ObjectRef::NULL);
+    locale_week_params_of(vm, locale)
+}
+
+/// Override the week parameters of an already-initialized calendar from a locale.
+fn calendar_apply_locale(vm: &mut Vm<'_>, this: ObjectRef, locale: ObjectRef) {
+    let (first_day, minimal_days) = locale_week_params_of(vm, locale);
+    for (name, value) in [
+        ("firstDayOfWeek", first_day),
+        ("minimalDaysInFirstWeek", minimal_days),
+    ] {
+        if let Some((declaring, field)) = vm.find_field_opt(vm.class_of(this), name, "I") {
+            vm.set_instance_int(this, declaring, field, value);
+        }
+    }
+}
+
 fn calendar_init(vm: &mut Vm<'_>, this: ObjectRef, time: i64) -> Result<(), VmError> {
     crate::lang::write_long_field(vm, this, "time", time);
     calendar_mark_all(vm, this);
@@ -27822,7 +27888,11 @@ fn calendar_init(vm: &mut Vm<'_>, this: ObjectRef, time: i64) -> Result<(), VmEr
     if let Some((declaring, field)) = vm.find_field_opt(vm.class_of(this), "lenient", "Z") {
         vm.set_instance_int(this, declaring, field, 1);
     }
-    for (name, value) in [("firstDayOfWeek", 1), ("minimalDaysInFirstWeek", 1)] {
+    let (first_day, minimal_days) = calendar_default_week_params(vm);
+    for (name, value) in [
+        ("firstDayOfWeek", first_day),
+        ("minimalDaysInFirstWeek", minimal_days),
+    ] {
         if let Some((declaring, field)) = vm.find_field_opt(vm.class_of(this), name, "I") {
             vm.set_instance_int(this, declaring, field, value);
         }
@@ -27969,6 +28039,9 @@ fn calendar_roll(vm: &mut Vm<'_>, this: ObjectRef, field: i32, amount: i32) {
     let time = calendar_time(vm, this);
     let mut fields = calendar_fields_from_millis(time);
     let amount = i64::from(amount);
+    if amount == 0 {
+        return;
+    }
     match field {
         // MONTH: cycle within the year, clamping the day.
         2 => {
@@ -27977,6 +28050,61 @@ fn calendar_roll(vm: &mut Vm<'_>, this: ObjectRef, field: i32, amount: i32) {
             let max_day = calendar_days_in_month(fields.year, month);
             fields.day = fields.day.min(max_day);
             calendar_set_time(vm, this, calendar_millis_from_fields(fields));
+        }
+        // WEEK_OF_YEAR: cycle through the weeks of the calendar year, keeping
+        // the day of week and the year (GregorianCalendar.roll semantics).
+        3 => {
+            let year = fields.year;
+            let dow = calendar_day_of_week(time);
+            let first = calendar_first_day_of_week(vm, this);
+            let dow_offset = (dow - first).rem_euclid(7);
+            let of_day = time.rem_euclid(MILLIS_PER_DAY);
+            let week_year = calendar_week_year(vm, this, time);
+            let mut woy = i64::from(calendar_get(vm, this, 3));
+            let start = calendar_week_one_start(vm, this, year);
+            let mut max =
+                (calendar_week_one_start(vm, this, year + 1) - start) / (7 * MILLIS_PER_DAY);
+            let mut min = 1i64;
+            let mut amount = amount;
+            let mut new_woy = if week_year == year {
+                let value = woy + amount;
+                if value > min && value < max {
+                    value
+                } else {
+                    // The current day of week must exist in week min / week max
+                    // of this calendar year, otherwise shrink the wrap range.
+                    let day1 = time - (woy - min) * 7 * MILLIS_PER_DAY;
+                    if calendar_fields_from_millis(day1).year != year {
+                        min += 1;
+                    }
+                    let day_max = time + (max - woy) * 7 * MILLIS_PER_DAY;
+                    if calendar_fields_from_millis(day_max).year != year {
+                        max -= 1;
+                    }
+                    calendar_rolled_value(woy, amount, min, max)
+                }
+            } else if week_year > year {
+                // The date sits in week 1 of the next week-year; stay in this
+                // calendar year by rolling from the last week.
+                if amount < 0 {
+                    amount += 1;
+                }
+                woy = max;
+                calendar_rolled_value(woy, amount, min, max)
+            } else {
+                // The date sits in the last week of the previous week-year.
+                if amount > 0 {
+                    amount -= woy - max;
+                }
+                woy = min;
+                calendar_rolled_value(woy, amount, min, max)
+            };
+            if new_woy == 1 && amount > 0 && calendar_invalid_week1(vm, this, year, dow) {
+                new_woy += 1;
+            }
+            let new_time =
+                start + (new_woy - 1) * 7 * MILLIS_PER_DAY + dow_offset * MILLIS_PER_DAY + of_day;
+            calendar_set_time(vm, this, new_time);
         }
         // DATE / DAY_OF_MONTH: cycle within the month.
         5 => {
@@ -28022,6 +28150,42 @@ fn calendar_roll(vm: &mut Vm<'_>, this: ObjectRef, field: i32, amount: i32) {
         // Larger fields have no smaller range to wrap within; fall back to add.
         _ => calendar_add(vm, this, field, amount as i32),
     }
+}
+
+/// Wrap `value + amount` into the inclusive range `[min, max]` (Calendar.getRolledValue).
+fn calendar_rolled_value(value: i64, amount: i64, min: i64, max: i64) -> i64 {
+    let range = max - min + 1;
+    if range <= 0 {
+        return value;
+    }
+    let amount = amount % range;
+    let mut n = value + amount;
+    if n > max {
+        n -= range;
+    } else if n < min {
+        n += range;
+    }
+    n
+}
+
+/// Whether week 1 of `year` is a valid first week but does not contain `dow`
+/// within the year (GregorianCalendar.isInvalidWeek1).
+fn calendar_invalid_week1(vm: &Vm<'_>, this: ObjectRef, year: i64, dow: i64) -> bool {
+    let jan1 = days_from_civil(year, 1, 1);
+    let jan1_dow = ((jan1 + 4).rem_euclid(7)) + 1;
+    let first = calendar_first_day_of_week(vm, this);
+    let days_in_first_week = if first <= jan1_dow {
+        7 - jan1_dow + first
+    } else {
+        first - jan1_dow
+    };
+    let end_dow = if first == 1 { 7 } else { first - 1 };
+    let in_min_week = if end_dow >= jan1_dow {
+        dow >= jan1_dow && dow <= end_dow
+    } else {
+        dow >= jan1_dow || dow <= end_dow
+    };
+    days_in_first_week >= calendar_minimal_days(vm, this) && !in_min_week
 }
 
 /// The configured first day of the week (1 = Sunday .. 7 = Saturday), defaulting to Sunday.
@@ -28183,7 +28347,11 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
         "getInstance",
         "(Ljava/util/Locale;)Ljava/util/Calendar;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| calendar_instance(vm),
+        |vm, _, args| {
+            let value = calendar_instance(vm)?;
+            calendar_apply_locale(vm, value.as_ref(), ref_arg(args, 0));
+            Ok(value)
+        },
     ),
     method(
         "getInstance",
@@ -28195,7 +28363,11 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
         "getInstance",
         "(Ljava/util/TimeZone;Ljava/util/Locale;)Ljava/util/Calendar;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| calendar_instance(vm),
+        |vm, _, args| {
+            let value = calendar_instance(vm)?;
+            calendar_apply_locale(vm, value.as_ref(), ref_arg(args, 1));
+            Ok(value)
+        },
     ),
     method("getTimeInMillis", "()J", ACC_PUBLIC, |vm, _, args| {
         long(calendar_time(vm, receiver(args)))
@@ -28464,7 +28636,7 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
     method("roll", "(II)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let field = int_arg(args, 1);
-        calendar_add(vm, this, field, int_arg(args, 2));
+        calendar_roll(vm, this, field, int_arg(args, 2));
         calendar_mark(vm, this, field);
         void()
     }),
@@ -28907,7 +29079,9 @@ const GREGORIAN_CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let now = vm.host_time_millis();
-            calendar_init(vm, receiver(args), now)?;
+            let this = receiver(args);
+            calendar_init(vm, this, now)?;
+            calendar_apply_locale(vm, this, ref_arg(args, 1));
             void()
         },
     ),
@@ -28919,6 +29093,7 @@ const GREGORIAN_CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
             let now = vm.host_time_millis();
             let this = receiver(args);
             calendar_init(vm, this, now)?;
+            calendar_apply_locale(vm, this, ref_arg(args, 2));
             if let Some((declaring, field)) =
                 vm.find_field_opt(vm.class_of(this), "timeZone", "Ljava/util/TimeZone;")
             {
