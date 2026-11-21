@@ -27121,10 +27121,12 @@ fn date_init_fields(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let year = int_arg(args, 1) as i64 + 1900;
-    let month = int_arg(args, 2) as i64 + 1;
-    let day = int_arg(args, 3) as i64;
-    let millis = days_from_civil(year, month, day).saturating_mul(86_400_000);
+    let (year, month) = calendar_normalize_month(
+        i64::from(int_arg(args, 1).wrapping_add(1900)),
+        i64::from(int_arg(args, 2)) + 1,
+    );
+    let day = i64::from(int_arg(args, 3));
+    let millis = days_from_civil(year, month, day).wrapping_mul(86_400_000);
     crate::lang::write_long_field(vm, receiver(args), "time", millis);
     void()
 }
@@ -27350,13 +27352,26 @@ const DATE_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
         },
     ),
     method("UTC", "(IIIIII)J", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
-        let year = i64::from(int_arg(args, 0)) + 1900;
-        let month = i64::from(int_arg(args, 1)) + 1;
+        // `int y = year + 1900` wraps at 32 bits in the JDK, and the millis
+        // arithmetic wraps at 64 bits rather than saturating. Out-of-range
+        // months carry into the year before normalization.
+        let mut year = int_arg(args, 0).wrapping_add(1900);
+        let mut month = int_arg(args, 1);
+        if month >= 12 {
+            year = year.wrapping_add(month / 12);
+            month %= 12;
+        } else if month < 0 {
+            year = year.wrapping_add(month.div_euclid(12));
+            month = month.rem_euclid(12);
+        }
+        let year = i64::from(year);
+        let month = i64::from(month) + 1;
         let day = i64::from(int_arg(args, 2));
-        let millis = days_from_civil(year, month, day).saturating_mul(86_400_000)
-            + i64::from(int_arg(args, 3)) * 3_600_000
-            + i64::from(int_arg(args, 4)) * 60_000
-            + i64::from(int_arg(args, 5)) * 1_000;
+        let millis = days_from_civil(year, month, day)
+            .wrapping_mul(86_400_000)
+            .wrapping_add(i64::from(int_arg(args, 3)) * 3_600_000)
+            .wrapping_add(i64::from(int_arg(args, 4)) * 60_000)
+            .wrapping_add(i64::from(int_arg(args, 5)) * 1_000);
         long(millis)
     }),
 ];
@@ -27367,14 +27382,17 @@ fn date_init_deprecated(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let year = i64::from(int_arg(args, 1)) + 1900;
-    let month = i64::from(int_arg(args, 2)) + 1;
+    let (year, month) = calendar_normalize_month(
+        i64::from(int_arg(args, 1).wrapping_add(1900)),
+        i64::from(int_arg(args, 2)) + 1,
+    );
     let day = i64::from(int_arg(args, 3));
-    let mut millis = days_from_civil(year, month, day).saturating_mul(86_400_000)
-        + i64::from(int_arg(args, 4)) * 3_600_000
-        + i64::from(int_arg(args, 5)) * 60_000;
+    let mut millis = days_from_civil(year, month, day)
+        .wrapping_mul(86_400_000)
+        .wrapping_add(i64::from(int_arg(args, 4)) * 3_600_000)
+        .wrapping_add(i64::from(int_arg(args, 5)) * 60_000);
     if args.len() > 6 {
-        millis += i64::from(int_arg(args, 6)) * 1_000;
+        millis = millis.wrapping_add(i64::from(int_arg(args, 6)) * 1_000);
     }
     crate::lang::write_long_field(vm, receiver(args), "time", millis);
     void()
@@ -28099,12 +28117,14 @@ fn calendar_fields_from_millis(time: i64) -> CalendarFields {
 }
 
 fn calendar_millis_from_fields(fields: CalendarFields) -> i64 {
+    // The JDK multiplies in plain long arithmetic, which wraps on overflow
+    // instead of saturating (GregorianCalendar.computeTime).
     days_from_civil(fields.year, fields.month, fields.day)
-        .saturating_mul(MILLIS_PER_DAY)
-        .saturating_add(fields.hour * MILLIS_PER_HOUR)
-        .saturating_add(fields.minute * 60_000)
-        .saturating_add(fields.second * 1_000)
-        .saturating_add(fields.millisecond)
+        .wrapping_mul(MILLIS_PER_DAY)
+        .wrapping_add(fields.hour * MILLIS_PER_HOUR)
+        .wrapping_add(fields.minute * 60_000)
+        .wrapping_add(fields.second * 1_000)
+        .wrapping_add(fields.millisecond)
 }
 
 fn calendar_day_of_week(time: i64) -> i64 {
@@ -28600,6 +28620,13 @@ fn calendar_get(vm: &Vm<'_>, this: ObjectRef, field: i32) -> i32 {
     }
 }
 
+/// Lenient month normalization: month 0 is December of the previous year and
+/// month 13 is January of the next year (`BaseCalendar.normalizeMonth`).
+fn calendar_normalize_month(year: i64, month: i64) -> (i64, i64) {
+    let total = year * 12 + (month - 1);
+    (total.div_euclid(12), total.rem_euclid(12) + 1)
+}
+
 fn calendar_set_components(
     vm: &mut Vm<'_>,
     this: ObjectRef,
@@ -28610,11 +28637,13 @@ fn calendar_set_components(
     minute: i64,
     second: i64,
 ) {
-    let max_day = calendar_days_in_month(year, month);
+    // Lenient mode carries out-of-range days into the following months
+    // instead of clamping; days_from_civil is linear in the day argument.
+    let (year, month) = calendar_normalize_month(year, month);
     let fields = CalendarFields {
         year,
         month,
-        day: day.clamp(1, max_day),
+        day,
         hour,
         minute,
         second,
@@ -28818,8 +28847,9 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
                 }
                 _ => {}
             }
-            let max_day = calendar_days_in_month(fields.year, fields.month);
-            fields.day = fields.day.clamp(1, max_day);
+            let (year, month) = calendar_normalize_month(fields.year, fields.month);
+            fields.year = year;
+            fields.month = month;
             calendar_set_time(vm, this, calendar_millis_from_fields(fields));
         } else {
             let time = calendar_time(vm, this);
@@ -29065,7 +29095,7 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
                 }
             }
             2 => 11,
-            1 => 292_278_993,
+            1 => 292_278_994,
             3 => {
                 let week_year = calendar_week_year(vm, this, time);
                 let start = calendar_week_one_start(vm, this, week_year);
@@ -29261,7 +29291,7 @@ fn calendar_minimum(field: i32) -> i32 {
 fn calendar_maximum(field: i32) -> i32 {
     match field {
         0 => 1,
-        1 => 292_278_993,
+        1 => 292_278_994,
         2 => 11,
         3 => 54,
         4 => 6,
