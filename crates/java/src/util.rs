@@ -21076,7 +21076,7 @@ fn checked_view_end(vm: &mut Vm<'_>, this: ObjectRef, name: &str) -> Result<Valu
     object(checked_wrap_element(vm, element, value_type)?)
 }
 
-const OXJVM_CHECKED_SEQ_VIEW_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const OXJVM_CHECKED_SEQ_VIEW_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
     method("size", "()I", ACC_PUBLIC, |vm, _, args| {
         checked_view_delegate(vm, receiver(args), "size", "()I", &[])
     }),
@@ -21251,6 +21251,31 @@ const OXJVM_CHECKED_SEQ_VIEW_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     ),
     method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
         checked_view_delegate(vm, receiver(args), "clear", "()V", &[])
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            checked_view_delegate(vm, receiver(args), "toString", "()Ljava/lang/String;", &[])
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            checked_view_delegate(
+                vm,
+                receiver(args),
+                "equals",
+                "(Ljava/lang/Object;)Z",
+                &[args[1]],
+            )
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        checked_view_delegate(vm, receiver(args), "hashCode", "()I", &[])
     }),
 ];
 
