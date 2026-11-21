@@ -286,7 +286,24 @@ fn throwable_to_string(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let text = vm.throwable_to_string(receiver(args));
+    let this = receiver(args);
+    if this.is_null() {
+        return object(vm.make_string("null")?);
+    }
+    let class = vm.class_of(this);
+    let name = vm.class_name(class).replace('/', ".");
+    // The JDK builds toString() from getLocalizedMessage(), dispatched virtually so
+    // a subclass override is honored.
+    let (method_class, method) =
+        vm.resolve_virtual_method(this, "getLocalizedMessage", "()Ljava/lang/String;")?;
+    let message = vm
+        .invoke_method(method_class, method, vec![Value::Ref(this)])?
+        .as_ref();
+    let text = if message.is_null() {
+        name
+    } else {
+        alloc::format!("{name}: {}", vm.string_or_empty(message))
+    };
     object(vm.make_string(&text)?)
 }
 
