@@ -5476,6 +5476,26 @@ pub(crate) fn default_locale(vm: &mut Vm<'_>) -> ObjectRef {
     };
     // The default locale is set when the class is initialized.
     let _ = vm.ensure_initialized(class);
+    // Formatting follows the FORMAT category default locale, not the user default.
+    if let Some(category_class) = vm.resolve_class_lenient_pub("java/util/Locale$Category") {
+        let _ = vm.ensure_initialized(category_class);
+        if let Some(format) =
+            vm.read_static_ref_if_set(category_class, "FORMAT", "Ljava/util/Locale$Category;")
+        {
+            if let Some((declaring, method)) = vm.find_method(
+                class,
+                "getDefault",
+                "(Ljava/util/Locale$Category;)Ljava/util/Locale;",
+            ) {
+                if let Ok(value) = vm.invoke_method(declaring, method, vec![Value::Ref(format)]) {
+                    let locale = value.as_ref();
+                    if !locale.is_null() {
+                        return locale;
+                    }
+                }
+            }
+        }
+    }
     // `Locale.getDefault` is a static method, so it takes no receiver.
     let Some((declaring, method)) = vm.find_method(class, "getDefault", "()Ljava/util/Locale;")
     else {

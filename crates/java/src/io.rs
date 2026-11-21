@@ -639,7 +639,7 @@ fn print_formatted(
     let stream = receiver(args);
     let format = crate::string_arg(vm, args[1])?;
     let arguments = object_array_elements(vm, ref_arg(args, 2));
-    let text = crate::lang::format_string(vm, &format, &arguments)?;
+    let text = crate::lang::format_string(vm, &format, &arguments, "")?;
     print_text(vm, stream, &text)?;
     object(stream)
 }
@@ -2738,7 +2738,7 @@ fn print_writer_formatted(
     let writer = receiver(args);
     let format = crate::string_arg(vm, args[1])?;
     let arguments = object_array_elements(vm, ref_arg(args, 2));
-    let text = crate::lang::format_string(vm, &format, &arguments)?;
+    let text = crate::lang::format_string(vm, &format, &arguments, "")?;
     print_writer_text(vm, writer, &text)?;
     object(writer)
 }

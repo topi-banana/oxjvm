@@ -2017,7 +2017,8 @@ const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 24] = [
             {
                 arguments = elements.clone();
             }
-            let text = format_string(vm, &format, &arguments)?;
+            let language = crate::locale::locale_language(vm, ref_arg(args, 0));
+            let text = format_string(vm, &format, &arguments, &language)?;
             object(vm.make_string(&text)?)
         },
     ),
@@ -3525,8 +3526,10 @@ fn string_to_upper(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let text = vm.string_or_empty(receiver(args)).to_uppercase();
-    object(vm.make_string(&text)?)
+    let text = vm.string_or_empty(receiver(args));
+    let language = crate::locale::locale_default_language(vm);
+    let converted = localized_case(&text, &language, true);
+    object(vm.make_string(&converted)?)
 }
 
 fn string_to_lower(
@@ -3534,8 +3537,10 @@ fn string_to_lower(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let text = vm.string_or_empty(receiver(args)).to_lowercase();
-    object(vm.make_string(&text)?)
+    let text = vm.string_or_empty(receiver(args));
+    let language = crate::locale::locale_default_language(vm);
+    let converted = localized_case(&text, &language, false);
+    object(vm.make_string(&converted)?)
 }
 
 /// Locale-sensitive case conversion.  Turkish and Azeri are the only locales in
@@ -3698,7 +3703,7 @@ fn string_format(
     {
         arguments = elements.clone();
     }
-    let text = format_string(vm, &format, &arguments)?;
+    let text = format_string(vm, &format, &arguments, "")?;
     object(vm.make_string(&text)?)
 }
 
@@ -3708,6 +3713,7 @@ pub(crate) fn format_string(
     vm: &mut Vm<'_>,
     format: &str,
     arguments: &[ObjectRef],
+    language: &str,
 ) -> Result<String, VmError> {
     let mut out = String::new();
     let mut argument = 0usize;
@@ -3854,7 +3860,7 @@ pub(crate) fn format_string(
                     Value::Ref(value),
                 )?;
                 if spec == 'S' {
-                    text = text.to_uppercase();
+                    text = localized_case(&text, language, true);
                 }
                 if let Some(limit) = precision {
                     text = text.chars().take(limit).collect();
@@ -4121,7 +4127,11 @@ fn formatter_format(
     {
         arguments = elements.clone();
     }
-    let text = format_string(vm, &format, &arguments)?;
+    let locale = vm
+        .read_ref_field(this, vm.class_of(this), "locale", "Ljava/util/Locale;")
+        .unwrap_or(ObjectRef::NULL);
+    let language = crate::locale::locale_language(vm, locale);
+    let text = format_string(vm, &format, &arguments, &language)?;
     let out = formatter_out(vm, this);
     if vm.find_field_opt(vm.class_of(out), "count", "I").is_some() {
         builder_append_text(vm, out, &text)?;

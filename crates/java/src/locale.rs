@@ -9,7 +9,7 @@ use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
 use crate::{boolean, class, field, int, method, object, receiver, ref_arg, string_arg, void};
 
-const LOCALE_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
+const LOCALE_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -32,37 +32,7 @@ const LOCALE_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
         "getDefault",
         "()Ljava/util/Locale;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| {
-            let class = vm.resolve_class("java/util/Locale")?;
-            if let Some(current) =
-                vm.read_static_ref_if_set(class, "defaultLocale", "Ljava/util/Locale;")
-            {
-                return object(current);
-            }
-            let us = vm
-                .read_static_ref_if_set(class, "US", "Ljava/util/Locale;")
-                .unwrap_or(ObjectRef::NULL);
-            if us.is_null() {
-                // Fall back to constructing en_US on the spot.
-                let instance = vm.new_instance(class)?;
-                let (declaring, ctor) = vm
-                    .find_method(class, "<init>", "(Ljava/lang/String;Ljava/lang/String;)V")
-                    .ok_or_else(|| VmError::internal("Locale lacks its constructor"))?;
-                let language = vm.make_string("en")?;
-                let country = vm.make_string("US")?;
-                vm.invoke_method(
-                    declaring,
-                    ctor,
-                    vec![
-                        Value::Ref(instance),
-                        Value::Ref(language),
-                        Value::Ref(country),
-                    ],
-                )?;
-                return object(instance);
-            }
-            object(us)
-        },
+        |vm, _, _| locale_default(vm),
     ),
     method(
         "getLanguage",
@@ -304,6 +274,63 @@ const LOCALE_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
                 "Ljava/util/Locale;",
                 Value::Ref(locale),
             );
+            vm.set_static_value(
+                class,
+                "defaultDisplayLocale",
+                "Ljava/util/Locale;",
+                Value::Ref(locale),
+            );
+            vm.set_static_value(
+                class,
+                "defaultFormatLocale",
+                "Ljava/util/Locale;",
+                Value::Ref(locale),
+            );
+            void()
+        },
+    ),
+    method(
+        "getDefault",
+        "(Ljava/util/Locale$Category;)Ljava/util/Locale;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let category = ref_arg(args, 0);
+            if category.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let ordinal = crate::lang::read_int_field(vm, category, "ordinal");
+            let class = vm.resolve_class("java/util/Locale")?;
+            // Each category keeps its own default, falling back to the user default.
+            let field_name = if ordinal == 0 {
+                "defaultDisplayLocale"
+            } else {
+                "defaultFormatLocale"
+            };
+            if let Some(value) = vm.read_static_ref_if_set(class, field_name, "Ljava/util/Locale;")
+            {
+                return object(value);
+            }
+            locale_default(vm)
+        },
+    ),
+    method(
+        "setDefault",
+        "(Ljava/util/Locale$Category;Ljava/util/Locale;)V",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let category = ref_arg(args, 0);
+            let locale = ref_arg(args, 1);
+            if category.is_null() || locale.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let ordinal = crate::lang::read_int_field(vm, category, "ordinal");
+            let class = vm.resolve_class("java/util/Locale")?;
+            let field_name = if ordinal == 0 {
+                "defaultDisplayLocale"
+            } else {
+                "defaultFormatLocale"
+            };
+            vm.set_static_value(class, field_name, "Ljava/util/Locale;", Value::Ref(locale));
             void()
         },
     ),
@@ -388,6 +415,18 @@ pub(crate) const LOCALE: oxjvm_vm::NativeClass = class(
         field("languageTag", "Ljava/lang/String;", ACC_PRIVATE, None),
         field(
             "defaultLocale",
+            "Ljava/util/Locale;",
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
+        field(
+            "defaultDisplayLocale",
+            "Ljava/util/Locale;",
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
+        field(
+            "defaultFormatLocale",
             "Ljava/util/Locale;",
             ACC_PRIVATE | ACC_STATIC,
             None,
@@ -528,6 +567,182 @@ pub(crate) const LOCALE: oxjvm_vm::NativeClass = class(
     &LOCALE_METHODS,
     Some(locale_clinit),
 );
+
+/// The default `Locale` (the FORMAT category default), falling back to `en_US`.
+fn locale_default(vm: &mut Vm<'_>) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/util/Locale")?;
+    if let Some(current) = vm.read_static_ref_if_set(class, "defaultLocale", "Ljava/util/Locale;") {
+        return object(current);
+    }
+    let us = vm
+        .read_static_ref_if_set(class, "US", "Ljava/util/Locale;")
+        .unwrap_or(ObjectRef::NULL);
+    if us.is_null() {
+        let instance = vm.new_instance(class)?;
+        let (declaring, ctor) = vm
+            .find_method(class, "<init>", "(Ljava/lang/String;Ljava/lang/String;)V")
+            .ok_or_else(|| VmError::internal("Locale lacks its constructor"))?;
+        let language = vm.make_string("en")?;
+        let country = vm.make_string("US")?;
+        vm.invoke_method(
+            declaring,
+            ctor,
+            vec![
+                Value::Ref(instance),
+                Value::Ref(language),
+                Value::Ref(country),
+            ],
+        )?;
+        return object(instance);
+    }
+    object(us)
+}
+
+/// The language of the default (FORMAT category) `Locale`, or "" when unavailable.
+pub(crate) fn locale_default_language(vm: &mut Vm<'_>) -> String {
+    // Read the cached default (or the US constant) directly; constructing a
+    // fresh Locale on every case conversion would be prohibitively slow.
+    let Some(class) = vm.resolve_class_lenient_pub("java/util/Locale") else {
+        return String::new();
+    };
+    let locale = vm
+        .read_static_ref_if_set(class, "defaultLocale", "Ljava/util/Locale;")
+        .or_else(|| vm.read_static_ref_if_set(class, "US", "Ljava/util/Locale;"))
+        .unwrap_or(ObjectRef::NULL);
+    if locale.is_null() {
+        return String::new();
+    }
+    let language = vm
+        .read_ref_field(
+            locale,
+            vm.class_of(locale),
+            "language",
+            "Ljava/lang/String;",
+        )
+        .unwrap_or(ObjectRef::NULL);
+    vm.string_or_empty(language)
+}
+
+/// The language tag of a `Locale` instance, or "" when null/unavailable.
+pub(crate) fn locale_language(vm: &Vm<'_>, locale: ObjectRef) -> String {
+    if locale.is_null() {
+        return String::new();
+    }
+    let language = vm
+        .read_ref_field(
+            locale,
+            vm.class_of(locale),
+            "language",
+            "Ljava/lang/String;",
+        )
+        .unwrap_or(ObjectRef::NULL);
+    vm.string_or_empty(language)
+}
+
+const CATEGORY_NAMES: [&str; 2] = ["DISPLAY", "FORMAT"];
+
+/// `java.util.Locale.Category`: the DISPLAY / FORMAT locale selector.
+pub(crate) const CATEGORY: oxjvm_vm::NativeClass = class(
+    "java/util/Locale$Category",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL | ACC_ENUM,
+    &[
+        field("ordinal", "I", ACC_PRIVATE | ACC_FINAL, None),
+        field(
+            "DISPLAY",
+            "Ljava/util/Locale$Category;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+        field(
+            "FORMAT",
+            "Ljava/util/Locale$Category;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_ENUM,
+            None,
+        ),
+    ],
+    &CATEGORY_METHODS,
+    Some(category_clinit),
+);
+
+fn category_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/util/Locale$Category")?;
+    for (ordinal, name) in CATEGORY_NAMES.iter().enumerate() {
+        let instance = vm.new_instance(class)?;
+        if let Some((declaring, field)) = vm.find_field_opt(class, "ordinal", "I") {
+            vm.set_instance_int(instance, declaring, field, ordinal as i32);
+        }
+        vm.set_static_value(
+            class,
+            name,
+            "Ljava/util/Locale$Category;",
+            Value::Ref(instance),
+        );
+    }
+    Ok(())
+}
+
+const CATEGORY_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method("ordinal", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "ordinal"))
+    }),
+    method("name", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
+        let index = crate::lang::read_int_field(vm, receiver(args), "ordinal").clamp(0, 1) as usize;
+        object(vm.make_string(CATEGORY_NAMES[index])?)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let index =
+                crate::lang::read_int_field(vm, receiver(args), "ordinal").clamp(0, 1) as usize;
+            object(vm.make_string(CATEGORY_NAMES[index])?)
+        },
+    ),
+    method(
+        "values",
+        "()[Ljava/util/Locale$Category;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/util/Locale$Category")?;
+            vm.ensure_initialized(class)?;
+            let array = vm.allocate_object_array(class, CATEGORY_NAMES.len())?;
+            for (index, name) in CATEGORY_NAMES.iter().enumerate() {
+                if let Some(value) =
+                    vm.read_static_ref_if_set(class, name, "Ljava/util/Locale$Category;")
+                {
+                    vm.array_set_ref(array, index, value)?;
+                }
+            }
+            object(array)
+        },
+    ),
+    method(
+        "valueOf",
+        "(Ljava/lang/String;)Ljava/util/Locale$Category;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = vm.string_or_empty(ref_arg(args, 0));
+            let class = vm.resolve_class("java/util/Locale$Category")?;
+            vm.ensure_initialized(class)?;
+            for constant in CATEGORY_NAMES {
+                if constant == name {
+                    if let Some(value) =
+                        vm.read_static_ref_if_set(class, constant, "Ljava/util/Locale$Category;")
+                    {
+                        return object(value);
+                    }
+                }
+            }
+            Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("No enum constant java.util.Locale.Category."),
+            ))
+        },
+    ),
+];
 
 fn locale_init(
     vm: &mut Vm<'_>,
