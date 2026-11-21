@@ -11703,11 +11703,39 @@ const PROPERTIES_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            let mut keys = Vec::new();
-            for (key, value) in hash_map_pairs(vm, properties_map(vm, this)) {
-                if vm.string_value(key).is_some() && vm.string_value(value).is_some() {
-                    keys.push(key);
+            let mut keys: Vec<ObjectRef> = Vec::new();
+            let mut current = this;
+            loop {
+                for (key, _value) in hash_map_pairs(vm, properties_map(vm, current)) {
+                    // The JDK casts every key to String while enumerating, so a
+                    // non-String key raises ClassCastException; values may be any
+                    // type. Shared keys are deduplicated (nearer maps win).
+                    if vm.string_value(key).is_none() {
+                        return Err(vm.throw_new("java/lang/ClassCastException", None));
+                    }
+                    let mut found = false;
+                    for existing in &keys {
+                        if values_equal(vm, *existing, key)? {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        keys.push(key);
+                    }
                 }
+                let defaults = vm
+                    .read_ref_field(
+                        current,
+                        vm.class_of(current),
+                        "defaults",
+                        "Ljava/util/Properties;",
+                    )
+                    .unwrap_or(ObjectRef::NULL);
+                if defaults.is_null() {
+                    break;
+                }
+                current = defaults;
             }
             object(new_enumeration(vm, &keys)?)
         },
@@ -12264,16 +12292,34 @@ fn properties_store_xml(
     void()
 }
 
-/// `Properties.stringPropertyNames`: the keys whose values are strings, as a `Set`.
+/// `Properties.stringPropertyNames`: the keys whose values are strings, as an
+/// unmodifiable `Set` (the JDK wraps the result in `Collections.unmodifiableSet`).
+/// The defaults chain is walked too, so keys inherited from a defaults
+/// `Properties` are included; the set deduplicates shared keys.
 fn properties_string_property_names(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError> {
     let set = new_hash_set(vm)?;
     let (class, method) = vm.resolve_virtual_method(set, "add", "(Ljava/lang/Object;)Z")?;
-    for (key, value) in hash_map_pairs(vm, properties_map(vm, this)) {
-        if vm.string_value(key).is_some() && vm.string_value(value).is_some() {
-            vm.invoke_method(class, method, vec![Value::Ref(set), Value::Ref(key)])?;
+    let mut current = this;
+    loop {
+        for (key, value) in hash_map_pairs(vm, properties_map(vm, current)) {
+            if vm.string_value(key).is_some() && vm.string_value(value).is_some() {
+                vm.invoke_method(class, method, vec![Value::Ref(set), Value::Ref(key)])?;
+            }
         }
+        let defaults = vm
+            .read_ref_field(
+                current,
+                vm.class_of(current),
+                "defaults",
+                "Ljava/util/Properties;",
+            )
+            .unwrap_or(ObjectRef::NULL);
+        if defaults.is_null() {
+            break;
+        }
+        current = defaults;
     }
-    object(set)
+    object(unmodifiable_collection_new(vm, set)?)
 }
 
 fn properties_init(
