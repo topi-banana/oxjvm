@@ -10726,8 +10726,38 @@ fn hash_map_put(
         pairs.push((key, value));
         hash_map_rehash_if_needed(vm, this, &mut pairs)?;
         hash_map_store(vm, this, &pairs)?;
+        if let Some(linked) = vm.resolve_class_lenient("java/util/LinkedHashMap") {
+            if vm.is_instance(this, linked) {
+                lhm_after_insertion(vm, this)?;
+            }
+        }
         object(ObjectRef::NULL)
     }
+}
+
+/// `LinkedHashMap.afterNodeInsertion`: after a new mapping is added, give a
+/// subclass's `removeEldestEntry` hook a chance to evict the eldest (first)
+/// entry. The default implementation returns false, so a plain LinkedHashMap
+/// keeps every entry.
+fn lhm_after_insertion(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    let pairs = lhm_pairs(vm, this);
+    let Some(&(key, value)) = pairs.first() else {
+        return Ok(());
+    };
+    let eldest = new_entry_immutable(vm, key, value)?;
+    let (class, method) =
+        vm.resolve_virtual_method(this, "removeEldestEntry", "(Ljava/util/Map$Entry;)Z")?;
+    let evict = vm
+        .invoke_method(class, method, vec![Value::Ref(this), Value::Ref(eldest)])?
+        .as_int();
+    if evict != 0 {
+        let mut pairs = lhm_pairs(vm, this);
+        if !pairs.is_empty() {
+            pairs.remove(0);
+            hash_map_store(vm, this, &pairs)?;
+        }
+    }
+    Ok(())
 }
 
 /// Reorder the pair array when the JDK's default 16-bucket table would resize.
@@ -17865,7 +17895,7 @@ fn seq_view_reversed(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError>
     vm.invoke_method(class, method, vec![Value::Ref(reversed)])
 }
 
-const LINKED_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const LINKED_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method(
         "putFirst",
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
@@ -17982,6 +18012,12 @@ const LINKED_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
             }
             void()
         },
+    ),
+    method(
+        "removeEldestEntry",
+        "(Ljava/util/Map$Entry;)Z",
+        ACC_PROTECTED,
+        |_, _, _| boolean(false),
     ),
     method("<init>", "(IFZ)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
