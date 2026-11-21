@@ -5010,8 +5010,12 @@ const BUFFERED_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
+            let out = ref_arg(args, 1);
+            if out.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let (declaring, field) = vm.find_field(vm.class_of(this), "out", "Ljava/io/Writer;")?;
-            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            vm.set_instance_ref(this, declaring, field, out);
             void()
         },
     ),
@@ -5021,8 +5025,18 @@ const BUFFERED_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
+            let out = ref_arg(args, 1);
+            if out.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            if int_arg(args, 2) <= 0 {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("Buffer size <= 0"),
+                ));
+            }
             let (declaring, field) = vm.find_field(vm.class_of(this), "out", "Ljava/io/Writer;")?;
-            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            vm.set_instance_ref(this, declaring, field, out);
             void()
         },
     ),
@@ -5601,6 +5615,13 @@ fn pushback_reader_in(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
         .unwrap_or(ObjectRef::NULL)
 }
 
+fn pushback_reader_ensure_open(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    if pushback_reader_in(vm, this).is_null() {
+        return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+    }
+    Ok(())
+}
+
 fn pushback_reader_buf(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
     vm.read_ref_field(this, vm.class_of(this), "buf", "[I")
         .unwrap_or(ObjectRef::NULL)
@@ -5636,7 +5657,7 @@ fn pushback_reader_unread_int(vm: &mut Vm<'_>, this: ObjectRef, ch: i32) -> Resu
     Ok(())
 }
 
-const PUSHBACK_READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const PUSHBACK_READER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method(
         "<init>",
         "(Ljava/io/Reader;)V",
@@ -5657,6 +5678,7 @@ const PUSHBACK_READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     ),
     method("read", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        pushback_reader_ensure_open(vm, this)?;
         let count = read_int_field(vm, this, "count");
         if count > 0 {
             let buf = pushback_reader_buf(vm, this);
@@ -5670,10 +5692,13 @@ const PUSHBACK_READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         }
     }),
     method("read", "([CII)I", ACC_PUBLIC, |vm, _, args| {
+        pushback_reader_ensure_open(vm, receiver(args))?;
         reader_read_chars(vm, args, int_arg(args, 2), Some(int_arg(args, 3)))
     }),
     method("unread", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        pushback_reader_unread_int(vm, receiver(args), int_arg(args, 1))?;
+        let this = receiver(args);
+        pushback_reader_ensure_open(vm, this)?;
+        pushback_reader_unread_int(vm, this, int_arg(args, 1))?;
         void()
     }),
     method("unread", "([C)V", ACC_PUBLIC, |vm, _, args| {
@@ -5695,11 +5720,15 @@ const PUSHBACK_READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     }),
     method("unread", "([CII)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        pushback_reader_ensure_open(vm, this)?;
         let array = ref_arg(args, 1);
+        if array.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
         let offset = int_arg(args, 2);
         let length = int_arg(args, 3);
         let capacity = vm.array_length(array)? as i32;
-        if offset < 0 || length < 0 || offset + length > capacity {
+        if offset < 0 || length < 0 || i64::from(offset) + i64::from(length) > i64::from(capacity) {
             return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
         }
         let buf = pushback_reader_buf(vm, this);
@@ -5715,19 +5744,42 @@ const PUSHBACK_READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         void()
     }),
     method("close", "()V", ACC_PUBLIC, |vm, _, args| {
-        let input = pushback_reader_in(vm, receiver(args));
+        let this = receiver(args);
+        let input = pushback_reader_in(vm, this);
+        if input.is_null() {
+            return void();
+        }
         let (class, method) = vm.resolve_virtual_method(input, "close", "()V")?;
         vm.invoke_method(class, method, vec![Value::Ref(input)])?;
+        // Closing detaches the source and the pushback buffer so later
+        // reads and unreads report "Stream closed".
+        let declaring_class = vm.class_of(this);
+        if let Some((declaring, field)) =
+            vm.find_field_opt(declaring_class, "in", "Ljava/io/Reader;")
+        {
+            vm.set_instance_ref(this, declaring, field, ObjectRef::NULL);
+        }
+        if let Some((declaring, field)) = vm.find_field_opt(declaring_class, "buf", "[I") {
+            vm.set_instance_ref(this, declaring, field, ObjectRef::NULL);
+        }
         void()
     }),
     method("ready", "()Z", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        pushback_reader_ensure_open(vm, this)?;
         if read_int_field(vm, this, "count") > 0 {
             return boolean(true);
         }
         let input = pushback_reader_in(vm, this);
         let (class, method) = vm.resolve_virtual_method(input, "ready", "()Z")?;
         vm.invoke_method(class, method, vec![Value::Ref(input)])
+    }),
+    method("markSupported", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method("mark", "(I)V", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/io/IOException", Some("mark/reset not supported")))
+    }),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/io/IOException", Some("mark/reset not supported")))
     }),
 ];
 
