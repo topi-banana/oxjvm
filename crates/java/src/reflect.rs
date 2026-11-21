@@ -334,7 +334,7 @@ const METHOD_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
         |vm, _, args| {
             let (class, slot) = method_parts(vm, receiver(args));
             {
-                let text = method_signature_text(vm, class, slot)?;
+                let text = method_signature_text(vm, class, slot, false)?;
                 object(vm.make_string(&text)?)
             }
         },
@@ -345,10 +345,11 @@ const METHOD_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let (class, slot) = method_parts(vm, receiver(args));
-            {
-                let text = method_signature_text(vm, class, slot)?;
-                object(vm.make_string(&text)?)
-            }
+            let text = match method_generic_signature_text(vm, class, slot)? {
+                Some(text) => text,
+                None => method_signature_text(vm, class, slot, true)?,
+            };
+            object(vm.make_string(&text)?)
         },
     ),
     method(
@@ -1449,6 +1450,32 @@ impl<'a> SignatureParser<'a> {
         }
     }
 
+    /// Parse the formal type parameters in a `<...>` block: each name with its
+    /// declared bounds.
+    fn parse_type_parameters(&mut self) -> Result<Vec<(String, Vec<ParsedType>)>, VmError> {
+        self.expect(b'<')?;
+        let mut parameters = Vec::new();
+        while self.peek() != Some(b'>') {
+            let name = self.read_until(b':')?;
+            if name.is_empty() {
+                return Err(VmError::internal("bad generic signature"));
+            }
+            self.expect(b':')?;
+            let mut bounds = Vec::new();
+            // Optional class bound, then any number of interface bounds.
+            if matches!(self.peek(), Some(b'L' | b'T' | b'[')) {
+                bounds.push(self.parse_field_type()?);
+            }
+            while self.peek() == Some(b':') {
+                self.advance();
+                bounds.push(self.parse_field_type()?);
+            }
+            parameters.push((name, bounds));
+        }
+        self.expect(b'>')?;
+        Ok(parameters)
+    }
+
     /// Skip a balanced `<...>` block of formal type parameters.
     fn skip_balanced(&mut self) -> Result<(), VmError> {
         self.expect(b'<')?;
@@ -1495,6 +1522,52 @@ fn parse_method_signature(text: &str) -> Result<(Vec<ParsedType>, ParsedType), V
         _ => parser.parse_field_type()?,
     };
     Ok((parameters, returns))
+}
+
+/// A full method type signature: formal type parameters (names and bounds),
+/// parameter types, return type, and the generic throws clause.
+/// A formal type parameter: its name and declared bounds.
+type FormalTypeParameter = (String, Vec<ParsedType>);
+
+/// A parsed generic method signature.
+struct GenericMethodSignature {
+    type_parameters: Vec<FormalTypeParameter>,
+    parameters: Vec<ParsedType>,
+    returns: ParsedType,
+    throws: Vec<ParsedType>,
+}
+
+fn parse_method_signature_full(text: &str) -> Result<GenericMethodSignature, VmError> {
+    let mut parser = SignatureParser::new(text);
+    let type_parameters = if parser.peek() == Some(b'<') {
+        parser.parse_type_parameters()?
+    } else {
+        Vec::new()
+    };
+    parser.expect(b'(')?;
+    let mut parameters = Vec::new();
+    while parser.peek() != Some(b')') {
+        parameters.push(parser.parse_field_type()?);
+    }
+    parser.expect(b')')?;
+    let returns = match parser.peek() {
+        Some(b'V') => {
+            parser.advance();
+            ParsedType::Primitive(oxjvm_classfile::BaseType::Void)
+        }
+        _ => parser.parse_field_type()?,
+    };
+    let mut throws = Vec::new();
+    while parser.peek() == Some(b'^') {
+        parser.advance();
+        throws.push(parser.parse_field_type()?);
+    }
+    Ok(GenericMethodSignature {
+        type_parameters,
+        parameters,
+        returns,
+        throws,
+    })
 }
 
 /// The source-style display name of a parsed type.
@@ -2907,11 +2980,9 @@ fn binary_name_for_field_type(_vm: &Vm<'_>, field_type: &FieldType) -> Result<St
     })
 }
 
-/// The JDK-style signature text of a method (`Method.toString` and `toGenericString`).
-fn method_signature_text(vm: &mut Vm<'_>, class: ClassId, slot: u32) -> Result<String, VmError> {
-    let (name, descriptor, flags) = method_entry(vm, class, slot);
-    let parsed = MethodDescriptor::parse(&descriptor)
-        .map_err(|_| VmError::internal("bad method descriptor"))?;
+/// The JDK-style erased signature text of a method (`Method.toString`).
+/// The modifier prefix shared by `Method.toString` and `toGenericString`.
+fn method_modifiers_text(vm: &Vm<'_>, class: ClassId, flags: u16) -> String {
     let mask = ACC_PUBLIC
         | ACC_PROTECTED
         | ACC_PRIVATE
@@ -2930,9 +3001,128 @@ fn method_signature_text(vm: &mut Vm<'_>, class: ClassId, slot: u32) -> Result<S
         }
         modifiers.push_str("default");
     }
+    modifiers
+}
+
+/// Render one formal type parameter with its bounds the way the JDK does:
+/// a lone `java.lang.Object` bound is omitted, and an Object class bound is
+/// dropped when interface bounds follow it.
+fn type_parameter_text(name: &str, bounds: &[ParsedType]) -> String {
+    let is_object = |parsed: &ParsedType| {
+        matches!(parsed, ParsedType::Class { name, arguments }
+            if name == "java/lang/Object" && arguments.is_empty())
+    };
+    if bounds.len() == 1 && is_object(&bounds[0]) {
+        return String::from(name);
+    }
+    let rendered: Vec<String> = bounds
+        .iter()
+        .filter(|bound| !(bounds.len() > 1 && is_object(bound)))
+        .map(parsed_type_name)
+        .collect();
+    if rendered.is_empty() {
+        return String::from(name);
+    }
+    alloc::format!("{name} extends {}", rendered.join(" & "))
+}
+
+/// A varargs parameter renders its trailing array brackets as an ellipsis.
+fn varargs_parameter_text(text: String) -> String {
+    match text.strip_suffix("[]") {
+        Some(component) => alloc::format!("{component}..."),
+        None => text,
+    }
+}
+
+/// `Method.toGenericString`: renders the generic Signature (type parameters,
+/// generic parameter/return types, and throws clause) when present. Returns
+/// None so the caller can fall back to the erased signature text.
+fn method_generic_signature_text(
+    vm: &mut Vm<'_>,
+    class: ClassId,
+    slot: u32,
+) -> Result<Option<String>, VmError> {
+    let signature = vm.classes.get(class).methods[slot as usize]
+        .signature
+        .clone();
+    let signature = match signature {
+        Some(text) => text,
+        None => return Ok(None),
+    };
+    let GenericMethodSignature {
+        type_parameters,
+        parameters,
+        returns,
+        throws,
+    } = match parse_method_signature_full(&signature) {
+        Ok(parsed) => parsed,
+        Err(_) => return Ok(None),
+    };
+    let (name, _, flags) = method_entry(vm, class, slot);
+    let modifiers = method_modifiers_text(vm, class, flags);
+    let mut parameter_names: Vec<String> = parameters.iter().map(parsed_type_name).collect();
+    if flags & ACC_VARARGS != 0 {
+        if let Some(last) = parameter_names.last_mut() {
+            *last = varargs_parameter_text(last.clone());
+        }
+    }
+    let return_type = parsed_type_name(&returns);
+    let declaring = crate::binary_name(vm, class);
+    let mut text = String::new();
+    if !modifiers.is_empty() {
+        text.push_str(&modifiers);
+        text.push(' ');
+    }
+    if !type_parameters.is_empty() {
+        let parts: Vec<String> = type_parameters
+            .iter()
+            .map(|(name, bounds)| type_parameter_text(name, bounds))
+            .collect();
+        text.push('<');
+        text.push_str(&parts.join(","));
+        text.push_str("> ");
+    }
+    text.push_str(&alloc::format!(
+        "{return_type} {declaring}.{name}({})",
+        parameter_names.join(",")
+    ));
+    // javac only records throws in the Signature when they mention type
+    // variables or parameterized types; otherwise use the Exceptions attribute.
+    let exception_names: Vec<String> = if throws.is_empty() {
+        vm.classes.get(class).methods[slot as usize]
+            .exceptions
+            .iter()
+            .map(|exception| crate::binary_name(vm, *exception))
+            .collect()
+    } else {
+        throws.iter().map(parsed_type_name).collect()
+    };
+    if !exception_names.is_empty() {
+        text.push_str(&alloc::format!(" throws {}", exception_names.join(",")));
+    }
+    Ok(Some(text))
+}
+
+fn method_signature_text(
+    vm: &mut Vm<'_>,
+    class: ClassId,
+    slot: u32,
+    varargs_ellipsis: bool,
+) -> Result<String, VmError> {
+    let (name, descriptor, flags) = method_entry(vm, class, slot);
+    let parsed = MethodDescriptor::parse(&descriptor)
+        .map_err(|_| VmError::internal("bad method descriptor"))?;
+    let modifiers = method_modifiers_text(vm, class, flags);
     let mut parameters = Vec::new();
     for parameter in &parsed.parameters {
         parameters.push(binary_name_for_field_type(vm, parameter)?);
+    }
+    // toGenericString renders a varargs parameter with an ellipsis; toString
+    // keeps the array brackets.
+    if varargs_ellipsis && flags & ACC_VARARGS != 0 {
+        if let Some(last) = parameters.last_mut() {
+            *last = varargs_parameter_text(last.clone());
+        }
     }
     let return_type = match &parsed.returns {
         Some(returns) => binary_name_for_field_type(vm, returns)?,
