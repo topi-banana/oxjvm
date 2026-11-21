@@ -4395,8 +4395,22 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 211] = [
 
 /// The recursive rendering used by `Arrays.deepToString`.
 fn deep_array_text(vm: &mut Vm<'_>, array: ObjectRef) -> Result<String, VmError> {
+    let mut seen = Vec::new();
+    deep_array_text_inner(vm, array, &mut seen)
+}
+
+fn deep_array_text_inner(
+    vm: &mut Vm<'_>,
+    array: ObjectRef,
+    seen: &mut Vec<ObjectRef>,
+) -> Result<String, VmError> {
     if array.is_null() {
         return Ok("null".into());
+    }
+    // A cyclic array prints "[...]" for any ancestor already on the recursion
+    // stack, the way Arrays.deepToString guards against self-reference.
+    if seen.contains(&array) {
+        return Ok("[...]".into());
     }
     let data = vm.heap.get(array).map(|object| object.data.clone());
     let Some(ObjectData::Array(data)) = data else {
@@ -4416,6 +4430,7 @@ fn deep_array_text(vm: &mut Vm<'_>, array: ObjectRef) -> Result<String, VmError>
         ArrayData::Double(_) => ArrayComponent::Double,
         ArrayData::Reference(_) => ArrayComponent::Reference,
     };
+    seen.push(array);
     let length = vm.array_length(array)?;
     let mut text = String::from("[");
     for index in 0..length {
@@ -4432,7 +4447,7 @@ fn deep_array_text(vm: &mut Vm<'_>, array: ObjectRef) -> Result<String, VmError>
                     vm.heap.get(reference).map(|object| &object.data),
                     Some(ObjectData::Array(_))
                 ) {
-                    text.push_str(&deep_array_text(vm, reference)?);
+                    text.push_str(&deep_array_text_inner(vm, reference, seen)?);
                 } else {
                     let (class, method) =
                         vm.resolve_virtual_method(reference, "toString", "()Ljava/lang/String;")?;
@@ -4444,6 +4459,7 @@ fn deep_array_text(vm: &mut Vm<'_>, array: ObjectRef) -> Result<String, VmError>
         }
     }
     text.push(']');
+    seen.pop();
     Ok(text)
 }
 
