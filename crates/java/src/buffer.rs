@@ -1637,6 +1637,12 @@ fn char_sequence_text(vm: &mut Vm<'_>, sequence: ObjectRef) -> Result<ObjectRef,
 }
 
 pub(crate) fn char_buffer_text(vm: &mut Vm<'_>, this: ObjectRef) -> Result<String, VmError> {
+    Ok(String::from_utf16_lossy(&char_buffer_units(vm, this)?))
+}
+
+/// The remaining chars of a `CharBuffer` as raw UTF-16 units, preserving lone
+/// surrogates (unlike `char_buffer_text`, which is lossy).
+fn char_buffer_units(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Vec<u16>, VmError> {
     let length = buffer_remaining(vm, this);
     let chars = char_buffer_chars(vm, this);
     let mut units = Vec::with_capacity(length as usize);
@@ -1649,11 +1655,16 @@ pub(crate) fn char_buffer_text(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Strin
                 + index as usize,
         )?);
     }
-    Ok(String::from_utf16_lossy(&units))
+    Ok(units)
 }
 
 pub(crate) fn char_buffer_from_text(vm: &mut Vm<'_>, text: &str) -> Result<ObjectRef, VmError> {
-    let units: Vec<u16> = text.encode_utf16().collect();
+    char_buffer_from_units(vm, text.encode_utf16().collect())
+}
+
+/// Wrap raw UTF-16 units in a `CharBuffer`, preserving lone surrogates that a
+/// lossy Rust `String` conversion would replace.
+fn char_buffer_from_units(vm: &mut Vm<'_>, units: Vec<u16>) -> Result<ObjectRef, VmError> {
     let chars = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Char, units.len())?;
     for (index, unit) in units.iter().enumerate() {
         put_char_at(vm, chars, index, *unit)?;
@@ -1713,8 +1724,16 @@ const CHAR_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
             let text_ref = char_sequence_text(vm, sequence)?;
-            let text = vm.string_or_empty(text_ref);
-            object(char_buffer_from_text(vm, &text)?)
+            // Preserve lone surrogates by copying the raw UTF-16 units rather
+            // than round-tripping through a lossy Rust String.
+            let units = vm.string_utf16(text_ref).map(<[u16]>::to_vec);
+            match units {
+                Some(units) => object(char_buffer_from_units(vm, units)?),
+                None => {
+                    let text = vm.string_or_empty(text_ref);
+                    object(char_buffer_from_text(vm, &text)?)
+                }
+            }
         },
     ),
     method("get", "()C", ACC_PUBLIC, |vm, _, args| {
@@ -1784,8 +1803,8 @@ const CHAR_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let text = char_buffer_text(vm, receiver(args))?;
-            object(vm.make_string(&text)?)
+            let units = char_buffer_units(vm, receiver(args))?;
+            object(vm.make_string_utf16(units)?)
         },
     ),
     method(
