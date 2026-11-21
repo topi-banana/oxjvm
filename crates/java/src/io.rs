@@ -1273,6 +1273,13 @@ fn pushback_in(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
         .unwrap_or(ObjectRef::NULL)
 }
 
+fn pushback_ensure_open(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    if pushback_in(vm, this).is_null() {
+        return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+    }
+    Ok(())
+}
+
 fn stream_read_byte(vm: &mut Vm<'_>, stream: ObjectRef) -> Result<i32, VmError> {
     if stream.is_null() {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
@@ -1283,7 +1290,7 @@ fn stream_read_byte(vm: &mut Vm<'_>, stream: ObjectRef) -> Result<i32, VmError> 
         .as_int())
 }
 
-const PUSHBACK_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const PUSHBACK_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     method(
         "<init>",
         "(Ljava/io/InputStream;)V",
@@ -1322,6 +1329,7 @@ const PUSHBACK_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     ),
     method("read", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        pushback_ensure_open(vm, this)?;
         let buf = pushback_buffer(vm, this);
         let pos = pushback_pos(vm, this);
         let length = vm.array_length(buf)? as i32;
@@ -1334,6 +1342,7 @@ const PUSHBACK_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     }),
     method("read", "([BII)I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        pushback_ensure_open(vm, this)?;
         let dst = ref_arg(args, 1);
         let mut offset = int_arg(args, 2);
         let mut length = int_arg(args, 3);
@@ -1385,6 +1394,7 @@ const PUSHBACK_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     }),
     method("unread", "(I)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        pushback_ensure_open(vm, this)?;
         let pos = pushback_pos(vm, this);
         if pos == 0 {
             return Err(vm.throw_new("java/io/IOException", Some("Push back buffer is full")));
@@ -1396,7 +1406,11 @@ const PUSHBACK_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     }),
     method("unread", "([B)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        pushback_ensure_open(vm, this)?;
         let src = ref_arg(args, 1);
+        if src.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
         let length = vm.array_length(src)? as i32;
         let pos = pushback_pos(vm, this);
         if length > pos {
@@ -1412,9 +1426,17 @@ const PUSHBACK_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     }),
     method("unread", "([BII)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        pushback_ensure_open(vm, this)?;
         let src = ref_arg(args, 1);
+        if src.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
         let offset = int_arg(args, 2);
         let length = int_arg(args, 3);
+        let total = vm.array_length(src)? as i32;
+        if offset < 0 || length < 0 || length > total - offset {
+            return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+        }
         let pos = pushback_pos(vm, this);
         if length > pos {
             return Err(vm.throw_new("java/io/IOException", Some("Push back buffer is full")));
@@ -1429,6 +1451,7 @@ const PUSHBACK_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     }),
     method("available", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        pushback_ensure_open(vm, this)?;
         let buf = pushback_buffer(vm, this);
         let pushed = vm.array_length(buf)? as i32 - pushback_pos(vm, this);
         let stream = pushback_in(vm, this);
@@ -1439,8 +1462,13 @@ const PUSHBACK_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         int(pushed.max(0) + available)
     }),
     method("markSupported", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method("mark", "(I)V", ACC_PUBLIC, |_, _, _| void()),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/io/IOException", Some("mark/reset not supported")))
+    }),
     method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        pushback_ensure_open(vm, this)?;
         let mut remaining = crate::long_arg(args, 1);
         if remaining <= 0 {
             return long(0);
@@ -1469,12 +1497,24 @@ const PUSHBACK_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         long(skipped)
     }),
     method("close", "()V", ACC_PUBLIC, |vm, _, args| {
-        let stream = pushback_in(vm, receiver(args));
+        let this = receiver(args);
+        let stream = pushback_in(vm, this);
         if stream.is_null() {
             return void();
         }
         let (class, method) = vm.resolve_virtual_method(stream, "close", "()V")?;
         vm.invoke_method(class, method, vec![Value::Ref(stream)])?;
+        // Closing detaches the source and the pushback buffer so later
+        // reads, unreads, skips and available calls report "Stream closed".
+        let declaring_class = vm.class_of(this);
+        if let Some((declaring, field)) =
+            vm.find_field_opt(declaring_class, "in", "Ljava/io/InputStream;")
+        {
+            vm.set_instance_ref(this, declaring, field, ObjectRef::NULL);
+        }
+        if let Some((declaring, field)) = vm.find_field_opt(declaring_class, "buf", "[B") {
+            vm.set_instance_ref(this, declaring, field, ObjectRef::NULL);
+        }
         void()
     }),
 ];
@@ -1646,18 +1686,44 @@ const SEQUENCE_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
             .invoke_method(class, method, vec![Value::Ref(streams)])?
             .as_int();
         let start = read_int_field(vm, this, "index");
+        // Every component stream is closed; the first failure is thrown and
+        // the rest are attached to it as suppressed exceptions.
+        let mut primary: Option<ObjectRef> = None;
         for index in start..size {
             let (class, method) =
                 vm.resolve_virtual_method(streams, "get", "(I)Ljava/lang/Object;")?;
             let stream = vm
                 .invoke_method(class, method, vec![Value::Ref(streams), Value::Int(index)])?
                 .as_ref();
-            if !stream.is_null() {
-                let (class, method) = vm.resolve_virtual_method(stream, "close", "()V")?;
-                vm.invoke_method(class, method, vec![Value::Ref(stream)])?;
+            if stream.is_null() {
+                continue;
+            }
+            let (class, method) = vm.resolve_virtual_method(stream, "close", "()V")?;
+            match vm.invoke_method(class, method, vec![Value::Ref(stream)]) {
+                Ok(_) => {}
+                Err(VmError::Thrown(exception)) => match primary {
+                    None => primary = Some(exception),
+                    Some(first) if first != exception => {
+                        let (class, method) = vm.resolve_virtual_method(
+                            first,
+                            "addSuppressed",
+                            "(Ljava/lang/Throwable;)V",
+                        )?;
+                        vm.invoke_method(
+                            class,
+                            method,
+                            vec![Value::Ref(first), Value::Ref(exception)],
+                        )?;
+                    }
+                    _ => {}
+                },
+                Err(other) => return Err(other),
             }
         }
         write_int_field(vm, this, "index", size);
+        if let Some(exception) = primary {
+            return Err(VmError::Thrown(exception));
+        }
         void()
     }),
 ];
