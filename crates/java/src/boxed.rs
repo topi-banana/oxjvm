@@ -726,7 +726,7 @@ fn compare_floats(a: f32, b: f32) -> i32 {
 }
 
 /// JDK `Double.compare`: see `compare_floats`.
-fn compare_doubles(a: f64, b: f64) -> i32 {
+pub(crate) fn compare_doubles(a: f64, b: f64) -> i32 {
     if a < b {
         return -1;
     }

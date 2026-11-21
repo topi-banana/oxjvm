@@ -4711,12 +4711,12 @@ fn arrays_binary_search_double(
     while lo <= hi {
         let mid = ((lo as usize) + (hi as usize)) / 2;
         let v = values[mid];
-        if v == key {
-            return int(mid as i32);
-        } else if v < key {
-            lo = mid as i32 + 1;
-        } else {
-            hi = mid as i32 - 1;
+        // Use Double.compare semantics (canonical NaN, -0.0 below 0.0) so any
+        // NaN bit pattern compares equal, matching the JDK binary search.
+        match crate::boxed::compare_doubles(v, key) {
+            0 => return int(mid as i32),
+            ordering if ordering < 0 => lo = mid as i32 + 1,
+            _ => hi = mid as i32 - 1,
         }
     }
     int(!lo)
