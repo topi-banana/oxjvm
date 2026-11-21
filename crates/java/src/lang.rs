@@ -3890,23 +3890,53 @@ pub(crate) fn format_string(
         let Some(spec) = chars.next() else { break };
         let mut prefix_len = 0usize;
         let numeric = matches!(spec, 'd' | 'x' | 'X' | 'o' | 'f' | 'e' | 'E');
+        // A null argument renders as "null" ("false" for %b), uppercased for an
+        // uppercase conversion, whatever the conversion type.
+        if !matches!(spec, '%' | 'n')
+            && arguments
+                .get(argument)
+                .copied()
+                .unwrap_or(ObjectRef::NULL)
+                .is_null()
+        {
+            argument += 1;
+            if matches!(spec, 't' | 'T') {
+                chars.next();
+            }
+            let base = if matches!(spec, 'b' | 'B') {
+                "false"
+            } else {
+                "null"
+            };
+            let text = if spec.is_ascii_uppercase() {
+                base.to_ascii_uppercase()
+            } else {
+                base.to_string()
+            };
+            format_push_padded(&mut out, &text, width, left_align, false, false, 0);
+            continue;
+        }
         let text = match spec {
             '%' => "%".to_string(),
             'n' => "\n".to_string(),
-            'b' => {
+            'b' | 'B' => {
                 let value = arguments.get(argument).copied().unwrap_or(ObjectRef::NULL);
                 argument += 1;
-                if value.is_null() {
-                    "false".to_string()
+                let text = if value.is_null() {
+                    "false"
                 } else if let Some(text) = vm.string_value(value) {
                     if text.eq_ignore_ascii_case("true") {
                         "true"
                     } else {
                         "false"
                     }
-                    .to_string()
                 } else {
-                    "true".to_string()
+                    "true"
+                };
+                if spec == 'B' {
+                    text.to_ascii_uppercase()
+                } else {
+                    text.to_string()
                 }
             }
             'd' => {
@@ -3996,30 +4026,46 @@ pub(crate) fn format_string(
             }
             other => alloc::format!("%{other}"),
         };
-        if text.len() < width {
-            let padding = width - text.len();
-            if left_align {
-                out.push_str(&text);
-                for _ in 0..padding {
-                    out.push(' ');
-                }
-            } else if zero_pad && numeric {
-                out.push_str(&text[..prefix_len]);
-                for _ in 0..padding {
-                    out.push('0');
-                }
-                out.push_str(&text[prefix_len..]);
-            } else {
-                for _ in 0..padding {
-                    out.push(' ');
-                }
-                out.push_str(&text);
-            }
-        } else {
-            out.push_str(&text);
-        }
+        format_push_padded(
+            &mut out, &text, width, left_align, zero_pad, numeric, prefix_len,
+        );
     }
     Ok(out)
+}
+
+/// Append `text` to `out`, padded to `width` with spaces (or zeros for a numeric
+/// conversion with the `0` flag, keeping any sign prefix ahead of the zeros).
+fn format_push_padded(
+    out: &mut String,
+    text: &str,
+    width: usize,
+    left_align: bool,
+    zero_pad: bool,
+    numeric: bool,
+    prefix_len: usize,
+) {
+    if text.len() < width {
+        let padding = width - text.len();
+        if left_align {
+            out.push_str(text);
+            for _ in 0..padding {
+                out.push(' ');
+            }
+        } else if zero_pad && numeric {
+            out.push_str(&text[..prefix_len]);
+            for _ in 0..padding {
+                out.push('0');
+            }
+            out.push_str(&text[prefix_len..]);
+        } else {
+            for _ in 0..padding {
+                out.push(' ');
+            }
+            out.push_str(text);
+        }
+    } else {
+        out.push_str(text);
+    }
 }
 
 /// The unsigned magnitude JDK printf uses for `%x`/`%o`: the value is masked to
@@ -4166,13 +4212,36 @@ const FORMATTER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         },
     ),
     method("flush", "()V", ACC_PUBLIC, |vm, _, args| {
-        formatter_check_open(vm, receiver(args))?;
+        let this = receiver(args);
+        formatter_check_open(vm, this)?;
+        let out = formatter_out(vm, this);
+        if vm
+            .resolve_class_lenient("java/io/Flushable")
+            .is_some_and(|class| vm.is_instance(out, class))
+        {
+            let (declaring, method) = vm.resolve_virtual_method(out, "flush", "()V")?;
+            vm.invoke_method(declaring, method, vec![Value::Ref(out)])?;
+        }
         void()
     }),
     method("close", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        if read_int_field(vm, this, "closed") == 0 {
-            write_int_field(vm, this, "closed", 1);
+        let class = vm.class_of(this);
+        let closed = vm
+            .read_instance_int_named(this, class, "closed", "Z")
+            .unwrap_or(0);
+        if closed == 0 {
+            if let Some((declaring, field)) = vm.find_field_opt(class, "closed", "Z") {
+                vm.set_instance_int(this, declaring, field, 1);
+            }
+            let out = formatter_out(vm, this);
+            if vm
+                .resolve_class_lenient("java/io/Closeable")
+                .is_some_and(|class| vm.is_instance(out, class))
+            {
+                let (declaring, method) = vm.resolve_virtual_method(out, "close", "()V")?;
+                vm.invoke_method(declaring, method, vec![Value::Ref(out)])?;
+            }
         }
         void()
     }),
@@ -4220,7 +4289,10 @@ fn formatter_out(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
 
 /// Throw `FormatterClosedException` when the formatter has been closed.
 fn formatter_check_open(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
-    if read_int_field(vm, this, "closed") != 0 {
+    let closed = vm
+        .read_instance_int_named(this, vm.class_of(this), "closed", "Z")
+        .unwrap_or(0);
+    if closed != 0 {
         return Err(vm.throw_new("java/util/FormatterClosedException", None));
     }
     Ok(())
