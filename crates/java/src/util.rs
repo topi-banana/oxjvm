@@ -20413,7 +20413,12 @@ pub(crate) const OXJVM_REVERSE_SEQ_SET_ITERATOR: oxjvm_vm::NativeClass = class(
 // given Class tokens and throw ClassCastException on mismatch; reads delegate.
 // -------------------------------------------------------------------------------------------
 
-fn checked_type_check(vm: &mut Vm<'_>, obj: ObjectRef, ty: ObjectRef) -> Result<(), VmError> {
+fn checked_type_check(
+    vm: &mut Vm<'_>,
+    obj: ObjectRef,
+    ty: ObjectRef,
+    role: &str,
+) -> Result<(), VmError> {
     // The JDK only type-checks non-null elements; null is always permitted.
     if obj.is_null() {
         return Ok(());
@@ -20424,10 +20429,24 @@ fn checked_type_check(vm: &mut Vm<'_>, obj: ObjectRef, ty: ObjectRef) -> Result<
         .as_int()
         != 0;
     if ok {
-        Ok(())
-    } else {
-        Err(vm.throw_new("java/lang/ClassCastException", None))
+        return Ok(());
     }
+    let obj_name = vm.class_name(vm.class_of(obj)).replace('/', ".");
+    let ty_name = {
+        let (name_class, name_method) =
+            vm.resolve_virtual_method(ty, "getName", "()Ljava/lang/String;")?;
+        let name = vm.invoke_method(name_class, name_method, vec![Value::Ref(ty)])?;
+        vm.string_or_empty(name.as_ref())
+    };
+    let container = if role == "element" {
+        "collection"
+    } else {
+        "map"
+    };
+    let message = alloc::format!(
+        "Attempt to insert class {obj_name} {role} into {container} with {role} type class {ty_name}"
+    );
+    Err(vm.throw_new("java/lang/ClassCastException", Some(&message)))
 }
 
 fn checked_map_backing(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
@@ -20530,8 +20549,8 @@ fn checked_map_check_pair(
     value: ObjectRef,
 ) -> Result<(), VmError> {
     let (key_type, value_type) = checked_map_types(vm, this);
-    checked_type_check(vm, key, key_type)?;
-    checked_type_check(vm, value, value_type)
+    checked_type_check(vm, key, key_type, "key")?;
+    checked_type_check(vm, value, value_type, "value")
 }
 
 const OXJVM_CHECKED_SEQ_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
@@ -20924,7 +20943,7 @@ const OXJVM_CHECKED_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
             let value_type = vm
                 .read_ref_field(this, vm.class_of(this), "valueType", "Ljava/lang/Class;")
                 .unwrap_or(ObjectRef::NULL);
-            checked_type_check(vm, ref_arg(args, 1), value_type)?;
+            checked_type_check(vm, ref_arg(args, 1), value_type, "value")?;
             checked_entry_delegate(
                 vm,
                 this,
@@ -21032,8 +21051,8 @@ fn checked_view_check_element(
     let Some((key, value)) = map_entry_key_value(vm, element)? else {
         return Err(vm.throw_new("java/lang/ClassCastException", None));
     };
-    checked_type_check(vm, key, key_type)?;
-    checked_type_check(vm, value, value_type)
+    checked_type_check(vm, key, key_type, "key")?;
+    checked_type_check(vm, value, value_type, "value")
 }
 
 /// A checked view end operation: delegate, then wrap the returned entry.
@@ -22410,7 +22429,7 @@ pub(crate) fn checked_collection_new(
 }
 
 fn checked_coll_check(vm: &mut Vm<'_>, this: ObjectRef, element: ObjectRef) -> Result<(), VmError> {
-    checked_type_check(vm, element, checked_coll_type(vm, this))
+    checked_type_check(vm, element, checked_coll_type(vm, this), "element")
 }
 
 fn checked_coll_check_all(
