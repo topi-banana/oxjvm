@@ -11811,6 +11811,54 @@ pub(crate) fn zone_offset_parse(text: &str) -> Option<i32> {
     Some(sign * (hours * 3600 + minutes * 60 + seconds))
 }
 
+/// Standard-time offsets for common region zone ids, in seconds. DST
+/// transitions are not modeled; unknown zones fall back to UTC elsewhere.
+pub(crate) fn region_zone_offset(id: &str) -> Option<i32> {
+    let offset = match id {
+        "UTC" | "GMT" | "UT" | "Europe/London" | "Europe/Dublin" | "Europe/Lisbon"
+        | "Africa/Abidjan" | "Atlantic/Reykjavik" => 0,
+        "Europe/Paris" | "Europe/Berlin" | "Europe/Madrid" | "Europe/Rome" | "Europe/Amsterdam"
+        | "Europe/Brussels" | "Europe/Vienna" | "Europe/Warsaw" | "Europe/Stockholm"
+        | "Europe/Oslo" | "Europe/Copenhagen" | "Africa/Lagos" => 3600,
+        "Europe/Athens"
+        | "Europe/Helsinki"
+        | "Europe/Kyiv"
+        | "Europe/Kiev"
+        | "Europe/Bucharest"
+        | "Africa/Cairo"
+        | "Africa/Johannesburg"
+        | "Asia/Jerusalem" => 7200,
+        "Europe/Moscow" | "Asia/Riyadh" | "Asia/Qatar" | "Africa/Nairobi" => 10800,
+        "Asia/Tehran" => 12600,
+        "Asia/Dubai" | "Asia/Muscat" => 14400,
+        "Asia/Karachi" => 18000,
+        "Asia/Kolkata" | "Asia/Colombo" => 19800,
+        "Asia/Kathmandu" => 20700,
+        "Asia/Dhaka" => 21600,
+        "Asia/Bangkok" | "Asia/Jakarta" | "Asia/Ho_Chi_Minh" => 25200,
+        "Asia/Shanghai" | "Asia/Singapore" | "Asia/Taipei" | "Asia/Manila" | "Australia/Perth" => {
+            28800
+        }
+        "Asia/Tokyo" | "Asia/Seoul" => 32400,
+        "Australia/Darwin" | "Australia/Adelaide" => 34200,
+        "Australia/Sydney" | "Australia/Melbourne" | "Australia/Brisbane" => 36000,
+        "Pacific/Noumea" => 39600,
+        "Pacific/Auckland" => 43200,
+        "Pacific/Honolulu" => -36000,
+        "America/Anchorage" => -32400,
+        "America/Los_Angeles" | "America/Vancouver" => -28800,
+        "America/Denver" | "America/Phoenix" => -25200,
+        "America/Chicago" | "America/Mexico_City" => -21600,
+        "America/New_York" | "America/Toronto" | "America/Detroit" => -18000,
+        "America/Halifax" => -14400,
+        "America/St_Johns" => -12600,
+        "America/Sao_Paulo" | "America/Argentina/Buenos_Aires" => -10800,
+        "Atlantic/Azores" => -3600,
+        _ => return None,
+    };
+    Some(offset)
+}
+
 const ZONE_OFFSET_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method("<init>", "(I)V", ACC_PRIVATE, |vm, _, args| {
         let this = receiver(args);

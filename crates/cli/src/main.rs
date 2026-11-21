@@ -234,6 +234,21 @@ impl StdHost {
         properties.insert("os.name".into(), std::env::consts::OS.into());
         properties.insert("os.arch".into(), std::env::consts::ARCH.into());
         properties.insert("line.separator".into(), "\n".into());
+        // Like the real JDK, the default zone follows the host: the TZ
+        // environment variable, else the /etc/localtime zoneinfo link.
+        let host_zone = std::env::var("TZ")
+            .ok()
+            .map(|value| value.trim_start_matches(':').to_string())
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                fs::read_link("/etc/localtime").ok().and_then(|path| {
+                    let text = path.to_string_lossy().into_owned();
+                    text.split("zoneinfo/").nth(1).map(String::from)
+                })
+            });
+        if let Some(zone) = host_zone {
+            properties.insert("user.timezone".into(), zone);
+        }
         // The VM's path helpers only understand "/", so `file.separator` stays the VM default
         // rather than the platform's own separator.
         //

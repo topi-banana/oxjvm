@@ -25801,14 +25801,20 @@ fn time_zone_id(vm: &Vm<'_>, this: ObjectRef) -> String {
 }
 
 fn new_time_zone(vm: &mut Vm<'_>, id: &str) -> Result<Value, VmError> {
-    if let Some(offset) = custom_zone_offset(id) {
+    let custom = custom_zone_offset(id);
+    if let Some(offset) = custom.or_else(|| crate::lang::region_zone_offset(id)) {
         let class = vm.resolve_class("java/util/SimpleTimeZone")?;
         let instance = vm.new_instance(class)?;
         let (declaring, field) = vm.find_field(class, "id", "Ljava/lang/String;")?;
         let text = vm.make_string(id)?;
         vm.set_instance_ref(instance, declaring, field, text);
         crate::lang::write_int_field(vm, instance, "rawOffset", offset);
-        crate::lang::write_int_field(vm, instance, "dstSavings", 3_600_000);
+        crate::lang::write_int_field(
+            vm,
+            instance,
+            "dstSavings",
+            if custom.is_some() { 3_600_000 } else { 0 },
+        );
         return object(instance);
     }
     let class = vm.resolve_class("java/util/TimeZone")?;
@@ -25860,7 +25866,10 @@ const TIME_ZONE_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
             {
                 return object(default);
             }
-            new_time_zone(vm, "GMT")
+            let id = crate::lang::system_property(vm, "user.timezone")
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| String::from("GMT"));
+            new_time_zone(vm, &id)
         },
     ),
     method(

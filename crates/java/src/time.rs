@@ -9,7 +9,7 @@ use oxjvm_classfile::flags::*;
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
 use crate::lang::{read_int_field, read_long_field, write_int_field, write_long_field};
-use crate::{boolean, class, field, int, int_arg, long, method, object, receiver, ref_arg};
+use crate::{boolean, class, field, int, int_arg, long, method, object, receiver, ref_arg, void};
 
 /// Parse an ISO-8601 duration such as `PT1H30M`, `P2DT3H4M0.5S` or `-PT0.5S`.
 fn duration_parse(vm: &mut Vm<'_>, text: &str) -> Result<Value, VmError> {
@@ -88,7 +88,18 @@ fn duration_parse(vm: &mut Vm<'_>, text: &str) -> Result<Value, VmError> {
     duration_new(vm, nanos)
 }
 
-const DURATION_METHODS: [oxjvm_vm::NativeMethodDef; 48] = [
+const DURATION_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
+    method("<init>", "(JI)V", ACC_PRIVATE, |vm, _, args| {
+        let this = receiver(args);
+        let seconds = crate::long_arg(args, 0);
+        let nanos = int_arg(args, 1);
+        let total = seconds
+            .saturating_mul(1_000_000_000)
+            .saturating_add(i64::from(nanos));
+        write_long_field(vm, this, "seconds", total.div_euclid(1_000_000_000));
+        write_long_field(vm, this, "nanos", total);
+        void()
+    }),
     method(
         "ofNanos",
         "(J)Ljava/time/Duration;",
@@ -610,6 +621,7 @@ fn duration_new(vm: &mut Vm<'_>, nanos: i64) -> Result<Value, VmError> {
         }
     }
     let instance = vm.new_instance(class)?;
+    write_long_field(vm, instance, "seconds", nanos.div_euclid(1_000_000_000));
     write_long_field(vm, instance, "nanos", nanos);
     object(instance)
 }
@@ -628,6 +640,22 @@ fn duration_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     let class = vm.resolve_class("java/time/Duration")?;
     let zero = duration_new(vm, 0)?.as_ref();
     vm.set_static_value(class, "ZERO", "Ljava/time/Duration;", Value::Ref(zero));
+    let min = duration_new(vm, i64::MIN)?.as_ref();
+    vm.set_static_value(class, "MIN", "Ljava/time/Duration;", Value::Ref(min));
+    let max = duration_new(vm, i64::MAX)?.as_ref();
+    vm.set_static_value(class, "MAX", "Ljava/time/Duration;", Value::Ref(max));
+    vm.set_static_value(
+        class,
+        "serialVersionUID",
+        "J",
+        Value::Long(3_078_959_286_409_965_644),
+    );
+    vm.set_static_value(
+        class,
+        "BI_NANOS_PER_SECOND",
+        "J",
+        Value::Long(1_000_000_000),
+    );
     Ok(())
 }
 
@@ -636,14 +664,40 @@ pub(crate) const DURATION: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_FINAL,
+    // Declaration order matches the JDK so getDeclaredFields reflects it.
     &[
-        field("nanos", "J", ACC_PRIVATE | ACC_FINAL, None),
         field(
             "ZERO",
             "Ljava/time/Duration;",
             ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
             None,
         ),
+        field(
+            "MIN",
+            "Ljava/time/Duration;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "MAX",
+            "Ljava/time/Duration;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "serialVersionUID",
+            "J",
+            ACC_PRIVATE | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "BI_NANOS_PER_SECOND",
+            "J",
+            ACC_PRIVATE | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field("seconds", "J", ACC_PRIVATE | ACC_FINAL, None),
+        field("nanos", "J", ACC_PRIVATE | ACC_FINAL, None),
     ],
     &DURATION_METHODS,
     Some(duration_clinit),
@@ -3877,7 +3931,9 @@ const LOCAL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 59] = [
         "()Ljava/time/LocalDate;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _| {
-            let millis = vm.host_time_millis();
+            let zone = system_default_zone(vm)?;
+            let offset = i64::from(zone_offset_seconds(vm, zone));
+            let millis = vm.host_time_millis() + offset * 1000;
             object(local_date_new(vm, millis.div_euclid(86_400_000))?)
         },
     ),
@@ -4753,7 +4809,9 @@ const LOCAL_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
         "()Ljava/time/LocalTime;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _| {
-            let millis = vm.host_time_millis();
+            let zone = system_default_zone(vm)?;
+            let offset = i64::from(zone_offset_seconds(vm, zone));
+            let millis = vm.host_time_millis() + offset * 1000;
             let nano = millis.rem_euclid(86_400_000) * 1_000_000;
             object(local_time_new(vm, nano)?)
         },
@@ -5292,7 +5350,9 @@ const LOCAL_DATE_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 67] = [
         "()Ljava/time/LocalDateTime;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _| {
-            let millis = vm.host_time_millis();
+            let zone = system_default_zone(vm)?;
+            let offset = i64::from(zone_offset_seconds(vm, zone));
+            let millis = vm.host_time_millis() + offset * 1000;
             object(local_date_time_new(
                 vm,
                 millis.div_euclid(86_400_000),
@@ -6000,7 +6060,7 @@ pub(crate) fn zone_offset_seconds(vm: &Vm<'_>, zone: ObjectRef) -> i32 {
             }
         }
     }
-    0
+    crate::lang::region_zone_offset(&id).unwrap_or(0)
 }
 
 pub(crate) const LOCAL_DATE_TIME: oxjvm_vm::NativeClass = class(
