@@ -4996,21 +4996,33 @@ pub(crate) const OBJECT_STREAM_FIELD: oxjvm_vm::NativeClass = class(
 // StringReader
 // -------------------------------------------------------------------------------------------
 
-const STRING_READER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+fn string_reader_ensure_open(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    if read_int_field(vm, this, "closed") != 0 {
+        return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+    }
+    Ok(())
+}
+
+const STRING_READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
+            let text = ref_arg(args, 1);
+            if text.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let class = vm.class_of(this);
             let (declaring, field) = vm.find_field(class, "str", "Ljava/lang/String;")?;
-            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            vm.set_instance_ref(this, declaring, field, text);
             void()
         },
     ),
     method("read", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        string_reader_ensure_open(vm, this)?;
         let class = vm.class_of(this);
         let next = read_int_field(vm, this, "next");
         let text = vm
@@ -5028,6 +5040,7 @@ const STRING_READER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     }),
     method("read", "([CII)I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        string_reader_ensure_open(vm, this)?;
         let class = vm.class_of(this);
         let array = ref_arg(args, 1);
         let offset = int_arg(args, 2);
@@ -5055,20 +5068,55 @@ const STRING_READER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         write_int_field(vm, this, "next", next + count as i32);
         int(count as i32)
     }),
-    method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        write_int_field(vm, receiver(args), "closed", 1);
+        void()
+    }),
     method("mark", "(I)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        string_reader_ensure_open(vm, this)?;
+        if int_arg(args, 1) < 0 {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("Read-ahead limit < 0"),
+            ));
+        }
         let next = read_int_field(vm, this, "next");
         write_int_field(vm, this, "mark", next);
         void()
     }),
     method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        string_reader_ensure_open(vm, this)?;
         let mark = read_int_field(vm, this, "mark");
         write_int_field(vm, this, "next", mark);
         void()
     }),
     method("markSupported", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
+    method("ready", "()Z", ACC_PUBLIC, |vm, _, args| {
+        string_reader_ensure_open(vm, receiver(args))?;
+        boolean(true)
+    }),
+    method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        string_reader_ensure_open(vm, this)?;
+        let ns = crate::long_arg(args, 1);
+        let class = vm.class_of(this);
+        let text = vm
+            .read_ref_field(this, class, "str", "Ljava/lang/String;")
+            .unwrap_or(ObjectRef::NULL);
+        let length = vm.string_utf16(text).map(<[u16]>::len).unwrap_or(0) as i64;
+        let next = i64::from(read_int_field(vm, this, "next"));
+        // StringReader skips backwards too, clamped to the start of the
+        // string; once the string is exhausted every skip returns zero.
+        let n = if next >= length {
+            0
+        } else {
+            (length - next).min(ns).max(-next)
+        };
+        write_int_field(vm, this, "next", (next + n) as i32);
+        long(n)
+    }),
 ];
 
 /// `java.io.StringReader`: reads UTF-16 units from a string.
@@ -5081,6 +5129,7 @@ pub(crate) const STRING_READER: oxjvm_vm::NativeClass = class(
         field("str", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("next", "I", ACC_PRIVATE, None),
         field("mark", "I", ACC_PRIVATE, None),
+        field("closed", "I", ACC_PRIVATE, None),
     ],
     &STRING_READER_METHODS,
     None,
