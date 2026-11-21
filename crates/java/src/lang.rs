@@ -10296,12 +10296,18 @@ pub(crate) const COMPARATOR: oxjvm_vm::NativeClass = class(
 // StackTraceElement
 // -------------------------------------------------------------------------------------------
 
-const STACK_TRACE_ELEMENT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const STACK_TRACE_ELEMENT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method(
         "<init>",
         "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;I)V",
         ACC_PUBLIC,
         stack_trace_element_init,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;I)V",
+        ACC_PUBLIC,
+        stack_trace_element_init_module,
     ),
     method(
         "getClassName",
@@ -10378,20 +10384,47 @@ const STACK_TRACE_ELEMENT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
             )
         },
     ),
-    method("isNativeMethod", "()Z", ACC_PUBLIC, |_, _, _| {
-        boolean(false)
+    method("isNativeMethod", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(read_int_field(vm, receiver(args), "lineNumber") == -2)
     }),
     method(
         "getModuleName",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
-        |_, _, _| object(ObjectRef::NULL),
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            match vm.read_ref_field(this, class, "moduleName", "Ljava/lang/String;") {
+                Some(reference) => object(reference),
+                None => object(ObjectRef::NULL),
+            }
+        },
     ),
     method(
         "getModuleVersion",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
-        |_, _, _| object(ObjectRef::NULL),
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            match vm.read_ref_field(this, class, "moduleVersion", "Ljava/lang/String;") {
+                Some(reference) => object(reference),
+                None => object(ObjectRef::NULL),
+            }
+        },
+    ),
+    method(
+        "getClassLoaderName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            match vm.read_ref_field(this, class, "classLoaderName", "Ljava/lang/String;") {
+                Some(reference) => object(reference),
+                None => object(ObjectRef::NULL),
+            }
+        },
     ),
 ];
 
@@ -10415,28 +10448,82 @@ fn stack_trace_element_init(
     void()
 }
 
+fn stack_trace_element_init_module(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let class = vm.class_of(this);
+    // (classLoaderName, moduleName, moduleVersion, declaringClass, methodName, fileName, lineNumber)
+    for (index, name) in [
+        (1, "classLoaderName"),
+        (2, "moduleName"),
+        (3, "moduleVersion"),
+        (4, "declaringClass"),
+        (5, "methodName"),
+        (6, "fileName"),
+    ] {
+        let (declaring, field) = vm.find_field(class, name, "Ljava/lang/String;")?;
+        vm.set_instance_ref(this, declaring, field, ref_arg(args, index));
+    }
+    write_int_field(vm, this, "lineNumber", int_arg(args, 7));
+    void()
+}
+
 fn stack_trace_element_to_string(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
     let this = receiver(args);
-    let frames = oxjvm_vm::BacktraceFrame {
-        class_name: vm
-            .read_string_field(this, vm.class_of(this), "declaringClass")
-            .unwrap_or_default(),
-        method_name: vm
-            .read_string_field(this, vm.class_of(this), "methodName")
-            .unwrap_or_default(),
-        file_name: vm.read_string_field(this, vm.class_of(this), "fileName"),
-        line_number: Some(read_int_field(vm, this, "lineNumber") as u16),
+    let class = vm.class_of(this);
+    let declaring = vm
+        .read_string_field(this, class, "declaringClass")
+        .unwrap_or_default();
+    let method = vm
+        .read_string_field(this, class, "methodName")
+        .unwrap_or_default();
+    let file = vm.read_string_field(this, class, "fileName");
+    let line = read_int_field(vm, this, "lineNumber");
+    let location = if line == -2 {
+        String::from("(Native Method)")
+    } else if let Some(file) = &file {
+        if line > 0 {
+            alloc::format!("({file}:{line})")
+        } else {
+            alloc::format!("({file})")
+        }
+    } else {
+        String::from("(Unknown Source)")
     };
-    let location = match (&frames.file_name, frames.line_number) {
-        (Some(file), Some(line)) if line > 0 => alloc::format!("({file}:{line})"),
-        (Some(file), _) => alloc::format!("({file})"),
-        _ => "(Unknown Source)".into(),
-    };
-    let text = alloc::format!("{}.{}{}", frames.class_name, frames.method_name, location);
+    // The JDK prefixes the class loader and module (with optional version) ahead
+    // of the class name; a loader with no module still adds a separating slash.
+    let loader = vm
+        .read_string_field(this, class, "classLoaderName")
+        .filter(|text| !text.is_empty());
+    let module = vm
+        .read_string_field(this, class, "moduleName")
+        .filter(|text| !text.is_empty());
+    let version = vm
+        .read_string_field(this, class, "moduleVersion")
+        .filter(|text| !text.is_empty());
+    let mut prefix = String::new();
+    if let Some(loader) = &loader {
+        prefix.push_str(loader);
+        prefix.push('/');
+    }
+    if let Some(module) = &module {
+        prefix.push_str(module);
+        if let Some(version) = &version {
+            prefix.push('@');
+            prefix.push_str(version);
+        }
+        prefix.push('/');
+    } else if loader.is_some() {
+        prefix.push('/');
+    }
+    let text = alloc::format!("{prefix}{declaring}.{method}{location}");
     object(vm.make_string(&text)?)
 }
 
@@ -10450,6 +10537,9 @@ pub(crate) const STACK_TRACE_ELEMENT: oxjvm_vm::NativeClass = class(
         field("methodName", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("fileName", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("lineNumber", "I", ACC_PRIVATE, None),
+        field("classLoaderName", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("moduleName", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("moduleVersion", "Ljava/lang/String;", ACC_PRIVATE, None),
     ],
     &STACK_TRACE_ELEMENT_METHODS,
     None,
