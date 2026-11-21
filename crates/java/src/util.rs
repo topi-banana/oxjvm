@@ -6361,7 +6361,7 @@ pub(crate) const RANDOM: oxjvm_vm::NativeClass = class(
 
 const ARRAY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
     method("<init>", "()V", ACC_PUBLIC, array_list_init),
-    method("<init>", "(I)V", ACC_PUBLIC, array_list_init),
+    method("<init>", "(I)V", ACC_PUBLIC, array_list_init_capacity),
     method("ensureCapacity", "(I)V", ACC_PUBLIC, |_, _, _| void()),
     method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, array_list_add),
     method(
@@ -6796,6 +6796,25 @@ fn array_list_init(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
+    array_list_store(vm, receiver(args), &[])?;
+    void()
+}
+
+/// `ArrayList(int)` and `Vector(int[, int])` reject a negative initial capacity
+/// with `IllegalArgumentException`. ArrayDeque clamps a negative size instead,
+/// so it keeps the plain initializer.
+fn array_list_init_capacity(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let capacity = int_arg(args, 1);
+    if capacity < 0 {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some(&alloc::format!("Illegal Capacity: {capacity}")),
+        ));
+    }
     array_list_store(vm, receiver(args), &[])?;
     void()
 }
@@ -15955,8 +15974,8 @@ pub(crate) const HASHTABLE: oxjvm_vm::NativeClass = class(
 
 const VECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
     method("<init>", "()V", ACC_PUBLIC, array_list_init),
-    method("<init>", "(I)V", ACC_PUBLIC, array_list_init),
-    method("<init>", "(II)V", ACC_PUBLIC, array_list_init),
+    method("<init>", "(I)V", ACC_PUBLIC, array_list_init_capacity),
+    method("<init>", "(II)V", ACC_PUBLIC, array_list_init_capacity),
     method(
         "<init>",
         "(Ljava/util/Collection;)V",
