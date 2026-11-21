@@ -8471,6 +8471,81 @@ pub(crate) const ABSTRACT_QUEUE: oxjvm_vm::NativeClass = class(
     None,
 );
 
+/// `Collections.asLifoQueue`: a queue view that pushes and pops at the deque's head.
+pub(crate) const AS_LIFO_QUEUE: oxjvm_vm::NativeClass = class(
+    "java/util/OxjvmAsLifoQueue",
+    Some("java/util/AbstractQueue"),
+    &["java/util/Queue", "java/io/Serializable"],
+    ACC_PUBLIC,
+    &[field("deque", "Ljava/util/Deque;", ACC_PRIVATE, None)],
+    &AS_LIFO_QUEUE_METHODS,
+    None,
+);
+
+fn as_lifo_queue_new(vm: &mut Vm<'_>, deque: ObjectRef) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/OxjvmAsLifoQueue")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "deque", "Ljava/util/Deque;")?;
+    vm.set_instance_ref(instance, declaring, field, deque);
+    Ok(instance)
+}
+
+fn as_lifo_call(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let deque = vm
+        .read_ref_field(this, vm.class_of(this), "deque", "Ljava/util/Deque;")
+        .unwrap_or(ObjectRef::NULL);
+    let (class, method) = vm.resolve_virtual_method(deque, name, descriptor)?;
+    let mut call_args = vec![Value::Ref(deque)];
+    call_args.extend_from_slice(args);
+    vm.invoke_method(class, method, call_args)
+}
+
+const AS_LIFO_QUEUE_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method(
+        "offer",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            as_lifo_call(
+                vm,
+                receiver(args),
+                "offerFirst",
+                "(Ljava/lang/Object;)Z",
+                &[args[1]],
+            )
+        },
+    ),
+    method("poll", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        as_lifo_call(vm, receiver(args), "pollFirst", "()Ljava/lang/Object;", &[])
+    }),
+    method("peek", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        as_lifo_call(vm, receiver(args), "peekFirst", "()Ljava/lang/Object;", &[])
+    }),
+    method(
+        "iterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            as_lifo_call(
+                vm,
+                receiver(args),
+                "iterator",
+                "()Ljava/util/Iterator;",
+                &[],
+            )
+        },
+    ),
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        as_lifo_call(vm, receiver(args), "size", "()I", &[])
+    }),
+];
+
 const ABSTRACT_QUEUE_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
     method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, |vm, _, args| {
         let offered = invoke_virtual_bool(
@@ -13308,7 +13383,13 @@ const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 70] = [
         "asLifoQueue",
         "(Ljava/util/Deque;)Ljava/util/Queue;",
         ACC_PUBLIC | ACC_STATIC,
-        |_, _, args| object(ref_arg(args, 0)),
+        |vm, _, args| {
+            let deque = ref_arg(args, 0);
+            if deque.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(as_lifo_queue_new(vm, deque)?)
+        },
     ),
     method(
         "unmodifiableSequencedCollection",

@@ -2667,20 +2667,49 @@ pub(crate) const LINKED_BLOCKING_DEQUE: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const LINKED_BLOCKING_DEQUE_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const LINKED_BLOCKING_DEQUE_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
     method("<init>", "()V", ACC_PUBLIC, lbd_init),
     method("<init>", "(I)V", ACC_PUBLIC, lbd_init),
     method("<init>", "(Ljava/util/Collection;)V", ACC_PUBLIC, lbd_init),
     method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, |vm, _, args| {
-        let element = ref_arg(args, 1);
-        if element.is_null() {
-            return Err(vm.throw_new("java/lang/NullPointerException", None));
-        }
-        let mut elements = crate::util::array_list_elements(vm, receiver(args));
-        elements.push(element);
-        crate::util::array_list_store(vm, receiver(args), &elements)?;
-        boolean(true)
+        lbd_add(vm, args, false)
     }),
+    method(
+        "addFirst",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            lbd_add(vm, args, true)?;
+            void()
+        },
+    ),
+    method(
+        "addLast",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            lbd_add(vm, args, false)?;
+            void()
+        },
+    ),
+    method(
+        "offer",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| lbd_offer(vm, args, false),
+    ),
+    method(
+        "offerFirst",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| lbd_offer(vm, args, true),
+    ),
+    method(
+        "offerLast",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| lbd_offer(vm, args, false),
+    ),
     method(
         "putFirst",
         "(Ljava/lang/Object;)V",
@@ -2750,6 +2779,34 @@ fn lbd_init(
 
 fn lbd_size(vm: &Vm<'_>, this: ObjectRef) -> usize {
     crate::lang::read_int_field(vm, this, "size").max(0) as usize
+}
+
+/// Non-blocking insertion honoring the capacity bound.
+fn lbd_offer(vm: &mut Vm<'_>, args: &[Value], first: bool) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let element = ref_arg(args, 1);
+    if element.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    if lbd_size(vm, this) >= lbd_capacity(vm, this) {
+        return boolean(false);
+    }
+    let mut elements = crate::util::array_list_elements(vm, this);
+    if first {
+        elements.insert(0, element);
+    } else {
+        elements.push(element);
+    }
+    crate::util::array_list_store(vm, this, &elements)?;
+    vm.monitor_notify(this, true);
+    boolean(true)
+}
+
+fn lbd_add(vm: &mut Vm<'_>, args: &[Value], first: bool) -> Result<Value, VmError> {
+    if lbd_offer(vm, args, first)?.as_int() == 0 {
+        return Err(vm.throw_new("java/lang/IllegalStateException", Some("Deque full")));
+    }
+    boolean(true)
 }
 
 fn lbd_capacity(vm: &Vm<'_>, this: ObjectRef) -> usize {
