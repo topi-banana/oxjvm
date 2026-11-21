@@ -1074,17 +1074,57 @@ const BYTE_ARRAY_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
             if buf.is_null() || len <= 0 {
                 return long(0);
             }
+            // Only a few JDK stream types are trusted not to scribble on the
+            // array they are handed; everyone else gets a temporary copy so
+            // the internal buffer stays intact (jdk TransferToTrusted).
+            let trusted = {
+                let name = vm.class_name(vm.class_of(out));
+                name == "java/io/ByteArrayOutputStream"
+                    || name == "java/io/FileOutputStream"
+                    || name == "java/io/PipedOutputStream"
+            };
             let (write_class, write_method) = vm.resolve_virtual_method(out, "write", "([BII)V")?;
-            vm.invoke_method(
-                write_class,
-                write_method,
-                vec![
-                    Value::Ref(out),
-                    Value::Ref(buf),
-                    Value::Int(pos),
-                    Value::Int(len),
-                ],
-            )?;
+            let max_transfer = 128 * 1024;
+            let mut written = 0;
+            if trusted {
+                while written < len {
+                    let nbyte = (len - written).min(max_transfer);
+                    vm.invoke_method(
+                        write_class,
+                        write_method,
+                        vec![
+                            Value::Ref(out),
+                            Value::Ref(buf),
+                            Value::Int(pos + written),
+                            Value::Int(nbyte),
+                        ],
+                    )?;
+                    written += nbyte;
+                }
+            } else {
+                let tmp = vm.allocate_array_of(
+                    oxjvm_vm::ArrayComponent::Byte,
+                    len.min(max_transfer) as usize,
+                )?;
+                while written < len {
+                    let nbyte = (len - written).min(max_transfer);
+                    for index in 0..nbyte {
+                        let byte = vm.array_get(buf, pos + written + index)?;
+                        vm.array_set(tmp, index, byte, false)?;
+                    }
+                    vm.invoke_method(
+                        write_class,
+                        write_method,
+                        vec![
+                            Value::Ref(out),
+                            Value::Ref(tmp),
+                            Value::Int(0),
+                            Value::Int(nbyte),
+                        ],
+                    )?;
+                    written += nbyte;
+                }
+            }
             let (declaring, field) = vm.find_field(class, "pos", "I")?;
             vm.set_instance_int(this, declaring, field, count);
             long(i64::from(len))
