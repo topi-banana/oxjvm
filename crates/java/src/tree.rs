@@ -128,6 +128,29 @@ fn compare_keys(
     }
 }
 
+/// Type-check a range view's bound the way the JDK submap/subset constructors
+/// do, even when the backing collection is empty: natural order rejects null
+/// (NPE) and non-Comparable keys (CCE), while a comparator rejects the bound
+/// itself. `compare_keys` alone is not enough for natural order because its
+/// identity short-circuit would accept a non-Comparable `compare(bound, bound)`.
+fn check_range_bound(
+    vm: &mut Vm<'_>,
+    ordering: ObjectRef,
+    bound: ObjectRef,
+) -> Result<(), VmError> {
+    if ordering.is_null() {
+        if bound.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        if find_compare_to(vm, bound).is_none() {
+            return Err(vm.throw_new("java/lang/ClassCastException", None));
+        }
+    } else {
+        compare_keys(vm, ordering, bound, bound)?;
+    }
+    Ok(())
+}
+
 /// The position of `key` in a sorted map's order, and whether an equal key is already there.
 fn search_key(vm: &mut Vm<'_>, this: ObjectRef, key: ObjectRef) -> Result<(usize, bool), VmError> {
     let ordering = ordering_of(vm, this);
@@ -1053,6 +1076,12 @@ fn tree_map_range_incl(
     to_inclusive: bool,
 ) -> Result<ObjectRef, VmError> {
     let ordering = ordering_of(vm, this);
+    if let Some(from) = from {
+        check_range_bound(vm, ordering, from)?;
+    }
+    if let Some(to) = to {
+        check_range_bound(vm, ordering, to)?;
+    }
     let range = new_sorted_map(vm, "java/util/TreeMap", ordering)?;
     for (key, value) in entries(vm, this) {
         if let Some(from) = from {
@@ -2433,6 +2462,12 @@ fn tree_set_range(
     to: Option<ObjectRef>,
 ) -> Result<ObjectRef, VmError> {
     let ordering = ordering_of(vm, this);
+    if let Some(from) = from {
+        check_range_bound(vm, ordering, from)?;
+    }
+    if let Some(to) = to {
+        check_range_bound(vm, ordering, to)?;
+    }
     let range = new_sorted_map(vm, "java/util/TreeSet", ordering)?;
     let present = hash_set_present(vm)?;
     for element in keys(vm, this) {
@@ -2496,6 +2531,12 @@ fn tree_set_range_flags(
     to_inclusive: bool,
 ) -> Result<ObjectRef, VmError> {
     let ordering = ordering_of(vm, this);
+    if let Some(from) = from {
+        check_range_bound(vm, ordering, from)?;
+    }
+    if let Some(to) = to {
+        check_range_bound(vm, ordering, to)?;
+    }
     let range = new_sorted_map(vm, "java/util/TreeSet", ordering)?;
     let present = hash_set_present(vm)?;
     for element in keys(vm, this) {
