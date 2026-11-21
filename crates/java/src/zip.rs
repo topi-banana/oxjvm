@@ -692,7 +692,17 @@ fn byte_array_output_bytes(vm: &mut Vm<'_>, buffer: ObjectRef) -> Result<Vec<u8>
 // CRC32
 // -------------------------------------------------------------------------------------------
 
-const CRC32_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const CRC32_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method(
+        "update",
+        "(Ljava/nio/ByteBuffer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let bytes = checksum_buffer_bytes(vm, ref_arg(args, 1))?;
+            crc32_update(vm, receiver(args), &bytes);
+            void()
+        },
+    ),
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         write_int_field_named(vm, receiver(args), "value", 0);
         void()
@@ -880,7 +890,17 @@ pub(crate) const CRC32: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const CRC32C_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const CRC32C_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method(
+        "update",
+        "(Ljava/nio/ByteBuffer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let bytes = checksum_buffer_bytes(vm, ref_arg(args, 1))?;
+            crc32c_update(vm, receiver(args), &bytes);
+            void()
+        },
+    ),
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         write_int_field_named(vm, receiver(args), "value", 0);
         void()
@@ -926,7 +946,17 @@ pub(crate) const CRC32C: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const ADLER32_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const ADLER32_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method(
+        "update",
+        "(Ljava/nio/ByteBuffer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let bytes = checksum_buffer_bytes(vm, ref_arg(args, 1))?;
+            adler32_update(vm, receiver(args), &bytes);
+            void()
+        },
+    ),
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         write_int_field_named(vm, receiver(args), "value", 1);
         void()
@@ -1414,6 +1444,23 @@ fn check_byte_range(vm: &mut Vm<'_>, len: usize, off: i32, count: i32) -> Result
         return Err(vm.throw_new("java/lang/ArrayIndexOutOfBoundsException", None));
     }
     Ok(())
+}
+
+/// Consume a `ByteBuffer`'s remaining bytes for a checksum update, advancing
+/// position to limit as the JDK's `Checksum.update(ByteBuffer)` default does.
+fn checksum_buffer_bytes(vm: &mut Vm<'_>, buffer: ObjectRef) -> Result<Vec<u8>, VmError> {
+    if buffer.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let bytes = crate::buffer::byte_buffer_remaining_bytes(vm, buffer)?;
+    let class = vm.class_of(buffer);
+    if let Some((declaring, field)) = vm.find_field_opt(class, "limit", "I") {
+        let limit = vm.read_instance_int(buffer, declaring, field).unwrap_or(0);
+        if let Some((position_class, position_field)) = vm.find_field_opt(class, "position", "I") {
+            vm.set_instance_int(buffer, position_class, position_field, limit);
+        }
+    }
+    Ok(bytes)
 }
 
 fn copy_pending(
