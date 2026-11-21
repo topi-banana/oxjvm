@@ -140,7 +140,10 @@ const OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     }),
     method("write", "([BII)V", ACC_PUBLIC, |vm, _, args| {
         let array = ref_arg(args, 1);
-        for index in int_arg(args, 2)..int_arg(args, 2) + int_arg(args, 3) {
+        let offset = int_arg(args, 2);
+        let length = int_arg(args, 3);
+        reader_check_range(vm, array, offset, length)?;
+        for index in offset..offset + length {
             let byte = vm.array_get(array, index)?.as_int();
             let (declaring, method) = vm.resolve_virtual_method(receiver(args), "write", "(I)V")?;
             vm.invoke_method(
@@ -869,6 +872,7 @@ const INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
         )
     }),
     method("read", "([BII)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
         let array = ref_arg(args, 1);
         let offset = int_arg(args, 2);
         let length = int_arg(args, 3);
@@ -876,13 +880,40 @@ const INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
         if length == 0 {
             return int(0);
         }
-        match crate::lang::read_input_byte(vm, receiver(args))? {
-            None => int(-1),
-            Some(byte) => {
-                vm.array_set(array, offset, Value::Int(byte), false)?;
-                int(1)
+        // The first byte goes through the overridable read(); its IOException
+        // propagates. Later failures end the read with the count so far, the
+        // way InputStream.read(byte[],int,int) does.
+        let (read_class, read_method) = vm.resolve_virtual_method(this, "read", "()I")?;
+        let first = vm
+            .invoke_method(read_class, read_method, vec![Value::Ref(this)])?
+            .as_int();
+        if first < 0 {
+            return int(-1);
+        }
+        vm.array_set(array, offset, Value::Int(first), false)?;
+        let mut count = 1;
+        while count < length {
+            let (read_class, read_method) = vm.resolve_virtual_method(this, "read", "()I")?;
+            match vm.invoke_method(read_class, read_method, vec![Value::Ref(this)]) {
+                Ok(value) => {
+                    let byte = value.as_int();
+                    if byte < 0 {
+                        break;
+                    }
+                    vm.array_set(array, offset + count, Value::Int(byte), false)?;
+                    count += 1;
+                }
+                Err(VmError::Thrown(exception)) => {
+                    let io_exception = vm.resolve_class("java/io/IOException")?;
+                    if vm.is_instance(exception, io_exception) {
+                        break;
+                    }
+                    return Err(VmError::Thrown(exception));
+                }
+                Err(other) => return Err(other),
             }
         }
+        int(count)
     }),
     method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
     method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
@@ -964,6 +995,11 @@ const INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
                     vec![Value::Ref(this), Value::Long(remaining)],
                 )?
                 .as_long();
+            // A skip that reports a negative count or more than requested
+            // cannot be trusted to make progress.
+            if skipped < 0 || skipped > remaining {
+                return Err(vm.throw_new("java/io/IOException", Some("Unable to skip exactly")));
+            }
             if skipped > 0 {
                 remaining -= skipped;
                 continue;
@@ -988,7 +1024,7 @@ const INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
             let this = receiver(args);
             let out = ref_arg(args, 1);
             if out.is_null() {
-                return Err(vm.throw_new("java/lang/NullPointerException", None));
+                return Err(vm.throw_new("java/lang/NullPointerException", Some("out")));
             }
             let buffer = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, 8192)?;
             let mut total = 0i64;
@@ -1074,6 +1110,14 @@ const BYTE_ARRAY_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     ),
     method("read", "([BII)I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        let target = ref_arg(args, 1);
+        let offset = int_arg(args, 2);
+        let count = int_arg(args, 3);
+        // Bounds are validated before the zero-length and EOF shortcuts.
+        reader_check_range(vm, target, offset, count)?;
+        if count == 0 {
+            return int(0);
+        }
         let class = vm.class_of(this);
         let buf = vm
             .read_ref_field(this, class, "buf", "[B")
@@ -1090,14 +1134,7 @@ const BYTE_ARRAY_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         if pos >= length {
             return int(-1);
         }
-        let target = ref_arg(args, 1);
-        let offset = int_arg(args, 2);
-        let count = int_arg(args, 3)
-            .min(length - pos)
-            .min(vm.array_length(target)? as i32 - offset);
-        if count <= 0 {
-            return int(0);
-        }
+        let count = count.min(length - pos);
         for index in 0..count {
             let byte = vm.array_get(buf, pos + index)?;
             vm.array_set(target, offset + index, byte, false)?;
@@ -1153,7 +1190,7 @@ const BYTE_ARRAY_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
             let this = receiver(args);
             let out = ref_arg(args, 1);
             if out.is_null() {
-                return Err(vm.throw_new("java/lang/NullPointerException", None));
+                return Err(vm.throw_new("java/lang/NullPointerException", Some("out")));
             }
             let class = vm.class_of(this);
             let buf = vm
@@ -1764,6 +1801,7 @@ const BYTE_ARRAY_OUTPUT_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
         let array = ref_arg(args, 1);
         let offset = int_arg(args, 2);
         let length = int_arg(args, 3);
+        reader_check_range(vm, array, offset, length)?;
         for index in 0..length {
             let byte = vm.array_get(array, offset + index)?.as_int();
             byte_array_output_write(vm, ctx, &[args[0], Value::Int(byte)])?;
@@ -2220,7 +2258,7 @@ const READER_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
             let this = receiver(args);
             let out = ref_arg(args, 1);
             if out.is_null() {
-                return Err(vm.throw_new("java/lang/NullPointerException", None));
+                return Err(vm.throw_new("java/lang/NullPointerException", Some("out")));
             }
             let buffer = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Char, 8192)?;
             let mut total = 0i64;
@@ -2506,6 +2544,9 @@ const NULL_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         "(Ljava/io/OutputStream;)J",
         ACC_PUBLIC,
         |vm, _, args| {
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", Some("out")));
+            }
             null_stream_ensure_open(vm, receiver(args))?;
             long(0)
         },
@@ -2591,6 +2632,9 @@ const NULL_READER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         "(Ljava/io/Writer;)J",
         ACC_PUBLIC,
         |vm, _, args| {
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", Some("out")));
+            }
             null_stream_ensure_open(vm, receiver(args))?;
             long(0)
         },
@@ -6269,6 +6313,8 @@ const BUFFERED_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     method("read", "([BII)I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         buffered_input_check_open(vm, this)?;
+        // Bounds are validated even for a zero-length request.
+        reader_check_range(vm, ref_arg(args, 1), int_arg(args, 2), int_arg(args, 3))?;
         if int_arg(args, 3) == 0 {
             return int(0);
         }
@@ -6426,7 +6472,7 @@ const BUFFERED_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
             return Err(vm.throw_new("java/lang/NullPointerException", None));
         }
         let total = vm.array_length(array)? as i32;
-        if offset < 0 || length < 0 || offset + length > total {
+        if offset < 0 || length < 0 || i64::from(offset) + i64::from(length) > i64::from(total) {
             return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
         }
         let class = vm.class_of(this);

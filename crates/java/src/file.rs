@@ -917,7 +917,10 @@ const FILE_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         let (length, position) = file_input_state(vm, this)?;
         int((length as i32 - position as i32).max(0))
     }),
-    method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        write_z_field(vm, receiver(args), "closed", true);
+        void()
+    }),
     method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let (length, position) = file_input_state(vm, this)?;
@@ -934,6 +937,9 @@ const FILE_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
             // The JDK copies what is left in 8 KiB chunks and reports the number of bytes.
             let this = receiver(args);
             let target = ref_arg(args, 1);
+            if target.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", Some("out")));
+            }
             let class = vm.class_of(this);
             let data = vm
                 .read_ref_field(this, class, "data", "[B")
@@ -999,6 +1005,7 @@ pub(crate) const FILE_INPUT_STREAM: oxjvm_vm::NativeClass = class(
         field("path", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("data", "[B", ACC_PRIVATE, None),
         field("position", "I", ACC_PRIVATE, None),
+        field("closed", "Z", ACC_PRIVATE, None),
     ],
     &FILE_INPUT_STREAM_METHODS,
     None,
@@ -1027,7 +1034,10 @@ fn file_input_init(vm: &mut Vm<'_>, this: ObjectRef, path: &str) -> Result<Value
     void()
 }
 
-fn file_input_state(vm: &Vm<'_>, this: ObjectRef) -> Result<(usize, usize), VmError> {
+fn file_input_state(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(usize, usize), VmError> {
+    if read_z_field(vm, this, "closed") {
+        return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+    }
     let class = vm.class_of(this);
     let data = vm
         .read_ref_field(this, class, "data", "[B")
@@ -1105,7 +1115,7 @@ fn file_input_read_into(
         return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
     }
     let target_length = vm.array_length(target)? as i32;
-    if offset + count > target_length {
+    if i64::from(offset) + i64::from(count) > i64::from(target_length) {
         return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
     }
     let (length, position) = file_input_state(vm, this)?;

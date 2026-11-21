@@ -207,11 +207,15 @@ const OBJECT_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
     }),
     method("write", "([BII)V", ACC_PUBLIC, |vm, _, args| {
         let bytes = crate::lang::array_bytes(vm, ref_arg(args, 1))?;
-        let offset = crate::int_arg(args, 2).max(0) as usize;
-        let count = crate::int_arg(args, 3).max(0) as usize;
-        let end = (offset + count).min(bytes.len());
+        let offset = crate::int_arg(args, 2);
+        let count = crate::int_arg(args, 3);
+        // Overflow-safe range check; the JDK throws before touching the array.
+        let end = i64::from(offset) + i64::from(count);
+        if offset < 0 || count < 0 || end > bytes.len() as i64 {
+            return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+        }
         let out = output_of(vm, receiver(args));
-        write_to_output(vm, out, &bytes[offset..end])?;
+        write_to_output(vm, out, &bytes[offset as usize..end as usize])?;
         void()
     }),
     method("writeBoolean", "(Z)V", ACC_PUBLIC, |vm, _, args| {
@@ -419,6 +423,16 @@ fn object_input_read(
     offset: i32,
     count: i32,
 ) -> Result<Value, VmError> {
+    if target.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let capacity = vm.array_length(target)? as i32;
+    if offset < 0 || count < 0 || i64::from(offset) + i64::from(count) > i64::from(capacity) {
+        return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+    }
+    if count == 0 {
+        return int(0);
+    }
     let input = input_of(vm, this);
     let mut read = 0;
     for index in 0..count {
@@ -433,6 +447,9 @@ fn object_input_read(
             true,
         )?;
         read += 1;
+    }
+    if read == 0 {
+        return int(-1);
     }
     int(read)
 }
