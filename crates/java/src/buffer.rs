@@ -1317,7 +1317,7 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
         |vm, _, args| {
             let this = receiver(args);
             let other = ref_arg(args, 1);
-            if other.is_null() || vm.class_name(vm.class_of(other)) != "java/nio/ByteBuffer" {
+            if other.is_null() || vm.class_name(vm.class_of(other)) != "java/nio/OjvmByteBuffer" {
                 return boolean(false);
             }
             let length = buffer_remaining(vm, this);
@@ -3771,6 +3771,17 @@ pub(crate) fn byte_buffer_remaining_bytes(
         )?);
     }
     Ok(out)
+}
+
+/// Read the remaining bytes of a `ByteBuffer` and advance its position to the limit.
+pub(crate) fn byte_buffer_consume_remaining(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+) -> Result<Vec<u8>, VmError> {
+    let bytes = byte_buffer_remaining_bytes(vm, this)?;
+    let limit = buffer_limit(vm, this);
+    set_position(vm, this, limit);
+    Ok(bytes)
 }
 
 /// Build a fresh `ByteBuffer` over `bytes`.

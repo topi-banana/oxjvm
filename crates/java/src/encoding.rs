@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use oxjvm_classfile::flags::*;
 
 use crate::lang::{read_int_field, write_int_field};
-use crate::{class, field, method, object, receiver, ref_arg};
+use crate::{class, field, method, object, receiver, ref_arg, void};
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -104,7 +104,9 @@ fn base64_mime_encoder(
     let class = vm.resolve_class("java/util/Base64$Encoder")?;
     let instance = vm.new_instance(class)?;
     write_int_field(vm, instance, "mime", 1);
-    write_int_field(vm, instance, "lineLength", line_length.max(0));
+    // MIME line length is rounded down to the nearest multiple of 4; a resulting
+    // length of 0 disables line separation entirely.
+    write_int_field(vm, instance, "lineLength", (line_length.max(0) / 4) * 4);
     let text = vm.make_string(separator)?;
     if let Some((declaring, field)) = vm.find_field_opt(class, "lineSep", "Ljava/lang/String;") {
         vm.set_instance_ref(instance, declaring, field, text);
@@ -167,6 +169,21 @@ fn byte_array_of(vm: &mut Vm<'_>, reference: ObjectRef) -> Result<Vec<u8>, VmErr
         bytes.push(vm.array_get(reference, index as i32)?.as_int() as u8);
     }
     Ok(bytes)
+}
+
+/// Write `bytes` into an existing destination array, returning the count written.
+fn fill_byte_array(vm: &mut Vm<'_>, dst: ObjectRef, bytes: &[u8]) -> Result<i32, VmError> {
+    let length = vm.array_length(dst)?;
+    if bytes.len() > length {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("Output byte array is too small for encoding all input bytes"),
+        ));
+    }
+    for (index, byte) in bytes.iter().enumerate() {
+        vm.array_set(dst, index as i32, Value::Int(i32::from(*byte as i8)), false)?;
+    }
+    Ok(bytes.len() as i32)
 }
 
 // -------------------------------------------------------------------------------------------
@@ -262,12 +279,28 @@ pub(crate) const BASE64: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const BASE64_ENCODER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+const BASE64_ENCODER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     method("encode", "([B)[B", ACC_PUBLIC, |vm, _, args| {
         let bytes = byte_array_of(vm, ref_arg(args, 1))?;
         let wrapped = base64_encoder_output(vm, receiver(args), &bytes);
         object(bytes_array(vm, &wrapped)?)
     }),
+    method("encode", "([B[B)I", ACC_PUBLIC, |vm, _, args| {
+        let bytes = byte_array_of(vm, ref_arg(args, 1))?;
+        let wrapped = base64_encoder_output(vm, receiver(args), &bytes);
+        let written = fill_byte_array(vm, ref_arg(args, 2), &wrapped)?;
+        Ok(Value::Int(written))
+    }),
+    method(
+        "encode",
+        "(Ljava/nio/ByteBuffer;)Ljava/nio/ByteBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let bytes = crate::buffer::byte_buffer_consume_remaining(vm, ref_arg(args, 1))?;
+            let wrapped = base64_encoder_output(vm, receiver(args), &bytes);
+            object(crate::buffer::byte_buffer_from_bytes(vm, &wrapped)?)
+        },
+    ),
     method(
         "encodeToString",
         "([B)Ljava/lang/String;",
@@ -284,6 +317,20 @@ const BASE64_ENCODER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
         "()Ljava/util/Base64$Encoder;",
         ACC_PUBLIC,
         |vm, _, args| base64_without_padding(vm, receiver(args)),
+    ),
+    method(
+        "wrap",
+        "(Ljava/io/OutputStream;)Ljava/io/OutputStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = vm.resolve_class("java/util/Base64$EncOutputStream")?;
+            let instance = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "out", "Ljava/io/OutputStream;")?;
+            vm.set_instance_ref(instance, declaring, field, ref_arg(args, 1));
+            let (declaring, field) = vm.find_field(class, "enc", "Ljava/util/Base64$Encoder;")?;
+            vm.set_instance_ref(instance, declaring, field, receiver(args));
+            object(instance)
+        },
     ),
 ];
 
@@ -303,12 +350,127 @@ pub(crate) const BASE64_ENCODER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const BASE64_DECODER_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+/// Accumulate bytes written to a wrapping Base64 output stream.
+fn enc_os_append(vm: &mut Vm<'_>, this: ObjectRef, bytes: &[u8]) -> Result<(), VmError> {
+    let class = vm.class_of(this);
+    let existing = vm
+        .read_ref_field(this, class, "buf", "[B")
+        .unwrap_or(ObjectRef::NULL);
+    let mut combined = if existing.is_null() {
+        Vec::new()
+    } else {
+        byte_array_of(vm, existing)?
+    };
+    combined.extend_from_slice(bytes);
+    let array = bytes_array(vm, &combined)?;
+    let (declaring, field) = vm.find_field(class, "buf", "[B")?;
+    vm.set_instance_ref(this, declaring, field, array);
+    Ok(())
+}
+
+/// On close, encode everything written so far and flush it to the wrapped stream.
+fn enc_os_close(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError> {
+    let class = vm.class_of(this);
+    if read_int_field(vm, this, "closed") != 0 {
+        return void();
+    }
+    write_int_field(vm, this, "closed", 1);
+    let buf = vm
+        .read_ref_field(this, class, "buf", "[B")
+        .unwrap_or(ObjectRef::NULL);
+    let input = if buf.is_null() {
+        Vec::new()
+    } else {
+        byte_array_of(vm, buf)?
+    };
+    let enc = vm
+        .read_ref_field(this, class, "enc", "Ljava/util/Base64$Encoder;")
+        .unwrap_or(ObjectRef::NULL);
+    let encoded = base64_encoder_output(vm, enc, &input);
+    let out = vm
+        .read_ref_field(this, class, "out", "Ljava/io/OutputStream;")
+        .unwrap_or(ObjectRef::NULL);
+    let array = bytes_array(vm, &encoded)?;
+    let (write_class, write_method) = vm.resolve_virtual_method(out, "write", "([B)V")?;
+    vm.invoke_method(
+        write_class,
+        write_method,
+        alloc::vec![Value::Ref(out), Value::Ref(array)],
+    )?;
+    let (close_class, close_method) = vm.resolve_virtual_method(out, "close", "()V")?;
+    vm.invoke_method(close_class, close_method, alloc::vec![Value::Ref(out)])?;
+    void()
+}
+
+const BASE64_ENC_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method("write", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let byte = crate::int_arg(args, 1) as u8;
+        enc_os_append(vm, receiver(args), &[byte])?;
+        void()
+    }),
+    method("write", "([B)V", ACC_PUBLIC, |vm, _, args| {
+        let bytes = byte_array_of(vm, ref_arg(args, 1))?;
+        enc_os_append(vm, receiver(args), &bytes)?;
+        void()
+    }),
+    method("write", "([BII)V", ACC_PUBLIC, |vm, _, args| {
+        let bytes = byte_array_of(vm, ref_arg(args, 1))?;
+        let off = crate::int_arg(args, 2);
+        let len = crate::int_arg(args, 3);
+        if off < 0 || len < 0 || off as usize + len as usize > bytes.len() {
+            return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+        }
+        enc_os_append(
+            vm,
+            receiver(args),
+            &bytes[off as usize..(off + len) as usize],
+        )?;
+        void()
+    }),
+    method("flush", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        enc_os_close(vm, receiver(args))
+    }),
+];
+
+pub(crate) const BASE64_ENC_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
+    "java/util/Base64$EncOutputStream",
+    Some("java/io/OutputStream"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("out", "Ljava/io/OutputStream;", ACC_PRIVATE, None),
+        field("enc", "Ljava/util/Base64$Encoder;", ACC_PRIVATE, None),
+        field("buf", "[B", ACC_PRIVATE, None),
+        field("closed", "I", ACC_PRIVATE, None),
+    ],
+    &BASE64_ENC_OUTPUT_STREAM_METHODS,
+    None,
+);
+
+const BASE64_DECODER_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
     method("decode", "([B)[B", ACC_PUBLIC, |vm, _, args| {
         let text = String::from_utf8_lossy(&byte_array_of(vm, ref_arg(args, 1))?).into_owned();
         let decoded = base64_decode_text(&text);
         object(bytes_array(vm, &decoded)?)
     }),
+    method("decode", "([B[B)I", ACC_PUBLIC, |vm, _, args| {
+        let text = String::from_utf8_lossy(&byte_array_of(vm, ref_arg(args, 1))?).into_owned();
+        let decoded = base64_decode_text(&text);
+        let written = fill_byte_array(vm, ref_arg(args, 2), &decoded)?;
+        Ok(Value::Int(written))
+    }),
+    method(
+        "decode",
+        "(Ljava/nio/ByteBuffer;)Ljava/nio/ByteBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let bytes = crate::buffer::byte_buffer_consume_remaining(vm, ref_arg(args, 1))?;
+            let text = String::from_utf8_lossy(&bytes).into_owned();
+            let decoded = base64_decode_text(&text);
+            object(crate::buffer::byte_buffer_from_bytes(vm, &decoded)?)
+        },
+    ),
     method(
         "decode",
         "(Ljava/lang/String;)[B",
