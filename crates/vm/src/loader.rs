@@ -966,9 +966,14 @@ impl<'a> Vm<'a> {
 
     /// The array class whose component is `component_class`.
     pub fn array_class_for(&mut self, component_class: ClassId) -> Result<ClassId, VmError> {
-        let component_name = self.classes.get(component_class).name.clone();
+        let (component_name, primitive) = {
+            let component = self.classes.get(component_class);
+            (component.name.clone(), component.primitive)
+        };
         let descriptor = if component_name.starts_with('[') {
             format!("[{component_name}")
+        } else if let Some(base) = primitive {
+            format!("[{}", base.as_char())
         } else {
             format!("[L{component_name};")
         };

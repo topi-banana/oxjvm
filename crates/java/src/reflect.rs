@@ -3831,7 +3831,13 @@ fn array_allocate_dimensions(
             vm.allocate_object_array(component, dimensions[0])
         };
     }
-    let inner_component = vm.array_class_for(component)?;
+    // The array class carries one dimension per entry in `dimensions`, even when
+    // a length is zero and no inner array is allocated, so build the component
+    // class for all but the outermost dimension before allocating the outer array.
+    let mut inner_component = component;
+    for _ in 1..dimensions.len() {
+        inner_component = vm.array_class_for(inner_component)?;
+    }
     let outer = vm.allocate_object_array(inner_component, dimensions[0])?;
     for index in 0..dimensions[0] {
         let inner = array_allocate_dimensions(vm, component, &dimensions[1..])?;

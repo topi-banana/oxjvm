@@ -250,7 +250,7 @@ pub(crate) const OBJECT: oxjvm_vm::NativeClass = class(
 // Class
 // -------------------------------------------------------------------------------------------
 
-const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 70] = [
+const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 71] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -459,6 +459,28 @@ const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 70] = [
         "(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;",
         ACC_PUBLIC | ACC_STATIC,
         class_for_name_with_loader,
+    ),
+    method(
+        "forPrimitiveName",
+        "(Ljava/lang/String;)Ljava/lang/Class;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = vm.string_or_empty(ref_arg(args, 0));
+            let base = match name.as_str() {
+                "boolean" => oxjvm_classfile::BaseType::Boolean,
+                "byte" => oxjvm_classfile::BaseType::Byte,
+                "char" => oxjvm_classfile::BaseType::Char,
+                "short" => oxjvm_classfile::BaseType::Short,
+                "int" => oxjvm_classfile::BaseType::Int,
+                "long" => oxjvm_classfile::BaseType::Long,
+                "float" => oxjvm_classfile::BaseType::Float,
+                "double" => oxjvm_classfile::BaseType::Double,
+                "void" => oxjvm_classfile::BaseType::Void,
+                _ => return object(ObjectRef::NULL),
+            };
+            let class = vm.primitive_class(base)?;
+            object(vm.class_object(class)?)
+        },
     ),
     method(
         "newInstance",
@@ -813,10 +835,17 @@ const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 70] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let class = class_argument(vm, receiver(args))?;
-            if vm.classes.get(class).name == "void" {
+            let name = vm.classes.get(class).name.clone();
+            if name == "void" {
                 return Err(vm.throw_new(
                     "java/lang/UnsupportedOperationException",
                     Some("void array type"),
+                ));
+            }
+            if name.chars().take_while(|c| *c == '[').count() >= 255 {
+                return Err(vm.throw_new(
+                    "java/lang/UnsupportedOperationException",
+                    Some("too many array dimensions"),
                 ));
             }
             let array_class = vm.array_class_for(class)?;
