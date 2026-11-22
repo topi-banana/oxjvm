@@ -9655,10 +9655,25 @@ const CLASS_LOADER_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
 
 /// The URL of the first class-path resource with this name, or null.
 fn first_resource_url(vm: &mut Vm<'_>, resource: &str) -> Result<ObjectRef, VmError> {
-    match vm.host.find_resources(resource).first() {
-        Some(hit) => crate::net::new_url(vm, &hit.url),
-        None => Ok(ObjectRef::NULL),
+    if let Some(hit) = vm.host.find_resources(resource).first() {
+        return crate::net::new_url(vm, &hit.url);
     }
+    if let Some(url) = jrt_class_resource(vm, resource) {
+        return crate::net::new_url(vm, &url);
+    }
+    Ok(ObjectRef::NULL)
+}
+
+/// The JDK exposes its platform classes as `jrt:` module resources. oxjvm's
+/// platform classes are native (no class files on the class path), so name a
+/// known class with its module URL instead of reporting it missing.
+fn jrt_class_resource(vm: &mut Vm<'_>, resource: &str) -> Option<String> {
+    let internal = resource.strip_suffix(".class")?;
+    if internal.starts_with('[') {
+        return None;
+    }
+    vm.resolve_class_lenient(internal)?;
+    Some(alloc::format!("jrt:/java.base/{resource}"))
 }
 
 /// Every class-path resource with this name, as `URL`s in class-path order.
@@ -9667,6 +9682,11 @@ fn resource_urls(vm: &mut Vm<'_>, resource: &str) -> Result<Vec<ObjectRef>, VmEr
     let mut urls = Vec::with_capacity(hits.len());
     for hit in hits {
         urls.push(crate::net::new_url(vm, &hit.url)?);
+    }
+    if urls.is_empty() {
+        if let Some(url) = jrt_class_resource(vm, resource) {
+            urls.push(crate::net::new_url(vm, &url)?);
+        }
     }
     Ok(urls)
 }
