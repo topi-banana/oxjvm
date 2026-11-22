@@ -840,6 +840,40 @@ fn url_parts(text: &str) -> UrlParts<'_> {
     }
 }
 
+/// The JDK's ftp handler percent-decodes the authority when opening a
+/// connection; a `%` not followed by two hex digits is a malformed escape
+/// pair and raises MalformedURLException. Other protocols do not perform
+/// this check at openConnection time.
+fn url_check_ftp_authority(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    let text = url_text(vm, this);
+    let parts = url_parts(&text);
+    if !parts.protocol.eq_ignore_ascii_case("ftp") {
+        return Ok(());
+    }
+    let Some(authority) = parts.authority else {
+        return Ok(());
+    };
+    let bytes = authority.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let valid = index + 2 < bytes.len()
+                && bytes[index + 1].is_ascii_hexdigit()
+                && bytes[index + 2].is_ascii_hexdigit();
+            if !valid {
+                return Err(vm.throw_new(
+                    "java/net/MalformedURLException",
+                    Some("Malformed escape pair: %"),
+                ));
+            }
+            index += 3;
+        } else {
+            index += 1;
+        }
+    }
+    Ok(())
+}
+
 fn url_without_userinfo(authority: &str) -> &str {
     match authority.rfind('@') {
         Some(index) => &authority[index + 1..],
@@ -1166,6 +1200,7 @@ const URL_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         "()Ljava/net/URLConnection;",
         ACC_PUBLIC,
         |vm, _, args| {
+            url_check_ftp_authority(vm, receiver(args))?;
             let class = vm.resolve_class("java/net/URLConnection")?;
             let connection = vm.new_instance(class)?;
             let (declaring, field) = vm.find_field(class, "url", "Ljava/net/URL;")?;
@@ -1178,6 +1213,7 @@ const URL_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         "(Ljava/net/Proxy;)Ljava/net/URLConnection;",
         ACC_PUBLIC,
         |vm, _, args| {
+            url_check_ftp_authority(vm, receiver(args))?;
             let class = vm.resolve_class("java/net/URLConnection")?;
             let connection = vm.new_instance(class)?;
             let (declaring, field) = vm.find_field(class, "url", "Ljava/net/URL;")?;
