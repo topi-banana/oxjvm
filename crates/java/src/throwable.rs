@@ -197,6 +197,18 @@ pub(crate) fn exception_ctor(
             "(Ljava/lang/String;)V"
             | "(Ljava/lang/String;Ljava/lang/Throwable;)V"
             | "(Ljava/lang/String;Ljava/lang/Throwable;ZZ)V" => ref_arg(args, 1),
+            // Throwable(Throwable) derives the message from the cause's toString().
+            "(Ljava/lang/Throwable;)V" => {
+                let cause = ref_arg(args, 1);
+                if cause.is_null() {
+                    ObjectRef::NULL
+                } else {
+                    let (method_class, method) =
+                        vm.resolve_virtual_method(cause, "toString", "()Ljava/lang/String;")?;
+                    vm.invoke_method(method_class, method, vec![Value::Ref(cause)])?
+                        .as_ref()
+                }
+            }
             _ => ObjectRef::NULL,
         };
         let cause = match descriptor.as_str() {
