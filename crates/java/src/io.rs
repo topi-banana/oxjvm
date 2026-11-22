@@ -4191,6 +4191,9 @@ fn file_writer_open(
 }
 
 fn file_writer_write_text(vm: &mut Vm<'_>, this: ObjectRef, text: &str) -> Result<Value, VmError> {
+    if read_int_field(vm, this, "closed") != 0 {
+        return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+    }
     let class = vm.class_of(this);
     let path = vm
         .read_string_field(this, class, "path")
@@ -4325,8 +4328,16 @@ const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
         let text = String::from_utf16_lossy(&units);
         file_writer_write_text(vm, this, &text)
     }),
-    method("flush", "()V", ACC_PUBLIC, |_, _, _| void()),
-    method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("flush", "()V", ACC_PUBLIC, |vm, _, args| {
+        if read_int_field(vm, receiver(args), "closed") != 0 {
+            return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+        }
+        void()
+    }),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        write_int_field(vm, receiver(args), "closed", 1);
+        void()
+    }),
     method(
         "append",
         "(Ljava/lang/CharSequence;)Ljava/io/Writer;",
@@ -4394,6 +4405,7 @@ pub(crate) const FILE_WRITER: oxjvm_vm::NativeClass = class(
     &[
         field("path", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("append", "I", ACC_PRIVATE, None),
+        field("closed", "I", ACC_PRIVATE, None),
     ],
     &FILE_WRITER_METHODS,
     None,
@@ -4464,6 +4476,9 @@ fn output_stream_writer_write_text(
     this: ObjectRef,
     text: &str,
 ) -> Result<Value, VmError> {
+    if read_int_field(vm, this, "closed") != 0 {
+        return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+    }
     let out = output_stream_writer_out(vm, this);
     if out.is_null() {
         return void();
@@ -4612,7 +4627,11 @@ const OUTPUT_STREAM_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         },
     ),
     method("flush", "()V", ACC_PUBLIC, |vm, _, args| {
-        let out = output_stream_writer_out(vm, receiver(args));
+        let this = receiver(args);
+        if read_int_field(vm, this, "closed") != 0 {
+            return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+        }
+        let out = output_stream_writer_out(vm, this);
         if !out.is_null() {
             let (class, method) = vm.resolve_virtual_method(out, "flush", "()V")?;
             vm.invoke_method(class, method, vec![Value::Ref(out)])?;
@@ -4620,7 +4639,12 @@ const OUTPUT_STREAM_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         void()
     }),
     method("close", "()V", ACC_PUBLIC, |vm, _, args| {
-        let out = output_stream_writer_out(vm, receiver(args));
+        let this = receiver(args);
+        if read_int_field(vm, this, "closed") != 0 {
+            return void();
+        }
+        write_int_field(vm, this, "closed", 1);
+        let out = output_stream_writer_out(vm, this);
         if !out.is_null() {
             let (class, method) = vm.resolve_virtual_method(out, "close", "()V")?;
             vm.invoke_method(class, method, vec![Value::Ref(out)])?;
@@ -4638,6 +4662,7 @@ pub(crate) const OUTPUT_STREAM_WRITER: oxjvm_vm::NativeClass = class(
         field("out", "Ljava/io/OutputStream;", ACC_PRIVATE, None),
         field("charset", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("encoding", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("closed", "I", ACC_PRIVATE, None),
     ],
     &OUTPUT_STREAM_WRITER_METHODS,
     None,
@@ -5912,6 +5937,9 @@ fn buffered_writer_call(
     descriptor: &str,
     arguments: Vec<Value>,
 ) -> Result<Value, VmError> {
+    if name != "close" && read_int_field(vm, this, "closed") != 0 {
+        return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+    }
     let writer = buffered_writer_out(vm, this);
     if writer.is_null() {
         return void();
@@ -6015,7 +6043,12 @@ const BUFFERED_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     }),
     method("close", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        buffered_writer_call(vm, this, "close", "()V", Vec::new())
+        if read_int_field(vm, this, "closed") != 0 {
+            return void();
+        }
+        buffered_writer_call(vm, this, "close", "()V", Vec::new())?;
+        write_int_field(vm, this, "closed", 1);
+        void()
     }),
     method(
         "append",
@@ -6103,7 +6136,10 @@ pub(crate) const BUFFERED_WRITER: oxjvm_vm::NativeClass = class(
     Some("java/io/Writer"),
     &[],
     ACC_PUBLIC,
-    &[field("out", "Ljava/io/Writer;", ACC_PRIVATE, None)],
+    &[
+        field("out", "Ljava/io/Writer;", ACC_PRIVATE, None),
+        field("closed", "I", ACC_PRIVATE, None),
+    ],
     &BUFFERED_WRITER_METHODS,
     None,
 );
