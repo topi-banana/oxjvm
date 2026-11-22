@@ -2616,6 +2616,115 @@ fn format_scaled(value: i128, scale: usize) -> Option<String> {
     Some(text)
 }
 
+/// Convert a non-negative decimal digit string to little-endian base-2^32
+/// limbs by repeated multiply-add, so magnitudes beyond i128 stay exact.
+fn decimal_to_limbs(digits: &str) -> Vec<u32> {
+    let mut limbs: Vec<u32> = Vec::new();
+    for byte in digits.bytes() {
+        let mut carry = u64::from(byte - b'0');
+        for limb in &mut limbs {
+            let cur = u64::from(*limb) * 10 + carry;
+            *limb = cur as u32;
+            carry = cur >> 32;
+        }
+        if carry != 0 {
+            limbs.push(carry as u32);
+        }
+    }
+    while limbs.last() == Some(&0) {
+        limbs.pop();
+    }
+    limbs
+}
+
+fn limbs_cmp(a: &[u32], b: &[u32]) -> Ordering {
+    a.len()
+        .cmp(&b.len())
+        .then_with(|| a.iter().rev().cmp(b.iter().rev()))
+}
+
+fn limbs_add(a: &[u32], b: &[u32]) -> Vec<u32> {
+    let mut out: Vec<u32> = Vec::with_capacity(a.len().max(b.len()) + 1);
+    let mut carry = 0u64;
+    for i in 0..a.len().max(b.len()) {
+        let cur = u64::from(a.get(i).copied().unwrap_or(0))
+            + u64::from(b.get(i).copied().unwrap_or(0))
+            + carry;
+        out.push(cur as u32);
+        carry = cur >> 32;
+    }
+    if carry != 0 {
+        out.push(carry as u32);
+    }
+    out
+}
+
+/// Subtract `b` from `a`, requiring `a >= b`.
+fn limbs_sub(a: &[u32], b: &[u32]) -> Vec<u32> {
+    let mut out: Vec<u32> = Vec::with_capacity(a.len());
+    let mut borrow = 0i64;
+    for (i, &word) in a.iter().enumerate() {
+        let cur = i64::from(word) - i64::from(b.get(i).copied().unwrap_or(0)) - borrow;
+        if cur < 0 {
+            out.push((cur + (1i64 << 32)) as u32);
+            borrow = 1;
+        } else {
+            out.push(cur as u32);
+            borrow = 0;
+        }
+    }
+    while out.last() == Some(&0) {
+        out.pop();
+    }
+    out
+}
+
+fn limbs_mul(a: &[u32], b: &[u32]) -> Vec<u32> {
+    if a.is_empty() || b.is_empty() {
+        return Vec::new();
+    }
+    let mut out = alloc::vec![0u32; a.len() + b.len()];
+    for (i, &x) in a.iter().enumerate() {
+        let mut carry = 0u64;
+        for (j, &y) in b.iter().enumerate() {
+            let cur = u64::from(x) * u64::from(y) + u64::from(out[i + j]) + carry;
+            out[i + j] = cur as u32;
+            carry = cur >> 32;
+        }
+        out[i + b.len()] = carry as u32;
+    }
+    while out.last() == Some(&0) {
+        out.pop();
+    }
+    out
+}
+
+/// Render an unsigned digit string at the given scale, mirroring
+/// `format_scaled` for magnitudes that no longer fit in i128.
+fn format_scaled_digits(digits: &str, negative: bool, scale: usize) -> String {
+    let mut text = String::new();
+    if negative && digits != "0" {
+        text.push('-');
+    }
+    if scale == 0 {
+        text.push_str(digits);
+        return text;
+    }
+    if digits.len() <= scale {
+        text.push_str("0.");
+        for _ in 0..(scale - digits.len()) {
+            text.push('0');
+        }
+        text.push_str(digits);
+    } else {
+        let point = digits.len() - scale;
+        text.push_str(&digits[..point]);
+        text.push('.');
+        text.push_str(&digits[point..]);
+    }
+    text
+}
+
 fn is_probable_prime(value: i128) -> bool {
     if value < 2 {
         return false;
@@ -4168,9 +4277,9 @@ fn big_decimal_multiply(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmErro
     let (neg_a, int_a, frac_a) = decimal_parts(&a);
     let (neg_b, int_b, frac_b) = decimal_parts(&b);
     let scale = frac_a.len() + frac_b.len();
-    let ua = parse_i128(&alloc::format!("{}{}", int_a, frac_a));
-    let ub = parse_i128(&alloc::format!("{}{}", int_b, frac_b));
-    if let (Some(va), Some(vb)) = (ua, ub) {
+    let ua = alloc::format!("{}{}", int_a, frac_a);
+    let ub = alloc::format!("{}{}", int_b, frac_b);
+    if let (Some(va), Some(vb)) = (parse_i128(&ua), parse_i128(&ub)) {
         let va = if neg_a { -va } else { va };
         let vb = if neg_b { -vb } else { vb };
         if let Some(product) = va.checked_mul(vb) {
@@ -4179,9 +4288,9 @@ fn big_decimal_multiply(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmErro
             }
         }
     }
-    let fa = a.parse::<f64>().unwrap_or(f64::NAN);
-    let fb = b.parse::<f64>().unwrap_or(f64::NAN);
-    create_big_number(vm, "java/math/BigDecimal", &alloc::format!("{}", fa * fb))
+    let digits = limbs_to_decimal(limbs_mul(&decimal_to_limbs(&ua), &decimal_to_limbs(&ub)));
+    let text = format_scaled_digits(&digits, neg_a != neg_b, scale);
+    create_big_number(vm, "java/math/BigDecimal", &text)
 }
 
 /// Round a decimal string to `precision` significant digits using `mode` (RoundingMode ordinal).
@@ -4348,18 +4457,31 @@ fn big_decimal_add_sub(vm: &mut Vm<'_>, args: &[Value], subtract: bool) -> Resul
         let va = if neg_a { -va } else { va };
         let vb = if neg_b { -vb } else { vb };
         let result = if subtract {
-            va.wrapping_sub(vb)
+            va.checked_sub(vb)
         } else {
-            va.wrapping_add(vb)
+            va.checked_add(vb)
         };
-        if let Some(text) = format_scaled(result, scale) {
-            return create_big_number(vm, "java/math/BigDecimal", &text);
+        if let Some(value) = result {
+            if let Some(text) = format_scaled(value, scale) {
+                return create_big_number(vm, "java/math/BigDecimal", &text);
+            }
         }
     }
-    let fa64 = a.parse::<f64>().unwrap_or(f64::NAN);
-    let fb64 = b.parse::<f64>().unwrap_or(f64::NAN);
-    let result = if subtract { fa64 - fb64 } else { fa64 + fb64 };
-    create_big_number(vm, "java/math/BigDecimal", &alloc::format!("{}", result))
+    let la = decimal_to_limbs(&ua);
+    let lb = decimal_to_limbs(&ub);
+    let sign_b = neg_b ^ subtract;
+    let (magnitude, negative) = if neg_a == sign_b {
+        (limbs_add(&la, &lb), neg_a)
+    } else {
+        match limbs_cmp(&la, &lb) {
+            Ordering::Equal => (Vec::new(), false),
+            Ordering::Greater => (limbs_sub(&la, &lb), neg_a),
+            Ordering::Less => (limbs_sub(&lb, &la), sign_b),
+        }
+    };
+    let digits = limbs_to_decimal(magnitude);
+    let text = format_scaled_digits(&digits, negative, scale);
+    create_big_number(vm, "java/math/BigDecimal", &text)
 }
 
 /// Split a decimal string into (negative, integer digits, fraction digits).

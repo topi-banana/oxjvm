@@ -100,6 +100,203 @@ pub(crate) const CONCURRENT_MODIFICATION_EXCEPTION: oxjvm_vm::NativeClass = {
     )
 };
 
+/// `java.util.IllegalFormatException`, base of the Formatter failure types.
+pub(crate) const ILLEGAL_FORMAT_EXCEPTION: oxjvm_vm::NativeClass = {
+    const METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+        method(
+            "<init>",
+            "()V",
+            ACC_PUBLIC,
+            crate::throwable::exception_ctor,
+        ),
+        method(
+            "<init>",
+            "(Ljava/lang/String;)V",
+            ACC_PUBLIC,
+            crate::throwable::exception_ctor,
+        ),
+    ];
+    class(
+        "java/util/IllegalFormatException",
+        Some("java/lang/IllegalArgumentException"),
+        &[],
+        ACC_PUBLIC,
+        &[],
+        &METHODS,
+        None,
+    )
+};
+
+/// Formatter exception constructor taking a leading String argument that
+/// must not be null (JDK requires NullPointerException otherwise).
+fn format_string_ctor(
+    vm: &mut Vm<'_>,
+    context: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    if ref_arg(args, 1).is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    crate::throwable::exception_ctor(vm, context, args)
+}
+
+/// `IllegalFormatConversionException(char, Class)` constructor: the Class
+/// argument must not be null.
+fn format_conversion_ctor(
+    vm: &mut Vm<'_>,
+    context: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    if ref_arg(args, 2).is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    crate::throwable::exception_ctor(vm, context, args)
+}
+
+pub(crate) const DUPLICATE_FORMAT_FLAGS_EXCEPTION: oxjvm_vm::NativeClass = {
+    const METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        format_string_ctor,
+    )];
+    class(
+        "java/util/DuplicateFormatFlagsException",
+        Some("java/util/IllegalFormatException"),
+        &[],
+        ACC_PUBLIC,
+        &[],
+        &METHODS,
+        None,
+    )
+};
+
+pub(crate) const FORMAT_FLAGS_CONVERSION_MISMATCH_EXCEPTION: oxjvm_vm::NativeClass = {
+    const METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+        "<init>",
+        "(Ljava/lang/String;C)V",
+        ACC_PUBLIC,
+        format_string_ctor,
+    )];
+    class(
+        "java/util/FormatFlagsConversionMismatchException",
+        Some("java/util/IllegalFormatException"),
+        &[],
+        ACC_PUBLIC,
+        &[],
+        &METHODS,
+        None,
+    )
+};
+
+pub(crate) const ILLEGAL_FORMAT_CONVERSION_EXCEPTION: oxjvm_vm::NativeClass = {
+    const METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+        "<init>",
+        "(CLjava/lang/Class;)V",
+        ACC_PUBLIC,
+        format_conversion_ctor,
+    )];
+    class(
+        "java/util/IllegalFormatConversionException",
+        Some("java/util/IllegalFormatException"),
+        &[],
+        ACC_PUBLIC,
+        &[],
+        &METHODS,
+        None,
+    )
+};
+
+pub(crate) const ILLEGAL_FORMAT_FLAGS_EXCEPTION: oxjvm_vm::NativeClass = {
+    const METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        format_string_ctor,
+    )];
+    class(
+        "java/util/IllegalFormatFlagsException",
+        Some("java/util/IllegalFormatException"),
+        &[],
+        ACC_PUBLIC,
+        &[],
+        &METHODS,
+        None,
+    )
+};
+
+pub(crate) const MISSING_FORMAT_ARGUMENT_EXCEPTION: oxjvm_vm::NativeClass = {
+    const METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        format_string_ctor,
+    )];
+    class(
+        "java/util/MissingFormatArgumentException",
+        Some("java/util/IllegalFormatException"),
+        &[],
+        ACC_PUBLIC,
+        &[],
+        &METHODS,
+        None,
+    )
+};
+
+pub(crate) const MISSING_FORMAT_WIDTH_EXCEPTION: oxjvm_vm::NativeClass = {
+    const METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        format_string_ctor,
+    )];
+    class(
+        "java/util/MissingFormatWidthException",
+        Some("java/util/IllegalFormatException"),
+        &[],
+        ACC_PUBLIC,
+        &[],
+        &METHODS,
+        None,
+    )
+};
+
+pub(crate) const UNKNOWN_FORMAT_CONVERSION_EXCEPTION: oxjvm_vm::NativeClass = {
+    const METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        format_string_ctor,
+    )];
+    class(
+        "java/util/UnknownFormatConversionException",
+        Some("java/util/IllegalFormatException"),
+        &[],
+        ACC_PUBLIC,
+        &[],
+        &METHODS,
+        None,
+    )
+};
+
+pub(crate) const UNKNOWN_FORMAT_FLAGS_EXCEPTION: oxjvm_vm::NativeClass = {
+    const METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        format_string_ctor,
+    )];
+    class(
+        "java/util/UnknownFormatFlagsException",
+        Some("java/util/IllegalFormatException"),
+        &[],
+        ACC_PUBLIC,
+        &[],
+        &METHODS,
+        None,
+    )
+};
+
 const ITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
     method(
         "hasNext",
