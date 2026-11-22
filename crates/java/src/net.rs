@@ -987,7 +987,11 @@ const URL_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let protocol = string_arg(vm, args[1])?;
-            let host = string_arg(vm, args[2])?;
+            let host = if ref_arg(args, 2).is_null() {
+                String::new()
+            } else {
+                string_arg(vm, args[2])?
+            };
             let file = string_arg(vm, args[3])?;
             url_set_parts(vm, receiver(args), &protocol, &host, -1, &file)?;
             void()
@@ -999,8 +1003,14 @@ const URL_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let protocol = string_arg(vm, args[1])?;
-            let host = string_arg(vm, args[2])?;
-            let port = int_arg(args, 3);
+            let host_null = ref_arg(args, 2).is_null();
+            let host = if host_null {
+                String::new()
+            } else {
+                string_arg(vm, args[2])?
+            };
+            // A null host drops the authority, so the port is not retained.
+            let port = if host_null { -1 } else { int_arg(args, 3) };
             let file = string_arg(vm, args[4])?;
             url_set_parts(vm, receiver(args), &protocol, &host, port, &file)?;
             void()
