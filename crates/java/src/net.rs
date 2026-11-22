@@ -1492,6 +1492,22 @@ const URL_DECODER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
         |vm, _, args| {
             let text = string_arg(vm, args[0])
                 .map_err(|_| vm.throw_new("java/lang/NullPointerException", None))?;
+            let enc_ref = args[1].as_ref();
+            if enc_ref.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", Some("enc")));
+            }
+            let enc_name = vm.string_or_empty(enc_ref);
+            if enc_name.is_empty() {
+                return Err(vm.throw_new(
+                    "java/io/UnsupportedEncodingException",
+                    Some("URLDecoder: empty string enc parameter"),
+                ));
+            }
+            // The JDK resolves the charset name; an illegal or unknown name is
+            // reported as an UnsupportedEncodingException.
+            if crate::charset::for_name(vm, &enc_name)?.is_none() {
+                return Err(vm.throw_new("java/io/UnsupportedEncodingException", Some(&enc_name)));
+            }
             match url_decode(&text) {
                 Ok(decoded) => object(vm.make_string(&decoded)?),
                 Err(message) => {
