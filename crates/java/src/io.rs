@@ -4108,10 +4108,19 @@ pub(crate) const STRING_WRITER: oxjvm_vm::NativeClass = class(
 
 fn string_writer_init(
     vm: &mut Vm<'_>,
-    _c: oxjvm_vm::NativeContext,
+    context: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
     let this = receiver(args);
+    let descriptor = vm.classes.get(context.class).methods[context.method as usize]
+        .descriptor
+        .clone();
+    if descriptor == "(I)V" && int_arg(args, 1) < 0 {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("Negative buffer size"),
+        ));
+    }
     let buffer_class = vm.resolve_class("java/lang/StringBuffer")?;
     let buffer = vm.new_instance(buffer_class)?;
     if let Some((declaring, ctor)) = vm.find_method(buffer_class, "<init>", "()V") {
