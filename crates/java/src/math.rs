@@ -2505,20 +2505,6 @@ fn write_big_text(vm: &mut Vm<'_>, this: ObjectRef, text: &str) -> Result<Value,
     Ok(Value::Int(0))
 }
 
-fn twos_complement_to_i128(bytes: &[u8]) -> i128 {
-    if bytes.is_empty() {
-        return 0;
-    }
-    let mut value: i128 = 0;
-    for byte in bytes {
-        value = (value << 8) | i128::from(*byte);
-    }
-    if bytes[0] & 0x80 != 0 {
-        value -= 1i128 << (bytes.len() * 8);
-    }
-    value
-}
-
 fn bytes_array(vm: &mut Vm<'_>, bytes: &[u8]) -> Result<ObjectRef, VmError> {
     let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, bytes.len())?;
     for (index, byte) in bytes.iter().enumerate() {
@@ -2665,6 +2651,108 @@ fn big_integer_parse(text: &str) -> Option<String> {
     } else {
         String::from(trimmed)
     })
+}
+
+/// Convert a big-endian magnitude byte array into little-endian base-2^32
+/// limbs, dropping leading zero words.
+fn bytes_to_limbs(bytes: &[u8]) -> Vec<u32> {
+    let mut limbs: Vec<u32> = Vec::new();
+    let mut end = bytes.len();
+    while end > 0 {
+        let start = end.saturating_sub(4);
+        let mut word = 0u32;
+        for &byte in &bytes[start..end] {
+            word = (word << 8) | u32::from(byte);
+        }
+        limbs.push(word);
+        end = start;
+    }
+    while limbs.last() == Some(&0) {
+        limbs.pop();
+    }
+    limbs
+}
+
+/// Render little-endian base-2^32 limbs as a decimal string by repeated
+/// division by 10^9, so magnitudes beyond i128 stay exact.
+fn limbs_to_decimal(mut limbs: Vec<u32>) -> String {
+    if limbs.is_empty() {
+        return String::from("0");
+    }
+    let mut chunks: Vec<u32> = Vec::new();
+    while !limbs.is_empty() {
+        let mut rem = 0u64;
+        for limb in limbs.iter_mut().rev() {
+            let cur = (rem << 32) | u64::from(*limb);
+            *limb = (cur / 1_000_000_000) as u32;
+            rem = cur % 1_000_000_000;
+        }
+        chunks.push(rem as u32);
+        while limbs.last() == Some(&0) {
+            limbs.pop();
+        }
+    }
+    let mut text = alloc::format!("{}", chunks.last().copied().unwrap_or(0));
+    for chunk in chunks.iter().rev().skip(1) {
+        text.push_str(&alloc::format!("{chunk:09}"));
+    }
+    text
+}
+
+/// Two's-complement byte array to an exact signed decimal string for
+/// magnitudes of any length (the i128 helper wraps past 16 bytes).
+fn twos_complement_to_decimal(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return String::from("0");
+    }
+    let negative = bytes[0] & 0x80 != 0;
+    let mut magnitude: Vec<u8> = Vec::from(bytes);
+    if negative {
+        let mut carry = 1u16;
+        for byte in magnitude.iter_mut().rev() {
+            let cur = u16::from(!*byte) + carry;
+            *byte = cur as u8;
+            carry = cur >> 8;
+        }
+    }
+    let text = limbs_to_decimal(bytes_to_limbs(&magnitude));
+    if negative && text != "0" {
+        alloc::format!("-{text}")
+    } else {
+        text
+    }
+}
+
+/// JDK `BigInteger.hashCode`: fold the big-endian 32-bit magnitude words
+/// with `31*h + word` using wrapping int arithmetic, then apply the sign.
+/// The decimal text is converted to base-2^32 limbs by repeated
+/// multiply-add, so magnitudes beyond i128 hash correctly too.
+fn big_integer_hash(text: &str) -> i32 {
+    let (negative, digits) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text.strip_prefix('+').unwrap_or(text)),
+    };
+    let digits = digits.trim_start_matches('0');
+    if digits.is_empty() {
+        return 0;
+    }
+    let mut limbs: Vec<u32> = Vec::new();
+    for byte in digits.bytes() {
+        let mut carry = u64::from(byte - b'0');
+        for limb in &mut limbs {
+            let cur = u64::from(*limb) * 10 + carry;
+            *limb = cur as u32;
+            carry = cur >> 32;
+        }
+        if carry != 0 {
+            limbs.push(carry as u32);
+        }
+    }
+    let mut hash = 0i32;
+    for &limb in limbs.iter().rev() {
+        hash = hash.wrapping_mul(31).wrapping_add(limb as i32);
+    }
+    if negative { hash.wrapping_neg() } else { hash }
 }
 
 /// Numeric comparison of two canonical integer strings.
@@ -3260,7 +3348,7 @@ const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
         },
     ),
     method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
-        int(java_hash(&big_text(vm, receiver(args))))
+        int(big_integer_hash(&big_text(vm, receiver(args))))
     }),
     method(
         "add",
@@ -3324,17 +3412,21 @@ const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
     ),
     method("<init>", "([B)V", ACC_PUBLIC, |vm, _, args| {
         let bytes = crate::lang::array_bytes(vm, ref_arg(args, 1))?;
-        let value = twos_complement_to_i128(&bytes);
-        write_big_text(vm, receiver(args), &value.to_string())
+        let text = twos_complement_to_decimal(&bytes);
+        write_big_text(vm, receiver(args), &text)
     }),
     method("<init>", "(I[B)V", ACC_PUBLIC, |vm, _, args| {
         let signum = int_arg(args, 1);
         let bytes = crate::lang::array_bytes(vm, ref_arg(args, 2))?;
-        let mut value = twos_complement_to_i128(&bytes).unsigned_abs() as i128;
-        if signum < 0 {
-            value = -value;
-        }
-        write_big_text(vm, receiver(args), &value.to_string())
+        let magnitude = limbs_to_decimal(bytes_to_limbs(&bytes));
+        let text = if signum == 0 || magnitude == "0" {
+            String::from("0")
+        } else if signum < 0 {
+            alloc::format!("-{magnitude}")
+        } else {
+            magnitude
+        };
+        write_big_text(vm, receiver(args), &text)
     }),
     method("toByteArray", "()[B", ACC_PUBLIC, |vm, _, args| {
         let value = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
@@ -3772,7 +3864,7 @@ const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
 
 fn big_integer_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     let class = vm.resolve_class("java/math/BigInteger")?;
-    for (name, text) in [("ZERO", "0"), ("ONE", "1"), ("TEN", "10")] {
+    for (name, text) in [("ZERO", "0"), ("ONE", "1"), ("TWO", "2"), ("TEN", "10")] {
         let value = create_big_number(vm, "java/math/BigInteger", text)?;
         vm.set_static_value(class, name, "Ljava/math/BigInteger;", value);
     }
@@ -3795,6 +3887,12 @@ pub(crate) const BIG_INTEGER: oxjvm_vm::NativeClass = class(
         ),
         field(
             "ONE",
+            "Ljava/math/BigInteger;",
+            ACC_PUBLIC | ACC_STATIC,
+            None,
+        ),
+        field(
+            "TWO",
             "Ljava/math/BigInteger;",
             ACC_PUBLIC | ACC_STATIC,
             None,
