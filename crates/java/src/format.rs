@@ -48,6 +48,8 @@ struct NumberPattern {
     max_integer: usize,
     /// The minimum digits the exponent is written with (`E00` writes two).
     min_exponent: usize,
+    /// An explicit multiplier from `setMultiplier`, overriding the percent/per-mille default.
+    multiplier: Option<i32>,
 }
 
 impl NumberPattern {
@@ -118,6 +120,7 @@ impl NumberPattern {
             scientific,
             max_integer,
             min_exponent,
+            multiplier: None,
         }
     }
 
@@ -131,13 +134,13 @@ impl NumberPattern {
     /// `compat` selects the legacy `jdk.compat.DecimalFormat` behavior, which rounds the
     /// double's full exact binary expansion instead of its shortest round-trip digits.
     fn format_with(&self, value: f64, mode: Rounding, compat: bool) -> Option<String> {
-        let scaled = if self.percent {
-            value * 100.0
-        } else if self.per_mille {
-            value * 1000.0
-        } else {
-            value
+        let factor = match self.multiplier {
+            Some(multiplier) => f64::from(multiplier),
+            None if self.percent => 100.0,
+            None if self.per_mille => 1000.0,
+            None => 1.0,
         };
+        let scaled = value * factor;
         if scaled.is_nan() {
             return Some(String::from("NaN"));
         }
@@ -2064,6 +2067,7 @@ fn init_number_format_state(vm: &mut Vm<'_>, this: ObjectRef) {
         "minIntegerDigits",
         "groupingUsed",
         "parseIntegerOnly",
+        "multiplier",
     ] {
         if let Some((declaring, field)) = vm.find_field_opt(class, name, "I") {
             vm.set_instance_int(this, declaring, field, i32::MIN);
@@ -2110,6 +2114,30 @@ fn read_number_flag(vm: &Vm<'_>, this: ObjectRef, name: &str, default: i32) -> i
     }
 }
 
+/// Store an explicit multiplier; `i32::MIN` means "use the pattern default".
+fn write_number_multiplier(vm: &mut Vm<'_>, this: ObjectRef, value: i32) {
+    if let Some((declaring, field)) = vm.find_field_opt(vm.class_of(this), "multiplier", "I") {
+        vm.set_instance_int(this, declaring, field, value);
+    }
+}
+
+/// The effective multiplier: the stored value, or the percent/per-mille/number default.
+fn read_number_multiplier(vm: &mut Vm<'_>, this: ObjectRef) -> i32 {
+    match vm.read_instance_int_named(this, vm.class_of(this), "multiplier", "I") {
+        Some(value) if value != i32::MIN => value,
+        _ => {
+            let pattern = NumberPattern::parse(&pattern_of(vm, this));
+            if pattern.percent {
+                100
+            } else if pattern.per_mille {
+                1000
+            } else {
+                1
+            }
+        }
+    }
+}
+
 /// The pattern a number format writes with, after its digit/grouping settings are applied,
 /// and the rounding mode it rounds under.
 /// The currency symbol a number format replaces the `\u{00a4}` placeholder with.
@@ -2148,6 +2176,11 @@ fn number_format_state(vm: &mut Vm<'_>, format: ObjectRef) -> (NumberPattern, Ro
     }
     if read_number_flag(vm, format, "groupingUsed", 1) == 0 {
         pattern.grouping = 0;
+    }
+    if let Some(value) = vm.read_instance_int_named(format, class, "multiplier", "I") {
+        if value != i32::MIN {
+            pattern.multiplier = Some(value);
+        }
     }
     let mode = vm
         .read_ref_field(format, class, "roundingMode", "Ljava/math/RoundingMode;")
@@ -2303,6 +2336,7 @@ pub(crate) const DECIMAL_FORMAT: oxjvm_vm::NativeClass = class(
         field("positiveSuffix", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("negativePrefix", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("negativeSuffix", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("multiplier", "I", ACC_PRIVATE, None),
     ],
     &DECIMAL_FORMAT_METHODS,
     None,
@@ -2432,8 +2466,13 @@ const DECIMAL_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
     ),
     method("setGroupingSize", "(I)V", ACC_PUBLIC, |_, _, _| void()),
     method("getGroupingSize", "()I", ACC_PUBLIC, |_, _, _| int(3)),
-    method("setMultiplier", "(I)V", ACC_PUBLIC, |_, _, _| void()),
-    method("getMultiplier", "()I", ACC_PUBLIC, |_, _, _| int(1)),
+    method("setMultiplier", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        write_number_multiplier(vm, receiver(args), int_arg(args, 1));
+        void()
+    }),
+    method("getMultiplier", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_number_multiplier(vm, receiver(args)))
+    }),
     method(
         "getPositivePrefix",
         "()Ljava/lang/String;",
