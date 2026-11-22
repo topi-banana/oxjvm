@@ -4646,7 +4646,14 @@ pub(crate) fn parse_date_text(text: &str) -> i64 {
 }
 
 /// The milliseconds a UTC date and time holds.
-fn millis_from_civil(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64) -> i64 {
+pub(crate) fn millis_from_civil(
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+    minute: i64,
+    second: i64,
+) -> i64 {
     // The days from the civil date, the same way the epoch is counted.
     let year = if month <= 2 { year - 1 } else { year };
     let era = if year >= 0 { year } else { year - 399 } / 400;

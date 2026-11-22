@@ -630,6 +630,158 @@ fn non_lenient_field_error(pattern: &str, text: &str) -> Option<usize> {
     None
 }
 
+/// Pattern-aware parse for `SimpleDateFormat`: extract each field the pattern
+/// names (including the AM/PM marker, which the loose numeric scan ignores) so
+/// times of day parse correctly. Falls back to the loose scan when the pattern
+/// yields no field at all.
+fn sdf_parse_millis(pattern: &str, text: &str) -> i64 {
+    let p: Vec<char> = pattern.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    let mut pi = 0;
+    let mut ti = 0;
+    let mut year: Option<i64> = None;
+    let mut month: Option<i64> = None;
+    let mut day: Option<i64> = None;
+    let mut hour: Option<i64> = None;
+    let mut minute: Option<i64> = None;
+    let mut second: Option<i64> = None;
+    let mut milli: Option<i64> = None;
+    let mut pm: Option<bool> = None;
+    let mut twelve_hour = false;
+    let mut any = false;
+    // Read a signed integer at the current input position, if any.
+    fn read_number(t: &[char], ti: &mut usize) -> Option<i64> {
+        let mut neg = false;
+        if *ti < t.len() && (t[*ti] == '-' || t[*ti] == '+') {
+            neg = t[*ti] == '-';
+            *ti += 1;
+        }
+        let start = *ti;
+        let mut value: i64 = 0;
+        while *ti < t.len() && t[*ti].is_ascii_digit() {
+            value = value * 10 + i64::from(t[*ti] as u32 - '0' as u32);
+            *ti += 1;
+        }
+        if *ti == start {
+            return None;
+        }
+        Some(if neg { -value } else { value })
+    }
+    while pi < p.len() {
+        let ch = p[pi];
+        if ch == '\'' {
+            pi += 1;
+            if pi < p.len() && p[pi] == '\'' {
+                if ti < t.len() && t[ti] == '\'' {
+                    ti += 1;
+                }
+                pi += 1;
+                continue;
+            }
+            while pi < p.len() && p[pi] != '\'' {
+                if ti < t.len() && t[ti] == p[pi] {
+                    ti += 1;
+                }
+                pi += 1;
+            }
+            pi += 1;
+            continue;
+        }
+        let mut run = 1;
+        while pi + run < p.len() && p[pi + run] == ch {
+            run += 1;
+        }
+        let numeric = matches!(
+            ch,
+            'y' | 'd' | 'H' | 'h' | 'k' | 'K' | 'm' | 's' | 'S' | 'D'
+        ) || (ch == 'M' && run < 3)
+            || (ch == 'Q' && run < 3);
+        if numeric {
+            if let Some(value) = read_number(&t, &mut ti) {
+                any = true;
+                match ch {
+                    'y' => {
+                        year = Some(if run == 2 && value < 100 {
+                            value + 2000
+                        } else {
+                            value
+                        });
+                    }
+                    'M' => month = Some(value),
+                    'd' => day = Some(value),
+                    'H' | 'k' => hour = Some(value),
+                    'h' | 'K' => {
+                        hour = Some(value);
+                        twelve_hour = true;
+                    }
+                    'm' => minute = Some(value),
+                    's' => second = Some(value),
+                    'S' => milli = Some(value),
+                    _ => {}
+                }
+            }
+        } else if ch == 'a' {
+            let rest: String = t[ti..].iter().collect();
+            let upper = rest.to_ascii_uppercase();
+            if upper.starts_with("PM") {
+                pm = Some(true);
+                ti += 2;
+                any = true;
+            } else if upper.starts_with("AM") {
+                pm = Some(false);
+                ti += 2;
+                any = true;
+            }
+        } else if ch == 'M' && run >= 3 {
+            let rest: String = t[ti..].iter().collect();
+            for m in 1..=12 {
+                let full = month_name(m, true);
+                let short = month_name(m, false);
+                if rest.starts_with(full) {
+                    month = Some(m);
+                    ti += full.chars().count();
+                    any = true;
+                    break;
+                }
+                if rest.starts_with(short) {
+                    month = Some(m);
+                    ti += short.chars().count();
+                    any = true;
+                    break;
+                }
+            }
+        } else if matches!(ch, 'E' | 'z' | 'Z') || (ch == 'Q' && run >= 3) {
+            while ti < t.len() && t[ti].is_alphabetic() {
+                ti += 1;
+            }
+        } else {
+            for _ in 0..run {
+                if ti < t.len() && t[ti] == ch {
+                    ti += 1;
+                }
+            }
+        }
+        pi += run;
+    }
+    if !any {
+        return crate::format::parse_date_text(text);
+    }
+    let hour = match (hour, pm) {
+        (None, Some(is_pm)) => i64::from(is_pm) * 12,
+        (Some(h), Some(is_pm)) if twelve_hour => h % 12 + i64::from(is_pm) * 12,
+        (Some(h), _) => h,
+        (None, None) => 0,
+    };
+    crate::format::millis_from_civil(
+        year.unwrap_or(1970),
+        month.unwrap_or(1),
+        day.unwrap_or(1),
+        hour,
+        minute.unwrap_or(0),
+        second.unwrap_or(0),
+    ) + milli.unwrap_or(0)
+}
+
 fn simple_date_format_millis(vm: &mut Vm<'_>, date: ObjectRef) -> Result<i64, VmError> {
     if date.is_null() {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
@@ -761,7 +913,8 @@ const SIMPLE_DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
                     return Err(vm.throw_new("java/text/ParseException", Some("Unparsable date")));
                 }
             }
-            let millis = crate::format::parse_date_text(&input);
+            let pattern = simple_date_format_pattern(vm, receiver(args));
+            let millis = sdf_parse_millis(&pattern, &input);
             let class = vm.resolve_class("java/util/Date")?;
             let instance = vm.new_instance(class)?;
             crate::lang::write_long_field(vm, instance, "time", millis);
@@ -786,7 +939,8 @@ const SIMPLE_DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
                     return object(ObjectRef::NULL);
                 }
             }
-            let millis = crate::format::parse_date_text(&input);
+            let pattern = simple_date_format_pattern(vm, receiver(args));
+            let millis = sdf_parse_millis(&pattern, &input);
             let class = vm.resolve_class("java/util/Date")?;
             let instance = vm.new_instance(class)?;
             crate::lang::write_long_field(vm, instance, "time", millis);
