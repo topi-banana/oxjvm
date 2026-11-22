@@ -2688,6 +2688,83 @@ fn big_integer_compare(a: &str, b: &str) -> i32 {
     if a_negative { -result } else { result }
 }
 
+/// Decompose a decimal string (plain or scientific notation) into a sign,
+/// its significant digits (no leading/trailing zeros) and a power-of-ten
+/// exponent, so `digits * 10^exp` is the exact magnitude.
+fn bd_decompose(text: &str) -> (i32, String, i64) {
+    let t = text.trim();
+    let (neg, t) = match t.as_bytes().first() {
+        Some(b'-') => (true, &t[1..]),
+        Some(b'+') => (false, &t[1..]),
+        _ => (false, t),
+    };
+    let (mantissa, exp) = match t.find(['E', 'e']) {
+        Some(i) => (&t[..i], t[i + 1..].parse::<i64>().unwrap_or(0)),
+        None => (t, 0_i64),
+    };
+    let (int_part, frac_part) = match mantissa.find('.') {
+        Some(i) => (&mantissa[..i], &mantissa[i + 1..]),
+        None => (mantissa, ""),
+    };
+    let frac_len = frac_part.len() as i64;
+    let mut digits: String = int_part
+        .bytes()
+        .chain(frac_part.bytes())
+        .filter(u8::is_ascii_digit)
+        .map(|b| b as char)
+        .collect();
+    let mut e = exp - frac_len;
+    let lead = digits.len() - digits.trim_start_matches('0').len();
+    digits.drain(..lead);
+    while digits.ends_with('0') {
+        digits.pop();
+        e += 1;
+    }
+    if digits.is_empty() {
+        return (0, String::new(), 0);
+    }
+    (if neg { -1 } else { 1 }, digits, e)
+}
+
+/// Compare two exact decimal magnitudes `d1 * 10^e1` and `d2 * 10^e2`.
+fn bd_compare_magnitude(d1: &str, e1: i64, d2: &str, e2: i64) -> Ordering {
+    let p1 = e1 + d1.len() as i64;
+    let p2 = e2 + d2.len() as i64;
+    if p1 != p2 {
+        return p1.cmp(&p2);
+    }
+    let len = d1.len().max(d2.len());
+    let mut a = String::from(d1);
+    let mut b = String::from(d2);
+    while a.len() < len {
+        a.push('0');
+    }
+    while b.len() < len {
+        b.push('0');
+    }
+    a.cmp(&b)
+}
+
+/// Exact `BigDecimal.compareTo` on the canonical value strings, avoiding the
+/// precision loss of comparing through `f64` (bug: distinct values near
+/// `Long.MAX_VALUE` collapsed to the same double).
+fn compare_big_decimal_text(a: &str, b: &str) -> Ordering {
+    let (sa, da, ea) = bd_decompose(a);
+    let (sb, db, eb) = bd_decompose(b);
+    if sa != sb {
+        return sa.cmp(&sb);
+    }
+    if sa == 0 {
+        return Ordering::Equal;
+    }
+    let magnitude = bd_compare_magnitude(&da, ea, &db, eb);
+    if sa < 0 {
+        magnitude.reverse()
+    } else {
+        magnitude
+    }
+}
+
 /// Validate and canonicalise a decimal string like `new BigDecimal(String)`.
 fn big_decimal_parse(text: &str) -> Option<String> {
     let (negative, digits) = match text.strip_prefix('-') {
@@ -4108,14 +4185,9 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
         "(Ljava/math/BigDecimal;)I",
         ACC_PUBLIC,
         |vm, _, args| {
-            let a = big_text(vm, receiver(args))
-                .parse::<f64>()
-                .unwrap_or(f64::NAN);
-            let b = big_text(vm, ref_arg(args, 1))
-                .parse::<f64>()
-                .unwrap_or(f64::NAN);
-            let ordering = a.partial_cmp(&b).unwrap_or(Ordering::Equal);
-            int(match ordering {
+            let a = big_text(vm, receiver(args));
+            let b = big_text(vm, ref_arg(args, 1));
+            int(match compare_big_decimal_text(&a, &b) {
                 Ordering::Less => -1,
                 Ordering::Equal => 0,
                 Ordering::Greater => 1,
