@@ -2023,7 +2023,7 @@ const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 73] = [
 
 // The remaining `String.valueOf` overloads and `format` are declared in a second array so the
 // first stays readable; both are concatenated below.
-const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 24] = [
+const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 27] = [
     method(
         "valueOf",
         "(Z)Ljava/lang/String;",
@@ -2132,6 +2132,13 @@ const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 24] = [
         string_replace_first,
     ),
     method("<init>", "([BII)V", ACC_PUBLIC, string_init_bytes_range),
+    method("<init>", "([BI)V", ACC_PUBLIC, string_init_bytes_hibyte),
+    method(
+        "<init>",
+        "([BIII)V",
+        ACC_PUBLIC,
+        string_init_bytes_hibyte_range,
+    ),
     method(
         "<init>",
         "([BLjava/nio/charset/Charset;)V",
@@ -2164,11 +2171,21 @@ const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 24] = [
         string_get_bytes_charset_object,
     ),
     method(
+        "getBytes",
+        "(II[BI)V",
+        ACC_PUBLIC,
+        string_get_bytes_deprecated,
+    ),
+    method(
         "encodedLength",
         "(Ljava/nio/charset/Charset;)I",
         ACC_PUBLIC,
         |vm, _, args| {
-            let name = crate::charset::name_of(vm, ref_arg(args, 1));
+            let charset = ref_arg(args, 1);
+            if charset.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let name = crate::charset::name_of(vm, charset);
             let text = vm.string_or_empty(receiver(args));
             let len = match crate::charset::canonical_name(&name) {
                 Some(canonical) => crate::charset::encode(&text, canonical).len(),
@@ -2302,6 +2319,44 @@ fn string_init_bytes_range(
     void()
 }
 
+/// The deprecated `String(byte[] ascii, int hibyte)` constructor: each char is
+/// `(hibyte << 8) | (ascii[i] & 0xff)`.
+fn string_init_bytes_hibyte(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let bytes = array_bytes(vm, ref_arg(args, 1))?;
+    let hibyte = (int_arg(args, 2) & 0xff) as u16;
+    let units: Vec<u16> = bytes
+        .iter()
+        .map(|byte| (hibyte << 8) | u16::from(*byte))
+        .collect();
+    write_string_payload(vm, receiver(args), units)?;
+    void()
+}
+
+/// The deprecated `String(byte[] ascii, int hibyte, int offset, int count)`
+/// constructor, with the same range checks as the other byte constructors.
+fn string_init_bytes_hibyte_range(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let bytes = array_bytes(vm, ref_arg(args, 1))?;
+    let hibyte = (int_arg(args, 2) & 0xff) as u16;
+    let offset = int_arg(args, 3);
+    let count = int_arg(args, 4);
+    string_range_check(vm, offset, count, bytes.len())?;
+    let slice = &bytes[offset as usize..(offset + count) as usize];
+    let units: Vec<u16> = slice
+        .iter()
+        .map(|byte| (hibyte << 8) | u16::from(*byte))
+        .collect();
+    write_string_payload(vm, receiver(args), units)?;
+    void()
+}
+
 /// `String.getBytes(String)`: encode as UTF-8 (the charset name is ignored).
 /// `String.getBytes(String)`: encode with the named charset (UTF-8 when unknown).
 fn string_get_bytes_charset(
@@ -2325,7 +2380,11 @@ fn string_get_bytes_charset_object(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let name = crate::charset::name_of(vm, ref_arg(args, 1));
+    let charset = ref_arg(args, 1);
+    if charset.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let name = crate::charset::name_of(vm, charset);
     let units = vm
         .string_utf16(receiver(args))
         .map(<[u16]>::to_vec)
@@ -2333,6 +2392,40 @@ fn string_get_bytes_charset_object(
     let canonical = crate::charset::canonical_name(&name).unwrap_or("UTF-8");
     let bytes = crate::charset::encode_units(&units, canonical);
     object(byte_array_from(vm, &bytes)?)
+}
+
+/// The deprecated `String.getBytes(int srcBegin, int srcEnd, byte[] dst, int
+/// dstBegin)`: copy the low byte of each char into `dst`.
+fn string_get_bytes_deprecated(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let src_begin = int_arg(args, 1);
+    let src_end = int_arg(args, 2);
+    let dst = ref_arg(args, 3);
+    let dst_begin = int_arg(args, 4);
+    if dst.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let units = vm
+        .string_utf16(receiver(args))
+        .map(<[u16]>::to_vec)
+        .unwrap_or_default();
+    let length = units.len() as i32;
+    if src_begin < 0 || src_end > length || src_begin > src_end {
+        return Err(vm.throw_new("java/lang/StringIndexOutOfBoundsException", None));
+    }
+    let count = src_end - src_begin;
+    let dst_length = vm.array_length(dst)? as i32;
+    if dst_begin < 0 || dst_begin + count > dst_length {
+        return Err(vm.throw_new("java/lang/ArrayIndexOutOfBoundsException", None));
+    }
+    for index in 0..count {
+        let byte = i32::from((units[(src_begin + index) as usize] & 0xff) as u8 as i8);
+        vm.array_set(dst, dst_begin + index, Value::Int(byte), false)?;
+    }
+    void()
 }
 
 /// Allocate a guest `byte[]` with `bytes` as its contents.
@@ -2418,7 +2511,7 @@ fn string_init_bytes(
     void()
 }
 
-/// `String(byte[], String)`: decode with the named charset (UTF-8 when unknown).
+/// `String(byte[], String)`: decode with the named charset.
 fn string_init_bytes_charset(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
@@ -2426,10 +2519,9 @@ fn string_init_bytes_charset(
 ) -> Result<Value, VmError> {
     let bytes = byte_array(vm, ref_arg(args, 1))?;
     let name = string_arg(vm, args[2])?;
-    let units = match crate::charset::canonical_name(&name) {
-        Some(canonical) => crate::charset::decode(&bytes, canonical),
-        None => String::from_utf8_lossy(&bytes).encode_utf16().collect(),
-    };
+    let canonical = crate::charset::canonical_name(&name)
+        .ok_or_else(|| vm.throw_new("java/io/UnsupportedEncodingException", Some(&name)))?;
+    let units = crate::charset::decode(&bytes, canonical);
     write_string_payload(vm, receiver(args), units)?;
     void()
 }
@@ -2441,7 +2533,11 @@ fn string_init_bytes_charset_object(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let bytes = byte_array(vm, ref_arg(args, 1))?;
-    let name = crate::charset::name_of(vm, ref_arg(args, 2));
+    let charset = ref_arg(args, 2);
+    if charset.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let name = crate::charset::name_of(vm, charset);
     let units = match crate::charset::canonical_name(&name) {
         Some(canonical) => crate::charset::decode(&bytes, canonical),
         None => String::from_utf8_lossy(&bytes).encode_utf16().collect(),
@@ -2457,11 +2553,15 @@ fn string_init_bytes_range_charset_object(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let bytes = byte_array(vm, ref_arg(args, 1))?;
+    let charset = ref_arg(args, 4);
+    if charset.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
     let offset = int_arg(args, 2);
     let count = int_arg(args, 3);
     string_range_check(vm, offset, count, bytes.len())?;
     let slice = &bytes[offset as usize..(offset + count) as usize];
-    let name = crate::charset::name_of(vm, ref_arg(args, 4));
+    let name = crate::charset::name_of(vm, charset);
     let units = match crate::charset::canonical_name(&name) {
         Some(canonical) => crate::charset::decode(slice, canonical),
         None => String::from_utf8_lossy(slice).encode_utf16().collect(),
@@ -2477,15 +2577,14 @@ fn string_init_bytes_range_charset(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let bytes = byte_array(vm, ref_arg(args, 1))?;
+    let name = string_arg(vm, args[4])?;
     let offset = int_arg(args, 2);
     let count = int_arg(args, 3);
     string_range_check(vm, offset, count, bytes.len())?;
     let slice = &bytes[offset as usize..(offset + count) as usize];
-    let name = string_arg(vm, args[4])?;
-    let units = match crate::charset::canonical_name(&name) {
-        Some(canonical) => crate::charset::decode(slice, canonical),
-        None => String::from_utf8_lossy(slice).encode_utf16().collect(),
-    };
+    let canonical = crate::charset::canonical_name(&name)
+        .ok_or_else(|| vm.throw_new("java/io/UnsupportedEncodingException", Some(&name)))?;
+    let units = crate::charset::decode(slice, canonical);
     write_string_payload(vm, receiver(args), units)?;
     void()
 }
