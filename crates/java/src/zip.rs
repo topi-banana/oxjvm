@@ -2578,6 +2578,13 @@ pub(crate) const GZIP_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
 // DeflaterInputStream / InflaterOutputStream: the remaining zip stream wrappers.
 // -------------------------------------------------------------------------------------------
 
+fn deflater_input_ensure_open(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    if read_int_field(vm, this, "closed") != 0 {
+        return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+    }
+    Ok(())
+}
+
 fn deflater_input_fill(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
     if read_int_field(vm, this, "filled") != 0 {
         return Ok(());
@@ -2656,41 +2663,65 @@ const DEFLATER_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     ),
     method("read", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        deflater_input_ensure_open(vm, this)?;
         deflater_input_fill(vm, this)?;
         let one = vm.allocate_array_of(ArrayComponent::Byte, 1)?;
         let n = serve_dbuf(vm, this, one, 0, 1)?.as_int();
         if n <= 0 {
+            write_int_field_named(vm, this, "eof", 1);
             return int(-1);
         }
         int(vm.array_get(one, 0)?.as_int() & 0xFF)
     }),
     method("read", "([B)I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        deflater_input_fill(vm, this)?;
+        deflater_input_ensure_open(vm, this)?;
         let out = ref_arg(args, 1);
-        let len = vm.array_length(out)? as i32;
-        serve_dbuf(vm, this, out, 0, len)
+        let bytes = crate::lang::array_bytes(vm, out)?;
+        if bytes.is_empty() {
+            return int(0);
+        }
+        deflater_input_fill(vm, this)?;
+        let n = serve_dbuf(vm, this, out, 0, bytes.len() as i32)?.as_int();
+        if n <= 0 {
+            write_int_field_named(vm, this, "eof", 1);
+            return int(-1);
+        }
+        int(n)
     }),
     method("read", "([BII)I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        deflater_input_ensure_open(vm, this)?;
+        let out = ref_arg(args, 1);
+        let bytes = crate::lang::array_bytes(vm, out)?;
+        let off = crate::int_arg(args, 2);
+        let len = crate::int_arg(args, 3);
+        if off < 0 || len < 0 || (off + len) as usize > bytes.len() {
+            return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+        }
+        if len == 0 {
+            return int(0);
+        }
         deflater_input_fill(vm, this)?;
-        serve_dbuf(
-            vm,
-            this,
-            ref_arg(args, 1),
-            crate::int_arg(args, 2),
-            crate::int_arg(args, 3),
-        )
+        let n = serve_dbuf(vm, this, out, off, len)?.as_int();
+        if n <= 0 {
+            write_int_field_named(vm, this, "eof", 1);
+            return int(-1);
+        }
+        int(n)
     }),
     method("available", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        deflater_input_fill(vm, this)?;
-        let dbuf = read_buf_field(vm, this, "dbuf");
-        let dpos = read_int_field(vm, this, "dpos").max(0) as usize;
-        int(i32::from(dpos < dbuf.len()))
+        deflater_input_ensure_open(vm, this)?;
+        int(i32::from(read_int_field(vm, this, "eof") == 0))
     }),
     method("close", "()V", ACC_PUBLIC, |vm, _, args| {
-        let input = filter_in(vm, receiver(args));
+        let this = receiver(args);
+        if read_int_field(vm, this, "closed") != 0 {
+            return void();
+        }
+        write_int_field_named(vm, this, "closed", 1);
+        let input = filter_in(vm, this);
         if !input.is_null() {
             let (class, method) = vm.resolve_virtual_method(input, "close", "()V")?;
             vm.invoke_method(class, method, vec![Value::Ref(input)])?;
@@ -2699,14 +2730,22 @@ const DEFLATER_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     }),
     method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        deflater_input_fill(vm, this)?;
+        deflater_input_ensure_open(vm, this)?;
         let mut remaining = crate::long_arg(args, 1);
+        if remaining < 0 {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("skip value is negative"),
+            ));
+        }
+        deflater_input_fill(vm, this)?;
         let chunk = vm.allocate_array_of(ArrayComponent::Byte, 4096)?;
         let mut skipped = 0i64;
         while remaining > 0 {
             let want = remaining.min(4096) as i32;
             let n = serve_dbuf(vm, this, chunk, 0, want)?.as_int();
             if n <= 0 {
+                write_int_field_named(vm, this, "eof", 1);
                 break;
             }
             skipped += i64::from(n);
@@ -2733,6 +2772,8 @@ pub(crate) const DEFLATER_INPUT_STREAM: oxjvm_vm::NativeClass = class(
         field("dbuf", "[B", ACC_PRIVATE, None),
         field("dpos", "I", ACC_PRIVATE, None),
         field("filled", "I", ACC_PRIVATE, None),
+        field("closed", "I", ACC_PRIVATE, None),
+        field("eof", "I", ACC_PRIVATE, None),
     ],
     &DEFLATER_INPUT_STREAM_METHODS,
     None,
