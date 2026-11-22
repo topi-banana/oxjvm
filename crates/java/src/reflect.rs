@@ -2757,15 +2757,13 @@ pub(crate) const MODIFIER: oxjvm_vm::NativeClass = class(
             "classModifiers",
             "()I",
             ACC_PUBLIC | ACC_STATIC,
-            |_, _, _| {
-                int(0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0200 | 0x0400 | 0x1000 | 0x2000 | 0x4000)
-            },
+            |_, _, _| int(0x0001 | 0x0002 | 0x0004 | 0x0008 | 0x0010 | 0x0400 | 0x0800),
         ),
         method(
             "interfaceModifiers",
             "()I",
             ACC_PUBLIC | ACC_STATIC,
-            |_, _, _| int(0x0001 | 0x0002 | 0x0004 | 0x0400 | 0x0200 | 0x1000 | 0x2000),
+            |_, _, _| int(0x0001 | 0x0002 | 0x0004 | 0x0008 | 0x0400 | 0x0800),
         ),
         method(
             "constructorModifiers",
@@ -2778,29 +2776,20 @@ pub(crate) const MODIFIER: oxjvm_vm::NativeClass = class(
             "()I",
             ACC_PUBLIC | ACC_STATIC,
             |_, _, _| {
-                int(0x0001
-                    | 0x0002
-                    | 0x0004
-                    | 0x0008
-                    | 0x0010
-                    | 0x0020
-                    | 0x0100
-                    | 0x0400
-                    | 0x0800
-                    | 0x1000)
+                int(0x0001 | 0x0002 | 0x0004 | 0x0008 | 0x0010 | 0x0020 | 0x0100 | 0x0400 | 0x0800)
             },
         ),
         method(
             "fieldModifiers",
             "()I",
             ACC_PUBLIC | ACC_STATIC,
-            |_, _, _| int(0x0001 | 0x0002 | 0x0004 | 0x0008 | 0x0010 | 0x0040 | 0x0080 | 0x1000),
+            |_, _, _| int(0x0001 | 0x0002 | 0x0004 | 0x0008 | 0x0010 | 0x0040 | 0x0080),
         ),
         method(
             "parameterModifiers",
             "()I",
             ACC_PUBLIC | ACC_STATIC,
-            |_, _, _| int(0x0010 | 0x1000 | 0x8000),
+            |_, _, _| int(0x0010),
         ),
     ],
     None,
