@@ -2710,6 +2710,125 @@ fn limbs_to_decimal(mut limbs: Vec<u32>) -> String {
     text
 }
 
+/// Subtract one from a non-negative decimal digit string (no sign).
+fn dec_sub_one(digits: &str) -> String {
+    let mut bytes: Vec<u8> = digits.bytes().collect();
+    let mut i = bytes.len();
+    while i > 0 {
+        i -= 1;
+        if bytes[i] > b'0' {
+            bytes[i] -= 1;
+            break;
+        }
+        bytes[i] = b'9';
+    }
+    let text: String = bytes.iter().map(|&b| b as char).collect();
+    let trimmed = text.trim_start_matches('0');
+    String::from(if trimmed.is_empty() { "0" } else { trimmed })
+}
+
+/// Add one to a non-negative decimal digit string (no sign).
+fn dec_add_one(digits: &str) -> String {
+    let mut bytes: Vec<u8> = digits.bytes().collect();
+    let mut i = bytes.len();
+    let mut carry = true;
+    while i > 0 && carry {
+        i -= 1;
+        if bytes[i] < b'9' {
+            bytes[i] += 1;
+            carry = false;
+        } else {
+            bytes[i] = b'0';
+        }
+    }
+    let text: String = bytes.iter().map(|&b| b as char).collect();
+    if carry {
+        alloc::format!("1{text}")
+    } else {
+        text
+    }
+}
+
+/// Arbitrary-precision `BigInteger.shiftLeft`/`shiftRight` on decimal text
+/// via base-2^32 limbs. Returns `None` when a left shift would need more
+/// than a million bits, where the JDK raises OutOfMemoryError allocating
+/// the magnitude array. Negative right shifts use the floor identity
+/// `-x >> n == -((x - 1) >> n) - 1`.
+fn big_integer_shift(text: &str, shift: i32, left: bool) -> Option<String> {
+    let (negative, digits) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text.strip_prefix('+').unwrap_or(text)),
+    };
+    let digits = digits.trim_start_matches('0');
+    if digits.is_empty() || shift == 0 {
+        return Some(String::from(text));
+    }
+    let n = shift.unsigned_abs();
+    if left && n > 1_000_000 {
+        return None;
+    }
+    let magnitude = if negative && !left {
+        dec_sub_one(digits)
+    } else {
+        String::from(digits)
+    };
+    let mut limbs: Vec<u32> = Vec::new();
+    for byte in magnitude.bytes() {
+        let mut carry = u64::from(byte - b'0');
+        for limb in &mut limbs {
+            let cur = u64::from(*limb) * 10 + carry;
+            *limb = cur as u32;
+            carry = cur >> 32;
+        }
+        if carry != 0 {
+            limbs.push(carry as u32);
+        }
+    }
+    let bit_len =
+        limbs.len() as u64 * 32 - u64::from(limbs.last().copied().unwrap_or(0).leading_zeros());
+    let shifted: Vec<u32> = if left {
+        let word_shift = (n / 32) as usize;
+        let bit_shift = n % 32;
+        let mut out: Vec<u32> = alloc::vec![0u32; word_shift];
+        let mut carry = 0u64;
+        for &limb in &limbs {
+            let cur = (u64::from(limb) << bit_shift) | carry;
+            out.push(cur as u32);
+            carry = cur >> 32;
+        }
+        if carry != 0 {
+            out.push(carry as u32);
+        }
+        out
+    } else {
+        if u64::from(n) >= bit_len {
+            return Some(String::from(if negative { "-1" } else { "0" }));
+        }
+        let word_shift = (n / 32) as usize;
+        let bit_shift = n % 32;
+        let mut out: Vec<u32> = Vec::new();
+        for i in word_shift..limbs.len() {
+            let mut word = limbs[i] >> bit_shift;
+            if bit_shift > 0 && i + 1 < limbs.len() {
+                word |= limbs[i + 1] << (32 - bit_shift);
+            }
+            out.push(word);
+        }
+        while out.last() == Some(&0) {
+            out.pop();
+        }
+        out
+    };
+    let decimal = limbs_to_decimal(shifted);
+    if negative && !left {
+        Some(alloc::format!("-{}", dec_add_one(&decimal)))
+    } else if negative {
+        Some(alloc::format!("-{decimal}"))
+    } else {
+        Some(decimal)
+    }
+}
+
 /// Two's-complement byte array to an exact signed decimal string for
 /// magnitudes of any length (the i128 helper wraps past 16 bytes).
 fn twos_complement_to_decimal(bytes: &[u8]) -> String {
@@ -3532,14 +3651,12 @@ const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
         "(I)Ljava/math/BigInteger;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let value = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
+            let text = big_text(vm, receiver(args));
             let shift = int_arg(args, 1);
-            let shifted = if shift >= 0 {
-                value.checked_shl(shift as u32).unwrap_or(0)
-            } else {
-                value.checked_shr((-shift) as u32).unwrap_or(0)
-            };
-            create_big_number(vm, "java/math/BigInteger", &shifted.to_string())
+            match big_integer_shift(&text, shift, shift >= 0) {
+                Some(shifted) => create_big_number(vm, "java/math/BigInteger", &shifted),
+                None => Err(vm.throw_new("java/lang/OutOfMemoryError", Some("Java heap space"))),
+            }
         },
     ),
     method(
@@ -3547,14 +3664,12 @@ const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
         "(I)Ljava/math/BigInteger;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let value = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
+            let text = big_text(vm, receiver(args));
             let shift = int_arg(args, 1);
-            let shifted = if shift >= 0 {
-                value.checked_shr(shift as u32).unwrap_or(0)
-            } else {
-                value.checked_shl((-shift) as u32).unwrap_or(0)
-            };
-            create_big_number(vm, "java/math/BigInteger", &shifted.to_string())
+            match big_integer_shift(&text, shift, shift < 0) {
+                Some(shifted) => create_big_number(vm, "java/math/BigInteger", &shifted),
+                None => Err(vm.throw_new("java/lang/OutOfMemoryError", Some("Java heap space"))),
+            }
         },
     ),
     method(
