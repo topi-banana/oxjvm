@@ -90,6 +90,24 @@ fn resolve_address(vm: &mut Vm<'_>, class_name: &str, text: &str) -> Result<Valu
     ))
 }
 
+/// The JDK caches a single loopback instance: `getLoopbackAddress` and a null
+/// host lookup return that same reference on every call.
+fn inet_loopback(vm: &mut Vm<'_>) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/net/InetAddress")?;
+    vm.ensure_initialized(class)?;
+    if let Some(existing) = vm.read_static_ref_if_set(class, "loopback", "Ljava/net/InetAddress;") {
+        return object(existing);
+    }
+    let address = new_address(
+        vm,
+        "java/net/Inet4Address",
+        [127, 0, 0, 1],
+        Some("localhost"),
+    )?;
+    vm.set_static_value(class, "loopback", "Ljava/net/InetAddress;", address);
+    Ok(address)
+}
+
 fn address_from_args(
     vm: &mut Vm<'_>,
     class_name: &str,
@@ -266,6 +284,9 @@ macro_rules! address_methods {
                 concat!("(Ljava/lang/String;)L", $class_name, ";"),
                 ACC_PUBLIC | ACC_STATIC,
                 |vm, _, args| {
+                    if ref_arg(args, 0).is_null() {
+                        return inet_loopback(vm);
+                    }
                     let text = string_arg(vm, args[0])?;
                     resolve_address(vm, "java/net/Inet4Address", &text)
                 },
@@ -287,22 +308,19 @@ macro_rules! address_methods {
                 "getLoopbackAddress",
                 concat!("()L", $class_name, ";"),
                 ACC_PUBLIC | ACC_STATIC,
-                |vm, _, _| {
-                    new_address(
-                        vm,
-                        "java/net/Inet4Address",
-                        [127, 0, 0, 1],
-                        Some("localhost"),
-                    )
-                },
+                |vm, _, _| inet_loopback(vm),
             ),
             method(
                 "getAllByName",
                 concat!("(Ljava/lang/String;)[L", $class_name, ";"),
                 ACC_PUBLIC | ACC_STATIC,
                 |vm, _, args| {
-                    let text = string_arg(vm, args[0])?;
-                    let address = resolve_address(vm, "java/net/Inet4Address", &text)?;
+                    let address = if ref_arg(args, 0).is_null() {
+                        inet_loopback(vm)?
+                    } else {
+                        let text = string_arg(vm, args[0])?;
+                        resolve_address(vm, "java/net/Inet4Address", &text)?
+                    };
                     let class = vm.resolve_class($class_name)?;
                     let array = vm.allocate_object_array(class, 1)?;
                     vm.array_set_ref(array, 0, address.as_ref())?;
@@ -345,6 +363,12 @@ pub(crate) const INET_ADDRESS: oxjvm_vm::NativeClass = class(
         field("address", "[B", ACC_PRIVATE, None),
         field("hostName", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("hostAddress", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field(
+            "loopback",
+            "Ljava/net/InetAddress;",
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
     ],
     &INET_ADDRESS_METHODS,
     None,
