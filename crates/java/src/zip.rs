@@ -2177,6 +2177,12 @@ const INFLATER_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let mut remaining = crate::long_arg(args, 1);
+        if remaining < 0 {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("negative skip length"),
+            ));
+        }
         let chunk = vm.allocate_array_of(ArrayComponent::Byte, 4096)?;
         let mut skipped = 0i64;
         while remaining > 0 {
