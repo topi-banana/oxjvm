@@ -4465,15 +4465,26 @@ fn round_to_precision(text: &str, precision: i32, mode: i32) -> Option<String> {
     if precision <= 0 {
         return Some(String::from(text));
     }
-    let (negative, int_part, frac_part) = decimal_parts(text);
-    let digits = alloc::format!("{}{}", int_part, frac_part);
-    let scale = frac_part.len() as i32;
+    let (negative, body) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text.strip_prefix('+').unwrap_or(text)),
+    };
+    let (mantissa, exponent) = match body.split_once(['e', 'E']) {
+        Some((m, e)) => (m, e.parse::<i64>().ok()?),
+        None => (body, 0),
+    };
+    let (int_part, frac_part) = match mantissa.split_once('.') {
+        Some((i, f)) => (i, f),
+        None => (mantissa, ""),
+    };
+    let digits = alloc::format!("{int_part}{frac_part}");
+    let scale = frac_part.len() as i64 - exponent;
     let sig_start = digits
         .bytes()
         .position(|b| b != b'0')
         .unwrap_or(digits.len());
-    let current_sig = (digits.len() - sig_start) as i32;
-    if current_sig <= precision {
+    let current_sig = (digits.len() - sig_start) as i64;
+    if current_sig <= i64::from(precision) {
         return Some(String::from(text));
     }
     let sig = &digits[sig_start..];
@@ -4501,7 +4512,7 @@ fn round_to_precision(text: &str, precision: i32, mode: i32) -> Option<String> {
         }
     };
     let mut kept = String::from(&sig[..keep]);
-    let mut drop = current_sig - precision;
+    let mut drop = current_sig - i64::from(precision);
     if round_up {
         kept = dec_add_one(&kept);
         if kept.len() > keep {
@@ -4511,18 +4522,27 @@ fn round_to_precision(text: &str, precision: i32, mode: i32) -> Option<String> {
         }
     }
     let new_scale = scale - drop;
+    // The JDK raises ArithmeticException when the rounded scale or adjusted
+    // exponent leaves the int range (e.g. valueOf(11, Integer.MIN_VALUE)
+    // rounded to one digit would need exponent 2147483648).
+    if new_scale > i64::from(i32::MAX) || new_scale < i64::from(i32::MIN) {
+        return None;
+    }
+    if kept.len() as i64 - 1 - new_scale > i64::from(i32::MAX) {
+        return None;
+    }
     let rendered = if new_scale > 0 {
-        if kept.len() as i32 <= new_scale {
-            let zeros = (new_scale - kept.len() as i32) as usize;
+        if kept.len() as i64 <= new_scale {
+            let zeros = (new_scale - kept.len() as i64) as usize;
             alloc::format!("0.{}{}", "0".repeat(zeros), kept)
         } else {
-            let point = kept.len() as i32 - new_scale;
+            let point = kept.len() as i64 - new_scale;
             alloc::format!("{}.{}", &kept[..point as usize], &kept[point as usize..])
         }
     } else if new_scale == 0 {
         kept
     } else {
-        big_decimal_with_scale(&kept, new_scale)
+        big_decimal_with_scale(&kept, new_scale as i32)
     };
     let mut result = String::new();
     if negative {
