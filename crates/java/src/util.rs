@@ -29228,10 +29228,7 @@ fn calendar_get(vm: &Vm<'_>, this: ObjectRef, field: i32) -> i32 {
         7 => calendar_day_of_week(time) as i32,
         8 => ((fields.day - 1) / 7 + 1) as i32,
         9 => i32::from(fields.hour >= 12),
-        10 => {
-            let hour = fields.hour % 12;
-            if hour == 0 { 12 } else { hour as i32 }
-        }
+        10 => (fields.hour % 12) as i32,
         11 => fields.hour as i32,
         12 => fields.minute as i32,
         13 => fields.second as i32,
