@@ -4026,6 +4026,17 @@ const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
         |vm, _, args| {
             let text = big_text(vm, receiver(args));
             let shift = int_arg(args, 1);
+            if shift == i32::MIN {
+                // Negating MIN_VALUE overflows; the JDK rejects the shift
+                // outright unless the value is zero.
+                if text.bytes().all(|b| b == b'0' || b == b'-' || b == b'+') {
+                    return create_big_number(vm, "java/math/BigInteger", "0");
+                }
+                return Err(vm.throw_new(
+                    "java/lang/ArithmeticException",
+                    Some("Shift distance too large"),
+                ));
+            }
             match big_integer_shift(&text, shift, shift < 0) {
                 Some(shifted) => create_big_number(vm, "java/math/BigInteger", &shifted),
                 None => Err(vm.throw_new("java/lang/OutOfMemoryError", Some("Java heap space"))),
@@ -5226,8 +5237,43 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 61] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let text = big_text(vm, receiver(args));
-            let scaled = scale_decimal(&text, int_arg(args, 1));
-            create_big_number(vm, "java/math/BigDecimal", &scaled)
+            let n = int_arg(args, 1);
+            // Keep the unscaled mantissa and only adjust the scale, like the
+            // JDK: ONE.scaleByPowerOfTen(1) is 1E+1, not the expanded "10".
+            let (negative, body) = match text.strip_prefix('-') {
+                Some(rest) => (true, rest),
+                None => (false, text.strip_prefix('+').unwrap_or(&text)),
+            };
+            let (mantissa, exponent) = match body.split_once(['e', 'E']) {
+                Some((m, e)) => (m, e.parse::<i64>().unwrap_or(0)),
+                None => (body, 0),
+            };
+            let (int_part, frac_part) = match mantissa.split_once('.') {
+                Some((i, f)) => (i, f),
+                None => (mantissa, ""),
+            };
+            let digits = alloc::format!("{int_part}{frac_part}");
+            let digits = digits.trim_start_matches('0');
+            let digits = if digits.is_empty() { "0" } else { digits };
+            let scale = frac_part.len() as i64 - exponent;
+            let new_scale = scale - i64::from(n);
+            if new_scale > i64::from(i32::MAX) {
+                return Err(vm.throw_new("java/lang/ArithmeticException", Some("Overflow")));
+            }
+            if new_scale < i64::from(i32::MIN) {
+                return Err(vm.throw_new("java/lang/ArithmeticException", Some("Underflow")));
+            }
+            let rendered = if new_scale >= 0 {
+                format_scaled_digits(digits, negative, new_scale as usize)
+            } else {
+                let signed = if negative && digits != "0" {
+                    alloc::format!("-{digits}")
+                } else {
+                    String::from(digits)
+                };
+                big_decimal_with_scale(&signed, new_scale as i32)
+            };
+            create_big_number(vm, "java/math/BigDecimal", &rendered)
         },
     ),
     method("precision", "()I", ACC_PUBLIC, |vm, _, args| {
