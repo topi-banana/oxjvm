@@ -45,8 +45,25 @@ const REFERENCE_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
             boolean(referent == ref_arg(args, 1))
         },
     ),
-    method("isEnqueued", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
-    method("enqueue", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method("isEnqueued", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "enqueued") != 0)
+    }),
+    method("enqueue", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let queue = vm
+            .read_ref_field(
+                this,
+                vm.class_of(this),
+                "queue",
+                "Ljava/lang/ref/ReferenceQueue;",
+            )
+            .unwrap_or(ObjectRef::NULL);
+        if queue.is_null() || crate::lang::read_int_field(vm, this, "enqueued") != 0 {
+            return boolean(false);
+        }
+        reference_queue_push(vm, queue, this)?;
+        boolean(true)
+    }),
     method(
         "reachabilityFence",
         "(Ljava/lang/Object;)V",
@@ -63,10 +80,70 @@ pub(crate) const REFERENCE: oxjvm_vm::NativeClass = class(
     &[
         field("referent", "Ljava/lang/Object;", ACC_PRIVATE, None),
         field("queue", "Ljava/lang/ref/ReferenceQueue;", ACC_PRIVATE, None),
+        field("enqueued", "I", ACC_PRIVATE, None),
+        field("next", "Ljava/lang/ref/Reference;", ACC_PRIVATE, None),
     ],
     &REFERENCE_METHODS,
     None,
 );
+
+/// Link a reference onto the head of its queue and mark it enqueued.
+fn reference_queue_push(vm: &mut Vm<'_>, queue: ObjectRef, this: ObjectRef) -> Result<(), VmError> {
+    let class = vm.class_of(this);
+    let head = vm
+        .read_ref_field(
+            queue,
+            vm.class_of(queue),
+            "head",
+            "Ljava/lang/ref/Reference;",
+        )
+        .unwrap_or(ObjectRef::NULL);
+    if let Some((declaring, field)) = vm.find_field_opt(class, "next", "Ljava/lang/ref/Reference;")
+    {
+        vm.set_instance_ref(this, declaring, field, head);
+    }
+    if let Some((declaring, field)) =
+        vm.find_field_opt(vm.class_of(queue), "head", "Ljava/lang/ref/Reference;")
+    {
+        vm.set_instance_ref(queue, declaring, field, this);
+    }
+    if let Some((declaring, field)) = vm.find_field_opt(class, "enqueued", "I") {
+        vm.set_instance_int(this, declaring, field, 1);
+    }
+    Ok(())
+}
+
+/// Pop the head of a queue, clearing its enqueued state; null when empty.
+fn reference_queue_pop(vm: &mut Vm<'_>, queue: ObjectRef) -> Result<ObjectRef, VmError> {
+    let head = vm
+        .read_ref_field(
+            queue,
+            vm.class_of(queue),
+            "head",
+            "Ljava/lang/ref/Reference;",
+        )
+        .unwrap_or(ObjectRef::NULL);
+    if head.is_null() {
+        return Ok(ObjectRef::NULL);
+    }
+    let next = vm
+        .read_ref_field(head, vm.class_of(head), "next", "Ljava/lang/ref/Reference;")
+        .unwrap_or(ObjectRef::NULL);
+    if let Some((declaring, field)) =
+        vm.find_field_opt(vm.class_of(queue), "head", "Ljava/lang/ref/Reference;")
+    {
+        vm.set_instance_ref(queue, declaring, field, next);
+    }
+    let class = vm.class_of(head);
+    if let Some((declaring, field)) = vm.find_field_opt(class, "next", "Ljava/lang/ref/Reference;")
+    {
+        vm.set_instance_ref(head, declaring, field, ObjectRef::NULL);
+    }
+    if let Some((declaring, field)) = vm.find_field_opt(class, "enqueued", "I") {
+        vm.set_instance_int(head, declaring, field, 0);
+    }
+    Ok(head)
+}
 
 const REFERENCE_CONSTRUCTOR_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
     method(
@@ -137,19 +214,19 @@ const REFERENCE_QUEUE_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         "poll",
         "()Ljava/lang/ref/Reference;",
         ACC_PUBLIC,
-        |_, _, _| object(ObjectRef::NULL),
+        |vm, _, args| object(reference_queue_pop(vm, receiver(args))?),
     ),
     method(
         "remove",
         "()Ljava/lang/ref/Reference;",
         ACC_PUBLIC,
-        |_, _, _| object(ObjectRef::NULL),
+        |vm, _, args| object(reference_queue_pop(vm, receiver(args))?),
     ),
     method(
         "remove",
         "(J)Ljava/lang/ref/Reference;",
         ACC_PUBLIC,
-        |_, _, _| object(ObjectRef::NULL),
+        |vm, _, args| object(reference_queue_pop(vm, receiver(args))?),
     ),
 ];
 
@@ -158,7 +235,12 @@ pub(crate) const REFERENCE_QUEUE: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC,
-    &[],
+    &[field(
+        "head",
+        "Ljava/lang/ref/Reference;",
+        ACC_PRIVATE,
+        None,
+    )],
     &REFERENCE_QUEUE_METHODS,
     None,
 );
