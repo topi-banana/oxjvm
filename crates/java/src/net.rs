@@ -611,11 +611,24 @@ fn url_absolute_spec(vm: &mut Vm<'_>, text: &str) -> Result<String, VmError> {
             Some(&alloc::format!("unknown protocol: {protocol}")),
         ));
     }
-    Ok(alloc::format!(
+    let spec = alloc::format!(
         "{}{}",
         protocol.to_ascii_lowercase(),
         &text[protocol.len()..]
-    ))
+    );
+    Ok(url_normalize_file_authority(&spec))
+}
+
+/// The JDK's file handler drops an empty authority: `file:///path` becomes
+/// `file:/path` (likewise before a `?` query or `#` fragment).
+fn url_normalize_file_authority(spec: &str) -> String {
+    let Some(rest) = spec.strip_prefix("file://") else {
+        return String::from(spec);
+    };
+    match rest.chars().next() {
+        None | Some('/') | Some('?') | Some('#') => alloc::format!("file:{rest}"),
+        _ => String::from(spec),
+    }
 }
 
 struct UrlParts<'a> {
@@ -659,6 +672,37 @@ fn resolve_url(vm: &mut Vm<'_>, base: ObjectRef, relative: &str) -> Result<Strin
             "java/net/MalformedURLException",
             Some(&alloc::format!("unknown protocol: {protocol}")),
         ));
+    }
+    // A jar base keeps its inner URL and `!/` separator intact: the relative
+    // spec resolves against the entry path that follows the separator.
+    if base_protocol == "jar" {
+        if let Some(index) = original.find("!/") {
+            let prefix = &original[..index + 1];
+            let entry = &original[index + 2..];
+            let entry_path = match entry.find(['?', '#']) {
+                Some(end) => &entry[..end],
+                None => entry,
+            };
+            // The entry path always sits under a leading `/` after the `!/`.
+            let directory = if entry_path.is_empty() {
+                String::from("/")
+            } else {
+                match entry_path.rfind('/') {
+                    Some(end) => alloc::format!("/{}/", &entry_path[..end]),
+                    None => String::from("/"),
+                }
+            };
+            let (rel_path, suffix) = match relative.find(['?', '#']) {
+                Some(end) => (&relative[..end], &relative[end..]),
+                None => (relative, ""),
+            };
+            let merged = if rel_path.starts_with('/') {
+                url_normalize_rel_path(rel_path)
+            } else {
+                url_normalize_rel_path(&alloc::format!("{directory}{rel_path}"))
+            };
+            return Ok(alloc::format!("{prefix}{merged}{suffix}"));
+        }
     }
     // A parts-constructed base keeps its host and file apart; merge against a
     // slash-prefixed file so the host is not swallowed into the path.
