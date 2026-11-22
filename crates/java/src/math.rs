@@ -2864,7 +2864,10 @@ fn compare_big_decimal_text(a: &str, b: &str) -> Ordering {
     }
 }
 
-/// Validate and canonicalise a decimal string like `new BigDecimal(String)`.
+/// Validate and canonicalise a decimal string like `new BigDecimal(String)`,
+/// preserving the scale: negative scales stay in the JDK's `E` notation
+/// (`1e1` -> `1E+1`, `0e13` -> `0E+13`) so equals, scale and
+/// stripTrailingZeros behave like the JDK.
 fn big_decimal_parse(text: &str) -> Option<String> {
     let (negative, digits) = match text.strip_prefix('-') {
         Some(rest) => (true, rest),
@@ -2874,7 +2877,91 @@ fn big_decimal_parse(text: &str) -> Option<String> {
         Some((mantissa, exponent)) => (mantissa, exponent.parse::<i32>().ok()?),
         None => (digits, 0),
     };
-    if exponent.abs() > 10_000 {
+    let (integer, fraction) = match mantissa.split_once('.') {
+        Some((integer, fraction)) => (integer, Some(fraction)),
+        None => (mantissa, None),
+    };
+    if integer.is_empty() && fraction.is_none_or(|part: &str| part.is_empty()) {
+        return None;
+    }
+    if !integer.bytes().all(|byte| byte.is_ascii_digit())
+        || fraction.is_some_and(|part| !part.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return None;
+    }
+    let scale = fraction.map(str::len).unwrap_or(0) as i64 - i64::from(exponent);
+    let combined = alloc::format!("{}{}", integer, fraction.unwrap_or(""));
+    let trimmed = combined.trim_start_matches('0');
+    if trimmed.is_empty() {
+        if scale < 0 {
+            return Some(alloc::format!("0E+{}", -scale));
+        }
+        return expand_decimal(text);
+    }
+    if scale < 0 {
+        let mut canonical = String::new();
+        if negative {
+            canonical.push('-');
+        }
+        canonical.push_str(&trimmed[..1]);
+        if trimmed.len() > 1 {
+            canonical.push('.');
+            canonical.push_str(&trimmed[1..]);
+        }
+        let adjusted = trimmed.len() as i64 - 1 - scale;
+        canonical.push('E');
+        if adjusted >= 0 {
+            canonical.push('+');
+        }
+        canonical.push_str(&adjusted.to_string());
+        return Some(canonical);
+    }
+    expand_decimal(text)
+}
+
+/// Would-be length and scale of the plain decimal form, computed without
+/// allocating it, so huge exponents can raise OutOfMemoryError pre-emptively
+/// like the JDK instead of trying to build a multi-gigabyte string.
+fn decimal_plain_len(text: &str) -> Option<(i64, i64)> {
+    let t = text.strip_prefix(['-', '+']).unwrap_or(text);
+    let (mantissa, exponent) = match t.split_once(['e', 'E']) {
+        Some((m, e)) => (m, e.parse::<i64>().ok()?),
+        None => (t, 0),
+    };
+    let (int_part, frac_part) = match mantissa.split_once('.') {
+        Some((i, f)) => (i, f),
+        None => (mantissa, ""),
+    };
+    if int_part.is_empty() && frac_part.is_empty() {
+        return None;
+    }
+    if !int_part.bytes().all(|b| b.is_ascii_digit())
+        || !frac_part.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let digits = int_part.len() as i64 + frac_part.len() as i64;
+    let scale = frac_part.len() as i64 - exponent;
+    let len = if scale >= 0 {
+        digits.max(scale + 1) + 1
+    } else {
+        digits - scale
+    };
+    Some((len, scale))
+}
+
+/// Expand a decimal string (plain or scientific notation) to plain decimal
+/// form, dropping the exponent but keeping fractional trailing zeros.
+fn expand_decimal(text: &str) -> Option<String> {
+    let (negative, digits) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text.strip_prefix('+').unwrap_or(text)),
+    };
+    let (mantissa, exponent) = match digits.split_once(['e', 'E']) {
+        Some((mantissa, exponent)) => (mantissa, exponent.parse::<i32>().ok()?),
+        None => (digits, 0),
+    };
+    if exponent.abs() > 1_000_000 {
         return None;
     }
     let (integer, fraction) = match mantissa.split_once('.') {
@@ -2934,7 +3021,7 @@ fn decimal_scale(text: &str) -> i32 {
 
 /// Shift the decimal point of a BigDecimal string without rounding.
 fn big_decimal_move_point(text: &str, shift: i32) -> String {
-    let plain = big_decimal_parse(text).unwrap_or_else(|| String::from(text));
+    let plain = expand_decimal(text).unwrap_or_else(|| String::from(text));
     let (negative, int_part, frac_part) = decimal_parts(&plain);
     let mut digits = alloc::format!("{}{}", int_part, frac_part);
     let mut point = int_part.len() as i32 + shift;
@@ -2955,7 +3042,7 @@ fn big_decimal_move_point(text: &str, shift: i32) -> String {
         raw.push('.');
         raw.push_str(&digits[point..]);
     }
-    big_decimal_parse(&raw).unwrap_or(raw)
+    expand_decimal(&raw).unwrap_or(raw)
 }
 
 /// `BigDecimal.divide(divisor, scale, roundingMode)` with exact i128 arithmetic
@@ -3057,8 +3144,8 @@ fn big_decimal_divide_scaled(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, V
 fn big_decimal_div_rem(vm: &mut Vm<'_>, args: &[Value], integral: bool) -> Result<Value, VmError> {
     let a_raw = big_text(vm, receiver(args));
     let b_raw = big_text(vm, ref_arg(args, 1));
-    let a_text = big_decimal_parse(&a_raw).unwrap_or(a_raw);
-    let b_text = big_decimal_parse(&b_raw).unwrap_or(b_raw);
+    let a_text = expand_decimal(&a_raw).unwrap_or(a_raw);
+    let b_text = expand_decimal(&b_raw).unwrap_or(b_raw);
     let (neg_a, int_a, frac_a) = decimal_parts(&a_text);
     let (neg_b, int_b, frac_b) = decimal_parts(&b_text);
     let sa = frac_a.len();
@@ -3250,51 +3337,47 @@ const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
         long(big_integer_narrow(&big_text(vm, receiver(args)), 64))
     }),
     method("intValueExact", "()I", ACC_PUBLIC, |vm, _, args| {
-        let text = big_text(vm, receiver(args));
-        match text.parse::<i128>() {
-            Ok(value) if value >= i128::from(i32::MIN) && value <= i128::from(i32::MAX) => {
-                int(value as i32)
-            }
-            _ => Err(vm.throw_new(
+        let value = big_decimal_exact_integer(vm, receiver(args), "BigInteger out of int range")?;
+        if value >= i128::from(i32::MIN) && value <= i128::from(i32::MAX) {
+            int(value as i32)
+        } else {
+            Err(vm.throw_new(
                 "java/lang/ArithmeticException",
                 Some("BigInteger out of int range"),
-            )),
+            ))
         }
     }),
     method("longValueExact", "()J", ACC_PUBLIC, |vm, _, args| {
-        let text = big_text(vm, receiver(args));
-        match text.parse::<i128>() {
-            Ok(value) if value >= i128::from(i64::MIN) && value <= i128::from(i64::MAX) => {
-                long(value as i64)
-            }
-            _ => Err(vm.throw_new(
+        let value = big_decimal_exact_integer(vm, receiver(args), "BigInteger out of long range")?;
+        if value >= i128::from(i64::MIN) && value <= i128::from(i64::MAX) {
+            long(value as i64)
+        } else {
+            Err(vm.throw_new(
                 "java/lang/ArithmeticException",
                 Some("BigInteger out of long range"),
-            )),
+            ))
         }
     }),
     method("shortValueExact", "()S", ACC_PUBLIC, |vm, _, args| {
-        let text = big_text(vm, receiver(args));
-        match text.parse::<i128>() {
-            Ok(value) if value >= i128::from(i16::MIN) && value <= i128::from(i16::MAX) => {
-                int(value as i16 as i32)
-            }
-            _ => Err(vm.throw_new(
+        let value = big_decimal_exact_integer(vm, receiver(args), "BigInteger out of short range")?;
+        if value >= i128::from(i16::MIN) && value <= i128::from(i16::MAX) {
+            int(value as i16 as i32)
+        } else {
+            Err(vm.throw_new(
                 "java/lang/ArithmeticException",
                 Some("BigInteger out of short range"),
-            )),
+            ))
         }
     }),
     method("byteValueExact", "()B", ACC_PUBLIC, |vm, _, args| {
-        let text = big_text(vm, receiver(args));
-        match text.parse::<i128>() {
-            Ok(value) if value >= i128::from(i8::MIN) && value <= i128::from(i8::MAX) => {
-                int(value as i8 as i32)
-            }
-            _ => Err(vm.throw_new(
+        let value = big_decimal_exact_integer(vm, receiver(args), "BigInteger out of byte range")?;
+        if value >= i128::from(i8::MIN) && value <= i128::from(i8::MAX) {
+            int(value as i8 as i32)
+        } else {
+            Err(vm.throw_new(
                 "java/lang/ArithmeticException",
                 Some("BigInteger out of byte range"),
-            )),
+            ))
         }
     }),
     method("doubleValue", "()D", ACC_PUBLIC, |vm, _, args| {
@@ -3945,6 +4028,11 @@ fn big_decimal_init(
         "(Ljava/math/BigInteger;)V" => big_text(vm, ref_arg(args, 1)),
         _ => string_arg(vm, args[1])?,
     };
+    if let Some((len, scale)) = decimal_plain_len(&text) {
+        if scale >= 0 && len > 100_000_000 {
+            return Err(vm.throw_new("java/lang/OutOfMemoryError", Some("Java heap space")));
+        }
+    }
     let Some(canonical) = big_decimal_parse(&text) else {
         return Err(vm.throw_new("java/lang/NumberFormatException", None));
     };
@@ -4120,11 +4208,42 @@ fn big_decimal_add_sub(vm: &mut Vm<'_>, args: &[Value], subtract: bool) -> Resul
 }
 
 /// Split a decimal string into (negative, integer digits, fraction digits).
+/// Shared check for BigDecimal.{int,long,short,byte}ValueExact and
+/// toBigIntegerExact: the fraction must be all zeros, then the integer part
+/// is parsed exactly (E notation expanded first).
+fn big_decimal_exact_integer(vm: &mut Vm<'_>, this: ObjectRef, msg: &str) -> Result<i128, VmError> {
+    let raw = big_text(vm, this);
+    let (sign, _, _) = bd_decompose(&raw);
+    if sign == 0 {
+        return Ok(0);
+    }
+    let scale = decimal_scale(&raw);
+    if scale < -38 {
+        return Err(vm.throw_new("java/lang/ArithmeticException", Some("Overflow")));
+    }
+    if scale > 10_000 {
+        return Err(vm.throw_new("java/lang/ArithmeticException", Some("Rounding necessary")));
+    }
+    let text = plain_text(&raw);
+    let (negative, int_part, frac_part) = decimal_parts(&text);
+    if !frac_part.bytes().all(|byte| byte == b'0') {
+        return Err(vm.throw_new("java/lang/ArithmeticException", Some("Rounding necessary")));
+    }
+    let digits = if negative {
+        alloc::format!("-{int_part}")
+    } else {
+        int_part
+    };
+    digits
+        .parse::<i128>()
+        .map_err(|_| vm.throw_new("java/lang/ArithmeticException", Some(msg)))
+}
+
 /// Plain (non-scientific) decimal form of a value text, expanding the `E`
 /// notation that negative-scale BigDecimal values carry.
 fn plain_text(text: &str) -> String {
     if text.contains(['e', 'E']) {
-        big_decimal_parse(text).unwrap_or_else(|| String::from(text))
+        expand_decimal(text).unwrap_or_else(|| String::from(text))
     } else {
         String::from(text)
     }
@@ -4246,7 +4365,7 @@ fn big_decimal_set_scale(
     create_big_number(vm, "java/math/BigDecimal", &result)
 }
 
-const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
+const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 52] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -4287,6 +4406,50 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
     method("floatValue", "()F", ACC_PUBLIC, |vm, _, args| {
         let text = big_text(vm, receiver(args));
         float(text.parse::<f32>().unwrap_or(f32::NAN))
+    }),
+    method("intValueExact", "()I", ACC_PUBLIC, |vm, _, args| {
+        let value = big_decimal_exact_integer(vm, receiver(args), "BigInteger out of int range")?;
+        if value >= i128::from(i32::MIN) && value <= i128::from(i32::MAX) {
+            int(value as i32)
+        } else {
+            Err(vm.throw_new(
+                "java/lang/ArithmeticException",
+                Some("BigInteger out of int range"),
+            ))
+        }
+    }),
+    method("longValueExact", "()J", ACC_PUBLIC, |vm, _, args| {
+        let value = big_decimal_exact_integer(vm, receiver(args), "BigInteger out of long range")?;
+        if value >= i128::from(i64::MIN) && value <= i128::from(i64::MAX) {
+            long(value as i64)
+        } else {
+            Err(vm.throw_new(
+                "java/lang/ArithmeticException",
+                Some("BigInteger out of long range"),
+            ))
+        }
+    }),
+    method("shortValueExact", "()S", ACC_PUBLIC, |vm, _, args| {
+        let value = big_decimal_exact_integer(vm, receiver(args), "BigInteger out of short range")?;
+        if value >= i128::from(i16::MIN) && value <= i128::from(i16::MAX) {
+            int(value as i16 as i32)
+        } else {
+            Err(vm.throw_new(
+                "java/lang/ArithmeticException",
+                Some("BigInteger out of short range"),
+            ))
+        }
+    }),
+    method("byteValueExact", "()B", ACC_PUBLIC, |vm, _, args| {
+        let value = big_decimal_exact_integer(vm, receiver(args), "BigInteger out of byte range")?;
+        if value >= i128::from(i8::MIN) && value <= i128::from(i8::MAX) {
+            int(value as i8 as i32)
+        } else {
+            Err(vm.throw_new(
+                "java/lang/ArithmeticException",
+                Some("BigInteger out of byte range"),
+            ))
+        }
     }),
     method(
         "equals",
@@ -4380,7 +4543,13 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let text = plain_text(&big_text(vm, receiver(args)));
+            let raw = big_text(vm, receiver(args));
+            if let Some((len, _)) = decimal_plain_len(&raw) {
+                if len > 100_000_000 {
+                    return Err(vm.throw_new("java/lang/OutOfMemoryError", Some("Java heap space")));
+                }
+            }
+            let text = plain_text(&raw);
             object(vm.make_string(&text)?)
         },
     ),
@@ -4392,6 +4561,40 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
             let text = plain_text(&big_text(vm, receiver(args)));
             let integer = text.split('.').next().unwrap_or("0");
             create_big_number(vm, "java/math/BigInteger", integer)
+        },
+    ),
+    method(
+        "toBigIntegerExact",
+        "()Ljava/math/BigInteger;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let raw = big_text(vm, this);
+            let (sign, _, _) = bd_decompose(&raw);
+            if sign != 0 {
+                let scale = decimal_scale(&raw);
+                if scale < -38 {
+                    return Err(vm.throw_new("java/lang/ArithmeticException", Some("Overflow")));
+                }
+                if scale > 10_000 {
+                    return Err(
+                        vm.throw_new("java/lang/ArithmeticException", Some("Rounding necessary"))
+                    );
+                }
+            }
+            let text = plain_text(&raw);
+            let (negative, int_part, frac_part) = decimal_parts(&text);
+            if !frac_part.bytes().all(|byte| byte == b'0') {
+                return Err(
+                    vm.throw_new("java/lang/ArithmeticException", Some("Rounding necessary"))
+                );
+            }
+            let integer = if negative && int_part != "0" {
+                alloc::format!("-{int_part}")
+            } else {
+                int_part
+            };
+            create_big_number(vm, "java/math/BigInteger", &integer)
         },
     ),
     method("signum", "()I", ACC_PUBLIC, |vm, _, args| {
@@ -4611,7 +4814,7 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let raw = big_text(vm, receiver(args));
-            let text = big_decimal_parse(&raw).unwrap_or(raw);
+            let text = expand_decimal(&raw).unwrap_or(raw);
             let (negative, int_part, frac_part) = decimal_parts(&text);
             let digits = alloc::format!("{}{}", int_part, frac_part);
             let trimmed = digits.trim_start_matches('0');
