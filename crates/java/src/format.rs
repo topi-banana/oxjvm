@@ -2727,7 +2727,10 @@ const DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
         "getInstance",
         "(Ljava/util/Locale;)Ljava/text/DateFormat;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| date_format(vm, "MMM d, yyyy h:mm:ss a"),
+        |vm, _, args| {
+            require_locale_arg(vm, args)?;
+            date_format(vm, "MMM d, yyyy h:mm:ss a")
+        },
     ),
     method(
         "getDateInstance",
@@ -2739,7 +2742,10 @@ const DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
         "getDateInstance",
         "(Ljava/util/Locale;)Ljava/text/DateFormat;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| date_format(vm, date_pattern("medium")),
+        |vm, _, args| {
+            require_locale_arg(vm, args)?;
+            date_format(vm, date_pattern("medium"))
+        },
     ),
     method(
         "getDateInstance",
@@ -2751,7 +2757,10 @@ const DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
         "getDateInstance",
         "(ILjava/util/Locale;)Ljava/text/DateFormat;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| date_format(vm, date_pattern(date_style_name(int_arg(args, 0)))),
+        |vm, _, args| {
+            require_locale_arg(vm, args)?;
+            date_format(vm, date_pattern(date_style_name(int_arg(args, 0))))
+        },
     ),
     method(
         "getTimeInstance",
@@ -2763,7 +2772,10 @@ const DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
         "getTimeInstance",
         "(Ljava/util/Locale;)Ljava/text/DateFormat;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| date_format(vm, time_pattern("medium")),
+        |vm, _, args| {
+            require_locale_arg(vm, args)?;
+            date_format(vm, time_pattern("medium"))
+        },
     ),
     method(
         "getDateTimeInstance",
@@ -2775,7 +2787,10 @@ const DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
         "getDateTimeInstance",
         "(Ljava/util/Locale;)Ljava/text/DateFormat;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| date_format(vm, "MMM d, yyyy h:mm:ss a"),
+        |vm, _, args| {
+            require_locale_arg(vm, args)?;
+            date_format(vm, "MMM d, yyyy h:mm:ss a")
+        },
     ),
     method(
         "format",
@@ -2860,7 +2875,10 @@ const DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
         "getTimeInstance",
         "(ILjava/util/Locale;)Ljava/text/DateFormat;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| date_format(vm, time_pattern(date_style_name(int_arg(args, 0)))),
+        |vm, _, args| {
+            require_locale_arg(vm, args)?;
+            date_format(vm, time_pattern(date_style_name(int_arg(args, 0))))
+        },
     ),
     method(
         "getDateTimeInstance",
@@ -2877,6 +2895,7 @@ const DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
         "(IILjava/util/Locale;)Ljava/text/DateFormat;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
+            require_locale_arg(vm, args)?;
             let date = date_pattern(date_style_name(int_arg(args, 0)));
             let time = time_pattern(date_style_name(int_arg(args, 1)));
             date_format(vm, &alloc::format!("{date} {time}"))
@@ -3003,6 +3022,15 @@ fn date_style_name(style: i32) -> &'static str {
 }
 
 /// A date format that carries a pattern.
+/// The JDK rejects a null Locale passed to the DateFormat factory methods;
+/// the Locale is always the last argument of those static overloads.
+fn require_locale_arg(vm: &mut Vm<'_>, args: &[Value]) -> Result<(), VmError> {
+    if ref_arg(args, args.len() - 1).is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    Ok(())
+}
+
 fn date_format(vm: &mut Vm<'_>, pattern: &str) -> Result<Value, VmError> {
     let class = vm.resolve_class("java/text/OjvmDateFormat")?;
     let instance = vm.new_instance(class)?;
@@ -4037,7 +4065,19 @@ const DATE_FORMAT_SYMBOLS_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            let rows = object_array_elements(vm, ref_arg(args, 1));
+            let zones = ref_arg(args, 1);
+            if zones.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let rows = object_array_elements(vm, zones);
+            if rows.is_empty() {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            for row in &rows {
+                if row.is_null() || vm.array_length(*row).unwrap_or(0) != 5 {
+                    return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+                }
+            }
             let string_class = vm.resolve_class("[Ljava/lang/String;")?;
             let copy = vm.allocate_object_array(string_class, rows.len())?;
             for (index, row) in rows.iter().enumerate() {

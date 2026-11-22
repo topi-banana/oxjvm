@@ -1040,6 +1040,12 @@ fn date_of_millis(vm: &mut Vm<'_>, millis: i64) -> Result<ObjectRef, VmError> {
 
 fn simple_date_format_init(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
     let this = receiver(args);
+    if ref_arg(args, 1).is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    if args.len() > 2 && ref_arg(args, 2).is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
     let (declaring, field) = vm.find_field(vm.class_of(this), "pattern", "Ljava/lang/String;")?;
     vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
     let millis = vm.host_time_millis();
