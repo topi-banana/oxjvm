@@ -12922,23 +12922,30 @@ fn properties_store(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
     }
     if let Some((declaring, method)) = writer_method {
         let string = vm.make_string(&text)?;
-        return vm.invoke_method(
+        vm.invoke_method(
             declaring,
             method,
             vec![Value::Ref(stream), Value::Ref(string)],
-        );
+        )?;
+    } else {
+        let bytes = text.into_bytes();
+        let array = vm.allocate_array_of(ArrayComponent::Byte, bytes.len())?;
+        for (index, byte) in bytes.iter().enumerate() {
+            vm.array_set(array, index as i32, Value::Int(i32::from(*byte)), false)?;
+        }
+        let (declaring, method) = vm.resolve_virtual_method(stream, "write", "([B)V")?;
+        vm.invoke_method(
+            declaring,
+            method,
+            vec![Value::Ref(stream), Value::Ref(array)],
+        )?;
     }
-    let bytes = text.into_bytes();
-    let array = vm.allocate_array_of(ArrayComponent::Byte, bytes.len())?;
-    for (index, byte) in bytes.iter().enumerate() {
-        vm.array_set(array, index as i32, Value::Int(i32::from(*byte)), false)?;
+    // The JDK's store0 flushes the writer chain, so a buffered stream drains
+    // even when the caller closes only the underlying file stream and never
+    // flushes the buffer itself (java/util/Properties/EscapeSpace).
+    if let Some((declaring, method)) = vm.find_method(vm.class_of(stream), "flush", "()V") {
+        vm.invoke_method(declaring, method, vec![Value::Ref(stream)])?;
     }
-    let (declaring, method) = vm.resolve_virtual_method(stream, "write", "([B)V")?;
-    vm.invoke_method(
-        declaring,
-        method,
-        vec![Value::Ref(stream), Value::Ref(array)],
-    )?;
     void()
 }
 
