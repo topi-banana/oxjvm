@@ -2738,6 +2738,13 @@ pub(crate) const DEFLATER_INPUT_STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
+fn inflater_output_ensure_open(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    if read_int_field(vm, this, "closed") != 0 {
+        return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+    }
+    Ok(())
+}
+
 fn inflater_output_finish(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
     if read_int_field(vm, this, "done") != 0 {
         return Ok(());
@@ -2812,45 +2819,55 @@ const INFLATER_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         },
     ),
     method("write", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        inflater_output_ensure_open(vm, this)?;
         let byte = crate::int_arg(args, 1) as u8;
-        append_ibuf(vm, receiver(args), &[byte])?;
+        append_ibuf(vm, this, &[byte])?;
         void()
     }),
     method("write", "([B)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        inflater_output_ensure_open(vm, this)?;
         let bytes = crate::lang::array_bytes(vm, ref_arg(args, 1))?;
-        append_ibuf(vm, receiver(args), &bytes)?;
+        append_ibuf(vm, this, &bytes)?;
         void()
     }),
     method("write", "([BII)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        inflater_output_ensure_open(vm, this)?;
         let bytes = crate::lang::array_bytes(vm, ref_arg(args, 1))?;
         let off = crate::int_arg(args, 2);
         let len = crate::int_arg(args, 3);
         if off < 0 || len < 0 || (off + len) as usize > bytes.len() {
             return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
         }
-        append_ibuf(
-            vm,
-            receiver(args),
-            &bytes[off as usize..(off + len) as usize],
-        )?;
+        append_ibuf(vm, this, &bytes[off as usize..(off + len) as usize])?;
         void()
     }),
     method("finish", "()V", ACC_PUBLIC, |vm, _, args| {
-        inflater_output_finish(vm, receiver(args))?;
+        let this = receiver(args);
+        inflater_output_ensure_open(vm, this)?;
+        inflater_output_finish(vm, this)?;
         void()
     }),
     method("close", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        if read_int_field(vm, this, "closed") != 0 {
+            return void();
+        }
         inflater_output_finish(vm, this)?;
         let out = filter_out(vm, this);
         if !out.is_null() {
             let (class, method) = vm.resolve_virtual_method(out, "close", "()V")?;
             vm.invoke_method(class, method, vec![Value::Ref(out)])?;
         }
+        write_int_field_named(vm, this, "closed", 1);
         void()
     }),
     method("flush", "()V", ACC_PUBLIC, |vm, _, args| {
-        let out = filter_out(vm, receiver(args));
+        let this = receiver(args);
+        inflater_output_ensure_open(vm, this)?;
+        let out = filter_out(vm, this);
         if !out.is_null() {
             let (class, method) = vm.resolve_virtual_method(out, "flush", "()V")?;
             vm.invoke_method(class, method, vec![Value::Ref(out)])?;
@@ -2868,6 +2885,7 @@ pub(crate) const INFLATER_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
         field("inf", "Ljava/util/zip/Inflater;", ACC_PROTECTED, None),
         field("ibuf", "[B", ACC_PRIVATE, None),
         field("done", "I", ACC_PRIVATE, None),
+        field("closed", "I", ACC_PRIVATE, None),
     ],
     &INFLATER_OUTPUT_STREAM_METHODS,
     None,
