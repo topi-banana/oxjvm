@@ -26656,21 +26656,12 @@ const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
             if !constants.is_null() {
                 let from_ord = crate::lang::read_int_field(vm, from, "ordinal");
                 let to_ord = crate::lang::read_int_field(vm, to, "ordinal");
-                if from_ord <= to_ord {
-                    for index in from_ord..=to_ord {
-                        let element = vm.array_get(constants, index)?.as_ref();
-                        enum_set_add(vm, set, element)?;
-                    }
-                } else {
-                    let length = vm.array_length(constants)?;
-                    for index in from_ord..length as i32 {
-                        let element = vm.array_get(constants, index)?.as_ref();
-                        enum_set_add(vm, set, element)?;
-                    }
-                    for index in 0..=to_ord {
-                        let element = vm.array_get(constants, index)?.as_ref();
-                        enum_set_add(vm, set, element)?;
-                    }
+                if from_ord > to_ord {
+                    return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+                }
+                for index in from_ord..=to_ord {
+                    let element = vm.array_get(constants, index)?.as_ref();
+                    enum_set_add(vm, set, element)?;
                 }
             }
             object(set)
