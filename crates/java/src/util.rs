@@ -12887,6 +12887,57 @@ fn properties_load_reader(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmEr
 ///
 /// Every entry becomes a `key=value` line, and the comment is written as a `#` line above
 /// them.
+/// Render the caller's comment the way the JDK `writeComments` does: a leading
+/// '#', non-Latin-1 characters escaped as `\uXXXX`, and each embedded newline
+/// starting a fresh '#' comment line unless the next line already begins with
+/// '#' or '!'. The escaping applies to both the byte and Writer paths.
+fn properties_write_comments(comment: &str) -> String {
+    let chars: Vec<char> = comment.chars().collect();
+    let len = chars.len();
+    let mut out = String::from("#");
+    let mut last = 0;
+    let mut current = 0;
+    while current < len {
+        let c = chars[current];
+        if c > '\u{ff}' || c == '\n' || c == '\r' {
+            if last != current {
+                out.extend(&chars[last..current]);
+            }
+            if c > '\u{ff}' {
+                let mut buf = [0u16; 2];
+                for unit in c.encode_utf16(&mut buf) {
+                    out.push('\\');
+                    out.push('u');
+                    for shift in [12u32, 8, 4, 0] {
+                        let nib = ((u32::from(*unit) >> shift) & 0xF) as u8;
+                        let hex = if nib < 10 {
+                            b'0' + nib
+                        } else {
+                            b'A' + nib - 10
+                        };
+                        out.push(char::from(hex));
+                    }
+                }
+            } else {
+                out.push('\n');
+                if c == '\r' && current != len - 1 && chars[current + 1] == '\n' {
+                    current += 1;
+                }
+                if current == len - 1 || (chars[current + 1] != '#' && chars[current + 1] != '!') {
+                    out.push('#');
+                }
+            }
+            last = current + 1;
+        }
+        current += 1;
+    }
+    if last != current {
+        out.extend(&chars[last..current]);
+    }
+    out.push('\n');
+    out
+}
+
 fn properties_store(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
     let this = receiver(args);
     let stream = ref_arg(args, 1);
@@ -12896,9 +12947,7 @@ fn properties_store(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
     let comment = vm.string_value(ref_arg(args, 2)).unwrap_or_default();
     let mut text = String::new();
     if !comment.is_empty() {
-        text.push('#');
-        text.push_str(&comment);
-        text.push('\n');
+        text.push_str(&properties_write_comments(&comment));
     }
     // The JDK writes the time of the store as a comment line below the caller's comment.
     text.push('#');
