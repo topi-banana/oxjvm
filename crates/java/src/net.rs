@@ -1308,7 +1308,7 @@ pub(crate) fn new_url(vm: &mut Vm<'_>, text: &str) -> Result<ObjectRef, VmError>
 // NetworkInterface
 // -------------------------------------------------------------------------------------------
 
-const NETWORK_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
+const NETWORK_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
     method(
         "getByName",
         "(Ljava/lang/String;)Ljava/net/NetworkInterface;",
@@ -1327,6 +1327,18 @@ const NETWORK_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
             if ref_arg(args, 0).is_null() {
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
+            object(ObjectRef::NULL)
+        },
+    ),
+    method(
+        "getByIndex",
+        "(I)Ljava/net/NetworkInterface;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if int_arg(args, 0) < 0 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            // No host interface is ever found, so any valid index yields null.
             object(ObjectRef::NULL)
         },
     ),
