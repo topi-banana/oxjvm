@@ -521,6 +521,113 @@ fn simple_date_format_pattern(vm: &Vm<'_>, this: ObjectRef) -> String {
         .unwrap_or_default()
 }
 
+/// Whether this format parses strictly (`setLenient(false)`). The flag is
+/// stored inverted so the zero-initialized field means the JDK default of
+/// lenient parsing.
+fn sdf_non_lenient(vm: &Vm<'_>, this: ObjectRef) -> bool {
+    let class = vm.class_of(this);
+    vm.read_instance_int_named(this, class, "nonLenient", "Z")
+        .unwrap_or(0)
+        != 0
+}
+
+/// In strict mode the JDK rejects a numeric field whose value falls outside
+/// the range its pattern letter allows, reporting the index just past the
+/// offending number. Returns that error index, or `None` when every numeric
+/// field is in range (or the text does not line up with the pattern closely
+/// enough to judge, leaving the value parse in charge).
+fn non_lenient_field_error(pattern: &str, text: &str) -> Option<usize> {
+    let p: Vec<char> = pattern.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    let mut pi = 0;
+    let mut ti = 0;
+    while pi < p.len() {
+        let ch = p[pi];
+        if ch == '\'' {
+            pi += 1;
+            if pi < p.len() && p[pi] == '\'' {
+                if ti < t.len() && t[ti] == '\'' {
+                    ti += 1;
+                } else {
+                    return None;
+                }
+                pi += 1;
+                continue;
+            }
+            while pi < p.len() && p[pi] != '\'' {
+                if ti < t.len() && t[ti] == p[pi] {
+                    ti += 1;
+                } else {
+                    return None;
+                }
+                pi += 1;
+            }
+            pi += 1;
+            continue;
+        }
+        let mut run = 1;
+        while pi + run < p.len() && p[pi + run] == ch {
+            run += 1;
+        }
+        let numeric = matches!(
+            ch,
+            'y' | 'd' | 'H' | 'h' | 'k' | 'K' | 'm' | 's' | 'S' | 'D'
+        ) || (ch == 'M' && run < 3)
+            || (ch == 'Q' && run < 3);
+        if numeric {
+            let mut neg = false;
+            if ti < t.len() && (t[ti] == '-' || t[ti] == '+') {
+                neg = t[ti] == '-';
+                ti += 1;
+            }
+            let digits_start = ti;
+            let mut value: i64 = 0;
+            while ti < t.len() && t[ti].is_ascii_digit() {
+                value = value * 10 + i64::from(t[ti] as u32 - '0' as u32);
+                ti += 1;
+            }
+            if ti == digits_start {
+                return None;
+            }
+            if neg {
+                value = -value;
+            }
+            let (lo, hi) = match ch {
+                'h' => (1, 12),
+                'k' => (1, 24),
+                'H' => (0, 23),
+                'K' => (0, 11),
+                'm' | 's' => (0, 59),
+                'M' => (1, 12),
+                'd' => (1, 31),
+                'S' => (0, 999),
+                'D' => (1, 366),
+                _ => (i64::MIN, i64::MAX),
+            };
+            if value < lo || value > hi {
+                return Some(ti);
+            }
+        } else if matches!(ch, 'a' | 'E' | 'z' | 'Z')
+            || (ch == 'M' && run >= 3)
+            || (ch == 'Q' && run >= 3)
+        {
+            while ti < t.len() && t[ti].is_alphabetic() {
+                ti += 1;
+            }
+        } else {
+            for _ in 0..run {
+                if ti < t.len() && t[ti] == ch {
+                    ti += 1;
+                } else {
+                    return None;
+                }
+            }
+        }
+        pi += run;
+    }
+    None
+}
+
 fn simple_date_format_millis(vm: &mut Vm<'_>, date: ObjectRef) -> Result<i64, VmError> {
     if date.is_null() {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
@@ -646,6 +753,12 @@ const SIMPLE_DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         |vm, _, args| {
             // Actually arg is string ref
             let input = vm.string_or_empty(ref_arg(args, 1));
+            if sdf_non_lenient(vm, receiver(args)) {
+                let pattern = simple_date_format_pattern(vm, receiver(args));
+                if non_lenient_field_error(&pattern, &input).is_some() {
+                    return Err(vm.throw_new("java/text/ParseException", Some("Unparsable date")));
+                }
+            }
             let millis = crate::format::parse_date_text(&input);
             let class = vm.resolve_class("java/util/Date")?;
             let instance = vm.new_instance(class)?;
@@ -664,6 +777,13 @@ const SIMPLE_DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
                 write_int_field(vm, position, "errorIndex", 0);
                 return object(ObjectRef::NULL);
             }
+            if sdf_non_lenient(vm, receiver(args)) {
+                let pattern = simple_date_format_pattern(vm, receiver(args));
+                if let Some(error) = non_lenient_field_error(&pattern, &input) {
+                    write_int_field(vm, position, "errorIndex", error as i32);
+                    return object(ObjectRef::NULL);
+                }
+            }
             let millis = crate::format::parse_date_text(&input);
             let class = vm.resolve_class("java/util/Date")?;
             let instance = vm.new_instance(class)?;
@@ -672,9 +792,16 @@ const SIMPLE_DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
             object(instance)
         },
     ),
-    method("setLenient", "(Z)V", ACC_PUBLIC, |_, _, _| void()),
-    method("isLenient", "()Z", ACC_PUBLIC, |_, _, _| {
-        crate::boolean(true)
+    method("setLenient", "(Z)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        if let Some((declaring, field)) = vm.find_field_opt(class, "nonLenient", "Z") {
+            vm.set_instance_int(this, declaring, field, i32::from(!crate::bool_arg(args, 1)));
+        }
+        void()
+    }),
+    method("isLenient", "()Z", ACC_PUBLIC, |vm, _, args| {
+        crate::boolean(!sdf_non_lenient(vm, receiver(args)))
     }),
     method(
         "set2DigitYearStart",
@@ -746,6 +873,7 @@ pub(crate) const SIMPLE_DATE_FORMAT: oxjvm_vm::NativeClass = class(
         field("pattern", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("timeZone", "Ljava/util/TimeZone;", ACC_PRIVATE, None),
         field("twoDigitYearStart", "Ljava/util/Date;", ACC_PRIVATE, None),
+        field("nonLenient", "Z", ACC_PRIVATE, None),
     ],
     &SIMPLE_DATE_FORMAT_METHODS,
     None,
