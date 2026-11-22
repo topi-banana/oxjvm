@@ -610,7 +610,7 @@ pub(crate) const LOG_RECORD: oxjvm_vm::NativeClass = class(
 // ResourceBundle (minimal)
 // -------------------------------------------------------------------------------------------
 
-const RESOURCE_BUNDLE_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const RESOURCE_BUNDLE_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     method(
         "getBundle",
         "(Ljava/lang/String;)Ljava/util/ResourceBundle;",
@@ -650,6 +650,20 @@ const RESOURCE_BUNDLE_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         ACC_PROTECTED,
         abstract_method_pub,
     ),
+    method(
+        "setParent",
+        "(Ljava/util/ResourceBundle;)V",
+        ACC_PROTECTED,
+        |vm, _, args| {
+            let this = receiver(args);
+            let parent = ref_arg(args, 1);
+            let class = vm.class_of(this);
+            let (declaring, field) =
+                vm.find_field(class, "parent", "Ljava/util/ResourceBundle;")?;
+            vm.set_instance_ref(this, declaring, field, parent);
+            void()
+        },
+    ),
 ];
 
 pub(crate) const RESOURCE_BUNDLE: oxjvm_vm::NativeClass = class(
@@ -657,7 +671,12 @@ pub(crate) const RESOURCE_BUNDLE: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_ABSTRACT,
-    &[],
+    &[field(
+        "parent",
+        "Ljava/util/ResourceBundle;",
+        ACC_PRIVATE,
+        None,
+    )],
     &RESOURCE_BUNDLE_METHODS,
     None,
 );
@@ -724,6 +743,18 @@ fn resource_bundle_object(
     )?;
     let value = vm.invoke_method(class, method, vec![Value::Ref(bundle), Value::Ref(key)])?;
     if value.as_ref().is_null() {
+        // The JDK falls back to the parent bundle chain before giving up.
+        let parent = vm
+            .read_ref_field(
+                bundle,
+                vm.class_of(bundle),
+                "parent",
+                "Ljava/util/ResourceBundle;",
+            )
+            .unwrap_or(ObjectRef::NULL);
+        if !parent.is_null() {
+            return resource_bundle_object(vm, parent, key);
+        }
         let message = vm.string_or_empty(key);
         return Err(vm.throw_new("java/util/MissingResourceException", Some(&message)));
     }
