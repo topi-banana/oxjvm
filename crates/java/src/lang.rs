@@ -899,13 +899,18 @@ fn class_get_simple_name(
             _ => {
                 let object = base.strip_prefix('L').unwrap_or(base);
                 let object = object.strip_suffix(';').unwrap_or(object);
-                object.rsplit('/').next().unwrap_or(object)
+                let last = object.rsplit('/').next().unwrap_or(object);
+                let segment = last.rsplit('$').next().unwrap_or(last);
+                segment.trim_start_matches(|c: char| c.is_ascii_digit())
             }
         };
         alloc::format!("{base_simple}{}", "[]".repeat(dims))
     } else {
         let base = name.rsplit('/').next().unwrap_or(name);
-        base.rsplit('$').next().unwrap_or(base).to_string()
+        let segment = base.rsplit('$').next().unwrap_or(base);
+        segment
+            .trim_start_matches(|c: char| c.is_ascii_digit())
+            .to_string()
     };
     object(vm.make_string(&simple)?)
 }
@@ -952,7 +957,13 @@ pub(crate) fn canonical_name(vm: &Vm<'_>, class: ClassId) -> Option<String> {
             rest = next;
         }
         let mut component = if let Some(object) = rest.strip_prefix('L') {
-            object.strip_suffix(';').unwrap_or(object).replace('/', ".")
+            let object = object.strip_suffix(';').unwrap_or(object);
+            // A local or anonymous component has no canonical name, and neither
+            // does an array of it.
+            if is_anonymous(object) {
+                return None;
+            }
+            object.replace(['/', '$'], ".")
         } else {
             primitive_name(rest).to_string()
         };
