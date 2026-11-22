@@ -515,6 +515,24 @@ pub(crate) fn pow(x: f64, y: f64) -> f64 {
     if x < 0.0 && (y - floor(y)) != 0.0 {
         return f64::NAN;
     }
+    // Integer exponents via repeated squaring: for integer powers of small
+    // integer bases (e.g. pow(5, 3) == 125) every intermediate is exact,
+    // while exp(y*ln(x)) can land one ulp low and truncate to the wrong int.
+    if y.abs() <= 1024.0 && (y - floor(y)) == 0.0 {
+        let mut n = y.abs() as u32;
+        let mut base = x.abs();
+        let mut acc = 1.0f64;
+        while n > 0 {
+            if n & 1 != 0 {
+                acc *= base;
+            }
+            base *= base;
+            n >>= 1;
+        }
+        let negative = x < 0.0 && (y as i64) % 2 != 0;
+        let result = if y < 0.0 { 1.0 / acc } else { acc };
+        return if negative { -result } else { result };
+    }
     let negative = x < 0.0 && y.abs() < 9001111111140992.0 && (y as i64) % 2 != 0;
     let result = exp(y * ln(x.abs()));
     if negative { -result } else { result }
@@ -3275,15 +3293,115 @@ fn big_decimal_move_point(text: &str, shift: i32) -> String {
 
 /// `BigDecimal.divide(divisor, scale, roundingMode)` with exact i128 arithmetic
 /// on the unscaled values when they fit (f64 fallback otherwise).
+/// Exact `BigDecimal.divide(BigDecimal)`: the quotient must terminate,
+/// otherwise ArithmeticException like the JDK. The result scale is the
+/// natural terminating scale reduced by trailing zeros down to the
+/// preferred scale (dividend scale minus divisor scale).
+fn big_decimal_divide_exact(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let a_text = big_text(vm, receiver(args));
+    let b_text = big_text(vm, ref_arg(args, 1));
+    let (neg_a, int_a, frac_a) = decimal_parts(&a_text);
+    let (neg_b, int_b, frac_b) = decimal_parts(&b_text);
+    let preferred = frac_a.len() as i32 - frac_b.len() as i32;
+    let ua = parse_i128(&alloc::format!("{int_a}{frac_a}"));
+    let ub = parse_i128(&alloc::format!("{int_b}{frac_b}"));
+    let (Some(ua), Some(ub)) = (ua, ub) else {
+        return Err(vm.throw_new("java/lang/ArithmeticException", Some("Overflow")));
+    };
+    if ub == 0 {
+        let msg = if ua == 0 {
+            "Division undefined"
+        } else {
+            "Division by zero"
+        };
+        return Err(vm.throw_new("java/lang/ArithmeticException", Some(msg)));
+    }
+    if ua == 0 {
+        let text = big_decimal_with_scale("0", preferred);
+        return create_big_number(vm, "java/math/BigDecimal", &text);
+    }
+    let negative = neg_a != neg_b;
+    let mut num = ua.unsigned_abs();
+    let mut den = ub.unsigned_abs();
+    let g = gcd_u128(num, den);
+    num /= g;
+    den /= g;
+    let mut twos = 0u32;
+    let mut fives = 0u32;
+    while den % 2 == 0 {
+        den /= 2;
+        twos += 1;
+    }
+    while den % 5 == 0 {
+        den /= 5;
+        fives += 1;
+    }
+    if den != 1 {
+        return Err(vm.throw_new(
+            "java/lang/ArithmeticException",
+            Some("Non-terminating decimal expansion; no exact representable decimal result"),
+        ));
+    }
+    let factor = 2u128
+        .checked_pow(fives)
+        .and_then(|v| v.checked_mul(5u128.checked_pow(twos)?));
+    let unscaled = factor.and_then(|f| num.checked_mul(f));
+    let Some(mut u) = unscaled else {
+        return Err(vm.throw_new("java/lang/ArithmeticException", Some("Overflow")));
+    };
+    let mut scale = i64::from(preferred) + i64::from(twos + fives);
+    while scale > i64::from(preferred) && u % 10 == 0 {
+        u /= 10;
+        scale -= 1;
+    }
+    if scale > i64::from(i32::MAX) || scale < i64::from(i32::MIN) {
+        return Err(vm.throw_new("java/lang/ArithmeticException", Some("Overflow")));
+    }
+    let digits = u.to_string();
+    let text = if scale >= 0 {
+        format_scaled_digits(&digits, negative, scale as usize)
+    } else {
+        let signed = if negative && digits != "0" {
+            alloc::format!("-{digits}")
+        } else {
+            digits
+        };
+        big_decimal_with_scale(&signed, scale as i32)
+    };
+    create_big_number(vm, "java/math/BigDecimal", &text)
+}
+
+fn gcd_u128(mut a: u128, mut b: u128) -> u128 {
+    while b != 0 {
+        let t = a % b;
+        a = b;
+        b = t;
+    }
+    a
+}
+
 fn big_decimal_divide_scaled(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
     let a_text = big_text(vm, receiver(args));
     let b_text = big_text(vm, ref_arg(args, 1));
     let new_scale = int_arg(args, 2);
-    let mode_ref = ref_arg(args, 3);
-    if mode_ref.is_null() {
-        return Err(vm.throw_new("java/lang/NullPointerException", None));
-    }
-    let mode = rounding_mode_ordinal(vm, mode_ref);
+    let mode = match args[3] {
+        Value::Int(m) => {
+            if !(0..=7).contains(&m) {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("Invalid rounding mode"),
+                ));
+            }
+            m
+        }
+        _ => {
+            let mode_ref = ref_arg(args, 3);
+            if mode_ref.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            rounding_mode_ordinal(vm, mode_ref)
+        }
+    };
     let (neg_a, int_a, frac_a) = decimal_parts(&a_text);
     let (neg_b, int_b, frac_b) = decimal_parts(&b_text);
     let sa = frac_a.len() as i32;
@@ -3339,19 +3457,12 @@ fn big_decimal_divide_scaled(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, V
             if negative {
                 value = -value;
             }
-            let mut scale = new_scale;
-            if scale < 0 {
-                if let Some(factor) = 10i128.checked_pow((-scale) as u32) {
-                    if let Some(scaled_value) = value.checked_mul(factor) {
-                        value = scaled_value;
-                        scale = 0;
-                    }
-                }
+            if new_scale < 0 {
+                let text = big_decimal_with_scale(&value.to_string(), new_scale);
+                return create_big_number(vm, "java/math/BigDecimal", &text);
             }
-            if scale >= 0 {
-                if let Some(text) = format_scaled(value, scale as usize) {
-                    return create_big_number(vm, "java/math/BigDecimal", &text);
-                }
+            if let Some(text) = format_scaled(value, new_scale as usize) {
+                return create_big_number(vm, "java/math/BigDecimal", &text);
             }
         }
     }
@@ -4802,7 +4913,7 @@ fn big_decimal_set_scale(
     create_big_number(vm, "java/math/BigDecimal", &result)
 }
 
-const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 60] = [
+const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 61] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -5145,18 +5256,7 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 60] = [
         "divide",
         "(Ljava/math/BigDecimal;)Ljava/math/BigDecimal;",
         ACC_PUBLIC,
-        |vm, _, args| {
-            let a = big_text(vm, receiver(args))
-                .parse::<f64>()
-                .unwrap_or(f64::NAN);
-            let b = big_text(vm, ref_arg(args, 1))
-                .parse::<f64>()
-                .unwrap_or(f64::NAN);
-            if b == 0.0 {
-                return Err(vm.throw_new("java/lang/ArithmeticException", Some("/ by zero")));
-            }
-            create_big_number(vm, "java/math/BigDecimal", &alloc::format!("{}", a / b))
-        },
+        |vm, _, args| big_decimal_divide_exact(vm, args),
     ),
     method(
         "setScale",
@@ -5241,6 +5341,12 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 60] = [
         |vm, _, args| big_decimal_divide_scaled(vm, args),
     ),
     method(
+        "divide",
+        "(Ljava/math/BigDecimal;II)Ljava/math/BigDecimal;",
+        ACC_PUBLIC,
+        |vm, _, args| big_decimal_divide_scaled(vm, args),
+    ),
+    method(
         "movePointLeft",
         "(I)Ljava/math/BigDecimal;",
         ACC_PUBLIC,
@@ -5315,9 +5421,18 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 60] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let raw = big_text(vm, receiver(args));
-            let text = expand_decimal(&raw).unwrap_or(raw);
-            let (negative, int_part, frac_part) = decimal_parts(&text);
-            let digits = alloc::format!("{}{}", int_part, frac_part);
+            // The unscaled value is the mantissa digit string, never the
+            // exponent-expanded form: valueOf(4, -5).unscaledValue() is 4.
+            let (negative, body) = match raw.strip_prefix('-') {
+                Some(rest) => (true, rest),
+                None => (false, raw.strip_prefix('+').unwrap_or(&raw)),
+            };
+            let mantissa = body.split_once(['e', 'E']).map_or(body, |(m, _)| m);
+            let (int_part, frac_part) = match mantissa.split_once('.') {
+                Some((i, f)) => (i, f),
+                None => (mantissa, ""),
+            };
+            let digits = alloc::format!("{int_part}{frac_part}");
             let trimmed = digits.trim_start_matches('0');
             let mut result = String::new();
             if negative && !trimmed.is_empty() {
