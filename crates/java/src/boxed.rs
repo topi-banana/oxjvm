@@ -6916,7 +6916,11 @@ fn float16_to_float(bits: u16) -> f32 {
         if mantissa == 0.0 {
             f64::INFINITY
         } else {
-            f64::NAN
+            // Preserve the NaN significand (and sign) through the widening
+            // conversion the way the JDK does, so a binary16 NaN round-trips.
+            let nan_bits =
+                (u32::from(bits & 0x8000) << 16) | 0x7f80_0000 | (u32::from(bits & 0x3ff) << 13);
+            return f32::from_bits(nan_bits);
         }
     } else {
         (1.0 + mantissa / 1024.0) * pow2(exponent - 15)
@@ -6944,7 +6948,17 @@ fn float_to_float16(value: f32) -> u16 {
     let mut exponent = ((bits >> 23) & 0xff) as i32;
     let mantissa = bits & 0x7f_ffff;
     if exponent == 0xff {
-        return sign | if mantissa != 0 { 0x7e00 } else { 0x7c00 };
+        // Preserve the NaN significand through the narrowing conversion: keep
+        // the top ten mantissa bits, forcing the quiet bit when they would all
+        // shift out so a NaN never collapses into infinity.
+        if mantissa != 0 {
+            let mut significand = mantissa >> 13;
+            if significand == 0 {
+                significand = 0x200;
+            }
+            return sign | 0x7c00 | significand as u16;
+        }
+        return sign | 0x7c00;
     }
     if exponent == 0 {
         return sign;
