@@ -1429,7 +1429,17 @@ const URL_ENCODER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let text = string_arg(vm, args[0])
-                .map_err(|_| vm.throw_new("java/lang/NullPointerException", Some("charsetName")))?;
+                .map_err(|_| vm.throw_new("java/lang/NullPointerException", None))?;
+            let enc_ref = args[1].as_ref();
+            if enc_ref.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", Some("charsetName")));
+            }
+            let enc_name = vm.string_or_empty(enc_ref);
+            // The JDK resolves the charset name; an illegal or unknown name is
+            // reported as an UnsupportedEncodingException.
+            if crate::charset::for_name(vm, &enc_name)?.is_none() {
+                return Err(vm.throw_new("java/io/UnsupportedEncodingException", Some(&enc_name)));
+            }
             let text = if text.is_empty() { String::new() } else { text };
             object(vm.make_string(&url_encode(&text))?)
         },
