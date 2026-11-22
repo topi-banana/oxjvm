@@ -244,7 +244,7 @@ pub(crate) const FILTER_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PRINT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
+const PRINT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
     method(
         "<init>",
         "(Ljava/io/OutputStream;)V",
@@ -490,6 +490,76 @@ const PRINT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
                 )
                 .ok_or_else(|| VmError::internal("Charset.defaultCharset"))?;
             vm.invoke_method(declaring, method, vec![])
+        },
+    ),
+    method(
+        "append",
+        "(Ljava/lang/CharSequence;)Ljava/io/PrintStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let csq = ref_arg(args, 1);
+            let text = if csq.is_null() {
+                vm.make_string("null")?
+            } else {
+                let (class, method) =
+                    vm.resolve_virtual_method(csq, "toString", "()Ljava/lang/String;")?;
+                vm.invoke_method(class, method, vec![Value::Ref(csq)])?
+                    .as_ref()
+            };
+            let (class, method) =
+                vm.resolve_virtual_method(this, "print", "(Ljava/lang/String;)V")?;
+            vm.invoke_method(class, method, vec![Value::Ref(this), Value::Ref(text)])?;
+            object(this)
+        },
+    ),
+    method(
+        "append",
+        "(Ljava/lang/CharSequence;II)Ljava/io/PrintStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let mut sequence = ref_arg(args, 1);
+            if sequence.is_null() {
+                sequence = vm.make_string("null")?;
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(sequence, "subSequence", "(II)Ljava/lang/CharSequence;")?;
+            let sub = vm.invoke_method(
+                class,
+                method,
+                vec![
+                    Value::Ref(sequence),
+                    Value::Int(int_arg(args, 2)),
+                    Value::Int(int_arg(args, 3)),
+                ],
+            )?;
+            let (class, method) =
+                vm.resolve_virtual_method(sub.as_ref(), "toString", "()Ljava/lang/String;")?;
+            let text = vm.invoke_method(class, method, vec![sub])?;
+            let (class, method) =
+                vm.resolve_virtual_method(this, "print", "(Ljava/lang/String;)V")?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![Value::Ref(this), Value::Ref(text.as_ref())],
+            )?;
+            object(this)
+        },
+    ),
+    method(
+        "append",
+        "(C)Ljava/io/PrintStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (class, method) = vm.resolve_virtual_method(this, "print", "(C)V")?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![Value::Ref(this), Value::Int(int_arg(args, 1))],
+            )?;
+            object(this)
         },
     ),
 ];
@@ -2376,11 +2446,13 @@ const WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
         |vm, _, args| {
             let this = receiver(args);
             let csq = ref_arg(args, 1);
-            if csq.is_null() {
-                return Err(vm.throw_new("java/lang/NullPointerException", None));
-            }
-            let (tc, tm) = vm.resolve_virtual_method(csq, "toString", "()Ljava/lang/String;")?;
-            let text = vm.invoke_method(tc, tm, vec![Value::Ref(csq)])?.as_ref();
+            let text = if csq.is_null() {
+                vm.make_string("null")?
+            } else {
+                let (tc, tm) =
+                    vm.resolve_virtual_method(csq, "toString", "()Ljava/lang/String;")?;
+                vm.invoke_method(tc, tm, vec![Value::Ref(csq)])?.as_ref()
+            };
             let (wc, wm) = vm.resolve_virtual_method(this, "write", "(Ljava/lang/String;)V")?;
             vm.invoke_method(wc, wm, vec![Value::Ref(this), Value::Ref(text)])?;
             object(this)
@@ -2392,9 +2464,9 @@ const WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            let csq = ref_arg(args, 1);
+            let mut csq = ref_arg(args, 1);
             if csq.is_null() {
-                return Err(vm.throw_new("java/lang/NullPointerException", None));
+                csq = vm.make_string("null")?;
             }
             let (sc, sm) =
                 vm.resolve_virtual_method(csq, "subSequence", "(II)Ljava/lang/CharSequence;")?;
@@ -3711,7 +3783,12 @@ const PRINT_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            let text = vm.string_or_empty(ref_arg(args, 1));
+            let csq = ref_arg(args, 1);
+            let text = if csq.is_null() {
+                String::from("null")
+            } else {
+                vm.string_or_empty(csq)
+            };
             print_writer_text(vm, this, &text)?;
             object(this)
         },
@@ -3722,21 +3799,25 @@ const PRINT_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            let sequence = ref_arg(args, 1);
-            let start = int_arg(args, 2).max(0) as usize;
-            let end = int_arg(args, 3).max(0) as usize;
-            let mut text = String::new();
-            if !sequence.is_null() {
-                if let Some(units) = vm.string_utf16(sequence) {
-                    let units = units.to_vec();
-                    for unit in units.iter().take(end).skip(start) {
-                        if let Some(ch) = char::from_u32(u32::from(*unit)) {
-                            text.push(ch);
-                        }
-                    }
-                }
+            let mut sequence = ref_arg(args, 1);
+            if sequence.is_null() {
+                sequence = vm.make_string("null")?;
             }
-            print_writer_text(vm, this, &text)?;
+            let (class, method) =
+                vm.resolve_virtual_method(sequence, "subSequence", "(II)Ljava/lang/CharSequence;")?;
+            let sub = vm.invoke_method(
+                class,
+                method,
+                vec![
+                    Value::Ref(sequence),
+                    Value::Int(int_arg(args, 2)),
+                    Value::Int(int_arg(args, 3)),
+                ],
+            )?;
+            let (class, method) =
+                vm.resolve_virtual_method(sub.as_ref(), "toString", "()Ljava/lang/String;")?;
+            let text = vm.invoke_method(class, method, vec![sub])?;
+            print_writer_text(vm, this, &vm.string_or_empty(text.as_ref()))?;
             object(this)
         },
     ),
@@ -4081,6 +4162,25 @@ fn string_writer_append(
 // -------------------------------------------------------------------------------------------
 
 /// Write `text` to the writer's file (append mode after the first write).
+/// Open a FileWriter: record the path and append mode, and truncate the
+/// file immediately for non-append mode the way the JDK's underlying
+/// FileOutputStream does on construction.
+fn file_writer_open(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    path: &str,
+    append: bool,
+) -> Result<(), VmError> {
+    vm.set_string_field(this, vm.class_of(this), "path", path)?;
+    write_int_field(vm, this, "append", i32::from(append));
+    if !append {
+        if let Some(fs) = vm.host.filesystem() {
+            fs.write(path, b"", false);
+        }
+    }
+    Ok(())
+}
+
 fn file_writer_write_text(vm: &mut Vm<'_>, this: ObjectRef, text: &str) -> Result<Value, VmError> {
     let class = vm.class_of(this);
     let path = vm
@@ -4107,8 +4207,7 @@ const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
         |vm, _, args| {
             let this = receiver(args);
             let path = crate::string_arg(vm, args[1])?;
-            vm.set_string_field(this, vm.class_of(this), "path", &path)?;
-            write_int_field(vm, this, "append", 0);
+            file_writer_open(vm, this, &path, false)?;
             void()
         },
     ),
@@ -4119,8 +4218,7 @@ const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
         |vm, _, args| {
             let this = receiver(args);
             let path = crate::string_arg(vm, args[1])?;
-            vm.set_string_field(this, vm.class_of(this), "path", &path)?;
-            write_int_field(vm, this, "append", i32::from(crate::bool_arg(args, 2)));
+            file_writer_open(vm, this, &path, crate::bool_arg(args, 2))?;
             void()
         },
     ),
@@ -4130,8 +4228,7 @@ const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
         let path = vm
             .read_string_field(file, vm.class_of(file), "path")
             .unwrap_or_default();
-        vm.set_string_field(this, vm.class_of(this), "path", &path)?;
-        write_int_field(vm, this, "append", 0);
+        file_writer_open(vm, this, &path, false)?;
         void()
     }),
     method("<init>", "(Ljava/io/File;Z)V", ACC_PUBLIC, |vm, _, args| {
@@ -4140,8 +4237,7 @@ const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
         let path = vm
             .read_string_field(file, vm.class_of(file), "path")
             .unwrap_or_default();
-        vm.set_string_field(this, vm.class_of(this), "path", &path)?;
-        write_int_field(vm, this, "append", i32::from(crate::bool_arg(args, 2)));
+        file_writer_open(vm, this, &path, crate::bool_arg(args, 2))?;
         void()
     }),
     method(
@@ -4151,8 +4247,7 @@ const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
         |vm, _, args| {
             let this = receiver(args);
             let path = crate::string_arg(vm, args[1])?;
-            vm.set_string_field(this, vm.class_of(this), "path", &path)?;
-            write_int_field(vm, this, "append", 0);
+            file_writer_open(vm, this, &path, false)?;
             void()
         },
     ),
@@ -4166,8 +4261,7 @@ const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
             let path = vm
                 .read_string_field(file, vm.class_of(file), "path")
                 .unwrap_or_default();
-            vm.set_string_field(this, vm.class_of(this), "path", &path)?;
-            write_int_field(vm, this, "append", 0);
+            file_writer_open(vm, this, &path, false)?;
             void()
         },
     ),
@@ -4178,8 +4272,7 @@ const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
         |vm, _, args| {
             let this = receiver(args);
             let path = crate::string_arg(vm, args[1])?;
-            vm.set_string_field(this, vm.class_of(this), "path", &path)?;
-            write_int_field(vm, this, "append", i32::from(crate::bool_arg(args, 3)));
+            file_writer_open(vm, this, &path, crate::bool_arg(args, 3))?;
             void()
         },
     ),
@@ -4193,8 +4286,7 @@ const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
             let path = vm
                 .read_string_field(file, vm.class_of(file), "path")
                 .unwrap_or_default();
-            vm.set_string_field(this, vm.class_of(this), "path", &path)?;
-            write_int_field(vm, this, "append", i32::from(crate::bool_arg(args, 3)));
+            file_writer_open(vm, this, &path, crate::bool_arg(args, 3))?;
             void()
         },
     ),
@@ -4232,7 +4324,12 @@ const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            let text = vm.string_or_empty(ref_arg(args, 1));
+            let csq = ref_arg(args, 1);
+            let text = if csq.is_null() {
+                String::from("null")
+            } else {
+                vm.string_or_empty(csq)
+            };
             file_writer_write_text(vm, this, &text)?;
             object(this)
         },
@@ -4243,13 +4340,25 @@ const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            let sequence = vm.string_or_empty(ref_arg(args, 1));
-            let start = int_arg(args, 2).max(0) as usize;
-            let end = int_arg(args, 3).max(0) as usize;
-            let units: Vec<u16> = sequence.encode_utf16().collect();
-            let text =
-                String::from_utf16_lossy(&units[start.min(units.len())..end.min(units.len())]);
-            file_writer_write_text(vm, this, &text)?;
+            let mut sequence = ref_arg(args, 1);
+            if sequence.is_null() {
+                sequence = vm.make_string("null")?;
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(sequence, "subSequence", "(II)Ljava/lang/CharSequence;")?;
+            let sub = vm.invoke_method(
+                class,
+                method,
+                vec![
+                    Value::Ref(sequence),
+                    Value::Int(int_arg(args, 2)),
+                    Value::Int(int_arg(args, 3)),
+                ],
+            )?;
+            let (class, method) =
+                vm.resolve_virtual_method(sub.as_ref(), "toString", "()Ljava/lang/String;")?;
+            let text = vm.invoke_method(class, method, vec![sub])?;
+            file_writer_write_text(vm, this, &vm.string_or_empty(text.as_ref()))?;
             object(this)
         },
     ),
@@ -5905,8 +6014,15 @@ const BUFFERED_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            let text = vm.string_or_empty(ref_arg(args, 1));
-            let text = vm.make_string(&text)?;
+            let sequence = ref_arg(args, 1);
+            let text = if sequence.is_null() {
+                vm.make_string("null")?
+            } else {
+                let (class, method) =
+                    vm.resolve_virtual_method(sequence, "toString", "()Ljava/lang/String;")?;
+                vm.invoke_method(class, method, vec![Value::Ref(sequence)])?
+                    .as_ref()
+            };
             buffered_writer_call(
                 vm,
                 this,
@@ -5923,19 +6039,30 @@ const BUFFERED_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            let sequence = vm.string_or_empty(ref_arg(args, 1));
-            let start = int_arg(args, 2).max(0) as usize;
-            let end = int_arg(args, 3).max(0) as usize;
-            let units: Vec<u16> = sequence.encode_utf16().collect();
-            let text: String =
-                String::from_utf16_lossy(&units[start.min(units.len())..end.min(units.len())]);
-            let text = vm.make_string(&text)?;
+            let mut sequence = ref_arg(args, 1);
+            if sequence.is_null() {
+                sequence = vm.make_string("null")?;
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(sequence, "subSequence", "(II)Ljava/lang/CharSequence;")?;
+            let sub = vm.invoke_method(
+                class,
+                method,
+                vec![
+                    Value::Ref(sequence),
+                    Value::Int(int_arg(args, 2)),
+                    Value::Int(int_arg(args, 3)),
+                ],
+            )?;
+            let (class, method) =
+                vm.resolve_virtual_method(sub.as_ref(), "toString", "()Ljava/lang/String;")?;
+            let text = vm.invoke_method(class, method, vec![sub])?;
             buffered_writer_call(
                 vm,
                 this,
                 "write",
                 "(Ljava/lang/String;)V",
-                vec![Value::Ref(text)],
+                vec![Value::Ref(text.as_ref())],
             )?;
             object(this)
         },
@@ -8568,7 +8695,18 @@ fn char_array_writer_set(vm: &mut Vm<'_>, this: ObjectRef, units: &[u16]) -> Res
     Ok(())
 }
 
-const CHAR_ARRAY_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+fn char_array_writer_append(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    text: ObjectRef,
+) -> Result<(), VmError> {
+    let source = vm.string_utf16(text).unwrap_or_default().to_vec();
+    let mut units = char_array_writer_units(vm, this);
+    units.extend_from_slice(&source);
+    char_array_writer_set(vm, this, &units)
+}
+
+const CHAR_ARRAY_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         char_array_writer_set(vm, receiver(args), &[])?;
         void()
@@ -8657,6 +8795,63 @@ const CHAR_ARRAY_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         },
     ),
     method("flush", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "append",
+        "(Ljava/lang/CharSequence;)Ljava/io/CharArrayWriter;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let sequence = ref_arg(args, 1);
+            let text = if sequence.is_null() {
+                vm.make_string("null")?
+            } else {
+                let (class, method) =
+                    vm.resolve_virtual_method(sequence, "toString", "()Ljava/lang/String;")?;
+                vm.invoke_method(class, method, vec![Value::Ref(sequence)])?
+                    .as_ref()
+            };
+            char_array_writer_append(vm, receiver(args), text)?;
+            object(receiver(args))
+        },
+    ),
+    method(
+        "append",
+        "(C)Ljava/io/CharArrayWriter;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let mut units = char_array_writer_units(vm, this);
+            units.push((int_arg(args, 1) & 0xFFFF) as u16);
+            char_array_writer_set(vm, this, &units)?;
+            object(this)
+        },
+    ),
+    method(
+        "append",
+        "(Ljava/lang/CharSequence;II)Ljava/io/CharArrayWriter;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let mut sequence = ref_arg(args, 1);
+            if sequence.is_null() {
+                sequence = vm.make_string("null")?;
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(sequence, "subSequence", "(II)Ljava/lang/CharSequence;")?;
+            let sub = vm.invoke_method(
+                class,
+                method,
+                vec![
+                    Value::Ref(sequence),
+                    Value::Int(int_arg(args, 2)),
+                    Value::Int(int_arg(args, 3)),
+                ],
+            )?;
+            let (class, method) =
+                vm.resolve_virtual_method(sub.as_ref(), "toString", "()Ljava/lang/String;")?;
+            let text = vm.invoke_method(class, method, vec![sub])?;
+            char_array_writer_append(vm, receiver(args), text.as_ref())?;
+            object(receiver(args))
+        },
+    ),
 ];
 
 pub(crate) const CHAR_ARRAY_WRITER: oxjvm_vm::NativeClass = class(

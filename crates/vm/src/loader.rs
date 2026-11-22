@@ -1062,20 +1062,87 @@ impl<'a> Vm<'a> {
         name: &str,
         descriptor: &str,
     ) -> Option<(ClassId, u32)> {
+        if let Some(found) = self.find_method_in_hierarchy(class, name, descriptor) {
+            return Some(found);
+        }
+        self.find_method_with_interfaces(class, name, descriptor)
+    }
+
+    /// Exact-descriptor search through the superclass chain and every
+    /// superinterface at each level, so default methods inherited through a
+    /// superclass's interfaces (e.g. `List.removeFirst` on `AbstractList$SubList`)
+    /// resolve even when the class chain itself declares nothing.
+    fn find_method_with_interfaces(
+        &self,
+        class: ClassId,
+        name: &str,
+        descriptor: &str,
+    ) -> Option<(ClassId, u32)> {
         if let Some(index) = self.classes.find_declared_method(class, name, descriptor) {
             return Some((class, index));
         }
         if let Some(super_class) = self.classes.get(class).super_class {
-            if let Some(found) = self.find_method(super_class, name, descriptor) {
+            if let Some(found) = self.find_method_with_interfaces(super_class, name, descriptor) {
                 return Some(found);
             }
         }
         for interface in &self.classes.get(class).interfaces {
-            if let Some(found) = self.find_method(*interface, name, descriptor) {
+            if let Some(found) = self.find_method_with_interfaces(*interface, name, descriptor) {
                 return Some(found);
             }
         }
         None
+    }
+
+    /// Search the superclass chain for an exact descriptor match, falling
+    /// back to a covariant match (same name and parameters, different return
+    /// type) for native classes that lack compiler-generated bridge methods.
+    /// The most-derived match wins; an exact match wins ties.
+    fn find_method_in_hierarchy(
+        &self,
+        class: ClassId,
+        name: &str,
+        descriptor: &str,
+    ) -> Option<(ClassId, u32)> {
+        let params = descriptor.split_once(')').map(|(part, _)| part);
+        let mut current = Some(class);
+        let mut depth = 0usize;
+        let mut exact: Option<(usize, ClassId, u32)> = None;
+        let mut covariant: Option<(usize, ClassId, u32)> = None;
+        while let Some(id) = current {
+            let methods = &self.classes.get(id).methods;
+            if exact.is_none() {
+                if let Some(index) = methods
+                    .iter()
+                    .position(|m| m.name == name && m.descriptor == descriptor)
+                {
+                    exact = Some((depth, id, index as u32));
+                }
+            }
+            if covariant.is_none() {
+                if let Some(index) = methods.iter().position(|m| {
+                    m.name == name
+                        && !m.is_abstract()
+                        && m.descriptor.split_once(')').map(|(part, _)| part) == params
+                }) {
+                    covariant = Some((depth, id, index as u32));
+                }
+            }
+            current = self.classes.get(id).super_class;
+            depth += 1;
+        }
+        match (exact, covariant) {
+            (Some(e), Some(c)) => {
+                if c.0 < e.0 {
+                    Some((c.1, c.2))
+                } else {
+                    Some((e.1, e.2))
+                }
+            }
+            (Some(e), None) => Some((e.1, e.2)),
+            (None, Some(c)) => Some((c.1, c.2)),
+            (None, None) => None,
+        }
     }
 
     /// Resolve a `Methodref` or `InterfaceMethodref` constant (JVMS 5.4.3.3/5.4.3.4).
