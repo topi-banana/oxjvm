@@ -408,8 +408,10 @@ pub(crate) fn format_pattern(pattern: &str, millis: i64) -> String {
             'y' => {
                 if run == 2 {
                     out.push_str(&alloc::format!("{:02}", year % 100));
+                } else if run == 1 {
+                    out.push_str(&alloc::format!("{year}"));
                 } else {
-                    out.push_str(&alloc::format!("{:04}", year));
+                    out.push_str(&alloc::format!("{:0width$}", year, width = run));
                 }
             }
             'M' if run >= 3 => {
