@@ -533,6 +533,20 @@ fn sdf_non_lenient(vm: &Vm<'_>, this: ObjectRef) -> bool {
         != 0
 }
 
+/// The year the two-digit-year window opens at (`set2DigitYearStart`),
+/// defaulting to eighty years before the format was created.
+fn sdf_two_digit_start_year(vm: &Vm<'_>, this: ObjectRef) -> i64 {
+    let class = vm.class_of(this);
+    let start = vm
+        .read_ref_field(this, class, "twoDigitYearStart", "Ljava/util/Date;")
+        .unwrap_or(ObjectRef::NULL);
+    if start.is_null() {
+        return 1970;
+    }
+    let millis = crate::lang::read_long_field(vm, start, "time");
+    civil_from_millis(millis).0
+}
+
 /// In strict mode the JDK rejects a numeric field whose value falls outside
 /// the range its pattern letter allows, reporting the index just past the
 /// offending number. Returns that error index, or `None` when every numeric
@@ -634,7 +648,7 @@ fn non_lenient_field_error(pattern: &str, text: &str) -> Option<usize> {
 /// names (including the AM/PM marker, which the loose numeric scan ignores) so
 /// times of day parse correctly. Falls back to the loose scan when the pattern
 /// yields no field at all.
-fn sdf_parse_millis(pattern: &str, text: &str) -> i64 {
+fn sdf_parse_millis(pattern: &str, text: &str, two_digit_start: i64) -> i64 {
     let p: Vec<char> = pattern.chars().collect();
     let t: Vec<char> = text.chars().collect();
     let mut pi = 0;
@@ -649,8 +663,12 @@ fn sdf_parse_millis(pattern: &str, text: &str) -> i64 {
     let mut pm: Option<bool> = None;
     let mut twelve_hour = false;
     let mut any = false;
-    // Read a signed integer at the current input position, if any.
+    // Read a signed integer at the current input position, if any. Lenient
+    // parsing skips whitespace before a numeric field.
     fn read_number(t: &[char], ti: &mut usize) -> Option<i64> {
+        while *ti < t.len() && t[*ti].is_whitespace() {
+            *ti += 1;
+        }
         let mut neg = false;
         if *ti < t.len() && (t[*ti] == '-' || t[*ti] == '+') {
             neg = t[*ti] == '-';
@@ -701,8 +719,13 @@ fn sdf_parse_millis(pattern: &str, text: &str) -> i64 {
                 any = true;
                 match ch {
                     'y' => {
-                        year = Some(if run == 2 && value < 100 {
-                            value + 2000
+                        year = Some(if run == 2 && (0..100).contains(&value) {
+                            let century = two_digit_start - two_digit_start.rem_euclid(100);
+                            let mut y = century + value;
+                            if y < two_digit_start {
+                                y += 100;
+                            }
+                            y
                         } else {
                             value
                         });
@@ -914,7 +937,11 @@ const SIMPLE_DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
                 }
             }
             let pattern = simple_date_format_pattern(vm, receiver(args));
-            let millis = sdf_parse_millis(&pattern, &input);
+            let millis = sdf_parse_millis(
+                &pattern,
+                &input,
+                sdf_two_digit_start_year(vm, receiver(args)),
+            );
             let class = vm.resolve_class("java/util/Date")?;
             let instance = vm.new_instance(class)?;
             crate::lang::write_long_field(vm, instance, "time", millis);
@@ -940,7 +967,11 @@ const SIMPLE_DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
                 }
             }
             let pattern = simple_date_format_pattern(vm, receiver(args));
-            let millis = sdf_parse_millis(&pattern, &input);
+            let millis = sdf_parse_millis(
+                &pattern,
+                &input,
+                sdf_two_digit_start_year(vm, receiver(args)),
+            );
             let class = vm.resolve_class("java/util/Date")?;
             let instance = vm.new_instance(class)?;
             crate::lang::write_long_field(vm, instance, "time", millis);
