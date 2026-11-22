@@ -29390,6 +29390,11 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
         |vm, _, args| {
             let this = receiver(args);
             let field = int_arg(args, 1);
+            let style = int_arg(args, 2);
+            // The JDK only accepts the SHORT, LONG and NARROW display styles.
+            if !matches!(style, 1 | 2 | 4) {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
             let value = calendar_get(vm, this, field);
             let name = match field {
                 2 => [
@@ -29434,6 +29439,10 @@ const CALENDAR_METHODS: [oxjvm_vm::NativeMethodDef; 49] = [
         |vm, _, args| {
             let field = int_arg(args, 1);
             let style = int_arg(args, 2);
+            // The JDK only accepts the SHORT, LONG and NARROW display styles.
+            if !matches!(style, 1 | 2 | 4) {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
             let long_months = [
                 "January",
                 "February",
