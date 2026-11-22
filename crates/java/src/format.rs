@@ -5194,6 +5194,28 @@ fn format_message(
     }
     Ok(out)
 }
+
+/// Format a log message, substituting `{n}` arguments when parameters are present.
+///
+/// Mirrors `java.util.logging.Formatter.formatMessage`: a message with no
+/// parameters, or without a `{0}`..`{3}` placeholder, is returned unchanged.
+pub(crate) fn format_log_message(
+    vm: &mut Vm<'_>,
+    message: &str,
+    parameters: ObjectRef,
+) -> Result<String, VmError> {
+    let elements = object_array_elements(vm, parameters);
+    if elements.is_empty()
+        || !(message.contains("{0")
+            || message.contains("{1")
+            || message.contains("{2")
+            || message.contains("{3"))
+    {
+        return Ok(String::from(message));
+    }
+    format_message(vm, message, &elements)
+}
+
 /// Format one argument of a message, with the type and the style the pattern names.
 fn format_argument_element(
     vm: &mut Vm<'_>,

@@ -776,7 +776,7 @@ fn print_stream_byte_arg(vm: &mut Vm<'_>, array: ObjectRef) -> Result<Vec<u8>, V
     }
 }
 
-fn write_bytes_array(vm: &mut Vm<'_>, bytes: &[u8]) -> Result<ObjectRef, VmError> {
+pub(crate) fn write_bytes_array(vm: &mut Vm<'_>, bytes: &[u8]) -> Result<ObjectRef, VmError> {
     let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, bytes.len())?;
     for (index, byte) in bytes.iter().enumerate() {
         vm.array_set(

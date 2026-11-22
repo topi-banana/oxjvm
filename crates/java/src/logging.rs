@@ -14,7 +14,7 @@ use oxjvm_classfile::flags::*;
 
 use crate::lang::abstract_method_pub;
 use crate::{boolean, class, field, int, long, method, object, receiver, ref_arg, void};
-use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
+use oxjvm_vm::{ArrayComponent, ObjectRef, Value, Vm, VmError};
 
 const LEVEL_CLASS: &str = "java/util/logging/Level";
 const LOG_RECORD_CLASS: &str = "java/util/logging/LogRecord";
@@ -859,6 +859,8 @@ const FORMATTER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         |vm, _, args| {
             let record = ref_arg(args, 1);
             let message = record_message(vm, record);
+            let parameters = record_get_ref(vm, record, "parameters", "[Ljava/lang/Object;");
+            let message = crate::format::format_log_message(vm, &message, parameters)?;
             let level = record_get_ref(vm, record, "level", "Ljava/util/logging/Level;");
             let name = level_name(vm, level);
             object(vm.make_string(&format!("{name}: {message}"))?)
@@ -896,9 +898,38 @@ const SIMPLE_FORMATTER_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
     |vm, _, args| {
         let record = ref_arg(args, 1);
         let message = record_message(vm, record);
+        let parameters = record_get_ref(vm, record, "parameters", "[Ljava/lang/Object;");
+        let message = crate::format::format_log_message(vm, &message, parameters)?;
         let level = record_get_ref(vm, record, "level", "Ljava/util/logging/Level;");
         let name = level_name(vm, level);
-        let mut text = format!("{name}: {message}\n");
+        let millis = crate::lang::read_long_field(vm, record, "millis");
+        let source_class = vm
+            .string_value(record_get_ref(
+                vm,
+                record,
+                "sourceClassName",
+                "Ljava/lang/String;",
+            ))
+            .unwrap_or_default();
+        let source_method = vm
+            .string_value(record_get_ref(
+                vm,
+                record,
+                "sourceMethodName",
+                "Ljava/lang/String;",
+            ))
+            .unwrap_or_default();
+        let mut text = simple_formatter_date(millis);
+        if !source_class.is_empty() {
+            text.push(' ');
+            text.push_str(&source_class);
+            if !source_method.is_empty() {
+                text.push(' ');
+                text.push_str(&source_method);
+            }
+        }
+        text.push('\n');
+        text.push_str(&format!("{name}: {message}\n"));
         let thrown = record_get_ref(vm, record, "thrown", "Ljava/lang/Throwable;");
         if !thrown.is_null() {
             text.push_str(&format_throwable(vm, thrown));
@@ -1159,12 +1190,20 @@ fn publish_to_output(
         vm.write_host(oxjvm_platform::Stream::Stderr, text.as_bytes());
         return Ok(());
     }
-    let (class, method) = vm.resolve_virtual_method(output, "print", "(Ljava/lang/String;)V")?;
-    let text_ref = vm.make_string(&text)?;
+    // Write the encoded bytes through OutputStream.write(byte[], int, int) so
+    // any OutputStream works, not just PrintStream (which alone has print()).
+    let bytes = text.as_bytes();
+    let array = crate::io::write_bytes_array(vm, bytes)?;
+    let (class, method) = vm.resolve_virtual_method(output, "write", "([BII)V")?;
     vm.invoke_method(
         class,
         method,
-        vec![Value::Ref(output), Value::Ref(text_ref)],
+        vec![
+            Value::Ref(output),
+            Value::Ref(array),
+            Value::Int(0),
+            Value::Int(bytes.len() as i32),
+        ],
     )?;
     Ok(())
 }
@@ -1429,6 +1468,81 @@ fn logger_log_message(
     publish_from_logger(vm, logger, record)
 }
 
+/// Publish a record carrying an explicit source class/method and parameters,
+/// as `Logger.logp` and the `entering`/`exiting` convenience methods do.
+fn logger_logp(
+    vm: &mut Vm<'_>,
+    logger: ObjectRef,
+    level: ObjectRef,
+    source_class: ObjectRef,
+    source_method: ObjectRef,
+    message: ObjectRef,
+    parameters: ObjectRef,
+    thrown: ObjectRef,
+) -> Result<(), VmError> {
+    if level.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    if level_int(vm, level) < effective_level(vm, logger) {
+        return Ok(());
+    }
+    let class = vm.resolve_class(LOG_RECORD_CLASS)?;
+    let record = vm.new_instance(class)?;
+    record_set_ref(vm, record, "level", "Ljava/util/logging/Level;", level);
+    record_set_ref(vm, record, "message", "Ljava/lang/String;", message);
+    record_set_ref(vm, record, "thrown", "Ljava/lang/Throwable;", thrown);
+    record_set_ref(vm, record, "parameters", "[Ljava/lang/Object;", parameters);
+    record_set_ref(
+        vm,
+        record,
+        "sourceClassName",
+        "Ljava/lang/String;",
+        source_class,
+    );
+    record_set_ref(
+        vm,
+        record,
+        "sourceMethodName",
+        "Ljava/lang/String;",
+        source_method,
+    );
+    let millis = vm.host_time_millis();
+    crate::lang::write_long_field(vm, record, "millis", millis);
+    let name = logger_name(vm, logger);
+    let name_ref = vm.make_string(&name)?;
+    record_set_ref(vm, record, "loggerName", "Ljava/lang/String;", name_ref);
+    publish_from_logger(vm, logger, record)
+}
+
+/// Wrap a single argument in a one-element `Object[]`, as the single-parameter
+/// `logp`/`entering`/`exiting` overloads do.
+fn single_param_array(vm: &mut Vm<'_>, value: ObjectRef) -> Result<ObjectRef, VmError> {
+    let array = vm.allocate_array_of(ArrayComponent::Reference, 1)?;
+    vm.array_set_ref(array, 0, value)?;
+    Ok(array)
+}
+
+/// The date prefix `SimpleFormatter` prints, in UTC (the only zone oxjvm models).
+fn simple_formatter_date(millis: i64) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let epoch_second = millis.div_euclid(1000);
+    let epoch_day = epoch_second.div_euclid(86_400);
+    let second_of_day = epoch_second.rem_euclid(86_400);
+    let (year, month, day) = crate::time::civil_from_days(epoch_day);
+    let hour24 = second_of_day / 3600;
+    let minute = (second_of_day % 3600) / 60;
+    let second = second_of_day % 60;
+    let hour12 = match hour24 % 12 {
+        0 => 12,
+        h => h,
+    };
+    let ampm = if hour24 < 12 { "AM" } else { "PM" };
+    let month_name = MONTHS.get((month - 1) as usize).copied().unwrap_or("Jan");
+    format!("{month_name} {day}, {year} {hour12}:{minute:02}:{second:02} {ampm}")
+}
+
 fn level_named(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class(LEVEL_CLASS)?;
     vm.ensure_initialized(class)?;
@@ -1436,7 +1550,7 @@ fn level_named(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
         .ok_or_else(|| VmError::internal("Level constant missing"))
 }
 
-const LOGGER_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
+const LOGGER_METHODS: [oxjvm_vm::NativeMethodDef; 43] = [
     method(
         "getLogger",
         "(Ljava/lang/String;)Ljava/util/logging/Logger;",
@@ -1869,6 +1983,189 @@ const LOGGER_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
         |vm, _, args| {
             let level = level_named(vm, "CONFIG")?;
             logger_log_message(vm, receiver(args), level, ref_arg(args, 1), ObjectRef::NULL)?;
+            void()
+        },
+    ),
+    method(
+        "logp",
+        "(Ljava/util/logging/Level;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            logger_logp(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                ref_arg(args, 3),
+                ref_arg(args, 4),
+                ObjectRef::NULL,
+                ObjectRef::NULL,
+            )?;
+            void()
+        },
+    ),
+    method(
+        "logp",
+        "(Ljava/util/logging/Level;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let params = single_param_array(vm, ref_arg(args, 5))?;
+            logger_logp(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                ref_arg(args, 3),
+                ref_arg(args, 4),
+                params,
+                ObjectRef::NULL,
+            )?;
+            void()
+        },
+    ),
+    method(
+        "logp",
+        "(Ljava/util/logging/Level;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            logger_logp(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                ref_arg(args, 3),
+                ref_arg(args, 4),
+                ref_arg(args, 5),
+                ObjectRef::NULL,
+            )?;
+            void()
+        },
+    ),
+    method(
+        "logp",
+        "(Ljava/util/logging/Level;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/Throwable;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            logger_logp(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                ref_arg(args, 3),
+                ref_arg(args, 4),
+                ObjectRef::NULL,
+                ref_arg(args, 5),
+            )?;
+            void()
+        },
+    ),
+    method(
+        "entering",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let level = level_named(vm, "FINER")?;
+            let message = vm.make_string("ENTRY")?;
+            logger_logp(
+                vm,
+                receiver(args),
+                level,
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                message,
+                ObjectRef::NULL,
+                ObjectRef::NULL,
+            )?;
+            void()
+        },
+    ),
+    method(
+        "entering",
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let level = level_named(vm, "FINER")?;
+            let message = vm.make_string("ENTRY {0}")?;
+            let params = single_param_array(vm, ref_arg(args, 3))?;
+            logger_logp(
+                vm,
+                receiver(args),
+                level,
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                message,
+                params,
+                ObjectRef::NULL,
+            )?;
+            void()
+        },
+    ),
+    method(
+        "entering",
+        "(Ljava/lang/String;Ljava/lang/String;[Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let level = level_named(vm, "FINER")?;
+            let params = ref_arg(args, 3);
+            let mut message = String::from("ENTRY");
+            if !params.is_null() {
+                let count = vm.array_length(params).unwrap_or(0);
+                for index in 0..count {
+                    message.push_str(&format!(" {{{index}}}"));
+                }
+            }
+            let message = vm.make_string(&message)?;
+            logger_logp(
+                vm,
+                receiver(args),
+                level,
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                message,
+                params,
+                ObjectRef::NULL,
+            )?;
+            void()
+        },
+    ),
+    method(
+        "exiting",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let level = level_named(vm, "FINER")?;
+            let message = vm.make_string("RETURN")?;
+            logger_logp(
+                vm,
+                receiver(args),
+                level,
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                message,
+                ObjectRef::NULL,
+                ObjectRef::NULL,
+            )?;
+            void()
+        },
+    ),
+    method(
+        "exiting",
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let level = level_named(vm, "FINER")?;
+            let message = vm.make_string("RETURN {0}")?;
+            let params = single_param_array(vm, ref_arg(args, 3))?;
+            logger_logp(
+                vm,
+                receiver(args),
+                level,
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                message,
+                params,
+                ObjectRef::NULL,
+            )?;
             void()
         },
     ),
