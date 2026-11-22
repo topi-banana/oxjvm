@@ -4017,6 +4017,165 @@ fn mul_mod(mut a: i128, mut b: i128, m: i128) -> i128 {
     result
 }
 
+/// Quotient and remainder of two base-2^32 magnitudes via decimal long
+/// division (at most nine trial subtractions per quotient digit).
+fn limbs_divmod(a: &[u32], b: &[u32]) -> (Vec<u32>, Vec<u32>) {
+    let a_digits = limbs_to_decimal(a.to_vec());
+    let mut rem: Vec<u32> = Vec::new();
+    let mut out = String::with_capacity(a_digits.len());
+    for byte in a_digits.bytes() {
+        let mut carry = u64::from(byte - b'0');
+        for limb in &mut rem {
+            let cur = u64::from(*limb) * 10 + carry;
+            *limb = cur as u32;
+            carry = cur >> 32;
+        }
+        if carry != 0 {
+            rem.push(carry as u32);
+        }
+        let mut digit = 0u8;
+        while limbs_cmp(&rem, b) != Ordering::Less {
+            rem = limbs_sub(&rem, b);
+            digit += 1;
+        }
+        out.push(char::from(b'0' + digit));
+    }
+    (decimal_to_limbs(&out), rem)
+}
+
+/// Shared `mod` (euclidean, non-negative) and `remainder` (sign of the
+/// dividend) with an i128 fast path and a limb fallback.
+fn big_integer_mod_like(vm: &mut Vm<'_>, args: &[Value], euclid: bool) -> Result<Value, VmError> {
+    if ref_arg(args, 1).is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let a_text = big_text(vm, receiver(args));
+    let b_text = big_text(vm, ref_arg(args, 1));
+    if let (Some(a), Some(b)) = (parse_i128(&a_text), parse_i128(&b_text)) {
+        if b == 0 {
+            return Err(vm.throw_new(
+                "java/lang/ArithmeticException",
+                Some("BigInteger divide by zero"),
+            ));
+        }
+        if euclid {
+            if b < 0 {
+                return Err(vm.throw_new(
+                    "java/lang/ArithmeticException",
+                    Some("BigInteger: modulus not positive"),
+                ));
+            }
+            return create_big_number(vm, "java/math/BigInteger", &a.rem_euclid(b).to_string());
+        }
+        return create_big_number(vm, "java/math/BigInteger", &(a % b).to_string());
+    }
+    let (neg_a, mag_a) = big_sign_magnitude(&a_text);
+    let (neg_b, mag_b) = big_sign_magnitude(&b_text);
+    let mag_a = mag_a.trim_start_matches('0');
+    let mag_b = mag_b.trim_start_matches('0');
+    if mag_b.is_empty() {
+        return Err(vm.throw_new(
+            "java/lang/ArithmeticException",
+            Some("BigInteger divide by zero"),
+        ));
+    }
+    if euclid && neg_b {
+        return Err(vm.throw_new(
+            "java/lang/ArithmeticException",
+            Some("BigInteger: modulus not positive"),
+        ));
+    }
+    if mag_a.len() > 100_000 || mag_b.len() > 100_000 {
+        return Err(vm.throw_new("java/lang/OutOfMemoryError", Some("Java heap space")));
+    }
+    let b = decimal_to_limbs(mag_b);
+    let (_, mut rem) = limbs_divmod(&decimal_to_limbs(mag_a), &b);
+    let negative = if euclid {
+        if neg_a && !rem.is_empty() {
+            rem = limbs_sub(&b, &rem);
+        }
+        false
+    } else {
+        neg_a
+    };
+    let digits = limbs_to_decimal(rem);
+    let text = if negative && digits != "0" {
+        alloc::format!("-{digits}")
+    } else {
+        digits
+    };
+    create_big_number(vm, "java/math/BigInteger", &text)
+}
+
+fn big_integer_mod_inverse(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let a_text = big_text(vm, receiver(args));
+    let m_text = big_text(vm, ref_arg(args, 1));
+    if let (Some(a), Some(m)) = (parse_i128(&a_text), parse_i128(&m_text)) {
+        if m <= 0 {
+            return Err(vm.throw_new(
+                "java/lang/ArithmeticException",
+                Some("BigInteger: modulus not positive"),
+            ));
+        }
+        let (mut old_r, mut r) = (a.rem_euclid(m), m);
+        let (mut old_s, mut s) = (1i128, 0i128);
+        while r != 0 {
+            let q = old_r / r;
+            (old_r, r) = (r, old_r - q * r);
+            (old_s, s) = (s, old_s - q * s);
+        }
+        if old_r != 1 {
+            return Err(vm.throw_new(
+                "java/lang/ArithmeticException",
+                Some("BigInteger not invertible"),
+            ));
+        }
+        return create_big_number(vm, "java/math/BigInteger", &old_s.rem_euclid(m).to_string());
+    }
+    let (neg_a, mag_a) = big_sign_magnitude(&a_text);
+    let (neg_m, mag_m) = big_sign_magnitude(&m_text);
+    let mag_a = mag_a.trim_start_matches('0');
+    let mag_m = mag_m.trim_start_matches('0');
+    if neg_m || mag_m.is_empty() {
+        return Err(vm.throw_new(
+            "java/lang/ArithmeticException",
+            Some("BigInteger: modulus not positive"),
+        ));
+    }
+    if mag_a.len() > 100_000 || mag_m.len() > 100_000 {
+        return Err(vm.throw_new("java/lang/OutOfMemoryError", Some("Java heap space")));
+    }
+    let m = decimal_to_limbs(mag_m);
+    let (_, mut rem) = limbs_divmod(&decimal_to_limbs(mag_a), &m);
+    if neg_a && !rem.is_empty() {
+        rem = limbs_sub(&m, &rem);
+    }
+    // Extended Euclid with signed base-2^32 coefficients.
+    let (mut old_r, mut r) = (rem, m.clone());
+    let (mut old_s, mut s) = ((false, decimal_to_limbs("1")), (false, Vec::new()));
+    while !r.is_empty() {
+        let (q, new_r) = limbs_divmod(&old_r, &r);
+        old_r = r;
+        r = new_r;
+        let qs_mag = limbs_mul(&q, &s.1);
+        let qs_neg = s.0 && !qs_mag.is_empty();
+        let (new_mag, new_neg) = limbs_signed_sub(&old_s.1, old_s.0, &qs_mag, qs_neg);
+        old_s = s;
+        s = (new_neg, new_mag);
+    }
+    if limbs_cmp(&old_r, &decimal_to_limbs("1")) != Ordering::Equal {
+        return Err(vm.throw_new(
+            "java/lang/ArithmeticException",
+            Some("BigInteger not invertible"),
+        ));
+    }
+    let (_, mut result) = limbs_divmod(&old_s.1, &m);
+    if old_s.0 && !result.is_empty() {
+        result = limbs_sub(&m, &result);
+    }
+    create_big_number(vm, "java/math/BigInteger", &limbs_to_decimal(result))
+}
+
 const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
     method(
         "<init>",
@@ -4340,29 +4499,27 @@ const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
         "remainder",
         "(Ljava/math/BigInteger;)Ljava/math/BigInteger;",
         ACC_PUBLIC,
-        |vm, _, args| {
-            if ref_arg(args, 1).is_null() {
-                return Err(vm.throw_new("java/lang/NullPointerException", None));
-            }
-            let a = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
-            let b = parse_i128(&big_text(vm, ref_arg(args, 1))).unwrap_or(0);
-            if b == 0 {
-                return Err(vm.throw_new(
-                    "java/lang/ArithmeticException",
-                    Some("BigInteger divide by zero"),
-                ));
-            }
-            create_big_number(vm, "java/math/BigInteger", &(a % b).to_string())
-        },
+        |vm, _, args| big_integer_mod_like(vm, args, false),
     ),
     method("bitLength", "()I", ACC_PUBLIC, |vm, _, args| {
-        let value = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
-        let magnitude = if value < 0 { !value } else { value } as u128;
-        int(if magnitude == 0 {
-            0
+        let text = big_text(vm, receiver(args));
+        let (negative, magnitude) = big_sign_magnitude(&text);
+        let magnitude = magnitude.trim_start_matches('0');
+        if magnitude.is_empty() {
+            return int(0);
+        }
+        // For negatives the JDK measures the minimal two's-complement
+        // representation, which is bitlen(magnitude - 1).
+        let digits = if negative {
+            dec_sub_one(magnitude)
         } else {
-            (128 - magnitude.leading_zeros()) as i32
-        })
+            String::from(magnitude)
+        };
+        let limbs = decimal_to_limbs(&digits);
+        let Some(&top) = limbs.last() else {
+            return int(0);
+        };
+        int(((limbs.len() - 1) * 32 + (32 - top.leading_zeros()) as usize) as i32)
     }),
     method("longValueExact", "()J", ACC_PUBLIC, |vm, _, args| {
         let value = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
@@ -4373,6 +4530,10 @@ const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
         }
     }),
     method("isProbablePrime", "(I)Z", ACC_PUBLIC, |vm, _, args| {
+        let certainty = int_arg(args, 1);
+        if certainty <= 0 {
+            return boolean(true);
+        }
         let value = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
         boolean(is_probable_prime(value))
     }),
@@ -4439,46 +4600,13 @@ const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
         "mod",
         "(Ljava/math/BigInteger;)Ljava/math/BigInteger;",
         ACC_PUBLIC,
-        |vm, _, args| {
-            let a = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
-            let b = parse_i128(&big_text(vm, ref_arg(args, 1))).unwrap_or(0);
-            if b <= 0 {
-                return Err(vm.throw_new(
-                    "java/lang/ArithmeticException",
-                    Some("BigInteger: modulus not positive"),
-                ));
-            }
-            create_big_number(vm, "java/math/BigInteger", &a.rem_euclid(b).to_string())
-        },
+        |vm, _, args| big_integer_mod_like(vm, args, true),
     ),
     method(
         "modInverse",
         "(Ljava/math/BigInteger;)Ljava/math/BigInteger;",
         ACC_PUBLIC,
-        |vm, _, args| {
-            let a = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
-            let m = parse_i128(&big_text(vm, ref_arg(args, 1))).unwrap_or(0);
-            if m <= 0 {
-                return Err(vm.throw_new(
-                    "java/lang/ArithmeticException",
-                    Some("BigInteger: modulus not positive"),
-                ));
-            }
-            let (mut old_r, mut r) = (a.rem_euclid(m), m);
-            let (mut old_s, mut s) = (1i128, 0i128);
-            while r != 0 {
-                let q = old_r / r;
-                (old_r, r) = (r, old_r - q * r);
-                (old_s, s) = (s, old_s - q * s);
-            }
-            if old_r != 1 {
-                return Err(vm.throw_new(
-                    "java/lang/ArithmeticException",
-                    Some("BigInteger not invertible"),
-                ));
-            }
-            create_big_number(vm, "java/math/BigInteger", &old_s.rem_euclid(m).to_string())
-        },
+        |vm, _, args| big_integer_mod_inverse(vm, args),
     ),
     method("testBit", "(I)Z", ACC_PUBLIC, |vm, _, args| {
         let value = parse_i128(&big_text(vm, receiver(args))).unwrap_or(0);
