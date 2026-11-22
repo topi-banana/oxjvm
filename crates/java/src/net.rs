@@ -11,20 +11,82 @@ use crate::{
 };
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
+/// Parse an IPv4 literal the way the JDK's `textToNumericFormatV4` does
+/// (inet_aton style): one to four decimal parts, where the last part fills
+/// the remaining bytes ("126.1" -> 126.0.0.1, "256" -> 0.0.1.0). Leading
+/// zeros are decimal, a single trailing dot is tolerated, the total length
+/// is capped at 15 characters, and hex digits, signs and empty parts are
+/// rejected.
 fn parse_ipv4(text: &str) -> Option<[u8; 4]> {
-    let parts: Vec<&str> = text.split('.').collect();
-    if parts.len() != 4 {
+    let bytes = text.as_bytes();
+    let mut len = bytes.len();
+    if len == 0 || len > 15 {
         return None;
     }
-    let mut bytes = [0u8; 4];
-    for (index, part) in parts.iter().enumerate() {
-        let value: u32 = part.parse().ok()?;
-        if value > 255 {
+    if bytes[len - 1] == b'.' {
+        len -= 1;
+        if len == 0 || bytes[len - 1] == b'.' {
             return None;
         }
-        bytes[index] = value as u8;
     }
-    Some(bytes)
+    let mut res = [0u8; 4];
+    let mut tmp: u64 = 0;
+    let mut curr_byte = 0usize;
+    let mut new_octet = true;
+    for &c in &bytes[..len] {
+        if c == b'.' {
+            if new_octet || curr_byte == 3 || tmp > 0xff {
+                return None;
+            }
+            res[curr_byte] = tmp as u8;
+            curr_byte += 1;
+            tmp = 0;
+            new_octet = true;
+        } else {
+            if !c.is_ascii_digit() {
+                return None;
+            }
+            tmp = tmp * 10 + u64::from(c - b'0');
+            if tmp > 0xffff_ffff {
+                return None;
+            }
+            new_octet = false;
+        }
+    }
+    if new_octet {
+        return None;
+    }
+    match curr_byte {
+        0 => {
+            res[0] = (tmp >> 24) as u8;
+            res[1] = (tmp >> 16) as u8;
+            res[2] = (tmp >> 8) as u8;
+            res[3] = tmp as u8;
+        }
+        1 => {
+            if tmp > 0xff_ffff {
+                return None;
+            }
+            res[1] = (tmp >> 16) as u8;
+            res[2] = (tmp >> 8) as u8;
+            res[3] = tmp as u8;
+        }
+        2 => {
+            if tmp > 0xffff {
+                return None;
+            }
+            res[2] = (tmp >> 8) as u8;
+            res[3] = tmp as u8;
+        }
+        3 => {
+            if tmp > 0xff {
+                return None;
+            }
+            res[3] = tmp as u8;
+        }
+        _ => return None,
+    }
+    Some(res)
 }
 
 fn dotted(bytes: &[u8; 4]) -> String {
@@ -75,13 +137,13 @@ fn new_address(
     object(instance)
 }
 
-/// Resolve a literal IPv4 address, `localhost` or the empty string.
+/// Resolve a literal IPv4 address, `localhost` or the empty string. The JDK
+/// does not trim whitespace, so a padded host is not a valid literal.
 fn resolve_address(vm: &mut Vm<'_>, class_name: &str, text: &str) -> Result<Value, VmError> {
-    let trimmed = text.trim();
-    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("localhost") {
+    if text.is_empty() || text.eq_ignore_ascii_case("localhost") {
         return new_address(vm, class_name, [127, 0, 0, 1], Some(text));
     }
-    if let Some(bytes) = parse_ipv4(trimmed) {
+    if let Some(bytes) = parse_ipv4(text) {
         return new_address(vm, class_name, bytes, None);
     }
     Err(vm.throw_new(
