@@ -2552,6 +2552,17 @@ fn i128_to_twos_complement(value: i128) -> Vec<u8> {
     bytes
 }
 
+/// Build a BigDecimal value text with an explicit scale. Negative scales
+/// stay in `E` notation so `scale()` and the JDK identity rules survive
+/// (`valueOf(1, -3)` is `1E+3`, not `1000`).
+fn big_decimal_with_scale(text: &str, scale: i32) -> String {
+    if scale < 0 {
+        alloc::format!("{text}E+{}", -(scale as i64))
+    } else {
+        scale_decimal(text, -scale)
+    }
+}
+
 fn scale_decimal(text: &str, power: i32) -> String {
     if power == 0 {
         return String::from(text);
@@ -4109,7 +4120,18 @@ fn big_decimal_add_sub(vm: &mut Vm<'_>, args: &[Value], subtract: bool) -> Resul
 }
 
 /// Split a decimal string into (negative, integer digits, fraction digits).
+/// Plain (non-scientific) decimal form of a value text, expanding the `E`
+/// notation that negative-scale BigDecimal values carry.
+fn plain_text(text: &str) -> String {
+    if text.contains(['e', 'E']) {
+        big_decimal_parse(text).unwrap_or_else(|| String::from(text))
+    } else {
+        String::from(text)
+    }
+}
+
 fn decimal_parts(text: &str) -> (bool, String, String) {
+    let text = &plain_text(text);
     let (negative, digits) = if let Some(stripped) = text.strip_prefix('-') {
         (true, stripped)
     } else {
@@ -4250,10 +4272,13 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
         },
     ),
     method("intValue", "()I", ACC_PUBLIC, |vm, _, args| {
-        int(big_number_narrow(&big_text(vm, receiver(args)), 32) as i32)
+        int(big_number_narrow(&plain_text(&big_text(vm, receiver(args))), 32) as i32)
     }),
     method("longValue", "()J", ACC_PUBLIC, |vm, _, args| {
-        long(big_number_narrow(&big_text(vm, receiver(args)), 64))
+        long(big_number_narrow(
+            &plain_text(&big_text(vm, receiver(args))),
+            64,
+        ))
     }),
     method("doubleValue", "()D", ACC_PUBLIC, |vm, _, args| {
         let text = big_text(vm, receiver(args));
@@ -4326,7 +4351,7 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
         |vm, _, args| {
             let text = big_text(vm, ref_arg(args, 1));
             let scale = int_arg(args, 2);
-            let scaled = scale_decimal(&text, -scale);
+            let scaled = big_decimal_with_scale(&text, scale);
             write_big_text(vm, receiver(args), &scaled)
         },
     ),
@@ -4337,7 +4362,7 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
         |vm, _, args| {
             let text = long_arg(args, 0).to_string();
             let scale = int_arg(args, 1);
-            let scaled = scale_decimal(&text, -scale);
+            let scaled = big_decimal_with_scale(&text, scale);
             create_big_number(vm, "java/math/BigDecimal", &scaled)
         },
     ),
@@ -4355,7 +4380,7 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let text = big_text(vm, receiver(args));
+            let text = plain_text(&big_text(vm, receiver(args)));
             object(vm.make_string(&text)?)
         },
     ),
@@ -4364,7 +4389,7 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
         "()Ljava/math/BigInteger;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let text = big_text(vm, receiver(args));
+            let text = plain_text(&big_text(vm, receiver(args)));
             let integer = text.split('.').next().unwrap_or("0");
             create_big_number(vm, "java/math/BigInteger", integer)
         },
@@ -4391,7 +4416,7 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
         },
     ),
     method("precision", "()I", ACC_PUBLIC, |vm, _, args| {
-        let text = big_text(vm, receiver(args));
+        let text = plain_text(&big_text(vm, receiver(args)));
         int(text
             .bytes()
             .filter(|byte| byte.is_ascii_digit())
@@ -4406,7 +4431,7 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
             let text = big_text(vm, receiver(args));
             let negated = match text.strip_prefix('-') {
                 Some(rest) => String::from(rest),
-                None if text == "0" => String::from("0"),
+                None if plain_text(&text) == "0" => text,
                 None => alloc::format!("-{text}"),
             };
             create_big_number(vm, "java/math/BigDecimal", &negated)
@@ -4516,8 +4541,13 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
         "(I)Ljava/math/BigDecimal;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let text = big_text(vm, receiver(args));
-            let moved = big_decimal_move_point(&text, int_arg(args, 1).wrapping_neg());
+            let this = receiver(args);
+            let n = int_arg(args, 1);
+            let text = big_text(vm, this);
+            if n == 0 && decimal_scale(&text) >= 0 {
+                return object(this);
+            }
+            let moved = big_decimal_move_point(&text, n.wrapping_neg());
             create_big_number(vm, "java/math/BigDecimal", &moved)
         },
     ),
@@ -4526,8 +4556,13 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
         "(I)Ljava/math/BigDecimal;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let text = big_text(vm, receiver(args));
-            let moved = big_decimal_move_point(&text, int_arg(args, 1));
+            let this = receiver(args);
+            let n = int_arg(args, 1);
+            let text = big_text(vm, this);
+            if n == 0 && decimal_scale(&text) >= 0 {
+                return object(this);
+            }
+            let moved = big_decimal_move_point(&text, n);
             create_big_number(vm, "java/math/BigDecimal", &moved)
         },
     ),
