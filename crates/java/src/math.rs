@@ -3480,6 +3480,267 @@ fn big_decimal_divide_scaled(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, V
 }
 
 /// `BigDecimal.divideToIntegralValue` / `remainder` on aligned unscaled values.
+/// Sign, significant digit string (leading zeros trimmed) and E-aware scale
+/// of a BigDecimal text, without ever expanding the exponent.
+fn big_decimal_mantissa(text: &str) -> (bool, String, i64) {
+    let (negative, body) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text.strip_prefix('+').unwrap_or(text)),
+    };
+    let (mantissa, exponent) = match body.split_once(['e', 'E']) {
+        Some((m, e)) => (m, e.parse::<i64>().unwrap_or(0)),
+        None => (body, 0),
+    };
+    let (int_part, frac_part) = match mantissa.split_once('.') {
+        Some((i, f)) => (i, f),
+        None => (mantissa, ""),
+    };
+    let digits = alloc::format!("{int_part}{frac_part}");
+    let trimmed = digits.trim_start_matches('0');
+    let digits = if trimmed.is_empty() {
+        String::from("0")
+    } else {
+        String::from(trimmed)
+    };
+    (negative, digits, frac_part.len() as i64 - exponent)
+}
+
+/// Render an unscaled digit string at the given scale in the canonical
+/// storage form: plain for non-negative scales, d.dddE+adj notation
+/// (matching big_decimal_parse) for negative scales.
+fn render_big_decimal(digits: &str, negative: bool, scale: i64) -> String {
+    if scale >= 0 {
+        return format_scaled_digits(digits, negative, scale as usize);
+    }
+    let mut canonical = String::new();
+    if negative && digits != "0" {
+        canonical.push('-');
+    }
+    canonical.push_str(&digits[..1]);
+    if digits.len() > 1 {
+        canonical.push('.');
+        canonical.push_str(&digits[1..]);
+    }
+    let adjusted = digits.len() as i64 - 1 - scale;
+    canonical.push('E');
+    if adjusted >= 0 {
+        canonical.push('+');
+    }
+    canonical.push_str(&adjusted.to_string());
+    canonical
+}
+
+/// Magnitude comparison of two mantissa digit strings with scales.
+fn mantissa_cmp(da: &str, sa: i64, db: &str, sb: i64) -> Ordering {
+    let da = da.trim_start_matches('0');
+    let db = db.trim_start_matches('0');
+    if da.is_empty() || db.is_empty() {
+        return match (da.is_empty(), db.is_empty()) {
+            (true, true) => Ordering::Equal,
+            (true, false) => Ordering::Less,
+            _ => Ordering::Greater,
+        };
+    }
+    let adj_a = da.len() as i64 - 1 - sa;
+    let adj_b = db.len() as i64 - 1 - sb;
+    if adj_a != adj_b {
+        return adj_a.cmp(&adj_b);
+    }
+    let len = da.len().max(db.len());
+    let mut pa = String::from(da);
+    let mut pb = String::from(db);
+    while pa.len() < len {
+        pa.push('0');
+    }
+    while pb.len() < len {
+        pb.push('0');
+    }
+    pa.cmp(&pb)
+}
+
+/// a - b on sign-magnitude limbs.
+fn limbs_signed_sub(la: &[u32], neg_a: bool, lb: &[u32], neg_b: bool) -> (Vec<u32>, bool) {
+    let neg_b = !neg_b;
+    if neg_a == neg_b {
+        (limbs_add(la, lb), neg_a)
+    } else {
+        match limbs_cmp(la, lb) {
+            Ordering::Equal => (Vec::new(), false),
+            Ordering::Greater => (limbs_sub(la, lb), neg_a),
+            Ordering::Less => (limbs_sub(lb, la), neg_b),
+        }
+    }
+}
+
+/// Integer part of the quotient with the JDK's preferred-scale semantics:
+/// the result scale moves toward (dividend scale - divisor scale), adding
+/// trailing zeros upward or stripping them downward, never past the digits.
+fn big_decimal_divide_integral(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let a_text = big_text(vm, receiver(args));
+    let b_text = big_text(vm, ref_arg(args, 1));
+    let (neg_a, da, sa) = big_decimal_mantissa(&a_text);
+    let (neg_b, db, sb) = big_decimal_mantissa(&b_text);
+    if db == "0" {
+        return Err(vm.throw_new("java/lang/ArithmeticException", Some("/ by zero")));
+    }
+    let preferred = sa - sb;
+    let (digits, negative) = if da == "0" {
+        (String::from("0"), false)
+    } else {
+        let common = sa.max(sb);
+        let pad_a = common - sa;
+        let pad_b = common - sb;
+        if pad_a > 1_000_000 || pad_b > 1_000_000 {
+            return Err(vm.throw_new("java/lang/OutOfMemoryError", Some("Java heap space")));
+        }
+        let a_digits = alloc::format!("{da}{}", "0".repeat(pad_a as usize));
+        let b_digits = alloc::format!("{db}{}", "0".repeat(pad_b as usize));
+        let quotient = match (parse_i128(&a_digits), parse_i128(&b_digits)) {
+            (Some(ua), Some(ub)) => (ua / ub).unsigned_abs().to_string(),
+            _ => {
+                if a_digits.len() > 100_000 {
+                    return Err(vm.throw_new("java/lang/OutOfMemoryError", Some("Java heap space")));
+                }
+                // Decimal long division with a base-2^32 remainder; each
+                // quotient digit needs at most nine trial subtractions.
+                let lb = decimal_to_limbs(&b_digits);
+                let mut rem: Vec<u32> = Vec::new();
+                let mut out = String::with_capacity(a_digits.len());
+                for byte in a_digits.bytes() {
+                    let mut carry = u64::from(byte - b'0');
+                    for limb in &mut rem {
+                        let cur = u64::from(*limb) * 10 + carry;
+                        *limb = cur as u32;
+                        carry = cur >> 32;
+                    }
+                    if carry != 0 {
+                        rem.push(carry as u32);
+                    }
+                    let mut digit = 0u8;
+                    while limbs_cmp(&rem, &lb) != Ordering::Less {
+                        rem = limbs_sub(&rem, &lb);
+                        digit += 1;
+                    }
+                    out.push(char::from(b'0' + digit));
+                }
+                let trimmed = out.trim_start_matches('0');
+                if trimmed.is_empty() {
+                    String::from("0")
+                } else {
+                    String::from(trimmed)
+                }
+            }
+        };
+        (quotient, neg_a != neg_b)
+    };
+    let negative = negative && digits != "0";
+    if preferred > 100_000_000 {
+        return Err(vm.throw_new("java/lang/OutOfMemoryError", Some("Java heap space")));
+    }
+    let mut digits = digits;
+    let mut scale = 0i64;
+    if preferred > 0 {
+        if digits != "0" {
+            digits.push_str(&"0".repeat(preferred as usize));
+        }
+        scale = preferred;
+    } else {
+        while scale > preferred && digits.ends_with('0') && digits != "0" {
+            digits.pop();
+            scale -= 1;
+        }
+    }
+    let text = render_big_decimal(&digits, negative, scale);
+    create_big_number(vm, "java/math/BigDecimal", &text)
+}
+
+/// divideToIntegralValue(divisor, mc): divide to mc.precision digits with
+/// ROUND_DOWN (the mode is ignored like the JDK), verify the integer part
+/// fits, then adjust the scale toward the preferred scale.
+fn big_decimal_divide_integral_mc(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let mc = ref_arg(args, 2);
+    if mc.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let precision = crate::lang::read_int_field(vm, mc, "precision");
+    let a_text = big_text(vm, receiver(args));
+    let b_text = big_text(vm, ref_arg(args, 1));
+    let (neg_a, da, sa) = big_decimal_mantissa(&a_text);
+    let (neg_b, db, sb) = big_decimal_mantissa(&b_text);
+    if precision == 0 || mantissa_cmp(&da, sa, &db, sb) == Ordering::Less {
+        return big_decimal_divide_integral(vm, args);
+    }
+    let divided = divide_to_precision(&a_text, &b_text, precision, 1).ok_or_else(|| {
+        vm.throw_new("java/lang/ArithmeticException", Some("Division impossible"))
+    })?;
+    let (neg_r, mut digits, mut scale) = big_decimal_mantissa(&divided);
+    if db == "0" {
+        return Err(vm.throw_new("java/lang/ArithmeticException", Some("/ by zero")));
+    }
+    if scale < 0 {
+        // The rounded-down quotient must cover the full integer part:
+        // |dividend - quotient*divisor| < |divisor|.
+        let product = limbs_mul(&decimal_to_limbs(&digits), &decimal_to_limbs(&db));
+        let product_digits = limbs_to_decimal(product);
+        let scale_p = scale + sb;
+        let neg_p = neg_r != neg_b;
+        let common = sa.max(scale_p);
+        let pad_a = (common - sa) as usize;
+        let pad_p = (common - scale_p) as usize;
+        if pad_a > 1_000_000 || pad_p > 1_000_000 {
+            return Err(vm.throw_new("java/lang/OutOfMemoryError", Some("Java heap space")));
+        }
+        let da_aligned = alloc::format!("{da}{}", "0".repeat(pad_a));
+        let dp_aligned = alloc::format!("{product_digits}{}", "0".repeat(pad_p));
+        let (diff, _) = limbs_signed_sub(
+            &decimal_to_limbs(&da_aligned),
+            neg_a,
+            &decimal_to_limbs(&dp_aligned),
+            neg_p,
+        );
+        let diff_digits = limbs_to_decimal(diff);
+        let common_b = common.max(sb);
+        let diff_aligned =
+            alloc::format!("{diff_digits}{}", "0".repeat((common_b - common) as usize));
+        let db_aligned = alloc::format!("{db}{}", "0".repeat((common_b - sb) as usize));
+        if mantissa_cmp(&diff_aligned, common_b, &db_aligned, common_b) != Ordering::Less {
+            return Err(vm.throw_new("java/lang/ArithmeticException", Some("Division impossible")));
+        }
+    } else if scale > 0 {
+        // Drop fractional digits (ROUND_DOWN to scale 0).
+        let plain = plain_text(&divided);
+        let int_part = plain.split_once('.').map_or(plain.as_str(), |(i, _)| i);
+        let int_part = int_part.strip_prefix('-').unwrap_or(int_part);
+        let trimmed = int_part.trim_start_matches('0');
+        digits = if trimmed.is_empty() {
+            String::from("0")
+        } else {
+            String::from(trimmed)
+        };
+        scale = 0;
+    }
+    let preferred = sa - sb;
+    let result_precision = digits.len().max(1) as i64;
+    let precision_diff = i64::from(precision) - result_precision;
+    if preferred > scale && precision_diff > 0 {
+        let delta = precision_diff.min(preferred - scale);
+        if digits != "0" {
+            digits.push_str(&"0".repeat(delta as usize));
+        }
+        scale += delta;
+    } else {
+        while scale > preferred && digits.ends_with('0') && digits != "0" {
+            digits.pop();
+            scale -= 1;
+        }
+    }
+    if scale > 100_000_000 {
+        return Err(vm.throw_new("java/lang/OutOfMemoryError", Some("Java heap space")));
+    }
+    let text = render_big_decimal(&digits, neg_r && digits != "0", scale);
+    create_big_number(vm, "java/math/BigDecimal", &text)
+}
+
 fn big_decimal_div_rem(vm: &mut Vm<'_>, args: &[Value], integral: bool) -> Result<Value, VmError> {
     let a_raw = big_text(vm, receiver(args));
     let b_raw = big_text(vm, ref_arg(args, 1));
@@ -4924,7 +5185,7 @@ fn big_decimal_set_scale(
     create_big_number(vm, "java/math/BigDecimal", &result)
 }
 
-const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 61] = [
+const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -5505,7 +5766,13 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 61] = [
         "divideToIntegralValue",
         "(Ljava/math/BigDecimal;)Ljava/math/BigDecimal;",
         ACC_PUBLIC,
-        |vm, _, args| big_decimal_div_rem(vm, args, true),
+        |vm, _, args| big_decimal_divide_integral(vm, args),
+    ),
+    method(
+        "divideToIntegralValue",
+        "(Ljava/math/BigDecimal;Ljava/math/MathContext;)Ljava/math/BigDecimal;",
+        ACC_PUBLIC,
+        |vm, _, args| big_decimal_divide_integral_mc(vm, args),
     ),
     method(
         "remainder",
