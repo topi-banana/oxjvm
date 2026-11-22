@@ -3498,22 +3498,135 @@ fn big_integer_init(
     void()
 }
 
-fn big_integer_binary(
-    vm: &mut Vm<'_>,
-    args: &[Value],
-    operation: fn(i128, i128) -> i128,
-) -> Result<Value, VmError> {
+#[derive(Clone, Copy)]
+enum BigOp {
+    Add,
+    Sub,
+    Mul,
+    And,
+    Or,
+    Xor,
+}
+
+fn big_integer_binary(vm: &mut Vm<'_>, args: &[Value], op: BigOp) -> Result<Value, VmError> {
     let this = receiver(args);
     if ref_arg(args, 1).is_null() {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
-    let a = parse_i128(&big_text(vm, this));
-    let b = parse_i128(&big_text(vm, ref_arg(args, 1)));
-    match (a, b) {
-        (Some(a), Some(b)) => {
-            create_big_number(vm, "java/math/BigInteger", &operation(a, b).to_string())
+    let a_text = big_text(vm, this);
+    let b_text = big_text(vm, ref_arg(args, 1));
+    if let (Some(a), Some(b)) = (parse_i128(&a_text), parse_i128(&b_text)) {
+        let result = match op {
+            BigOp::Add => a.checked_add(b),
+            BigOp::Sub => a.checked_sub(b),
+            BigOp::Mul => a.checked_mul(b),
+            BigOp::And => Some(a & b),
+            BigOp::Or => Some(a | b),
+            BigOp::Xor => Some(a ^ b),
+        };
+        if let Some(value) = result {
+            return create_big_number(vm, "java/math/BigInteger", &value.to_string());
         }
-        _ => Err(vm.throw_new("java/lang/ArithmeticException", None)),
+    }
+    let (neg_a, mag_a) = big_sign_magnitude(&a_text);
+    let (neg_b, mag_b) = big_sign_magnitude(&b_text);
+    let la = decimal_to_limbs(mag_a);
+    let lb = decimal_to_limbs(mag_b);
+    let (magnitude, negative) = match op {
+        BigOp::And | BigOp::Or | BigOp::Xor => limbs_bitwise(&la, neg_a, &lb, neg_b, op),
+        BigOp::Mul => (limbs_mul(&la, &lb), neg_a != neg_b),
+        _ => {
+            let neg_b = neg_b ^ matches!(op, BigOp::Sub);
+            if neg_a == neg_b {
+                (limbs_add(&la, &lb), neg_a)
+            } else {
+                match limbs_cmp(&la, &lb) {
+                    Ordering::Equal => (Vec::new(), false),
+                    Ordering::Greater => (limbs_sub(&la, &lb), neg_a),
+                    Ordering::Less => (limbs_sub(&lb, &la), neg_b),
+                }
+            }
+        }
+    };
+    let digits = limbs_to_decimal(magnitude);
+    let text = if negative && digits != "0" {
+        alloc::format!("-{digits}")
+    } else {
+        digits
+    };
+    create_big_number(vm, "java/math/BigInteger", &text)
+}
+
+/// Bitwise and/or/xor on sign-magnitude limbs via infinite-precision two's
+/// complement: negatives are inverted-plus-one and sign-extended with all-1
+/// words, the result sign follows the operation, then converted back.
+fn limbs_bitwise(a: &[u32], neg_a: bool, b: &[u32], neg_b: bool, op: BigOp) -> (Vec<u32>, bool) {
+    fn to_twos_complement(magnitude: &[u32], negative: bool) -> Vec<u32> {
+        if !negative {
+            return magnitude.to_vec();
+        }
+        let mut out: Vec<u32> = magnitude.iter().map(|word| !word).collect();
+        let mut carry = 1u64;
+        for word in &mut out {
+            let cur = u64::from(*word) + carry;
+            *word = cur as u32;
+            carry = cur >> 32;
+        }
+        if carry != 0 {
+            out.push(carry as u32);
+        }
+        out
+    }
+    let ta = to_twos_complement(a, neg_a);
+    let tb = to_twos_complement(b, neg_b);
+    let ext_a = if neg_a { u32::MAX } else { 0 };
+    let ext_b = if neg_b { u32::MAX } else { 0 };
+    let negative = match op {
+        BigOp::And => neg_a && neg_b,
+        BigOp::Or => neg_a || neg_b,
+        _ => neg_a != neg_b,
+    };
+    let mut out: Vec<u32> = Vec::with_capacity(ta.len().max(tb.len()) + 1);
+    for i in 0..ta.len().max(tb.len()) {
+        let wa = ta.get(i).copied().unwrap_or(ext_a);
+        let wb = tb.get(i).copied().unwrap_or(ext_b);
+        out.push(match op {
+            BigOp::And => wa & wb,
+            BigOp::Or => wa | wb,
+            _ => wa ^ wb,
+        });
+    }
+    let ext_out = if negative { u32::MAX } else { 0 };
+    if out.last().copied().unwrap_or(ext_out) != ext_out {
+        out.push(ext_out);
+    }
+    if negative {
+        let mut borrow = 1i64;
+        for word in &mut out {
+            let cur = i64::from(*word) - borrow;
+            if cur < 0 {
+                *word = (cur + (1i64 << 32)) as u32;
+                borrow = 1;
+            } else {
+                *word = cur as u32;
+                borrow = 0;
+            }
+        }
+        for word in &mut out {
+            *word = !*word;
+        }
+    }
+    while out.last() == Some(&0) {
+        out.pop();
+    }
+    (out, negative)
+}
+
+/// Split an optionally signed decimal string into (negative, magnitude digits).
+fn big_sign_magnitude(text: &str) -> (bool, &str) {
+    match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text.strip_prefix('+').unwrap_or(text)),
     }
 }
 
@@ -3532,7 +3645,7 @@ fn mul_mod(mut a: i128, mut b: i128, m: i128) -> i128 {
     result
 }
 
-const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
+const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -3612,6 +3725,10 @@ const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
         let text = big_text(vm, receiver(args));
         double(text.parse::<f64>().unwrap_or(f64::NAN))
     }),
+    method("floatValue", "()F", ACC_PUBLIC, |vm, _, args| {
+        let text = big_text(vm, receiver(args));
+        float(text.parse::<f32>().unwrap_or(f32::NAN))
+    }),
     method("signum", "()I", ACC_PUBLIC, |vm, _, args| {
         let text = big_text(vm, receiver(args));
         int(if text == "0" {
@@ -3676,19 +3793,19 @@ const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
         "add",
         "(Ljava/math/BigInteger;)Ljava/math/BigInteger;",
         ACC_PUBLIC,
-        |vm, _, args| big_integer_binary(vm, args, i128::wrapping_add),
+        |vm, _, args| big_integer_binary(vm, args, BigOp::Add),
     ),
     method(
         "subtract",
         "(Ljava/math/BigInteger;)Ljava/math/BigInteger;",
         ACC_PUBLIC,
-        |vm, _, args| big_integer_binary(vm, args, i128::wrapping_sub),
+        |vm, _, args| big_integer_binary(vm, args, BigOp::Sub),
     ),
     method(
         "multiply",
         "(Ljava/math/BigInteger;)Ljava/math/BigInteger;",
         ACC_PUBLIC,
-        |vm, _, args| big_integer_binary(vm, args, i128::wrapping_mul),
+        |vm, _, args| big_integer_binary(vm, args, BigOp::Mul),
     ),
     method(
         "valueOf",
@@ -3716,20 +3833,43 @@ const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
         "(ILjava/util/Random;)V",
         ACC_PUBLIC,
         |vm, _, args| {
-            let bits = int_arg(args, 1).max(0) as u32;
+            let bits = int_arg(args, 1);
             let random = ref_arg(args, 2);
-            let (class, method) = vm.resolve_virtual_method(random, "nextLong", "()J")?;
-            let value = vm
-                .invoke_method(class, method, vec![Value::Ref(random)])?
-                .as_long();
-            let mask = if bits == 0 {
-                0
-            } else if bits >= 63 {
-                i64::MAX
-            } else {
-                (1i64 << bits) - 1
-            };
-            write_big_text(vm, receiver(args), &(value & mask).to_string())
+            if bits < 0 {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("numBits must be non-negative"),
+                ));
+            }
+            if random.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            if bits == 0 {
+                return write_big_text(vm, receiver(args), "0");
+            }
+            if bits > 1_000_000 {
+                return Err(vm.throw_new("java/lang/OutOfMemoryError", Some("Java heap space")));
+            }
+            let nwords = (bits as u32).div_ceil(32) as usize;
+            let mut limbs: Vec<u32> = Vec::with_capacity(nwords);
+            for _ in 0..nwords {
+                let word = match crate::util::next_random_int(vm, random, 32, &[])? {
+                    Value::Int(value) => value as u32,
+                    _ => 0,
+                };
+                limbs.insert(0, word);
+            }
+            let excess = nwords as u32 * 32 - bits as u32;
+            if excess > 0 {
+                if let Some(top) = limbs.last_mut() {
+                    *top &= u32::MAX >> excess;
+                }
+            }
+            while limbs.last() == Some(&0) {
+                limbs.pop();
+            }
+            let text = limbs_to_decimal(limbs);
+            write_big_text(vm, receiver(args), &text)
         },
     ),
     method("<init>", "([B)V", ACC_PUBLIC, |vm, _, args| {
@@ -4041,19 +4181,19 @@ const BIG_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
         "and",
         "(Ljava/math/BigInteger;)Ljava/math/BigInteger;",
         ACC_PUBLIC,
-        |vm, _, args| big_integer_binary(vm, args, |a, b| a & b),
+        |vm, _, args| big_integer_binary(vm, args, BigOp::And),
     ),
     method(
         "or",
         "(Ljava/math/BigInteger;)Ljava/math/BigInteger;",
         ACC_PUBLIC,
-        |vm, _, args| big_integer_binary(vm, args, |a, b| a | b),
+        |vm, _, args| big_integer_binary(vm, args, BigOp::Or),
     ),
     method(
         "xor",
         "(Ljava/math/BigInteger;)Ljava/math/BigInteger;",
         ACC_PUBLIC,
-        |vm, _, args| big_integer_binary(vm, args, |a, b| a ^ b),
+        |vm, _, args| big_integer_binary(vm, args, BigOp::Xor),
     ),
     method(
         "not",
