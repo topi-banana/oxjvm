@@ -4185,6 +4185,33 @@ fn big_decimal_multiply(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmErro
 }
 
 /// Round a decimal string to `precision` significant digits using `mode` (RoundingMode ordinal).
+/// Apply a MathContext's precision and rounding mode to a BigDecimal value
+/// text; UNLIMITED (precision 0) leaves the value untouched.
+fn apply_math_context(vm: &mut Vm<'_>, text: &str, mc: ObjectRef) -> Result<String, VmError> {
+    if mc.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let precision = crate::lang::read_int_field(vm, mc, "precision");
+    if precision == 0 {
+        return Ok(String::from(text));
+    }
+    let mode_ref = vm
+        .read_ref_field(
+            mc,
+            vm.class_of(mc),
+            "roundingMode",
+            "Ljava/math/RoundingMode;",
+        )
+        .unwrap_or(ObjectRef::NULL);
+    let mode = rounding_mode_ordinal(vm, mode_ref);
+    round_to_precision(text, precision, mode)
+        .ok_or_else(|| vm.throw_new("java/lang/ArithmeticException", Some("Rounding necessary")))
+}
+
+/// Round a decimal value text to `precision` significant digits using the
+/// given RoundingMode ordinal. Pure digit-string arithmetic, so values
+/// beyond i128 (e.g. a 38-digit unscaled value with scale 177) round
+/// correctly instead of overflowing the parse.
 fn round_to_precision(text: &str, precision: i32, mode: i32) -> Option<String> {
     if precision <= 0 {
         return Some(String::from(text));
@@ -4200,47 +4227,60 @@ fn round_to_precision(text: &str, precision: i32, mode: i32) -> Option<String> {
     if current_sig <= precision {
         return Some(String::from(text));
     }
-    let drop = (current_sig - precision) as u32;
-    let unscaled = parse_i128(&digits)?;
-    let unscaled = if negative { -unscaled } else { unscaled };
-    let divisor = 10i128.checked_pow(drop)?;
-    let quotient = unscaled / divisor;
-    let remainder = (unscaled % divisor).abs();
-    let half = divisor / 2;
+    let sig = &digits[sig_start..];
+    let keep = precision as usize;
+    let dropped = &sig[keep..];
+    let first_drop = dropped.as_bytes()[0];
+    let rest_nonzero = dropped[1..].bytes().any(|b| b != b'0');
+    let any_nonzero = first_drop != b'0' || rest_nonzero;
     let round_up = match mode {
-        0 => remainder != 0,
+        0 => any_nonzero,
         1 => false,
-        2 => !negative && remainder != 0,
-        3 => negative && remainder != 0,
-        4 => remainder >= half,
-        5 => remainder > half,
+        2 => !negative && any_nonzero,
+        3 => negative && any_nonzero,
+        4 => first_drop >= b'5',
+        5 => first_drop > b'5' || (first_drop == b'5' && rest_nonzero),
         6 => {
-            if remainder > half {
-                true
-            } else if remainder < half {
-                false
-            } else {
-                quotient % 2 != 0
-            }
+            first_drop > b'5'
+                || (first_drop == b'5' && (rest_nonzero || sig.as_bytes()[keep - 1] % 2 != 0))
         }
         _ => {
-            if remainder != 0 {
+            if any_nonzero {
                 return None;
             }
             false
         }
     };
-    let mut result = quotient;
+    let mut kept = String::from(&sig[..keep]);
+    let mut drop = current_sig - precision;
     if round_up {
-        result += if negative { -1 } else { 1 };
+        kept = dec_add_one(&kept);
+        if kept.len() > keep {
+            // 999.. -> 1000..0: carry into a new exponent, keep p digits.
+            kept.pop();
+            drop += 1;
+        }
     }
-    let new_scale = scale - drop as i32;
-    if new_scale >= 0 {
-        format_scaled(result, new_scale as usize)
+    let new_scale = scale - drop;
+    let rendered = if new_scale > 0 {
+        if kept.len() as i32 <= new_scale {
+            let zeros = (new_scale - kept.len() as i32) as usize;
+            alloc::format!("0.{}{}", "0".repeat(zeros), kept)
+        } else {
+            let point = kept.len() as i32 - new_scale;
+            alloc::format!("{}.{}", &kept[..point as usize], &kept[point as usize..])
+        }
+    } else if new_scale == 0 {
+        kept
     } else {
-        let factor = 10i128.checked_pow((-new_scale) as u32)?;
-        format_scaled(result.checked_mul(factor)?, 0)
+        big_decimal_with_scale(&kept, new_scale)
+    };
+    let mut result = String::new();
+    if negative {
+        result.push('-');
     }
+    result.push_str(&rendered);
+    Some(result)
 }
 
 /// Divide two decimal strings to `precision` significant digits via i128 long division.
@@ -4480,7 +4520,7 @@ fn big_decimal_set_scale(
     create_big_number(vm, "java/math/BigDecimal", &result)
 }
 
-const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 52] = [
+const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 60] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -4631,6 +4671,70 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 52] = [
             let scale = int_arg(args, 2);
             let scaled = big_decimal_with_scale(&text, scale);
             write_big_text(vm, receiver(args), &scaled)
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/math/BigInteger;ILjava/math/MathContext;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = big_text(vm, ref_arg(args, 1));
+            let scale = int_arg(args, 2);
+            let scaled = big_decimal_with_scale(&text, scale);
+            let rounded = apply_math_context(vm, &scaled, ref_arg(args, 3))?;
+            write_big_text(vm, receiver(args), &rounded)
+        },
+    ),
+    method(
+        "<init>",
+        "(JLjava/math/MathContext;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = long_arg(args, 1).to_string();
+            let rounded = apply_math_context(vm, &text, ref_arg(args, 2))?;
+            write_big_text(vm, receiver(args), &rounded)
+        },
+    ),
+    method(
+        "<init>",
+        "(ILjava/math/MathContext;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = int_arg(args, 1).to_string();
+            let rounded = apply_math_context(vm, &text, ref_arg(args, 2))?;
+            write_big_text(vm, receiver(args), &rounded)
+        },
+    ),
+    method(
+        "<init>",
+        "(DLjava/math/MathContext;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let value = double_arg(args, 1);
+            if value.is_nan() || value.is_infinite() {
+                return Err(vm.throw_new("java/lang/NumberFormatException", None));
+            }
+            let text = alloc::format!("{value}");
+            let rounded = apply_math_context(vm, &text, ref_arg(args, 2))?;
+            write_big_text(vm, receiver(args), &rounded)
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/math/MathContext;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = string_arg(vm, args[1])?;
+            if let Some((len, scale)) = decimal_plain_len(&text) {
+                if scale >= 0 && len > 100_000_000 {
+                    return Err(vm.throw_new("java/lang/OutOfMemoryError", Some("Java heap space")));
+                }
+            }
+            let Some(canonical) = big_decimal_parse(&text) else {
+                return Err(vm.throw_new("java/lang/NumberFormatException", None));
+            };
+            let rounded = apply_math_context(vm, &canonical, ref_arg(args, 2))?;
+            write_big_text(vm, receiver(args), &rounded)
         },
     ),
     method(
@@ -4971,31 +5075,9 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 52] = [
         "(Ljava/math/MathContext;)Ljava/math/BigDecimal;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let this = receiver(args);
-            let mc = ref_arg(args, 1);
-            if mc.is_null() {
-                return Err(vm.throw_new("java/lang/NullPointerException", None));
-            }
-            let precision = crate::lang::read_int_field(vm, mc, "precision");
-            let mode_ref = vm
-                .read_ref_field(
-                    mc,
-                    vm.class_of(mc),
-                    "roundingMode",
-                    "Ljava/math/RoundingMode;",
-                )
-                .unwrap_or(ObjectRef::NULL);
-            let mode = rounding_mode_ordinal(vm, mode_ref);
-            if precision == 0 {
-                return object(this);
-            }
-            let text = big_text(vm, this);
-            match round_to_precision(&text, precision, mode) {
-                Some(rounded) => create_big_number(vm, "java/math/BigDecimal", &rounded),
-                None => {
-                    Err(vm.throw_new("java/lang/ArithmeticException", Some("Rounding necessary")))
-                }
-            }
+            let text = big_text(vm, receiver(args));
+            let rounded = apply_math_context(vm, &text, ref_arg(args, 1))?;
+            create_big_number(vm, "java/math/BigDecimal", &rounded)
         },
     ),
     method(
@@ -5083,6 +5165,42 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 52] = [
         "()Ljava/math/BigDecimal;",
         ACC_PUBLIC,
         |_, _, args| object(receiver(args)),
+    ),
+    method(
+        "plus",
+        "(Ljava/math/MathContext;)Ljava/math/BigDecimal;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = big_text(vm, receiver(args));
+            let rounded = apply_math_context(vm, &text, ref_arg(args, 1))?;
+            create_big_number(vm, "java/math/BigDecimal", &rounded)
+        },
+    ),
+    method(
+        "negate",
+        "(Ljava/math/MathContext;)Ljava/math/BigDecimal;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = big_text(vm, receiver(args));
+            let negated = match text.strip_prefix('-') {
+                Some(rest) => String::from(rest),
+                None if plain_text(&text) == "0" => text,
+                None => alloc::format!("-{text}"),
+            };
+            let rounded = apply_math_context(vm, &negated, ref_arg(args, 1))?;
+            create_big_number(vm, "java/math/BigDecimal", &rounded)
+        },
+    ),
+    method(
+        "abs",
+        "(Ljava/math/MathContext;)Ljava/math/BigDecimal;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = big_text(vm, receiver(args));
+            let stripped = text.strip_prefix('-').unwrap_or(&text);
+            let rounded = apply_math_context(vm, stripped, ref_arg(args, 1))?;
+            create_big_number(vm, "java/math/BigDecimal", &rounded)
+        },
     ),
     method(
         "divideAndRemainder",
