@@ -1719,7 +1719,7 @@ fn char_buffer_from_units(vm: &mut Vm<'_>, units: Vec<u16>) -> Result<ObjectRef,
     )
 }
 
-const CHAR_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
+const CHAR_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
     method(
         "allocate",
         "(I)Ljava/nio/CharBuffer;",
@@ -1775,8 +1775,48 @@ const CHAR_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
             }
         },
     ),
+    method(
+        "wrap",
+        "(Ljava/lang/CharSequence;II)Ljava/nio/CharBuffer;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let sequence = ref_arg(args, 0);
+            if sequence.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let start = crate::int_arg(args, 1);
+            let end = crate::int_arg(args, 2);
+            let text_ref = char_sequence_text(vm, sequence)?;
+            let units = vm
+                .string_utf16(text_ref)
+                .map(<[u16]>::to_vec)
+                .unwrap_or_default();
+            let total = units.len() as i32;
+            if start < 0 || end < start || end > total {
+                return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+            }
+            let chars = vm.allocate_array_of(ArrayComponent::Char, units.len())?;
+            for (index, unit) in units.iter().enumerate() {
+                put_char_at(vm, chars, index, *unit)?;
+            }
+            object(new_char_buffer(vm, chars, 0, total, start, end, true)?)
+        },
+    ),
     method("get", "()C", ACC_PUBLIC, |vm, _, args| {
         int(i32::from(char_buffer_get(vm, receiver(args))?))
+    }),
+    method("get", "(I)C", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let index = crate::int_arg(args, 1);
+        if index < 0 || index >= buffer_limit(vm, this) {
+            return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+        }
+        let value = char_at(
+            vm,
+            char_buffer_chars(vm, this),
+            char_buffer_offset(vm, this) as usize + index as usize,
+        )?;
+        int(i32::from(value))
     }),
     method(
         "get",
@@ -2094,6 +2134,29 @@ const CHAR_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
         },
     ),
     method(
+        "slice",
+        "(II)Ljava/nio/CharBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let index = crate::int_arg(args, 1);
+            let length = crate::int_arg(args, 2);
+            if index < 0 || length < 0 || index + length > buffer_limit(vm, this) {
+                return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+            }
+            let offset = char_buffer_offset(vm, this) + index;
+            object(new_char_buffer(
+                vm,
+                char_buffer_chars(vm, this),
+                offset,
+                length,
+                0,
+                length,
+                char_buffer_read_only(vm, this),
+            )?)
+        },
+    ),
+    method(
         "asReadOnlyBuffer",
         "()Ljava/nio/CharBuffer;",
         ACC_PUBLIC,
@@ -2133,6 +2196,48 @@ const CHAR_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
         ACC_PUBLIC,
         |vm, _, args| buffer_reset(vm, receiver(args)),
     ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if other.is_null() || vm.class_name(vm.class_of(other)) != "java/nio/OjvmCharBuffer" {
+                return boolean(false);
+            }
+            let length = buffer_remaining(vm, this);
+            if length != buffer_remaining(vm, other) {
+                return boolean(false);
+            }
+            let left = char_buffer_chars(vm, this);
+            let right = char_buffer_chars(vm, other);
+            let left_base =
+                char_buffer_offset(vm, this) as usize + buffer_position(vm, this) as usize;
+            let right_base =
+                char_buffer_offset(vm, other) as usize + buffer_position(vm, other) as usize;
+            for index in 0..length as usize {
+                if char_at(vm, left, left_base + index)? != char_at(vm, right, right_base + index)?
+                {
+                    return boolean(false);
+                }
+            }
+            boolean(true)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let chars = char_buffer_chars(vm, this);
+        let base = char_buffer_offset(vm, this) as usize;
+        let mut hash = 1i32;
+        let mut index = buffer_limit(vm, this) - 1;
+        while index >= buffer_position(vm, this) {
+            let value = char_at(vm, chars, base + index as usize)?;
+            hash = hash.wrapping_mul(31).wrapping_add(i32::from(value));
+            index -= 1;
+        }
+        int(hash)
+    }),
 ];
 
 pub(crate) const CHAR_BUFFER: oxjvm_vm::NativeClass = class(
