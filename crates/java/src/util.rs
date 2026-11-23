@@ -18344,9 +18344,27 @@ const OJVM_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
             let this = receiver(args);
             check_mutable(vm, this)?;
             let previous = entry_field(vm, this, "value");
+            let new_value = ref_arg(args, 1);
+            // Write-through entries (e.g. ConcurrentHashMap's entrySet) also
+            // update the backing map, as the JDK does.
+            if let Some(backing) = vm.read_ref_field_any(this, "backing") {
+                if !backing.is_null() {
+                    let key = entry_field(vm, this, "key");
+                    let (class, method) = vm.resolve_virtual_method(
+                        backing,
+                        "put",
+                        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                    )?;
+                    vm.invoke_method(
+                        class,
+                        method,
+                        vec![Value::Ref(backing), Value::Ref(key), Value::Ref(new_value)],
+                    )?;
+                }
+            }
             let class = vm.class_of(this);
             let (declaring, field) = vm.find_field(class, "value", "Ljava/lang/Object;")?;
-            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            vm.set_instance_ref(this, declaring, field, new_value);
             object(previous)
         },
     ),
@@ -18387,6 +18405,7 @@ pub(crate) const OJVM_ENTRY: oxjvm_vm::NativeClass = class(
         field("key", "Ljava/lang/Object;", ACC_PRIVATE, None),
         field("value", "Ljava/lang/Object;", ACC_PRIVATE, None),
         field("immutable", "I", ACC_PRIVATE, None),
+        field("backing", "Ljava/util/Map;", ACC_PRIVATE, None),
     ],
     &OJVM_ENTRY_METHODS,
     None,
@@ -18989,6 +19008,10 @@ const CONCURRENT_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
             let present = hash_set_present(vm)?;
             for (key, value) in pairs {
                 let entry = new_entry(vm, key, value)?;
+                let entry_class = vm.class_of(entry);
+                let (declaring, field) =
+                    vm.find_field(entry_class, "backing", "Ljava/util/Map;")?;
+                vm.set_instance_ref(entry, declaring, field, this);
                 concurrent_map_call(
                     vm,
                     backing,
