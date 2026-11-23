@@ -533,6 +533,7 @@ impl<'a> Vm<'a> {
 
         let mut enclosing_class_name = None;
         let mut declaring_class_name = None;
+        let mut inner_class_access_flags = None;
         for attribute in &parsed.attributes {
             match &attribute.data {
                 AttributeData::EnclosingMethod(enclosing) => {
@@ -556,6 +557,7 @@ impl<'a> Vm<'a> {
                             .class_name(entry.outer_class_info_index)
                         {
                             declaring_class_name = Some(outer.to_string());
+                            inner_class_access_flags = Some(entry.inner_class_access_flags);
                         }
                     }
                 }
@@ -591,6 +593,7 @@ impl<'a> Vm<'a> {
             nest_host,
             enclosing_class_name,
             declaring_class_name,
+            inner_class_access_flags,
             permitted_subclasses,
             is_enum: parsed.access_flags & ACC_ENUM != 0,
             annotations: visible_annotations(&parsed.attributes),
@@ -835,6 +838,7 @@ impl<'a> Vm<'a> {
             nest_host: None,
             enclosing_class_name: None,
             declaring_class_name: None,
+            inner_class_access_flags: None,
             permitted_subclasses: Vec::new(),
             is_enum: definition.access_flags & ACC_ENUM != 0,
             annotations: Vec::new(),
@@ -941,6 +945,7 @@ impl<'a> Vm<'a> {
             nest_host: None,
             enclosing_class_name: None,
             declaring_class_name: None,
+            inner_class_access_flags: None,
             permitted_subclasses: Vec::new(),
             is_enum: false,
             annotations: Vec::new(),
@@ -2051,6 +2056,7 @@ impl<'a> Vm<'a> {
             nest_host: None,
             enclosing_class_name: None,
             declaring_class_name: None,
+            inner_class_access_flags: None,
             permitted_subclasses: Vec::new(),
             is_enum: false,
             annotations: Vec::new(),

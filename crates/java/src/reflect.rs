@@ -4967,6 +4967,7 @@ const ACCESS_FLAG_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
                 "PROTECTED",
                 "STATIC",
                 "FINAL",
+                "SUPER",
                 "SYNCHRONIZED",
                 "VOLATILE",
                 "TRANSIENT",
@@ -5022,6 +5023,7 @@ fn access_flag_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
         ("PROTECTED", 0x0004),
         ("STATIC", 0x0008),
         ("FINAL", 0x0010),
+        ("SUPER", 0x0020),
         ("SYNCHRONIZED", 0x0020),
         ("VOLATILE", 0x0040),
         ("TRANSIENT", 0x0080),
@@ -5084,6 +5086,12 @@ pub(crate) const ACCESS_FLAG: oxjvm_vm::NativeClass = class(
         ),
         field(
             "FINAL",
+            "Ljava/lang/reflect/AccessFlag;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "SUPER",
             "Ljava/lang/reflect/AccessFlag;",
             ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
             None,

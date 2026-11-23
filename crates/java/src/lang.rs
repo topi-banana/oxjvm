@@ -250,7 +250,7 @@ pub(crate) const OBJECT: oxjvm_vm::NativeClass = class(
 // Class
 // -------------------------------------------------------------------------------------------
 
-const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 71] = [
+const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 72] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -443,8 +443,17 @@ const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 71] = [
     ),
     method("getModifiers", "()I", ACC_PUBLIC, |vm, _, args| {
         let class = class_argument(vm, receiver(args))?;
-        int(i32::from(vm.classes.get(class).access_flags))
+        int(i32::from(class_modifiers(vm, class)))
     }),
+    method(
+        "accessFlags",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = class_argument(vm, receiver(args))?;
+            class_access_flags(vm, class)
+        },
+    ),
     method("desiredAssertionStatus", "()Z", ACC_PUBLIC, |_, _, _| {
         boolean(false)
     }),
@@ -1221,6 +1230,87 @@ fn class_is_record(
         None => return boolean(false),
     };
     boolean(vm.class_is_subtype(class, record))
+}
+
+/// The source-level modifiers of a class, as returned by `Class.getModifiers`.
+/// Primitives and arrays are `public final abstract`; arrays also inherit the
+/// access level of their component. Nested classes use the `InnerClasses`
+/// member flags; top-level classes expose their class-file flags minus `SUPER`.
+fn class_modifiers(vm: &Vm<'_>, class: ClassId) -> u16 {
+    let definition = vm.classes.get(class);
+    match definition.kind {
+        oxjvm_vm::ClassKind::Primitive => ACC_PUBLIC | ACC_FINAL | ACC_ABSTRACT,
+        oxjvm_vm::ClassKind::Array => {
+            let component = definition.component_class.map_or(0, |component| {
+                class_modifiers(vm, component) & (ACC_PUBLIC | ACC_PROTECTED | ACC_PRIVATE)
+            });
+            ACC_PUBLIC | ACC_FINAL | ACC_ABSTRACT | component
+        }
+        _ => definition
+            .inner_class_access_flags
+            .unwrap_or(definition.access_flags & !ACC_SUPER),
+    }
+}
+
+/// `Class.accessFlags()`: the set of `AccessFlag` constants for this class.
+/// Top-level classes and primitives interpret the raw class-file flags at the
+/// `CLASS` location (which admits `SUPER`); nested and array classes interpret
+/// their source modifiers at the `INNER_CLASS` location.
+fn class_access_flags(vm: &mut Vm<'_>, class: ClassId) -> Result<Value, VmError> {
+    let definition = vm.classes.get(class);
+    let is_member = definition.declaring_class_name.is_some();
+    let is_local =
+        definition.declaring_class_name.is_none() && definition.enclosing_class_name.is_some();
+    let is_anonymous = definition.name.contains("$$Lambda$");
+    let is_array = definition.kind == oxjvm_vm::ClassKind::Array;
+    let inner = is_member || is_local || is_anonymous || is_array;
+    let mask = if inner {
+        class_modifiers(vm, class)
+    } else if definition.kind == oxjvm_vm::ClassKind::Primitive {
+        ACC_PUBLIC | ACC_FINAL | ACC_ABSTRACT
+    } else {
+        definition.access_flags
+    };
+    let flags: &[(&str, u16)] = if inner {
+        &[
+            ("PUBLIC", ACC_PUBLIC),
+            ("PRIVATE", ACC_PRIVATE),
+            ("PROTECTED", ACC_PROTECTED),
+            ("STATIC", ACC_STATIC),
+            ("FINAL", ACC_FINAL),
+            ("INTERFACE", ACC_INTERFACE),
+            ("ABSTRACT", ACC_ABSTRACT),
+            ("SYNTHETIC", ACC_SYNTHETIC),
+            ("ANNOTATION", ACC_ANNOTATION),
+            ("ENUM", ACC_ENUM),
+        ]
+    } else {
+        &[
+            ("PUBLIC", ACC_PUBLIC),
+            ("FINAL", ACC_FINAL),
+            ("SUPER", ACC_SUPER),
+            ("INTERFACE", ACC_INTERFACE),
+            ("ABSTRACT", ACC_ABSTRACT),
+            ("SYNTHETIC", ACC_SYNTHETIC),
+            ("ANNOTATION", ACC_ANNOTATION),
+            ("ENUM", ACC_ENUM),
+            ("MODULE", ACC_MODULE),
+        ]
+    };
+    let access_flag_class = vm.resolve_class("java/lang/reflect/AccessFlag")?;
+    vm.ensure_initialized(access_flag_class)?;
+    let mut elements = Vec::new();
+    for (name, bit) in flags {
+        if mask & bit != 0 {
+            if let Some(value) =
+                vm.read_static_ref_if_set(access_flag_class, name, "Ljava/lang/reflect/AccessFlag;")
+            {
+                elements.push(value);
+            }
+        }
+    }
+    let set = crate::util::hash_set_from(vm, &elements)?;
+    object(set)
 }
 
 /// `Class.getEnumConstants()`: a fresh copy of the enum's `$VALUES` array, or null.

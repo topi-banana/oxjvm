@@ -386,6 +386,8 @@ pub struct Class {
     pub enclosing_class_name: Option<String>,
     /// The declaring (outer) class name from `InnerClasses`, for member classes.
     pub declaring_class_name: Option<String>,
+    /// The member access flags from the `InnerClasses` entry, for nested classes.
+    pub inner_class_access_flags: Option<u16>,
     /// Permitted subclasses, from `PermittedSubclasses`.
     pub permitted_subclasses: Vec<ClassId>,
     /// Whether the class has an `ACC_ENUM` flag.
