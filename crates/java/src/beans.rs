@@ -1231,6 +1231,9 @@ const PROPERTY_CHANGE_EVENT_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         "(Ljava/lang/Object;Ljava/lang/String;Ljava/lang/Object;Ljava/lang/Object;)V",
         ACC_PUBLIC,
         |vm, _, args| {
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("null source")));
+            }
             let class = vm.class_of(receiver(args));
             for (name, descriptor, value) in [
                 ("source", "Ljava/lang/Object;", ref_arg(args, 1)),
@@ -1385,12 +1388,15 @@ pub(crate) const VETOABLE_CHANGE_LISTENER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PROPERTY_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const PROPERTY_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
     method(
         "<init>",
         "(Ljava/lang/Object;)V",
         ACC_PUBLIC,
         |vm, _, args| {
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let class = vm.class_of(receiver(args));
             if let Some((declaring, field)) =
                 vm.find_field_opt(class, "source", "Ljava/lang/Object;")
@@ -1410,26 +1416,50 @@ const PROPERTY_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "addPropertyChangeListener",
         "(Ljava/beans/PropertyChangeListener;)V",
         ACC_PUBLIC,
-        |vm, _, args| change_add(vm, receiver(args), ref_arg(args, 1), "listeners"),
+        |vm, _, args| {
+            change_add(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                "listeners",
+                "java/beans/PropertyChangeListenerProxy",
+            )
+        },
     ),
     method(
         "addPropertyChangeListener",
         "(Ljava/lang/String;Ljava/beans/PropertyChangeListener;)V",
         ACC_PUBLIC,
-        |vm, _, args| change_add_named(vm, receiver(args), ref_arg(args, 1), ref_arg(args, 2)),
+        |vm, _, args| {
+            change_add_named(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                "java/beans/PropertyChangeListenerProxy",
+            )
+        },
     ),
     method(
         "removePropertyChangeListener",
         "(Ljava/beans/PropertyChangeListener;)V",
         ACC_PUBLIC,
-        |vm, _, args| change_remove(vm, receiver(args), ref_arg(args, 1), "listeners"),
+        |vm, _, args| {
+            change_remove(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                "listeners",
+                "java/beans/PropertyChangeListenerProxy",
+            )
+        },
     ),
     method(
         "getPropertyChangeListeners",
         "()[Ljava/beans/PropertyChangeListener;",
         ACC_PUBLIC,
         |vm, _, args| {
-            change_listeners(
+            change_all_listeners(
                 vm,
                 receiver(args),
                 "listeners",
@@ -1442,6 +1472,9 @@ const PROPERTY_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "(Ljava/beans/PropertyChangeEvent;)V",
         ACC_PUBLIC,
         |vm, _, args| {
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             change_fire(
                 vm,
                 receiver(args),
@@ -1456,14 +1489,18 @@ const PROPERTY_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "(Ljava/lang/String;Ljava/lang/Object;Ljava/lang/Object;)V",
         ACC_PUBLIC,
         |vm, _, args| {
+            let this = receiver(args);
+            if change_values_equal(vm, ref_arg(args, 2), ref_arg(args, 3))? {
+                return void();
+            }
             let event = make_change_event(
                 vm,
-                receiver(args),
+                this,
                 ref_arg(args, 1),
                 ref_arg(args, 2),
                 ref_arg(args, 3),
             )?;
-            change_fire(vm, receiver(args), event, "listeners", "propertyChange")
+            change_fire_virtual(vm, this, event, "firePropertyChange")
         },
     ),
     method(
@@ -1471,18 +1508,24 @@ const PROPERTY_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "(Ljava/lang/String;ZZ)V",
         ACC_PUBLIC,
         |vm, _, args| {
-            let old = vm.make_string(if crate::int_arg(args, 2) != 0 {
-                "true"
-            } else {
-                "false"
-            })?;
-            let new = vm.make_string(if crate::int_arg(args, 3) != 0 {
-                "true"
-            } else {
-                "false"
-            })?;
-            let event = make_change_event(vm, receiver(args), ref_arg(args, 1), old, new)?;
-            change_fire(vm, receiver(args), event, "listeners", "propertyChange")
+            let this = receiver(args);
+            let old = crate::boxed::box_value(vm, Value::Int(crate::int_arg(args, 2)), "Z")?;
+            let new = crate::boxed::box_value(vm, Value::Int(crate::int_arg(args, 3)), "Z")?;
+            let (class, method) = vm.resolve_virtual_method(
+                this,
+                "firePropertyChange",
+                "(Ljava/lang/String;Ljava/lang/Object;Ljava/lang/Object;)V",
+            )?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![
+                    Value::Ref(this),
+                    Value::Ref(ref_arg(args, 1)),
+                    Value::Ref(old.as_ref()),
+                    Value::Ref(new.as_ref()),
+                ],
+            )
         },
     ),
     method(
@@ -1490,16 +1533,121 @@ const PROPERTY_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "(Ljava/lang/String;II)V",
         ACC_PUBLIC,
         |vm, _, args| {
+            let this = receiver(args);
             let old = crate::boxed::box_value(vm, Value::Int(crate::int_arg(args, 2)), "I")?;
             let new = crate::boxed::box_value(vm, Value::Int(crate::int_arg(args, 3)), "I")?;
-            let event = make_change_event(
-                vm,
-                receiver(args),
-                ref_arg(args, 1),
-                old.as_ref(),
-                new.as_ref(),
+            let (class, method) = vm.resolve_virtual_method(
+                this,
+                "firePropertyChange",
+                "(Ljava/lang/String;Ljava/lang/Object;Ljava/lang/Object;)V",
             )?;
-            change_fire(vm, receiver(args), event, "listeners", "propertyChange")
+            vm.invoke_method(
+                class,
+                method,
+                vec![
+                    Value::Ref(this),
+                    Value::Ref(ref_arg(args, 1)),
+                    Value::Ref(old.as_ref()),
+                    Value::Ref(new.as_ref()),
+                ],
+            )
+        },
+    ),
+    method(
+        "fireIndexedPropertyChange",
+        "(Ljava/lang/String;ILjava/lang/Object;Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if change_values_equal(vm, ref_arg(args, 3), ref_arg(args, 4))? {
+                return void();
+            }
+            let event = make_indexed_change_event(
+                vm,
+                this,
+                ref_arg(args, 1),
+                crate::int_arg(args, 2),
+                ref_arg(args, 3),
+                ref_arg(args, 4),
+            )?;
+            change_fire_virtual(vm, this, event, "firePropertyChange")
+        },
+    ),
+    method(
+        "fireIndexedPropertyChange",
+        "(Ljava/lang/String;III)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let old = crate::boxed::box_value(vm, Value::Int(crate::int_arg(args, 3)), "I")?;
+            let new = crate::boxed::box_value(vm, Value::Int(crate::int_arg(args, 4)), "I")?;
+            let (class, method) = vm.resolve_virtual_method(
+                this,
+                "fireIndexedPropertyChange",
+                "(Ljava/lang/String;ILjava/lang/Object;Ljava/lang/Object;)V",
+            )?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![
+                    Value::Ref(this),
+                    Value::Ref(ref_arg(args, 1)),
+                    Value::Int(crate::int_arg(args, 2)),
+                    Value::Ref(old.as_ref()),
+                    Value::Ref(new.as_ref()),
+                ],
+            )
+        },
+    ),
+    method(
+        "fireIndexedPropertyChange",
+        "(Ljava/lang/String;IZZ)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let old = crate::boxed::box_value(vm, Value::Int(crate::int_arg(args, 3)), "Z")?;
+            let new = crate::boxed::box_value(vm, Value::Int(crate::int_arg(args, 4)), "Z")?;
+            let (class, method) = vm.resolve_virtual_method(
+                this,
+                "fireIndexedPropertyChange",
+                "(Ljava/lang/String;ILjava/lang/Object;Ljava/lang/Object;)V",
+            )?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![
+                    Value::Ref(this),
+                    Value::Ref(ref_arg(args, 1)),
+                    Value::Int(crate::int_arg(args, 2)),
+                    Value::Ref(old.as_ref()),
+                    Value::Ref(new.as_ref()),
+                ],
+            )
+        },
+    ),
+    method(
+        "getPropertyChangeListeners",
+        "(Ljava/lang/String;)[Ljava/beans/PropertyChangeListener;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let name = ref_arg(args, 1);
+            let class = vm.resolve_class("java/beans/PropertyChangeListener")?;
+            if name.is_null() {
+                let array = vm.allocate_object_array(class, 0)?;
+                return object(array);
+            }
+            let list = change_named_list(vm, this, name, false)?;
+            let elements = if list.is_null() {
+                Vec::new()
+            } else {
+                crate::util::array_list_elements(vm, list)
+            };
+            let array = vm.allocate_object_array(class, elements.len())?;
+            for (index, element) in elements.iter().enumerate() {
+                vm.array_set_ref(array, index, *element)?;
+            }
+            object(array)
         },
     ),
     method("hasListeners", "()Z", ACC_PUBLIC, |vm, _, args| {
@@ -1515,7 +1663,15 @@ const PROPERTY_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "removePropertyChangeListener",
         "(Ljava/lang/String;Ljava/beans/PropertyChangeListener;)V",
         ACC_PUBLIC,
-        |vm, _, args| change_remove_named(vm, receiver(args), ref_arg(args, 1), ref_arg(args, 2)),
+        |vm, _, args| {
+            change_remove_named(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                "java/beans/PropertyChangeListenerProxy",
+            )
+        },
     ),
 ];
 
@@ -1554,14 +1710,39 @@ fn change_named_list(
     Ok(list)
 }
 
-/// Register a listener both globally and under its property name.
+/// Unwrap proxy listeners to the wrapped listener, as `ChangeListenerMap.extract`.
+fn change_extract(
+    vm: &mut Vm<'_>,
+    listener: ObjectRef,
+    proxy_name: &str,
+) -> Result<ObjectRef, VmError> {
+    let proxy_class = vm.resolve_class(proxy_name)?;
+    let mut current = listener;
+    while !current.is_null() && vm.is_instance(current, proxy_class) {
+        let (class, method) =
+            vm.resolve_virtual_method(current, "getListener", "()Ljava/util/EventListener;")?;
+        current = vm
+            .invoke_method(class, method, vec![Value::Ref(current)])?
+            .as_ref();
+    }
+    Ok(current)
+}
+
+/// Register a listener under its property name only; a null name or listener is ignored.
 fn change_add_named(
     vm: &mut Vm<'_>,
     this: ObjectRef,
     name: ObjectRef,
     listener: ObjectRef,
+    proxy_name: &str,
 ) -> Result<Value, VmError> {
-    change_add(vm, this, listener, "listeners")?;
+    if name.is_null() || listener.is_null() {
+        return void();
+    }
+    let listener = change_extract(vm, listener, proxy_name)?;
+    if listener.is_null() {
+        return void();
+    }
     let list = change_named_list(vm, this, name, true)?;
     if !list.is_null() {
         let (class, method) = vm.resolve_virtual_method(list, "add", "(Ljava/lang/Object;)Z")?;
@@ -1570,14 +1751,21 @@ fn change_add_named(
     void()
 }
 
-/// Remove a listener both globally and under its property name.
+/// Remove a listener registered under its property name; a null name or listener is ignored.
 fn change_remove_named(
     vm: &mut Vm<'_>,
     this: ObjectRef,
     name: ObjectRef,
     listener: ObjectRef,
+    proxy_name: &str,
 ) -> Result<Value, VmError> {
-    change_remove(vm, this, listener, "listeners")?;
+    if name.is_null() || listener.is_null() {
+        return void();
+    }
+    let listener = change_extract(vm, listener, proxy_name)?;
+    if listener.is_null() {
+        return void();
+    }
     let list = change_named_list(vm, this, name, false)?;
     if !list.is_null() {
         let (class, method) = vm.resolve_virtual_method(list, "remove", "(Ljava/lang/Object;)Z")?;
@@ -1586,32 +1774,43 @@ fn change_remove_named(
     void()
 }
 
-/// `hasListeners()` / `hasListeners(String)`.
+/// Whether a listener list holds at least one element.
+fn change_list_nonempty(vm: &mut Vm<'_>, list: ObjectRef) -> Result<bool, VmError> {
+    if list.is_null() {
+        return Ok(false);
+    }
+    let (class, method) = vm.resolve_virtual_method(list, "isEmpty", "()Z")?;
+    Ok(!vm
+        .invoke_method(class, method, vec![Value::Ref(list)])?
+        .as_boolean())
+}
+
+/// `hasListeners()` / `hasListeners(String)`: the generic list, or a matching named list.
 fn change_has_listeners(
     vm: &mut Vm<'_>,
     this: ObjectRef,
     name: Option<ObjectRef>,
 ) -> Result<Value, VmError> {
-    let list = match name {
-        None => vm
-            .read_ref_field(
-                this,
-                vm.class_of(this),
-                "listeners",
-                "Ljava/util/ArrayList;",
-            )
-            .unwrap_or(ObjectRef::NULL),
-        Some(name) => change_named_list(vm, this, name, false)?,
-    };
-    if list.is_null() {
-        return boolean(false);
+    let generic = vm
+        .read_ref_field(
+            this,
+            vm.class_of(this),
+            "listeners",
+            "Ljava/util/ArrayList;",
+        )
+        .unwrap_or(ObjectRef::NULL);
+    if change_list_nonempty(vm, generic)? {
+        return boolean(true);
     }
-    let (class, method) = vm.resolve_virtual_method(list, "isEmpty", "()Z")?;
-    let empty = vm
-        .invoke_method(class, method, vec![Value::Ref(list)])?
-        .as_int()
-        != 0;
-    boolean(!empty)
+    if let Some(name) = name {
+        if !name.is_null() {
+            let named = change_named_list(vm, this, name, false)?;
+            if change_list_nonempty(vm, named)? {
+                return boolean(true);
+            }
+        }
+    }
+    boolean(false)
 }
 
 fn change_add(
@@ -1619,7 +1818,25 @@ fn change_add(
     this: ObjectRef,
     listener: ObjectRef,
     field_name: &str,
+    proxy_name: &str,
 ) -> Result<Value, VmError> {
+    if listener.is_null() {
+        return void();
+    }
+    let proxy_class = vm.resolve_class(proxy_name)?;
+    if vm.is_instance(listener, proxy_class) {
+        let (class, method) =
+            vm.resolve_virtual_method(listener, "getPropertyName", "()Ljava/lang/String;")?;
+        let name = vm
+            .invoke_method(class, method, vec![Value::Ref(listener)])?
+            .as_ref();
+        let (class, method) =
+            vm.resolve_virtual_method(listener, "getListener", "()Ljava/util/EventListener;")?;
+        let real = vm
+            .invoke_method(class, method, vec![Value::Ref(listener)])?
+            .as_ref();
+        return change_add_named(vm, this, name, real, proxy_name);
+    }
     let list = vm
         .read_ref_field(this, vm.class_of(this), field_name, "Ljava/util/ArrayList;")
         .unwrap_or(ObjectRef::NULL);
@@ -1635,7 +1852,25 @@ fn change_remove(
     this: ObjectRef,
     listener: ObjectRef,
     field_name: &str,
+    proxy_name: &str,
 ) -> Result<Value, VmError> {
+    if listener.is_null() {
+        return void();
+    }
+    let proxy_class = vm.resolve_class(proxy_name)?;
+    if vm.is_instance(listener, proxy_class) {
+        let (class, method) =
+            vm.resolve_virtual_method(listener, "getPropertyName", "()Ljava/lang/String;")?;
+        let name = vm
+            .invoke_method(class, method, vec![Value::Ref(listener)])?
+            .as_ref();
+        let (class, method) =
+            vm.resolve_virtual_method(listener, "getListener", "()Ljava/util/EventListener;")?;
+        let real = vm
+            .invoke_method(class, method, vec![Value::Ref(listener)])?
+            .as_ref();
+        return change_remove_named(vm, this, name, real, proxy_name);
+    }
     let list = vm
         .read_ref_field(this, vm.class_of(this), field_name, "Ljava/util/ArrayList;")
         .unwrap_or(ObjectRef::NULL);
@@ -1646,21 +1881,51 @@ fn change_remove(
     void()
 }
 
-fn change_listeners(
+/// All listeners: the global list plus every named list, as the JDK returns.
+fn change_all_listeners(
     vm: &mut Vm<'_>,
     this: ObjectRef,
     field_name: &str,
     component: &str,
 ) -> Result<Value, VmError> {
+    let mut elements = Vec::new();
     let list = vm
         .read_ref_field(this, vm.class_of(this), field_name, "Ljava/util/ArrayList;")
         .unwrap_or(ObjectRef::NULL);
+    if !list.is_null() {
+        elements.extend(crate::util::array_list_elements(vm, list));
+    }
+    let map = vm
+        .read_ref_field(this, vm.class_of(this), "named", "Ljava/util/HashMap;")
+        .unwrap_or(ObjectRef::NULL);
+    if !map.is_null() {
+        let (class, method) =
+            vm.resolve_virtual_method(map, "values", "()Ljava/util/Collection;")?;
+        let values = vm
+            .invoke_method(class, method, vec![Value::Ref(map)])?
+            .as_ref();
+        let (class, method) =
+            vm.resolve_virtual_method(values, "iterator", "()Ljava/util/Iterator;")?;
+        let iterator = vm
+            .invoke_method(class, method, vec![Value::Ref(values)])?
+            .as_ref();
+        loop {
+            let (class, method) = vm.resolve_virtual_method(iterator, "hasNext", "()Z")?;
+            if !vm
+                .invoke_method(class, method, vec![Value::Ref(iterator)])?
+                .as_boolean()
+            {
+                break;
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(iterator, "next", "()Ljava/lang/Object;")?;
+            let named_list = vm
+                .invoke_method(class, method, vec![Value::Ref(iterator)])?
+                .as_ref();
+            elements.extend(crate::util::array_list_elements(vm, named_list));
+        }
+    }
     let class = vm.resolve_class(component)?;
-    let elements = if list.is_null() {
-        Vec::new()
-    } else {
-        crate::util::array_list_elements(vm, list)
-    };
     let array = vm.allocate_object_array(class, elements.len())?;
     for (index, element) in elements.iter().enumerate() {
         vm.array_set_ref(array, index, *element)?;
@@ -1688,16 +1953,68 @@ fn change_fire(
             vm.invoke_method(class, method, vec![Value::Ref(listener), Value::Ref(event)])?;
         }
     }
+    let name = vm
+        .read_ref_field(
+            event,
+            vm.class_of(event),
+            "propertyName",
+            "Ljava/lang/String;",
+        )
+        .unwrap_or(ObjectRef::NULL);
+    if !name.is_null() {
+        let named = change_named_list(vm, this, name, false)?;
+        if !named.is_null() {
+            for listener in crate::util::array_list_elements(vm, named) {
+                let (class, method) = vm.resolve_virtual_method(
+                    listener,
+                    method_name,
+                    "(Ljava/beans/PropertyChangeEvent;)V",
+                )?;
+                vm.invoke_method(class, method, vec![Value::Ref(listener), Value::Ref(event)])?;
+            }
+        }
+    }
     void()
+}
+
+/// The JDK skips firing when both values are non-null and equal.
+fn change_values_equal(vm: &mut Vm<'_>, old: ObjectRef, new: ObjectRef) -> Result<bool, VmError> {
+    if old.is_null() || new.is_null() {
+        return Ok(false);
+    }
+    let (class, method) = vm.resolve_virtual_method(old, "equals", "(Ljava/lang/Object;)Z")?;
+    Ok(vm
+        .invoke_method(class, method, vec![Value::Ref(old), Value::Ref(new)])?
+        .as_boolean())
+}
+
+/// Dispatch through the public fire method so subclass overrides run, as the JDK does.
+fn change_fire_virtual(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    event: ObjectRef,
+    fire_method: &str,
+) -> Result<Value, VmError> {
+    let (class, method) =
+        vm.resolve_virtual_method(this, fire_method, "(Ljava/beans/PropertyChangeEvent;)V")?;
+    vm.invoke_method(class, method, vec![Value::Ref(this), Value::Ref(event)])
 }
 
 fn make_change_event(
     vm: &mut Vm<'_>,
-    source: ObjectRef,
+    support: ObjectRef,
     name: ObjectRef,
     old: ObjectRef,
     new: ObjectRef,
 ) -> Result<ObjectRef, VmError> {
+    let source = vm
+        .read_ref_field(
+            support,
+            vm.class_of(support),
+            "source",
+            "Ljava/lang/Object;",
+        )
+        .unwrap_or(ObjectRef::NULL);
     let class = vm.resolve_class("java/beans/PropertyChangeEvent")?;
     let event = vm.new_instance(class)?;
     let (declaring, ctor) = vm
@@ -1721,6 +2038,46 @@ fn make_change_event(
     Ok(event)
 }
 
+fn make_indexed_change_event(
+    vm: &mut Vm<'_>,
+    support: ObjectRef,
+    name: ObjectRef,
+    index: i32,
+    old: ObjectRef,
+    new: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    let source = vm
+        .read_ref_field(
+            support,
+            vm.class_of(support),
+            "source",
+            "Ljava/lang/Object;",
+        )
+        .unwrap_or(ObjectRef::NULL);
+    let class = vm.resolve_class("java/beans/IndexedPropertyChangeEvent")?;
+    let event = vm.new_instance(class)?;
+    let (declaring, ctor) = vm
+        .find_method(
+            class,
+            "<init>",
+            "(Ljava/lang/Object;Ljava/lang/String;ILjava/lang/Object;Ljava/lang/Object;)V",
+        )
+        .ok_or_else(|| VmError::internal("IndexedPropertyChangeEvent ctor missing"))?;
+    vm.invoke_method(
+        declaring,
+        ctor,
+        vec![
+            Value::Ref(event),
+            Value::Ref(source),
+            Value::Ref(name),
+            Value::Int(index),
+            Value::Ref(old),
+            Value::Ref(new),
+        ],
+    )?;
+    Ok(event)
+}
+
 pub(crate) const PROPERTY_CHANGE_SUPPORT: oxjvm_vm::NativeClass = class(
     "java/beans/PropertyChangeSupport",
     Some("java/lang/Object"),
@@ -1735,12 +2092,15 @@ pub(crate) const PROPERTY_CHANGE_SUPPORT: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const VETOABLE_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const VETOABLE_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     method(
         "<init>",
         "(Ljava/lang/Object;)V",
         ACC_PUBLIC,
         |vm, _, args| {
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let class = vm.class_of(receiver(args));
             if let Some((declaring, field)) =
                 vm.find_field_opt(class, "source", "Ljava/lang/Object;")
@@ -1760,25 +2120,52 @@ const VETOABLE_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         "addVetoableChangeListener",
         "(Ljava/beans/VetoableChangeListener;)V",
         ACC_PUBLIC,
-        |vm, _, args| change_add(vm, receiver(args), ref_arg(args, 1), "listeners"),
+        |vm, _, args| {
+            change_add(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                "listeners",
+                "java/beans/VetoableChangeListenerProxy",
+            )
+        },
     ),
     method(
         "addVetoableChangeListener",
         "(Ljava/lang/String;Ljava/beans/VetoableChangeListener;)V",
         ACC_PUBLIC,
-        |vm, _, args| change_add_named(vm, receiver(args), ref_arg(args, 1), ref_arg(args, 2)),
+        |vm, _, args| {
+            change_add_named(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                "java/beans/VetoableChangeListenerProxy",
+            )
+        },
     ),
     method(
         "removeVetoableChangeListener",
         "(Ljava/beans/VetoableChangeListener;)V",
         ACC_PUBLIC,
-        |vm, _, args| change_remove(vm, receiver(args), ref_arg(args, 1), "listeners"),
+        |vm, _, args| {
+            change_remove(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                "listeners",
+                "java/beans/VetoableChangeListenerProxy",
+            )
+        },
     ),
     method(
         "fireVetoableChange",
         "(Ljava/beans/PropertyChangeEvent;)V",
         ACC_PUBLIC,
         |vm, _, args| {
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             change_fire(
                 vm,
                 receiver(args),
@@ -1793,14 +2180,93 @@ const VETOABLE_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         "(Ljava/lang/String;Ljava/lang/Object;Ljava/lang/Object;)V",
         ACC_PUBLIC,
         |vm, _, args| {
+            let this = receiver(args);
+            if change_values_equal(vm, ref_arg(args, 2), ref_arg(args, 3))? {
+                return void();
+            }
             let event = make_change_event(
                 vm,
-                receiver(args),
+                this,
                 ref_arg(args, 1),
                 ref_arg(args, 2),
                 ref_arg(args, 3),
             )?;
-            change_fire(vm, receiver(args), event, "listeners", "vetoableChange")
+            change_fire_virtual(vm, this, event, "fireVetoableChange")
+        },
+    ),
+    method(
+        "fireVetoableChange",
+        "(Ljava/lang/String;ZZ)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let old = crate::boxed::box_value(vm, Value::Int(crate::int_arg(args, 2)), "Z")?;
+            let new = crate::boxed::box_value(vm, Value::Int(crate::int_arg(args, 3)), "Z")?;
+            let (class, method) = vm.resolve_virtual_method(
+                this,
+                "fireVetoableChange",
+                "(Ljava/lang/String;Ljava/lang/Object;Ljava/lang/Object;)V",
+            )?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![
+                    Value::Ref(this),
+                    Value::Ref(ref_arg(args, 1)),
+                    Value::Ref(old.as_ref()),
+                    Value::Ref(new.as_ref()),
+                ],
+            )
+        },
+    ),
+    method(
+        "fireVetoableChange",
+        "(Ljava/lang/String;II)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let old = crate::boxed::box_value(vm, Value::Int(crate::int_arg(args, 2)), "I")?;
+            let new = crate::boxed::box_value(vm, Value::Int(crate::int_arg(args, 3)), "I")?;
+            let (class, method) = vm.resolve_virtual_method(
+                this,
+                "fireVetoableChange",
+                "(Ljava/lang/String;Ljava/lang/Object;Ljava/lang/Object;)V",
+            )?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![
+                    Value::Ref(this),
+                    Value::Ref(ref_arg(args, 1)),
+                    Value::Ref(old.as_ref()),
+                    Value::Ref(new.as_ref()),
+                ],
+            )
+        },
+    ),
+    method(
+        "getVetoableChangeListeners",
+        "(Ljava/lang/String;)[Ljava/beans/VetoableChangeListener;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let name = ref_arg(args, 1);
+            let class = vm.resolve_class("java/beans/VetoableChangeListener")?;
+            if name.is_null() {
+                let array = vm.allocate_object_array(class, 0)?;
+                return object(array);
+            }
+            let list = change_named_list(vm, this, name, false)?;
+            let elements = if list.is_null() {
+                Vec::new()
+            } else {
+                crate::util::array_list_elements(vm, list)
+            };
+            let array = vm.allocate_object_array(class, elements.len())?;
+            for (index, element) in elements.iter().enumerate() {
+                vm.array_set_ref(array, index, *element)?;
+            }
+            object(array)
         },
     ),
     method(
@@ -1808,7 +2274,7 @@ const VETOABLE_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         "()[Ljava/beans/VetoableChangeListener;",
         ACC_PUBLIC,
         |vm, _, args| {
-            change_listeners(
+            change_all_listeners(
                 vm,
                 receiver(args),
                 "listeners",
@@ -1829,7 +2295,15 @@ const VETOABLE_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         "removeVetoableChangeListener",
         "(Ljava/lang/String;Ljava/beans/VetoableChangeListener;)V",
         ACC_PUBLIC,
-        |vm, _, args| change_remove_named(vm, receiver(args), ref_arg(args, 1), ref_arg(args, 2)),
+        |vm, _, args| {
+            change_remove_named(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                "java/beans/VetoableChangeListenerProxy",
+            )
+        },
     ),
 ];
 
@@ -2297,3 +2771,228 @@ pub(crate) const FEATURE_DESCRIPTOR: oxjvm_vm::NativeClass = class(
     &FEATURE_DESCRIPTOR_METHODS,
     None,
 );
+
+/// `java.beans.IndexedPropertyChangeEvent`: a change event carrying the index
+/// of the changed element, as produced by `fireIndexedPropertyChange`.
+pub(crate) const INDEXED_PROPERTY_CHANGE_EVENT: oxjvm_vm::NativeClass = class(
+    "java/beans/IndexedPropertyChangeEvent",
+    Some("java/beans/PropertyChangeEvent"),
+    &[],
+    ACC_PUBLIC,
+    &[field("index", "I", ACC_PRIVATE, None)],
+    &INDEXED_PROPERTY_CHANGE_EVENT_METHODS,
+    None,
+);
+
+const INDEXED_PROPERTY_CHANGE_EVENT_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "<init>",
+        "(Ljava/lang/Object;Ljava/lang/String;ILjava/lang/Object;Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let super_class = vm.resolve_class("java/beans/PropertyChangeEvent")?;
+            let (declaring, ctor) = vm
+                .find_method(
+                    super_class,
+                    "<init>",
+                    "(Ljava/lang/Object;Ljava/lang/String;Ljava/lang/Object;Ljava/lang/Object;)V",
+                )
+                .ok_or_else(|| VmError::internal("PropertyChangeEvent ctor missing"))?;
+            vm.invoke_method(
+                declaring,
+                ctor,
+                vec![
+                    Value::Ref(this),
+                    Value::Ref(ref_arg(args, 1)),
+                    Value::Ref(ref_arg(args, 2)),
+                    Value::Ref(ref_arg(args, 4)),
+                    Value::Ref(ref_arg(args, 5)),
+                ],
+            )?;
+            crate::lang::write_int_field(vm, this, "index", crate::int_arg(args, 3));
+            void()
+        },
+    ),
+    method("getIndex", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "index"))
+    }),
+];
+
+/// `java.beans.PropertyChangeListenerProxy`: a named listener registration
+/// that forwards events to the wrapped listener.
+pub(crate) const PROPERTY_CHANGE_LISTENER_PROXY: oxjvm_vm::NativeClass = class(
+    "java/beans/PropertyChangeListenerProxy",
+    Some("java/util/EventListenerProxy"),
+    &["java/beans/PropertyChangeListener"],
+    ACC_PUBLIC,
+    &[field(
+        "propertyName",
+        "Ljava/lang/String;",
+        ACC_PRIVATE,
+        None,
+    )],
+    &PROPERTY_CHANGE_LISTENER_PROXY_METHODS,
+    None,
+);
+
+const PROPERTY_CHANGE_LISTENER_PROXY_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/beans/PropertyChangeListener;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let name = ref_arg(args, 1);
+            let listener = ref_arg(args, 2);
+            if name.is_null() || listener.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let super_class = vm.resolve_class("java/util/EventListenerProxy")?;
+            let (declaring, ctor) = vm
+                .find_method(super_class, "<init>", "(Ljava/util/EventListener;)V")
+                .ok_or_else(|| VmError::internal("EventListenerProxy ctor missing"))?;
+            vm.invoke_method(
+                declaring,
+                ctor,
+                vec![Value::Ref(this), Value::Ref(listener)],
+            )?;
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "propertyName", "Ljava/lang/String;")?;
+            vm.set_instance_ref(this, declaring, field, name);
+            void()
+        },
+    ),
+    method(
+        "propertyChange",
+        "(Ljava/beans/PropertyChangeEvent;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let listener = vm
+                .read_ref_field(
+                    this,
+                    vm.class_of(this),
+                    "listener",
+                    "Ljava/util/EventListener;",
+                )
+                .unwrap_or(ObjectRef::NULL);
+            let (class, method) = vm.resolve_virtual_method(
+                listener,
+                "propertyChange",
+                "(Ljava/beans/PropertyChangeEvent;)V",
+            )?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![Value::Ref(listener), Value::Ref(ref_arg(args, 1))],
+            )
+        },
+    ),
+    method(
+        "getPropertyName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(
+                vm.read_ref_field(
+                    this,
+                    vm.class_of(this),
+                    "propertyName",
+                    "Ljava/lang/String;",
+                )
+                .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+];
+
+/// `java.beans.VetoableChangeListenerProxy`: a named listener registration
+/// that forwards vetoable events to the wrapped listener.
+pub(crate) const VETOABLE_CHANGE_LISTENER_PROXY: oxjvm_vm::NativeClass = class(
+    "java/beans/VetoableChangeListenerProxy",
+    Some("java/util/EventListenerProxy"),
+    &["java/beans/VetoableChangeListener"],
+    ACC_PUBLIC,
+    &[field(
+        "propertyName",
+        "Ljava/lang/String;",
+        ACC_PRIVATE,
+        None,
+    )],
+    &VETOABLE_CHANGE_LISTENER_PROXY_METHODS,
+    None,
+);
+
+const VETOABLE_CHANGE_LISTENER_PROXY_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/beans/VetoableChangeListener;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let name = ref_arg(args, 1);
+            let listener = ref_arg(args, 2);
+            if name.is_null() || listener.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let super_class = vm.resolve_class("java/util/EventListenerProxy")?;
+            let (declaring, ctor) = vm
+                .find_method(super_class, "<init>", "(Ljava/util/EventListener;)V")
+                .ok_or_else(|| VmError::internal("EventListenerProxy ctor missing"))?;
+            vm.invoke_method(
+                declaring,
+                ctor,
+                vec![Value::Ref(this), Value::Ref(listener)],
+            )?;
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "propertyName", "Ljava/lang/String;")?;
+            vm.set_instance_ref(this, declaring, field, name);
+            void()
+        },
+    ),
+    method(
+        "vetoableChange",
+        "(Ljava/beans/PropertyChangeEvent;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let listener = vm
+                .read_ref_field(
+                    this,
+                    vm.class_of(this),
+                    "listener",
+                    "Ljava/util/EventListener;",
+                )
+                .unwrap_or(ObjectRef::NULL);
+            let (class, method) = vm.resolve_virtual_method(
+                listener,
+                "vetoableChange",
+                "(Ljava/beans/PropertyChangeEvent;)V",
+            )?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![Value::Ref(listener), Value::Ref(ref_arg(args, 1))],
+            )
+        },
+    ),
+    method(
+        "getPropertyName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(
+                vm.read_ref_field(
+                    this,
+                    vm.class_of(this),
+                    "propertyName",
+                    "Ljava/lang/String;",
+                )
+                .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+];
