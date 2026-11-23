@@ -1216,9 +1216,29 @@ const HANDLER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         |vm, _, args| {
             let this = receiver(args);
             let record = ref_arg(args, 1);
+            // A null record is never loggable (and must not raise an NPE).
+            if record.is_null() {
+                return boolean(false);
+            }
             let lvl = binder_level(vm, this);
+            if lvl == i32::MAX {
+                // Level.OFF disables logging entirely.
+                return boolean(false);
+            }
             let record_level = record_get_ref(vm, record, "level", "Ljava/util/logging/Level;");
-            boolean(level_int(vm, record_level) >= lvl)
+            if level_int(vm, record_level) < lvl {
+                return boolean(false);
+            }
+            let filter = record_get_ref(vm, this, "filter", "Ljava/util/logging/Filter;");
+            if filter.is_null() {
+                return boolean(true);
+            }
+            let (class, method) = vm.resolve_virtual_method(
+                filter,
+                "isLoggable",
+                "(Ljava/util/logging/LogRecord;)Z",
+            )?;
+            vm.invoke_method(class, method, vec![Value::Ref(filter), Value::Ref(record)])
         },
     ),
 ];
@@ -1337,7 +1357,19 @@ const STREAM_HANDLER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         "(Ljava/util/logging/LogRecord;)V",
         ACC_PUBLIC,
         |vm, _, args| {
-            publish_to_output(vm, receiver(args), ref_arg(args, 1))?;
+            let this = receiver(args);
+            let record = ref_arg(args, 1);
+            // StreamHandler.publish drops records that are not loggable (a null
+            // record included) before formatting them.
+            let (class, method) =
+                vm.resolve_virtual_method(this, "isLoggable", "(Ljava/util/logging/LogRecord;)Z")?;
+            let loggable = vm
+                .invoke_method(class, method, vec![Value::Ref(this), Value::Ref(record)])?
+                .as_int();
+            if loggable == 0 {
+                return void();
+            }
+            publish_to_output(vm, this, record)?;
             void()
         },
     ),
@@ -1401,6 +1433,218 @@ pub(crate) const CONSOLE_HANDLER: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC,
     &[],
     &CONSOLE_HANDLER_METHODS,
+    None,
+);
+
+/// Push every buffered record to the target handler and empty the buffer.
+fn memory_handler_push(vm: &mut Vm<'_>, handler: ObjectRef) -> Result<(), VmError> {
+    let buffer = record_get_ref(vm, handler, "buffer", "Ljava/util/ArrayList;");
+    let target = record_get_ref(vm, handler, "target", "Ljava/util/logging/Handler;");
+    let records = crate::util::array_list_elements(vm, buffer);
+    for record in records {
+        let (class, method) =
+            vm.resolve_virtual_method(target, "publish", "(Ljava/util/logging/LogRecord;)V")?;
+        vm.invoke_method(class, method, vec![Value::Ref(target), Value::Ref(record)])?;
+    }
+    crate::util::array_list_store(vm, buffer, &[])?;
+    Ok(())
+}
+
+const MEMORY_HANDLER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method(
+        "<init>",
+        "(Ljava/util/logging/Handler;ILjava/util/logging/Level;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let target = ref_arg(args, 1);
+            let size = crate::int_arg(args, 2);
+            let push_level = ref_arg(args, 3);
+            if target.is_null() || push_level.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            if size <= 0 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            record_set_ref(
+                vm,
+                this,
+                "level",
+                "Ljava/util/logging/Level;",
+                ObjectRef::NULL,
+            );
+            let formatter_class = vm.resolve_class("java/util/logging/SimpleFormatter")?;
+            let formatter = vm.new_instance(formatter_class)?;
+            record_set_ref(
+                vm,
+                this,
+                "formatter",
+                "Ljava/util/logging/Formatter;",
+                formatter,
+            );
+            record_set_ref(vm, this, "target", "Ljava/util/logging/Handler;", target);
+            record_set_ref(
+                vm,
+                this,
+                "pushLevel",
+                "Ljava/util/logging/Level;",
+                push_level,
+            );
+            crate::lang::write_int_field(vm, this, "size", size);
+            let buffer = crate::util::new_array_list(vm)?;
+            record_set_ref(vm, this, "buffer", "Ljava/util/ArrayList;", buffer);
+            void()
+        },
+    ),
+    method(
+        "publish",
+        "(Ljava/util/logging/LogRecord;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let record = ref_arg(args, 1);
+            let (class, method) =
+                vm.resolve_virtual_method(this, "isLoggable", "(Ljava/util/logging/LogRecord;)Z")?;
+            let loggable = vm
+                .invoke_method(class, method, vec![Value::Ref(this), Value::Ref(record)])?
+                .as_int();
+            if loggable == 0 {
+                return void();
+            }
+            let buffer = record_get_ref(vm, this, "buffer", "Ljava/util/ArrayList;");
+            hlist_add(vm, buffer, record)?;
+            // The buffer is circular: once full, the oldest record is dropped.
+            let size = crate::lang::read_int_field(vm, this, "size");
+            let len = hlist_len(vm, buffer)?;
+            if len > size {
+                let records = crate::util::array_list_elements(vm, buffer);
+                let keep = &records[(len - size) as usize..];
+                crate::util::array_list_store(vm, buffer, keep)?;
+            }
+            let record_level = record_get_ref(vm, record, "level", "Ljava/util/logging/Level;");
+            let push_level = record_get_ref(vm, this, "pushLevel", "Ljava/util/logging/Level;");
+            if level_int(vm, record_level) >= level_int(vm, push_level) {
+                memory_handler_push(vm, this)?;
+            }
+            void()
+        },
+    ),
+    method("push", "()V", ACC_PUBLIC, |vm, _, args| {
+        memory_handler_push(vm, receiver(args))?;
+        void()
+    }),
+    method("flush", "()V", ACC_PUBLIC, |vm, _, args| {
+        let target = record_get_ref(vm, receiver(args), "target", "Ljava/util/logging/Handler;");
+        let (class, method) = vm.resolve_virtual_method(target, "flush", "()V")?;
+        vm.invoke_method(class, method, vec![Value::Ref(target)])?;
+        void()
+    }),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let target = record_get_ref(vm, this, "target", "Ljava/util/logging/Handler;");
+        let (class, method) = vm.resolve_virtual_method(target, "close", "()V")?;
+        vm.invoke_method(class, method, vec![Value::Ref(target)])?;
+        let off = level_named(vm, "OFF")?;
+        record_set_ref(vm, this, "level", "Ljava/util/logging/Level;", off);
+        void()
+    }),
+    method(
+        "setPushLevel",
+        "(Ljava/util/logging/Level;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let new_level = ref_arg(args, 1);
+            if new_level.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            record_set_ref(
+                vm,
+                receiver(args),
+                "pushLevel",
+                "Ljava/util/logging/Level;",
+                new_level,
+            );
+            void()
+        },
+    ),
+    method(
+        "getPushLevel",
+        "()Ljava/util/logging/Level;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(record_get_ref(
+                vm,
+                receiver(args),
+                "pushLevel",
+                "Ljava/util/logging/Level;",
+            ))
+        },
+    ),
+];
+
+pub(crate) const MEMORY_HANDLER: oxjvm_vm::NativeClass = class(
+    "java/util/logging/MemoryHandler",
+    Some(HANDLER_CLASS),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("target", "Ljava/util/logging/Handler;", ACC_PRIVATE, None),
+        field("pushLevel", "Ljava/util/logging/Level;", ACC_PRIVATE, None),
+        field("size", "I", ACC_PRIVATE, None),
+        field("buffer", "Ljava/util/ArrayList;", ACC_PRIVATE, None),
+    ],
+    &MEMORY_HANDLER_METHODS,
+    None,
+);
+
+const FILE_HANDLER_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "<init>",
+    "(Ljava/lang/String;)V",
+    ACC_PUBLIC,
+    |vm, _, args| {
+        let this = receiver(args);
+        let pattern = ref_arg(args, 1);
+        if pattern.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let stream_class = vm.resolve_class("java/io/FileOutputStream")?;
+        let stream = vm.new_instance(stream_class)?;
+        let (declaring, ctor) = vm
+            .find_method(stream_class, "<init>", "(Ljava/lang/String;)V")
+            .ok_or_else(|| VmError::internal("FileOutputStream(String) missing"))?;
+        vm.invoke_method(
+            declaring,
+            ctor,
+            vec![Value::Ref(stream), Value::Ref(pattern)],
+        )?;
+        record_set_ref(
+            vm,
+            this,
+            "level",
+            "Ljava/util/logging/Level;",
+            ObjectRef::NULL,
+        );
+        let formatter_class = vm.resolve_class("java/util/logging/SimpleFormatter")?;
+        let formatter = vm.new_instance(formatter_class)?;
+        record_set_ref(
+            vm,
+            this,
+            "formatter",
+            "Ljava/util/logging/Formatter;",
+            formatter,
+        );
+        record_set_ref(vm, this, "output", "Ljava/lang/Object;", stream);
+        void()
+    },
+)];
+
+pub(crate) const FILE_HANDLER: oxjvm_vm::NativeClass = class(
+    "java/util/logging/FileHandler",
+    Some("java/util/logging/StreamHandler"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &FILE_HANDLER_METHODS,
     None,
 );
 
