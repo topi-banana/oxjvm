@@ -714,6 +714,23 @@ const PRINCIPAL_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
     crate::lang::abstract_method_pub,
 )];
 
+pub(crate) const DOMAIN_COMBINER: oxjvm_vm::NativeClass = class(
+    "java/security/DomainCombiner",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &DOMAIN_COMBINER_METHODS,
+    None,
+);
+
+const DOMAIN_COMBINER_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "combine",
+    "([Ljava/security/ProtectionDomain;[Ljava/security/ProtectionDomain;)[Ljava/security/ProtectionDomain;",
+    ACC_PUBLIC | ACC_ABSTRACT,
+    crate::lang::abstract_method_pub,
+)];
+
 pub(crate) const SECURITY_CERTIFICATE: oxjvm_vm::NativeClass = class(
     "java/security/Certificate",
     Some("java/lang/Object"),
@@ -3027,7 +3044,17 @@ fn run_privileged_action(
     vm.invoke_method(class, method, vec![Value::Ref(action)])
 }
 
-const ACCESS_CONTROLLER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const ACCESS_CONTROLLER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method(
+        "getContext",
+        "()Ljava/security/AccessControlContext;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/security/AccessControlContext")?;
+            let acc = vm.new_instance(class)?;
+            object(acc)
+        },
+    ),
     method(
         "doPrivileged",
         "(Ljava/security/PrivilegedAction;)Ljava/lang/Object;",
@@ -3081,10 +3108,191 @@ pub(crate) const ACCESS_CONTROL_CONTEXT: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_FINAL,
-    &[],
-    &[],
+    &[
+        field(
+            "context",
+            "[Ljava/security/ProtectionDomain;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field(
+            "combiner",
+            "Ljava/security/DomainCombiner;",
+            ACC_PRIVATE,
+            None,
+        ),
+    ],
+    &ACCESS_CONTROL_CONTEXT_METHODS,
     None,
 );
+
+const ACCESS_CONTROL_CONTEXT_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method(
+        "<init>",
+        "([Ljava/security/ProtectionDomain;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let context = ref_arg(args, 1);
+            if context.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            // The JDK keeps the non-null, deduplicated protection domains; an
+            // all-null or empty array collapses to a null context.
+            let len = vm.array_length(context)?;
+            let mut kept: Vec<ObjectRef> = Vec::new();
+            for index in 0..len {
+                let domain = vm.array_get(context, index as i32)?.as_ref();
+                if domain.is_null() {
+                    continue;
+                }
+                let mut duplicate = false;
+                for &existing in &kept {
+                    if ref_equals(vm, existing, domain)? {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if !duplicate {
+                    kept.push(domain);
+                }
+            }
+            if !kept.is_empty() {
+                let domain_class = vm.resolve_class("java/security/ProtectionDomain")?;
+                let array = vm.allocate_object_array(domain_class, kept.len())?;
+                for (index, &domain) in kept.iter().enumerate() {
+                    vm.array_set_ref(array, index, domain)?;
+                }
+                set_ref_field(
+                    vm,
+                    this,
+                    "context",
+                    "[Ljava/security/ProtectionDomain;",
+                    array,
+                )?;
+            }
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/security/AccessControlContext;Ljava/security/DomainCombiner;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let acc = ref_arg(args, 1);
+            if acc.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let context = ref_field(vm, acc, "context", "[Ljava/security/ProtectionDomain;");
+            set_ref_field(
+                vm,
+                this,
+                "context",
+                "[Ljava/security/ProtectionDomain;",
+                context,
+            )?;
+            set_ref_field(
+                vm,
+                this,
+                "combiner",
+                "Ljava/security/DomainCombiner;",
+                ref_arg(args, 2),
+            )?;
+            void()
+        },
+    ),
+    method(
+        "getDomainCombiner",
+        "()Ljava/security/DomainCombiner;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "combiner",
+                "Ljava/security/DomainCombiner;",
+            ))
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if this == other {
+                return boolean(true);
+            }
+            let acc_class = vm.resolve_class("java/security/AccessControlContext")?;
+            if other.is_null() || !vm.is_instance(other, acc_class) {
+                return boolean(false);
+            }
+            let this_context = ref_field(vm, this, "context", "[Ljava/security/ProtectionDomain;");
+            let that_context = ref_field(vm, other, "context", "[Ljava/security/ProtectionDomain;");
+            if !acc_equal_pds(vm, this_context, that_context)? {
+                return boolean(false);
+            }
+            let this_combiner = ref_field(vm, this, "combiner", "Ljava/security/DomainCombiner;");
+            let that_combiner = ref_field(vm, other, "combiner", "Ljava/security/DomainCombiner;");
+            if this_combiner.is_null() {
+                return boolean(that_combiner.is_null());
+            }
+            boolean(ref_equals(vm, this_combiner, that_combiner)?)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let context = ref_field(vm, this, "context", "[Ljava/security/ProtectionDomain;");
+        let mut hash = 0i32;
+        if !context.is_null() {
+            let len = vm.array_length(context)?;
+            for index in 0..len {
+                let domain = vm.array_get(context, index as i32)?.as_ref();
+                if !domain.is_null() {
+                    let (declaring, method) =
+                        vm.resolve_virtual_method(domain, "hashCode", "()I")?;
+                    let value = vm.invoke_method(declaring, method, vec![Value::Ref(domain)])?;
+                    hash = hash.wrapping_add(value.as_int());
+                }
+            }
+        }
+        int(hash)
+    }),
+];
+
+/// `AccessControlContext.equalPDs`: two null contexts match; otherwise each
+/// protection domain on either side must equal some domain on the other side.
+fn acc_equal_pds(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmError> {
+    if a.is_null() {
+        return Ok(b.is_null());
+    }
+    if b.is_null() {
+        return Ok(false);
+    }
+    Ok(acc_contains_all_pds(vm, a, b)? && acc_contains_all_pds(vm, b, a)?)
+}
+
+fn acc_contains_all_pds(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmError> {
+    let len_a = vm.array_length(a)?;
+    let len_b = vm.array_length(b)?;
+    for i in 0..len_a {
+        let pa = vm.array_get(a, i as i32)?.as_ref();
+        let mut found = false;
+        for j in 0..len_b {
+            let pb = vm.array_get(b, j as i32)?.as_ref();
+            if ref_equals(vm, pa, pb)? {
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
 
 pub(crate) const PRIVILEGED_ACTION_EXCEPTION: oxjvm_vm::NativeClass = class(
     "java/security/PrivilegedActionException",
