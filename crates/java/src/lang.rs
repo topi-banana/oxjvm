@@ -2228,7 +2228,7 @@ const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 27] = [
                 arguments = elements.clone();
             }
             let language = crate::locale::locale_language(vm, ref_arg(args, 0));
-            let text = format_string(vm, &format, &arguments, &language)?;
+            let text = format_string(vm, &format, &arguments, &language, ObjectRef::NULL)?;
             object(vm.make_string(&text)?)
         },
     ),
@@ -4076,7 +4076,7 @@ fn string_format(
     {
         arguments = elements.clone();
     }
-    let text = format_string(vm, &format, &arguments, "")?;
+    let text = format_string(vm, &format, &arguments, "", ObjectRef::NULL)?;
     object(vm.make_string(&text)?)
 }
 
@@ -4087,6 +4087,7 @@ pub(crate) fn format_string(
     format: &str,
     arguments: &[ObjectRef],
     language: &str,
+    formatter: ObjectRef,
 ) -> Result<String, VmError> {
     let mut out = String::new();
     let mut argument = 0usize;
@@ -4131,7 +4132,7 @@ pub(crate) fn format_string(
                     spec_text.push('-');
                     chars.next();
                 }
-                Some('0') => {
+                Some('0') if width == 0 => {
                     zero_pad = true;
                     spec_text.push('0');
                     chars.next();
@@ -4327,17 +4328,31 @@ pub(crate) fn format_string(
             }
             's' | 'S' => {
                 let value = resolved;
-                let mut text = vm.display_value(
-                    &oxjvm_classfile::FieldType::Object("java/lang/Object".into()),
-                    Value::Ref(value),
-                )?;
-                if spec == 'S' {
-                    text = localized_case(&text, language, true);
+                let formattable = vm
+                    .resolve_class_lenient("java/util/Formattable")
+                    .is_some_and(|class| !value.is_null() && vm.is_instance(value, class));
+                if !formatter.is_null() && formattable {
+                    // A Formattable renders itself; formatTo applies width and
+                    // precision, so do not pad or truncate the result again.
+                    let flags = (if left_align { 1 } else { 0 })
+                        | (if spec == 'S' { 2 } else { 0 })
+                        | (if alternate { 4 } else { 0 });
+                    let text = format_formattable(vm, formatter, value, flags, width, precision)?;
+                    width = 0;
+                    text
+                } else {
+                    let mut text = vm.display_value(
+                        &oxjvm_classfile::FieldType::Object("java/lang/Object".into()),
+                        Value::Ref(value),
+                    )?;
+                    if spec == 'S' {
+                        text = localized_case(&text, language, true);
+                    }
+                    if let Some(limit) = precision {
+                        text = text.chars().take(limit).collect();
+                    }
+                    text
                 }
-                if let Some(limit) = precision {
-                    text = text.chars().take(limit).collect();
-                }
-                text
             }
             'f' => {
                 let value = resolved;
@@ -4357,6 +4372,55 @@ pub(crate) fn format_string(
         );
     }
     Ok(out)
+}
+
+/// Render a `Formattable` argument by invoking its `formatTo` with the
+/// formatter's destination temporarily swapped for a fresh builder, so the
+/// text it appends can be captured as this conversion's output.
+fn format_formattable(
+    vm: &mut Vm<'_>,
+    formatter: ObjectRef,
+    value: ObjectRef,
+    flags: i32,
+    width: usize,
+    precision: Option<usize>,
+) -> Result<String, VmError> {
+    let class = vm.class_of(formatter);
+    let old_out = vm
+        .read_ref_field(formatter, class, "a", "Ljava/lang/Appendable;")
+        .unwrap_or(ObjectRef::NULL);
+    let builder_class = vm.resolve_class("java/lang/StringBuilder")?;
+    let builder = vm.new_instance(builder_class)?;
+    builder_store(vm, builder, &[], 0)?;
+    let (declaring, field) = vm.find_field(class, "a", "Ljava/lang/Appendable;")?;
+    vm.set_instance_ref(formatter, declaring, field, builder);
+    let precision_arg = precision.map_or(-1, |p| p as i32);
+    let invoked = (|| -> Result<(), VmError> {
+        let (declaring, method) =
+            vm.resolve_virtual_method(value, "formatTo", "(Ljava/util/Formatter;III)V")?;
+        vm.invoke_method(
+            declaring,
+            method,
+            vec![
+                Value::Ref(value),
+                Value::Ref(formatter),
+                Value::Int(flags),
+                Value::Int(width as i32),
+                Value::Int(precision_arg),
+            ],
+        )?;
+        Ok(())
+    })();
+    let text = {
+        let (declaring, method) =
+            vm.resolve_virtual_method(builder, "toString", "()Ljava/lang/String;")?;
+        let result = vm.invoke_method(declaring, method, vec![Value::Ref(builder)])?;
+        vm.string_value(result.as_ref()).unwrap_or_default()
+    };
+    let (declaring, field) = vm.find_field(class, "a", "Ljava/lang/Appendable;")?;
+    vm.set_instance_ref(formatter, declaring, field, old_out);
+    invoked?;
+    Ok(text)
 }
 
 /// Append `text` to `out`, padded to `width` with spaces (or zeros for a numeric
@@ -4431,6 +4495,57 @@ fn radix_string_unsigned(mut value: u64, radix: u64, upper: bool) -> String {
 
 fn format_fixed(value: f64, digits: usize) -> String {
     crate::format::format_fixed_jdk(value, digits)
+}
+
+// -------------------------------------------------------------------------------------------
+// java.util.Formattable / FormattableFlags
+// -------------------------------------------------------------------------------------------
+
+/// `java.util.Formattable`: an object that can render itself through a
+/// `Formatter` for the `%s`/`%S` conversions.
+pub(crate) const FORMATTABLE: oxjvm_vm::NativeClass = class(
+    "java/util/Formattable",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &FORMATTABLE_METHODS,
+    None,
+);
+
+const FORMATTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "formatTo",
+    "(Ljava/util/Formatter;III)V",
+    ACC_PUBLIC | ACC_ABSTRACT,
+    abstract_method_pub,
+)];
+
+/// The flag constants `Formattable.formatTo` receives.
+pub(crate) const FORMATTABLE_FLAGS: oxjvm_vm::NativeClass = class(
+    "java/util/FormattableFlags",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field(
+            "LEFT_JUSTIFY",
+            "I",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field("UPPERCASE", "I", ACC_PUBLIC | ACC_STATIC | ACC_FINAL, None),
+        field("ALTERNATE", "I", ACC_PUBLIC | ACC_STATIC | ACC_FINAL, None),
+    ],
+    &[],
+    Some(formattable_flags_clinit),
+);
+
+fn formattable_flags_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/util/FormattableFlags")?;
+    vm.set_static_value(class, "LEFT_JUSTIFY", "I", Value::Int(1));
+    vm.set_static_value(class, "UPPERCASE", "I", Value::Int(2));
+    vm.set_static_value(class, "ALTERNATE", "I", Value::Int(4));
+    Ok(())
 }
 
 // -------------------------------------------------------------------------------------------
@@ -4619,13 +4734,29 @@ const FORMATTER_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
         "format",
         "(Ljava/lang/String;[Ljava/lang/Object;)Ljava/util/Formatter;",
         ACC_PUBLIC | ACC_VARARGS,
-        |vm, _, args| formatter_format(vm, receiver(args), ref_arg(args, 1), ref_arg(args, 2)),
+        |vm, _, args| {
+            formatter_format(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                ObjectRef::NULL,
+            )
+        },
     ),
     method(
         "format",
         "(Ljava/util/Locale;Ljava/lang/String;[Ljava/lang/Object;)Ljava/util/Formatter;",
         ACC_PUBLIC | ACC_VARARGS,
-        |vm, _, args| formatter_format(vm, receiver(args), ref_arg(args, 2), ref_arg(args, 3)),
+        |vm, _, args| {
+            formatter_format(
+                vm,
+                receiver(args),
+                ref_arg(args, 2),
+                ref_arg(args, 3),
+                ref_arg(args, 1),
+            )
+        },
     ),
     method(
         "toString",
@@ -4871,6 +5002,7 @@ fn formatter_format(
     this: ObjectRef,
     format: ObjectRef,
     args: ObjectRef,
+    locale_override: ObjectRef,
 ) -> Result<Value, VmError> {
     formatter_check_open(vm, this)?;
     let format = vm.string_or_empty(format);
@@ -4880,11 +5012,24 @@ fn formatter_format(
     {
         arguments = elements.clone();
     }
+    let class = vm.class_of(this);
+    let saved_locale = vm
+        .read_ref_field(this, class, "locale", "Ljava/util/Locale;")
+        .unwrap_or(ObjectRef::NULL);
+    if !locale_override.is_null() {
+        let (declaring, field) = vm.find_field(class, "locale", "Ljava/util/Locale;")?;
+        vm.set_instance_ref(this, declaring, field, locale_override);
+    }
     let locale = vm
-        .read_ref_field(this, vm.class_of(this), "locale", "Ljava/util/Locale;")
+        .read_ref_field(this, class, "locale", "Ljava/util/Locale;")
         .unwrap_or(ObjectRef::NULL);
     let language = crate::locale::locale_language(vm, locale);
-    let text = format_string(vm, &format, &arguments, &language)?;
+    let text = format_string(vm, &format, &arguments, &language, this);
+    if !locale_override.is_null() {
+        let (declaring, field) = vm.find_field(class, "locale", "Ljava/util/Locale;")?;
+        vm.set_instance_ref(this, declaring, field, saved_locale);
+    }
+    let text = text?;
     let out = formatter_out(vm, this);
     if vm.find_field_opt(vm.class_of(out), "count", "I").is_some() {
         builder_append_text(vm, out, &text)?;
