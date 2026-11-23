@@ -2443,7 +2443,22 @@ pub(crate) const CERTIFICATE_FACTORY: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const CERTIFICATE_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const CERTIFICATE_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PROTECTED,
+        |vm, _, args| {
+            set_ref_field(
+                vm,
+                receiver(args),
+                "type",
+                "Ljava/lang/String;",
+                ref_arg(args, 1),
+            )?;
+            void()
+        },
+    ),
     method(
         "getType",
         "()Ljava/lang/String;",
@@ -2479,6 +2494,12 @@ const CERTIFICATE_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
         "()Ljava/security/PublicKey;",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
+    ),
+    method(
+        "verify",
+        "(Ljava/security/PublicKey;Ljava/security/Provider;)V",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
     ),
     method(
         "equals",
@@ -2701,13 +2722,17 @@ const CODE_SOURCE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         |vm, _, args| {
             let this = receiver(args);
             set_ref_field(vm, this, "location", "Ljava/net/URL;", ref_arg(args, 1))?;
-            set_ref_field(
-                vm,
-                this,
-                "certificates",
-                "[Ljava/security/cert/Certificate;",
-                ref_arg(args, 2),
-            )?;
+            let certs = ref_arg(args, 2);
+            if !certs.is_null() {
+                let copy = clone_cert_array(vm, certs)?;
+                set_ref_field(
+                    vm,
+                    this,
+                    "certificates",
+                    "[Ljava/security/cert/Certificate;",
+                    copy,
+                )?;
+            }
             void()
         },
     ),
@@ -2718,46 +2743,85 @@ const CODE_SOURCE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         |vm, _, args| {
             let this = receiver(args);
             set_ref_field(vm, this, "location", "Ljava/net/URL;", ref_arg(args, 1))?;
-            set_ref_field(
-                vm,
-                this,
-                "codeSigners",
-                "[Ljava/security/CodeSigner;",
-                ref_arg(args, 2),
-            )?;
+            let signers = ref_arg(args, 2);
+            if !signers.is_null() {
+                let copy = clone_signer_array(vm, signers)?;
+                set_ref_field(vm, this, "codeSigners", "[Ljava/security/CodeSigner;", copy)?;
+            }
             void()
         },
     ),
     method(
         "getLocation",
         "()Ljava/net/URL;",
-        ACC_PUBLIC,
+        ACC_PUBLIC | ACC_FINAL,
         |vm, _, args| object(ref_field(vm, receiver(args), "location", "Ljava/net/URL;")),
     ),
     method(
         "getCertificates",
         "()[Ljava/security/cert/Certificate;",
-        ACC_PUBLIC,
+        ACC_PUBLIC | ACC_FINAL,
         |vm, _, args| {
-            object(ref_field(
+            let this = receiver(args);
+            let certs = ref_field(
                 vm,
-                receiver(args),
+                this,
                 "certificates",
                 "[Ljava/security/cert/Certificate;",
-            ))
+            );
+            if !certs.is_null() {
+                return object(clone_cert_array(vm, certs)?);
+            }
+            let signers = ref_field(vm, this, "codeSigners", "[Ljava/security/CodeSigner;");
+            if !signers.is_null() {
+                // Flattening signer cert paths needs CertPath support; with no
+                // chains available the JDK conversion yields an empty array.
+                let cert_class = vm.resolve_class("java/security/cert/Certificate")?;
+                let empty = vm.allocate_object_array(cert_class, 0)?;
+                set_ref_field(
+                    vm,
+                    this,
+                    "certificates",
+                    "[Ljava/security/cert/Certificate;",
+                    empty,
+                )?;
+                return object(clone_cert_array(vm, empty)?);
+            }
+            object(ObjectRef::NULL)
         },
     ),
     method(
         "getCodeSigners",
         "()[Ljava/security/CodeSigner;",
-        ACC_PUBLIC,
+        ACC_PUBLIC | ACC_FINAL,
         |vm, _, args| {
-            object(ref_field(
+            let this = receiver(args);
+            let signers = ref_field(vm, this, "codeSigners", "[Ljava/security/CodeSigner;");
+            if !signers.is_null() {
+                return object(clone_signer_array(vm, signers)?);
+            }
+            let certs = ref_field(
                 vm,
-                receiver(args),
-                "codeSigners",
-                "[Ljava/security/CodeSigner;",
-            ))
+                this,
+                "certificates",
+                "[Ljava/security/cert/Certificate;",
+            );
+            if !certs.is_null() {
+                // Only X.509 certificates convert to code signers, and building
+                // their cert paths is unsupported, so the conversion yields an
+                // empty (non-null) signer array exactly as for non-X.509 input.
+                let signer_class = vm.resolve_class("java/security/CodeSigner")?;
+                let empty = vm.allocate_object_array(signer_class, 0)?;
+                set_ref_field(
+                    vm,
+                    this,
+                    "codeSigners",
+                    "[Ljava/security/CodeSigner;",
+                    empty,
+                )?;
+                return object(clone_signer_array(vm, empty)?);
+            }
+            object(ObjectRef::NULL)
         },
     ),
     method(
@@ -4047,6 +4111,17 @@ fn clone_cert_array(vm: &mut Vm<'_>, certs: ObjectRef) -> Result<ObjectRef, VmEr
     let copy = vm.allocate_object_array(cert_class, length)?;
     for index in 0..length {
         let value = vm.array_get(certs, index as i32)?;
+        vm.array_set_ref(copy, index, value.as_ref())?;
+    }
+    Ok(copy)
+}
+
+fn clone_signer_array(vm: &mut Vm<'_>, signers: ObjectRef) -> Result<ObjectRef, VmError> {
+    let length = vm.array_length(signers)?;
+    let signer_class = vm.resolve_class("java/security/CodeSigner")?;
+    let copy = vm.allocate_object_array(signer_class, length)?;
+    for index in 0..length {
+        let value = vm.array_get(signers, index as i32)?;
         vm.array_set_ref(copy, index, value.as_ref())?;
     }
     Ok(copy)
