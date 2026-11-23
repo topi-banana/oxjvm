@@ -5505,6 +5505,12 @@ pub(crate) const REFLECT_PERMISSION: oxjvm_vm::NativeClass = class(
             ACC_PUBLIC,
             |vm, _, args| {
                 let name = string_arg(vm, args[1])?;
+                if name.is_empty() {
+                    return Err(vm.throw_new(
+                        "java/lang/IllegalArgumentException",
+                        Some("name can't be empty"),
+                    ));
+                }
                 vm.set_string_field(receiver(args), vm.class_of(receiver(args)), "name", &name)?;
                 void()
             },
@@ -5515,6 +5521,12 @@ pub(crate) const REFLECT_PERMISSION: oxjvm_vm::NativeClass = class(
             ACC_PUBLIC,
             |vm, _, args| {
                 let name = string_arg(vm, args[1])?;
+                if name.is_empty() {
+                    return Err(vm.throw_new(
+                        "java/lang/IllegalArgumentException",
+                        Some("name can't be empty"),
+                    ));
+                }
                 vm.set_string_field(receiver(args), vm.class_of(receiver(args)), "name", &name)?;
                 void()
             },
