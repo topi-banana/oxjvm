@@ -19422,8 +19422,23 @@ const ENUM_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let map = enum_map_map(vm, receiver(args));
-            map_to_string_guarded(vm, receiver(args), map)
+            let this = receiver(args);
+            let map = enum_map_map(vm, this);
+            let mut pairs = hash_map_pairs(vm, map);
+            // An EnumMap prints its entries in enum ordinal order, not in the
+            // arbitrary order of its backing HashMap.
+            pairs.sort_by_key(|(key, _)| crate::lang::read_int_field(vm, *key, "ordinal"));
+            let mut text = String::from("{");
+            for (index, (key, value)) in pairs.iter().enumerate() {
+                if index > 0 {
+                    text.push_str(", ");
+                }
+                text.push_str(&map_entry_string(vm, this, *key)?);
+                text.push('=');
+                text.push_str(&map_entry_string(vm, this, *value)?);
+            }
+            text.push('}');
+            object(vm.make_string(&text)?)
         },
     ),
     method("putAll", "(Ljava/util/Map;)V", ACC_PUBLIC, |vm, _, args| {
