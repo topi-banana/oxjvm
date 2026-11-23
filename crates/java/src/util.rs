@@ -10804,6 +10804,135 @@ pub(crate) const ABSTRACT_LIST_SUB_LIST: oxjvm_vm::NativeClass = class(
     None,
 );
 
+/// `java.util.AbstractSequentialList`: a list backed by a `listIterator(int)`.
+fn seq_list_iterator(vm: &mut Vm<'_>, this: ObjectRef, index: i32) -> Result<ObjectRef, VmError> {
+    let (class, method) =
+        vm.resolve_virtual_method(this, "listIterator", "(I)Ljava/util/ListIterator;")?;
+    Ok(vm
+        .invoke_method(class, method, vec![Value::Ref(this), Value::Int(index)])?
+        .as_ref())
+}
+
+fn seq_it_invoke(
+    vm: &mut Vm<'_>,
+    iterator: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    extra: &[Value],
+) -> Result<Value, VmError> {
+    let (class, method) = vm.resolve_virtual_method(iterator, name, descriptor)?;
+    let mut args = vec![Value::Ref(iterator)];
+    args.extend_from_slice(extra);
+    vm.invoke_method(class, method, args)
+}
+
+const ABSTRACT_SEQ_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+    method(
+        "listIterator",
+        "(I)Ljava/util/ListIterator;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "listIterator",
+        "()Ljava/util/ListIterator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(seq_list_iterator(vm, this, 0)?)
+        },
+    ),
+    method(
+        "iterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(seq_list_iterator(vm, this, 0)?)
+        },
+    ),
+    method("get", "(I)Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let iterator = seq_list_iterator(vm, this, int_arg(args, 1))?;
+        let element = seq_it_invoke(vm, iterator, "next", "()Ljava/lang/Object;", &[])?;
+        object(element.as_ref())
+    }),
+    method(
+        "set",
+        "(ILjava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let iterator = seq_list_iterator(vm, this, int_arg(args, 1))?;
+            let previous =
+                seq_it_invoke(vm, iterator, "next", "()Ljava/lang/Object;", &[])?.as_ref();
+            seq_it_invoke(vm, iterator, "set", "(Ljava/lang/Object;)V", &[args[2]])?;
+            object(previous)
+        },
+    ),
+    method(
+        "add",
+        "(ILjava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let iterator = seq_list_iterator(vm, this, int_arg(args, 1))?;
+            seq_it_invoke(vm, iterator, "add", "(Ljava/lang/Object;)V", &[args[2]])?;
+            void()
+        },
+    ),
+    method(
+        "remove",
+        "(I)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let iterator = seq_list_iterator(vm, this, int_arg(args, 1))?;
+            let previous =
+                seq_it_invoke(vm, iterator, "next", "()Ljava/lang/Object;", &[])?.as_ref();
+            seq_it_invoke(vm, iterator, "remove", "()V", &[])?;
+            object(previous)
+        },
+    ),
+    method(
+        "addAll",
+        "(ILjava/util/Collection;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let collection = ref_arg(args, 2);
+            if collection.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let iterator = seq_list_iterator(vm, this, int_arg(args, 1))?;
+            let elements = collection_iterator(vm, collection)?;
+            let mut modified = false;
+            while iterator_has_next(vm, elements)? {
+                let element = iterator_next(vm, elements)?;
+                seq_it_invoke(
+                    vm,
+                    iterator,
+                    "add",
+                    "(Ljava/lang/Object;)V",
+                    &[Value::Ref(element)],
+                )?;
+                modified = true;
+            }
+            boolean(modified)
+        },
+    ),
+];
+
+pub(crate) const ABSTRACT_SEQ_LIST: oxjvm_vm::NativeClass = class(
+    "java/util/AbstractSequentialList",
+    Some("java/util/AbstractList"),
+    &["java/util/List"],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[],
+    &ABSTRACT_SEQ_LIST_METHODS,
+    None,
+);
+
 const ITR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
     method("hasNext", "()Z", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
