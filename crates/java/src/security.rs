@@ -3172,7 +3172,29 @@ const PROTECTION_DOMAIN_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         "implies",
         "(Ljava/security/Permission;)Z",
         ACC_PUBLIC,
-        |_, _, _| boolean(true),
+        |vm, _, args| {
+            let this = receiver(args);
+            let permission = ref_arg(args, 1);
+            let perms = ref_field(
+                vm,
+                this,
+                "permissions",
+                "Ljava/security/PermissionCollection;",
+            );
+            // A domain with no permissions implies nothing (the JDK consults the
+            // policy here, which this VM does not install).
+            if perms.is_null() {
+                return boolean(false);
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(perms, "implies", "(Ljava/security/Permission;)Z")?;
+            let value = vm.invoke_method(
+                class,
+                method,
+                vec![Value::Ref(perms), Value::Ref(permission)],
+            )?;
+            boolean(value.as_boolean())
+        },
     ),
     method(
         "toString",
@@ -3248,8 +3270,28 @@ fn run_privileged_action(
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
     let (class, method) = vm.resolve_virtual_method(action, "run", "()Ljava/lang/Object;")?;
-    let _ = exception_action;
-    vm.invoke_method(class, method, vec![Value::Ref(action)])
+    let runtime = vm.resolve_class("java/lang/RuntimeException")?;
+    let error = vm.resolve_class("java/lang/Error")?;
+    match vm.invoke_method(class, method, vec![Value::Ref(action)]) {
+        Ok(value) => Ok(value),
+        Err(VmError::Thrown(exc)) if exception_action => {
+            // A PrivilegedExceptionAction wraps checked exceptions in a
+            // PrivilegedActionException; runtime exceptions and errors propagate.
+            if vm.is_instance(exc, runtime) || vm.is_instance(exc, error) {
+                return Err(VmError::Thrown(exc));
+            }
+            let pae_class = vm.resolve_class("java/security/PrivilegedActionException")?;
+            let pae = vm.new_instance(pae_class)?;
+            let (declaring, ctor) = vm
+                .find_method(pae_class, "<init>", "(Ljava/lang/Exception;)V")
+                .ok_or_else(|| {
+                    VmError::internal("PrivilegedActionException lacks its constructor")
+                })?;
+            vm.invoke_method(declaring, ctor, vec![Value::Ref(pae), Value::Ref(exc)])?;
+            Err(VmError::Thrown(pae))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 const ACCESS_CONTROLLER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
@@ -3520,17 +3562,24 @@ pub(crate) const PRIVILEGED_ACTION_EXCEPTION: oxjvm_vm::NativeClass = class(
             ACC_PUBLIC,
             |vm, _, args| {
                 let this = receiver(args);
-                set_ref_field(
-                    vm,
-                    this,
-                    "exception",
-                    "Ljava/lang/Exception;",
-                    ref_arg(args, 1),
-                )?;
-                let exception_ctor =
-                    vm.find_method(vm.class_of(this), "<init>", "(Ljava/lang/Throwable;)V");
+                let exception = ref_arg(args, 1);
+                set_ref_field(vm, this, "exception", "Ljava/lang/Exception;", exception)?;
+                // The JDK calls super(null, exception): no message, cause set.
+                let exception_ctor = vm.find_method(
+                    vm.class_of(this),
+                    "<init>",
+                    "(Ljava/lang/String;Ljava/lang/Throwable;)V",
+                );
                 if let Some((declaring, ctor)) = exception_ctor {
-                    vm.invoke_method(declaring, ctor, vec![Value::Ref(this)])?;
+                    vm.invoke_method(
+                        declaring,
+                        ctor,
+                        vec![
+                            Value::Ref(this),
+                            Value::Ref(ObjectRef::NULL),
+                            Value::Ref(exception),
+                        ],
+                    )?;
                 }
                 void()
             },
@@ -3546,6 +3595,25 @@ pub(crate) const PRIVILEGED_ACTION_EXCEPTION: oxjvm_vm::NativeClass = class(
                     "exception",
                     "Ljava/lang/Exception;",
                 ))
+            },
+        ),
+        method(
+            "toString",
+            "()Ljava/lang/String;",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let this = receiver(args);
+                let name = vm.class_name(vm.class_of(this)).replace('/', ".");
+                let cause = ref_field(vm, this, "exception", "Ljava/lang/Exception;");
+                let text = if cause.is_null() {
+                    name
+                } else {
+                    let (class, method) =
+                        vm.resolve_virtual_method(cause, "toString", "()Ljava/lang/String;")?;
+                    let value = vm.invoke_method(class, method, vec![Value::Ref(cause)])?;
+                    alloc::format!("{name}: {}", vm.string_or_empty(value.as_ref()))
+                };
+                object(vm.make_string(&text)?)
             },
         ),
     ],
