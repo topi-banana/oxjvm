@@ -743,7 +743,7 @@ fn property_editor_for(vm: &mut Vm<'_>, type_object: ObjectRef) -> Result<Value,
             | "java/lang/Void"
             | "java/lang/String"
     );
-    if !builtin {
+    if !builtin && !crate::lang::class_is_enum(vm, type_class) {
         return object(ObjectRef::NULL);
     }
     let class = vm.resolve_class("java/beans/OjvmPropertyEditor")?;
@@ -812,14 +812,30 @@ const OJVM_PROPERTY_EDITOR_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
                 let type_object = vm
                     .read_ref_field(this, vm.class_of(this), "type", "Ljava/lang/Class;")
                     .unwrap_or(ObjectRef::NULL);
-                let type_name = if type_object.is_null() {
-                    String::new()
-                } else {
-                    let class = class_argument(vm, type_object)?;
-                    vm.classes.get(class).name.clone()
-                };
+                if type_object.is_null() {
+                    return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+                }
+                let type_class = class_argument(vm, type_object)?;
+                let type_name = vm.classes.get(type_class).name.clone();
                 if type_name == "java/lang/String" {
                     text_ref
+                } else if crate::lang::class_is_enum(vm, type_class) {
+                    let enum_class = vm.resolve_class("java/lang/Enum")?;
+                    let (declaring, method) = vm
+                        .find_method(
+                            enum_class,
+                            "valueOf",
+                            "(Ljava/lang/Class;Ljava/lang/String;)Ljava/lang/Enum;",
+                        )
+                        .ok_or_else(|| {
+                            vm.throw_new("java/lang/NoSuchMethodError", Some("Enum.valueOf"))
+                        })?;
+                    vm.invoke_method(
+                        declaring,
+                        method,
+                        vec![Value::Ref(type_object), Value::Ref(text_ref)],
+                    )?
+                    .as_ref()
                 } else {
                     let text = vm.string_or_empty(text_ref);
                     property_editor_parse(vm, &type_name, &text)?.as_ref()
