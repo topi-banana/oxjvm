@@ -1004,7 +1004,12 @@ impl<'a> Vm<'a> {
                     let (class, method) =
                         self.resolve_virtual_method(reference, "toString", "()Ljava/lang/String;")?;
                     let result = self.invoke_method(class, method, vec![Value::Ref(reference)])?;
-                    self.string_value(result.as_ref()).unwrap_or_default()
+                    let result = result.as_ref();
+                    if result.is_null() {
+                        "null".into()
+                    } else {
+                        self.string_value(result).unwrap_or_default()
+                    }
                 }
             }
         };
