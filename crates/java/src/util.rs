@@ -17351,7 +17351,7 @@ pub(crate) const HASHTABLE: oxjvm_vm::NativeClass = class(
 // Vector (ArrayList plus the legacy element API)
 // -------------------------------------------------------------------------------------------
 
-const VECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
+const VECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 45] = [
     method("<init>", "()V", ACC_PUBLIC, array_list_init),
     method("<init>", "(I)V", ACC_PUBLIC, array_list_init_capacity),
     method("<init>", "(II)V", ACC_PUBLIC, array_list_init_capacity),
@@ -17651,6 +17651,44 @@ const VECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 42] = [
         "()Ljava/util/Iterator;",
         ACC_PUBLIC,
         array_list_iterator,
+    ),
+    method(
+        "listIterator",
+        "()Ljava/util/ListIterator;",
+        ACC_PUBLIC,
+        |vm, _, args| list_iterator_new(vm, receiver(args), 0),
+    ),
+    method(
+        "listIterator",
+        "(I)Ljava/util/ListIterator;",
+        ACC_PUBLIC,
+        |vm, _, args| list_iterator_new(vm, receiver(args), int_arg(args, 1)),
+    ),
+    method(
+        "subList",
+        "(II)Ljava/util/List;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let from = int_arg(args, 1);
+            let to = int_arg(args, 2);
+            let size = array_list_elements(vm, this).len() as i32;
+            if from < 0 || to > size || from > to {
+                return Err(vm.throw_new(
+                    "java/lang/IndexOutOfBoundsException",
+                    Some(&alloc::format!(
+                        "fromIndex: {from}, toIndex: {to}, size: {size}"
+                    )),
+                ));
+            }
+            let class = vm.resolve_class("java/util/AbstractList$SubList")?;
+            let view = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "parent", "Ljava/util/List;")?;
+            vm.set_instance_ref(view, declaring, field, this);
+            crate::lang::write_int_field(vm, view, "offset", from);
+            crate::lang::write_int_field(vm, view, "length", to - from);
+            object(view)
+        },
     ),
     method(
         "toArray",
