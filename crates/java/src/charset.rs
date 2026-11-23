@@ -9,7 +9,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use oxjvm_classfile::flags::*;
 
-use crate::{boolean, class, field, int, method, object, receiver, ref_arg};
+use crate::{boolean, class, field, int, method, object, receiver, ref_arg, void};
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
 /// (canonical name, additional normalized aliases)
@@ -887,7 +887,30 @@ fn byte_array_bytes(vm: &mut Vm<'_>, array: ObjectRef) -> Result<Vec<u8>, VmErro
     Ok(bytes)
 }
 
-const CHARSET_ENCODER_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+const CHARSET_ENCODER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+    method(
+        "<init>",
+        "(Ljava/nio/charset/Charset;FF)V",
+        ACC_PROTECTED,
+        |vm, _, args| {
+            let this = receiver(args);
+            let average = args[2].as_float();
+            let max = args[3].as_float();
+            let valid = average > 0.0 && max >= average;
+            if !valid {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("Illegal bytes-per-char values"),
+                ));
+            }
+            let name = name_of(vm, ref_arg(args, 1));
+            let string = vm.make_string(&name)?;
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "charset", "Ljava/lang/String;")?;
+            vm.set_instance_ref(this, declaring, field, string);
+            void()
+        },
+    ),
     method(
         "charset",
         "()Ljava/nio/charset/Charset;",
@@ -1063,7 +1086,30 @@ pub(crate) const OJVM_CHARSET_ENCODER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const CHARSET_DECODER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const CHARSET_DECODER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+    method(
+        "<init>",
+        "(Ljava/nio/charset/Charset;FF)V",
+        ACC_PROTECTED,
+        |vm, _, args| {
+            let this = receiver(args);
+            let average = args[2].as_float();
+            let max = args[3].as_float();
+            let valid = average > 0.0 && max >= average;
+            if !valid {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("Illegal chars-per-byte values"),
+                ));
+            }
+            let name = name_of(vm, ref_arg(args, 1));
+            let string = vm.make_string(&name)?;
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "charset", "Ljava/lang/String;")?;
+            vm.set_instance_ref(this, declaring, field, string);
+            void()
+        },
+    ),
     method(
         "charset",
         "()Ljava/nio/charset/Charset;",
