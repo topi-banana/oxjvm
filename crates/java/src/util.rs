@@ -19226,7 +19226,7 @@ fn enum_map_put_all(vm: &mut Vm<'_>, this: ObjectRef, source: ObjectRef) -> Resu
     void()
 }
 
-const ENUM_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
+const ENUM_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
     method(
         "<init>",
         "(Ljava/lang/Class;)V",
@@ -19434,6 +19434,25 @@ const ENUM_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
         |vm, _, args| {
             let map = enum_map_map(vm, receiver(args));
             hash_map_call(vm, map, "entrySet", "()Ljava/util/Set;", &[])
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let map = enum_map_map(vm, receiver(args));
+        hash_map_call(vm, map, "hashCode", "()I", &[])
+    }),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = enum_map_map(vm, receiver(args));
+            hash_map_call(
+                vm,
+                map,
+                "equals",
+                "(Ljava/lang/Object;)Z",
+                &[Value::Ref(ref_arg(args, 1))],
+            )
         },
     ),
     method(
