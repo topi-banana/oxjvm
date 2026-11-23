@@ -14200,6 +14200,9 @@ const REVERSE_COMPARATOR_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
             "comparator",
             "Ljava/util/Comparator;",
         );
+        // Reverse by swapping the arguments rather than negating the result:
+        // a comparator may return Integer.MIN_VALUE, whose negation overflows
+        // back to MIN_VALUE (the JDK's ReverseComparator swaps for this reason).
         let ordering = match delegate {
             Some(delegate) if !delegate.is_null() => {
                 let (class, method) = vm.resolve_virtual_method(
@@ -14210,13 +14213,13 @@ const REVERSE_COMPARATOR_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
                 vm.invoke_method(
                     class,
                     method,
-                    vec![Value::Ref(delegate), Value::Ref(a), Value::Ref(b)],
+                    vec![Value::Ref(delegate), Value::Ref(b), Value::Ref(a)],
                 )?
                 .as_int()
             }
-            _ => natural_compare(vm, a, b)?,
+            _ => natural_compare(vm, b, a)?,
         };
-        int(-ordering)
+        int(ordering)
     },
 )];
 
@@ -14247,7 +14250,7 @@ pub(crate) const NATURAL_ORDER_COMPARATOR: oxjvm_vm::NativeClass = class(
     None,
 );
 
-/// `Collections$ReverseComparator`: negates the delegate's ordering.
+/// `Collections$ReverseComparator`: reverses the delegate's ordering by swapping arguments.
 pub(crate) const REVERSE_COMPARATOR: oxjvm_vm::NativeClass = class(
     "java/util/Collections$ReverseComparator",
     Some("java/lang/Object"),
@@ -14266,35 +14269,79 @@ pub(crate) const REVERSE_COMPARATOR: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const REVERSE_COMPARATOR2_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
-    "compare",
-    "(Ljava/lang/Object;Ljava/lang/Object;)I",
-    ACC_PUBLIC,
-    |vm, _, args| {
+const REVERSE_COMPARATOR2_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method(
+        "compare",
+        "(Ljava/lang/Object;Ljava/lang/Object;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let delegate = vm
+                .read_ref_field(this, vm.class_of(this), "cmp", "Ljava/util/Comparator;")
+                .unwrap_or(ObjectRef::NULL);
+            let a = ref_arg(args, 1);
+            let b = ref_arg(args, 2);
+            let (class, method) = vm.resolve_virtual_method(
+                delegate,
+                "compare",
+                "(Ljava/lang/Object;Ljava/lang/Object;)I",
+            )?;
+            // Swap arguments instead of negating: Integer.MIN_VALUE negation would
+            // overflow (matches the JDK's ReverseComparator2 argument swap).
+            let ordering = vm
+                .invoke_method(
+                    class,
+                    method,
+                    vec![Value::Ref(delegate), Value::Ref(b), Value::Ref(a)],
+                )?
+                .as_int();
+            int(ordering)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let class = vm.resolve_class("java/util/Collections$ReverseComparator2")?;
+            if other.is_null() || !vm.is_instance(other, class) {
+                return boolean(false);
+            }
+            let cmp = vm
+                .read_ref_field(this, vm.class_of(this), "cmp", "Ljava/util/Comparator;")
+                .unwrap_or(ObjectRef::NULL);
+            let other_cmp = vm
+                .read_ref_field(other, class, "cmp", "Ljava/util/Comparator;")
+                .unwrap_or(ObjectRef::NULL);
+            let (declaring, method) =
+                vm.resolve_virtual_method(cmp, "equals", "(Ljava/lang/Object;)Z")?;
+            let result = vm.invoke_method(
+                declaring,
+                method,
+                vec![Value::Ref(cmp), Value::Ref(other_cmp)],
+            )?;
+            boolean(result.as_int() != 0)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let delegate = vm
+        let cmp = vm
             .read_ref_field(this, vm.class_of(this), "cmp", "Ljava/util/Comparator;")
             .unwrap_or(ObjectRef::NULL);
-        let a = ref_arg(args, 1);
-        let b = ref_arg(args, 2);
-        let (class, method) = vm.resolve_virtual_method(
-            delegate,
-            "compare",
-            "(Ljava/lang/Object;Ljava/lang/Object;)I",
-        )?;
-        let ordering = vm
-            .invoke_method(
-                class,
-                method,
-                vec![Value::Ref(delegate), Value::Ref(a), Value::Ref(b)],
-            )?
+        let (declaring, method) = vm.resolve_virtual_method(cmp, "hashCode", "()I")?;
+        let hash = vm
+            .invoke_method(declaring, method, vec![Value::Ref(cmp)])?
             .as_int();
-        int(-ordering)
-    },
-)];
+        // The JDK flips the sign bit of the delegate's hash code.
+        int(hash ^ i32::MIN)
+    }),
+];
 
-/// `Collections$ReverseComparator2`: wraps an arbitrary comparator, negating its ordering;
-/// `Collections.reverseOrder` unwraps it so double reversal returns the original instance.
+/// `Collections$ReverseComparator2`: wraps an arbitrary comparator, reversing its ordering by
+/// swapping arguments; `Collections.reverseOrder` unwraps it so double reversal returns the
+/// original instance.
 pub(crate) const REVERSE_COMPARATOR2: oxjvm_vm::NativeClass = class(
     "java/util/Collections$ReverseComparator2",
     Some("java/lang/Object"),
