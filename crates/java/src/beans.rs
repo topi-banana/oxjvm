@@ -1977,6 +1977,96 @@ fn change_fire(
     void()
 }
 
+/// Fire a vetoable change; if a listener vetoes, roll back the listeners that
+/// were already notified by re-firing with the values swapped, then rethrow.
+fn change_fire_vetoable(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    event: ObjectRef,
+) -> Result<Value, VmError> {
+    let old = vm
+        .read_ref_field(event, vm.class_of(event), "oldValue", "Ljava/lang/Object;")
+        .unwrap_or(ObjectRef::NULL);
+    let new = vm
+        .read_ref_field(event, vm.class_of(event), "newValue", "Ljava/lang/Object;")
+        .unwrap_or(ObjectRef::NULL);
+    if change_values_equal(vm, old, new)? {
+        return void();
+    }
+    let name = vm
+        .read_ref_field(
+            event,
+            vm.class_of(event),
+            "propertyName",
+            "Ljava/lang/String;",
+        )
+        .unwrap_or(ObjectRef::NULL);
+    let mut listeners = Vec::new();
+    let global = vm
+        .read_ref_field(
+            this,
+            vm.class_of(this),
+            "listeners",
+            "Ljava/util/ArrayList;",
+        )
+        .unwrap_or(ObjectRef::NULL);
+    if !global.is_null() {
+        listeners.extend(crate::util::array_list_elements(vm, global));
+    }
+    if !name.is_null() {
+        let named = change_named_list(vm, this, name, false)?;
+        if !named.is_null() {
+            listeners.extend(crate::util::array_list_elements(vm, named));
+        }
+    }
+    let veto_class = vm.resolve_class("java/beans/PropertyVetoException")?;
+    let mut current = 0;
+    let mut veto = None;
+    for listener in listeners.clone() {
+        let (class, method) = vm.resolve_virtual_method(
+            listener,
+            "vetoableChange",
+            "(Ljava/beans/PropertyChangeEvent;)V",
+        )?;
+        match vm.invoke_method(class, method, vec![Value::Ref(listener), Value::Ref(event)]) {
+            Ok(_) => current += 1,
+            Err(VmError::Thrown(exc)) => {
+                if vm.is_instance(exc, veto_class) {
+                    veto = Some(exc);
+                    break;
+                }
+                return Err(VmError::Thrown(exc));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    let Some(veto) = veto else {
+        return void();
+    };
+    let rollback = make_change_event(vm, this, name, new, old)?;
+    for listener in listeners.iter().take(current) {
+        let (class, method) = vm.resolve_virtual_method(
+            *listener,
+            "vetoableChange",
+            "(Ljava/beans/PropertyChangeEvent;)V",
+        )?;
+        match vm.invoke_method(
+            class,
+            method,
+            vec![Value::Ref(*listener), Value::Ref(rollback)],
+        ) {
+            Err(VmError::Thrown(exc)) => {
+                if !vm.is_instance(exc, veto_class) {
+                    return Err(VmError::Thrown(exc));
+                }
+            }
+            Err(error) => return Err(error),
+            Ok(_) => {}
+        }
+    }
+    Err(VmError::Thrown(veto))
+}
+
 /// The JDK skips firing when both values are non-null and equal.
 fn change_values_equal(vm: &mut Vm<'_>, old: ObjectRef, new: ObjectRef) -> Result<bool, VmError> {
     if old.is_null() || new.is_null() {
@@ -2166,13 +2256,7 @@ const VETOABLE_CHANGE_SUPPORT_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
             if ref_arg(args, 1).is_null() {
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
-            change_fire(
-                vm,
-                receiver(args),
-                ref_arg(args, 1),
-                "listeners",
-                "vetoableChange",
-            )
+            change_fire_vetoable(vm, receiver(args), ref_arg(args, 1))
         },
     ),
     method(
