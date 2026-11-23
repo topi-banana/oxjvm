@@ -4097,6 +4097,260 @@ fn socket_permission_implies(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, V
     boolean(other_low >= this_low && other_high <= this_high)
 }
 
+/// Split a SocketPermission name into host and raw port text (bracket-aware).
+fn socket_permission_split(name: &str) -> (String, String) {
+    if let Some(rest) = name.strip_prefix('[') {
+        if let Some(index) = rest.find(']') {
+            let port = rest[index + 1..].strip_prefix(':').unwrap_or("");
+            return (String::from(&name[..index + 2]), String::from(port));
+        }
+    }
+    match name.rfind(':') {
+        Some(index) => (
+            String::from(&name[..index]),
+            String::from(&name[index + 1..]),
+        ),
+        None => (String::from(name), String::new()),
+    }
+}
+
+/// Numeric port range for equality: an absent port is (-1, -1).
+fn socket_port_numeric(port_text: &str) -> (i32, i32) {
+    if port_text.is_empty() {
+        return (-1, -1);
+    }
+    if let Some((from, to)) = port_text.split_once('-') {
+        (
+            if from.is_empty() {
+                0
+            } else {
+                from.parse().unwrap_or(0)
+            },
+            if to.is_empty() {
+                65535
+            } else {
+                to.parse().unwrap_or(65535)
+            },
+        )
+    } else {
+        let value = port_text.parse().unwrap_or(0);
+        (value, value)
+    }
+}
+
+/// Validate the action list and render it in the JDK's canonical order
+/// (connect,listen,accept,resolve); accept/connect/listen imply resolve.
+fn socket_actions_canonical(vm: &mut Vm<'_>, actions: &str) -> Result<String, VmError> {
+    let mut mask = 0u32;
+    for token in actions.split(',') {
+        match token.trim().to_ascii_lowercase().as_str() {
+            "accept" => mask |= 1,
+            "connect" => mask |= 2,
+            "listen" => mask |= 4,
+            "resolve" => mask |= 8,
+            _ => {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some(&alloc::format!("invalid action: {actions}")),
+                ));
+            }
+        }
+    }
+    if mask & 0b111 != 0 {
+        mask |= 8;
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    if mask & 2 != 0 {
+        parts.push("connect");
+    }
+    if mask & 4 != 0 {
+        parts.push("listen");
+    }
+    if mask & 1 != 0 {
+        parts.push("accept");
+    }
+    if mask & 8 != 0 {
+        parts.push("resolve");
+    }
+    Ok(parts.join(","))
+}
+
+/// True for a 1-4 digit hexadecimal IPv6 group.
+fn socket_hex_group(text: &str) -> bool {
+    !text.is_empty() && text.len() <= 4 && text.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Recognize a full (non-compressed) eight-group IPv6 literal written without
+/// brackets, optionally followed by ":port" or carrying a "%scope" on the last
+/// group, and return the bracketed form the JDK stores. Compressed (`::`)
+/// forms are not recognized here; they fall through to the ambiguous-hostport
+/// rejection, exactly like the JDK.
+fn socket_normalize_v6(name: &str) -> Option<String> {
+    if name.starts_with('[') || name.is_empty() {
+        return None;
+    }
+    let parts: Vec<&str> = name.split(':').collect();
+    if parts.len() != 8 && parts.len() != 9 {
+        return None;
+    }
+    let mut groups: Vec<String> = Vec::new();
+    for (index, part) in parts[..8].iter().enumerate() {
+        let group = if index == 7 {
+            match part.split_once('%') {
+                Some((hex, scope)) => {
+                    if !socket_hex_group(hex)
+                        || scope.is_empty()
+                        || !scope.chars().all(|c| c.is_ascii_digit())
+                    {
+                        return None;
+                    }
+                    alloc::format!("{hex}%{scope}")
+                }
+                None => {
+                    if !socket_hex_group(part) {
+                        return None;
+                    }
+                    String::from(*part)
+                }
+            }
+        } else {
+            if !socket_hex_group(part) {
+                return None;
+            }
+            String::from(*part)
+        };
+        groups.push(group);
+    }
+    let host = alloc::format!("[{}]", groups.join(":"));
+    if parts.len() == 9 {
+        Some(alloc::format!("{host}:{}", parts[8]))
+    } else {
+        Some(host)
+    }
+}
+
+/// Validate a SocketPermission host/port name and normalize it the way the JDK
+/// constructor does: an empty host becomes "localhost", and a full unbracketed
+/// IPv6 literal is bracketed.
+fn socket_permission_validate(vm: &mut Vm<'_>, name: &str) -> Result<String, VmError> {
+    let normalized = if let Some(rest) = name.strip_prefix('[') {
+        match rest.find(']') {
+            Some(index) => {
+                let after = &rest[index + 1..];
+                if !after.is_empty() && !after.starts_with(':') {
+                    return Err(vm.throw_new(
+                        "java/lang/IllegalArgumentException",
+                        Some("invalid hostport part"),
+                    ));
+                }
+            }
+            None => {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("invalid hostport part"),
+                ));
+            }
+        }
+        String::from(name)
+    } else if let Some(v6) = socket_normalize_v6(name) {
+        v6
+    } else {
+        if let Some(index) = name.rfind(':') {
+            if name[..index].contains(':') {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("Ambiguous hostport part"),
+                ));
+            }
+        }
+        if name.is_empty() {
+            String::from("localhost")
+        } else {
+            String::from(name)
+        }
+    };
+    let (_, port_text) = socket_permission_split(&normalized);
+    if !port_text.is_empty() {
+        let ok = if let Some((from, to)) = port_text.split_once('-') {
+            let low = if from.is_empty() {
+                Some(0)
+            } else {
+                from.parse::<i32>().ok()
+            };
+            let high = if to.is_empty() {
+                Some(65535)
+            } else {
+                to.parse::<i32>().ok()
+            };
+            match (low, high) {
+                (Some(l), Some(h)) if l <= h => true,
+                (Some(_), Some(_)) => {
+                    return Err(vm.throw_new(
+                        "java/lang/IllegalArgumentException",
+                        Some(&alloc::format!("invalid port range: {port_text}")),
+                    ));
+                }
+                _ => false,
+            }
+        } else {
+            port_text.parse::<i32>().is_ok()
+        };
+        if !ok {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some(&alloc::format!("invalid port: {port_text}")),
+            ));
+        }
+    }
+    Ok(normalized)
+}
+
+/// SocketPermission.equals: same action mask, same host (IP literals by
+/// address bytes, hostnames case-insensitively) and same port. A resolve-only
+/// wildcard ignores the port; IP ports compare numerically, hostname ports as
+/// written.
+fn socket_permission_equals(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    other: ObjectRef,
+) -> Result<Value, VmError> {
+    let this_name = vm.read_string_field_any(this, "name").unwrap_or_default();
+    let other_name = vm.read_string_field_any(other, "name").unwrap_or_default();
+    let this_mask = socket_actions_mask(
+        &vm.read_string_field_any(this, "actions")
+            .unwrap_or_default(),
+    );
+    let other_mask = socket_actions_mask(
+        &vm.read_string_field_any(other, "actions")
+            .unwrap_or_default(),
+    );
+    if this_mask != other_mask {
+        return boolean(false);
+    }
+    let (this_host, this_port) = socket_permission_split(&this_name);
+    let (other_host, other_port) = socket_permission_split(&other_name);
+    match (socket_ip_bytes(&this_host), socket_ip_bytes(&other_host)) {
+        (Some(a), Some(b)) => {
+            if a != b {
+                return boolean(false);
+            }
+            let (al, ah) = socket_port_numeric(&this_port);
+            let (bl, bh) = socket_port_numeric(&other_port);
+            boolean(al == bl && ah == bh)
+        }
+        (None, None) => {
+            if !this_host.eq_ignore_ascii_case(&other_host) {
+                return boolean(false);
+            }
+            if this_mask == 8 && this_host.starts_with('*') {
+                return boolean(true);
+            }
+            boolean(this_port == other_port)
+        }
+        _ => boolean(false),
+    }
+}
+
 pub(crate) const SOCKET_PERMISSION: oxjvm_vm::NativeClass = class(
     "java/net/SocketPermission",
     Some("java/security/Permission"),
@@ -4115,9 +4369,11 @@ pub(crate) const SOCKET_PERMISSION: oxjvm_vm::NativeClass = class(
                 let this = receiver(args);
                 let class = vm.class_of(this);
                 let name = string_arg(vm, args[1])?;
-                vm.set_string_field(this, class, "name", &name)?;
                 let actions = string_arg(vm, args[2])?;
-                vm.set_string_field(this, class, "actions", &actions)?;
+                let canonical = socket_actions_canonical(vm, &actions)?;
+                let name = socket_permission_validate(vm, &name)?;
+                vm.set_string_field(this, class, "name", &name)?;
+                vm.set_string_field(this, class, "actions", &canonical)?;
                 void()
             },
         ),
@@ -4148,6 +4404,45 @@ pub(crate) const SOCKET_PERMISSION: oxjvm_vm::NativeClass = class(
             "(Ljava/security/Permission;)Z",
             ACC_PUBLIC,
             |vm, _, args| socket_permission_implies(vm, args),
+        ),
+        method(
+            "equals",
+            "(Ljava/lang/Object;)Z",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let other = ref_arg(args, 1);
+                if other.is_null()
+                    || vm.class_name(vm.class_of(other)) != "java/net/SocketPermission"
+                {
+                    return boolean(false);
+                }
+                socket_permission_equals(vm, receiver(args), other)
+            },
+        ),
+        method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+            let name = vm
+                .read_string_field_any(receiver(args), "name")
+                .unwrap_or_default();
+            let mut hash = 0i32;
+            for unit in name.encode_utf16() {
+                hash = hash.wrapping_mul(31).wrapping_add(i32::from(unit));
+            }
+            int(hash)
+        }),
+        method(
+            "toString",
+            "()Ljava/lang/String;",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let this = receiver(args);
+                let name = vm.read_string_field_any(this, "name").unwrap_or_default();
+                let actions = vm
+                    .read_string_field_any(this, "actions")
+                    .unwrap_or_default();
+                let text =
+                    alloc::format!("(\"java.net.SocketPermission\" \"{name}\" \"{actions}\")");
+                object(vm.make_string(&text)?)
+            },
         ),
     ],
     None,
