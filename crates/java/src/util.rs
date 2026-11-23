@@ -26714,7 +26714,7 @@ fn enum_set_copy(vm: &mut Vm<'_>, source: ObjectRef) -> Result<ObjectRef, VmErro
     Ok(set)
 }
 
-const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
+const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
     method(
         "copyOf",
         "(Ljava/util/EnumSet;)Ljava/util/EnumSet;",
@@ -26728,7 +26728,7 @@ const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
         |vm, _, args| {
             let source = ref_arg(args, 0);
             let enum_set_class = vm.resolve_class("java/util/EnumSet")?;
-            if vm.class_of(source) == enum_set_class {
+            if !source.is_null() && vm.is_instance(source, enum_set_class) {
                 return object(enum_set_copy(vm, source)?);
             }
             let elements = collection_elements(vm, source)?;
@@ -27053,6 +27053,101 @@ const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
             crate::lang::write_int_field(vm, iterator, "cursor", 0);
             object(iterator)
         },
+    ),
+    method(
+        "toArray",
+        "()[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = enum_set_map(vm, receiver(args));
+            let keys: Vec<ObjectRef> = hash_map_pairs(vm, map)
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect();
+            let object_class = vm.resolve_class("java/lang/Object")?;
+            let array = vm.allocate_object_array(object_class, keys.len())?;
+            for (index, key) in keys.iter().enumerate() {
+                vm.array_set_ref(array, index, *key)?;
+            }
+            object(array)
+        },
+    ),
+    method(
+        "toArray",
+        "([Ljava/lang/Object;)[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = enum_set_map(vm, receiver(args));
+            let keys: Vec<ObjectRef> = hash_map_pairs(vm, map)
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect();
+            collection_to_array_into(vm, &keys, ref_arg(args, 1))
+        },
+    ),
+    method(
+        "removeAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        collection_remove_all,
+    ),
+    method(
+        "containsAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        collection_contains_all,
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        // Set contract: the sum of the element hash codes.
+        let map = enum_set_map(vm, receiver(args));
+        let mut hash = 0_i32;
+        for (key, _) in hash_map_pairs(vm, map) {
+            hash = hash.wrapping_add(object_hash(vm, key)?);
+        }
+        int(hash)
+    }),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if this == other {
+                return boolean(true);
+            }
+            let set_class = vm.resolve_class("java/util/Set")?;
+            if other.is_null() || !vm.is_instance(other, set_class) {
+                return boolean(false);
+            }
+            let (size_class, size_method) = vm.resolve_virtual_method(other, "size", "()I")?;
+            let other_size = vm
+                .invoke_method(size_class, size_method, vec![Value::Ref(other)])?
+                .as_int();
+            let map = enum_set_map(vm, this);
+            if hash_map_pairs(vm, map).len() as i32 != other_size {
+                return boolean(false);
+            }
+            let (contains_class, contains) =
+                vm.resolve_virtual_method(other, "contains", "(Ljava/lang/Object;)Z")?;
+            for (key, _) in hash_map_pairs(vm, map) {
+                let has = vm.invoke_method(
+                    contains_class,
+                    contains,
+                    vec![Value::Ref(other), Value::Ref(key)],
+                )?;
+                if has.as_int() == 0 {
+                    return boolean(false);
+                }
+            }
+            boolean(true)
+        },
+    ),
+    method(
+        "clone",
+        "()Ljava/util/EnumSet;",
+        ACC_PUBLIC,
+        |vm, _, args| object(enum_set_copy(vm, receiver(args))?),
     ),
     method(
         "retainAll",
