@@ -972,7 +972,9 @@ fn url_absolute_spec(vm: &mut Vm<'_>, text: &str) -> Result<String, VmError> {
         protocol.to_ascii_lowercase(),
         &text[protocol.len()..]
     );
-    Ok(url_normalize_file_authority(&spec))
+    let spec = url_normalize_file_authority(&spec);
+    url_validate_authority(vm, &spec)?;
+    Ok(spec)
 }
 
 /// The JDK's file handler drops an empty authority: `file:///path` becomes
@@ -1109,6 +1111,10 @@ fn resolve_url(vm: &mut Vm<'_>, base: ObjectRef, relative: &str) -> Result<Strin
 /// then a trailing `/..` or `/.` — unlike RFC 3986, a trailing slash survives.
 fn url_normalize_rel_path(path: &str) -> String {
     let mut path = String::from(path);
+    // RFC 3986 remove_dot_segments drops a leading "./" segment.
+    while let Some(stripped) = path.strip_prefix("./") {
+        path = String::from(stripped);
+    }
     while let Some(index) = path.find("/./") {
         path = alloc::format!("{}{}", &path[..index], &path[index + 2..]);
     }
@@ -1154,6 +1160,12 @@ fn url_set_parts(
     file: &str,
 ) -> Result<(), VmError> {
     let protocol = protocol.to_ascii_lowercase();
+    if port < -1 {
+        return Err(vm.throw_new(
+            "java/net/MalformedURLException",
+            Some(&alloc::format!("Port out of range: {port}")),
+        ));
+    }
     // A bare IPv6 literal host is stored bracketed, like the JDK does.
     let bracketed;
     let host = if host.contains(':') && !host.starts_with('[') {
@@ -1276,6 +1288,67 @@ fn url_port(authority: &str) -> i32 {
         Some(text) if !text.is_empty() => text.parse().unwrap_or(-1),
         _ => -1,
     }
+}
+
+/// Validate a numeric port the way the JDK's URL parser does: it must parse as
+/// an int and not be below -1 (which stands for the protocol default).
+fn url_validate_port(vm: &mut Vm<'_>, text: &str) -> Result<(), VmError> {
+    match text.parse::<i32>() {
+        Ok(port) if port >= -1 => Ok(()),
+        Ok(port) => Err(vm.throw_new(
+            "java/net/MalformedURLException",
+            Some(&alloc::format!("Port out of range: {port}")),
+        )),
+        Err(_) => Err(vm.throw_new(
+            "java/net/MalformedURLException",
+            Some(&alloc::format!("Invalid port: {text}")),
+        )),
+    }
+}
+
+/// Validate the authority of an absolute URL spec the way `URLStreamHandler.parseURL`
+/// does: a bracketed host must be an IPv6 literal, anything after the closing bracket
+/// must be a `:port` suffix, and a numeric port must not be below -1.
+fn url_validate_authority(vm: &mut Vm<'_>, spec: &str) -> Result<(), VmError> {
+    let Some(authority) = url_parts(spec).authority else {
+        return Ok(());
+    };
+    let host = url_without_userinfo(authority);
+    if let Some(rest) = host.strip_prefix('[') {
+        let Some(close) = rest.find(']') else {
+            return Err(vm.throw_new(
+                "java/net/MalformedURLException",
+                Some(&alloc::format!("Invalid authority field: {authority}")),
+            ));
+        };
+        let inner = &rest[..close];
+        if !inner.contains(':')
+            || !inner
+                .chars()
+                .all(|ch| ch.is_ascii_hexdigit() || matches!(ch, ':' | '.'))
+        {
+            return Err(vm.throw_new(
+                "java/net/MalformedURLException",
+                Some(&alloc::format!("Invalid host: {host}")),
+            ));
+        }
+        let after = &rest[close + 1..];
+        if !after.is_empty() {
+            let Some(port_text) = after.strip_prefix(':') else {
+                return Err(vm.throw_new(
+                    "java/net/MalformedURLException",
+                    Some(&alloc::format!("Invalid authority field: {authority}")),
+                ));
+            };
+            url_validate_port(vm, port_text)?;
+        }
+    } else if let Some(index) = host.rfind(':') {
+        let port_text = &host[index + 1..];
+        if !port_text.is_empty() {
+            url_validate_port(vm, port_text)?;
+        }
+    }
+    Ok(())
 }
 
 /// Build a URL spec from protocol/host/port/file parts, matching the JDK's
