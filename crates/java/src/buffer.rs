@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 use oxjvm_classfile::flags::*;
 use oxjvm_vm::{ArrayComponent, ObjectRef, Value, Vm, VmError};
 
-use crate::{boolean, class, double, field, int, long, method, object, receiver, ref_arg};
+use crate::{boolean, class, double, field, float, int, long, method, object, receiver, ref_arg};
 
 fn field_int(vm: &Vm<'_>, this: ObjectRef, name: &str) -> i32 {
     let class = vm.class_of(this);
@@ -198,6 +198,51 @@ fn default_byte_order(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
     Ok(vm
         .read_static_ref_if_set(class, "BIG_ENDIAN", "Ljava/nio/ByteOrder;")
         .unwrap_or(ObjectRef::NULL))
+}
+
+fn native_byte_order(vm: &mut Vm<'_>) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/nio/ByteOrder")?;
+    let (declaring, method) = vm
+        .find_method(class, "nativeOrder", "()Ljava/nio/ByteOrder;")
+        .ok_or_else(|| VmError::internal("ByteOrder.nativeOrder missing"))?;
+    vm.invoke_method(declaring, method, vec![])
+}
+
+/// The byte order of a typed buffer: a view created by `ByteBuffer.asXBuffer`
+/// carries its parent's order in the `order` field, while an allocated or
+/// wrapped buffer leaves it null and reports the platform native order.
+fn typed_buffer_order(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError> {
+    let order = vm
+        .read_ref_field(this, vm.class_of(this), "order", "Ljava/nio/ByteOrder;")
+        .unwrap_or(ObjectRef::NULL);
+    if order.is_null() {
+        native_byte_order(vm)
+    } else {
+        object(order)
+    }
+}
+
+fn set_typed_buffer_order(
+    vm: &mut Vm<'_>,
+    buffer: ObjectRef,
+    order: ObjectRef,
+) -> Result<(), VmError> {
+    let (declaring, field) = vm.find_field(vm.class_of(buffer), "order", "Ljava/nio/ByteOrder;")?;
+    vm.set_instance_ref(buffer, declaring, field, order);
+    Ok(())
+}
+
+/// A slice/duplicate/read-only copy of a typed buffer keeps the source's byte
+/// order: a view stays in its parent's order, while an allocated/wrapped buffer
+/// (order field unset) stays on the native order.
+fn copy_typed_buffer_order(vm: &mut Vm<'_>, src: ObjectRef, dst: ObjectRef) -> Result<(), VmError> {
+    let order = vm
+        .read_ref_field(src, vm.class_of(src), "order", "Ljava/nio/ByteOrder;")
+        .unwrap_or(ObjectRef::NULL);
+    if !order.is_null() {
+        set_typed_buffer_order(vm, dst, order)?;
+    }
+    Ok(())
 }
 
 // -------------------------------------------------------------------------------------------
@@ -587,7 +632,7 @@ fn byte_buffer_put_at(
     Ok(())
 }
 
-const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
+const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 65] = [
     method(
         "allocate",
         "(I)Ljava/nio/ByteBuffer;",
@@ -1099,7 +1144,7 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
                 }
                 vm.array_set(longs, index, Value::Long(value as i64), false)?;
             }
-            object(new_long_buffer(
+            let view = new_long_buffer(
                 vm,
                 longs,
                 0,
@@ -1107,7 +1152,10 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
                 0,
                 count,
                 byte_buffer_read_only(vm, this),
-            )?)
+            )?;
+            let order = byte_buffer_order(vm, this);
+            set_typed_buffer_order(vm, view, order)?;
+            object(view)
         },
     ),
     method(
@@ -1118,6 +1166,7 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
             let this = receiver(args);
             let remaining = buffer_remaining(vm, this);
             let offset = byte_buffer_offset(vm, this) + buffer_position(vm, this);
+            let order = default_byte_order(vm)?;
             object(new_byte_buffer(
                 vm,
                 byte_buffer_bytes(vm, this),
@@ -1125,7 +1174,7 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
                 remaining,
                 0,
                 remaining,
-                byte_buffer_order(vm, this),
+                order,
                 byte_buffer_read_only(vm, this),
             )?)
         },
@@ -1142,6 +1191,7 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
                 return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
             }
             let offset = byte_buffer_offset(vm, this) + index;
+            let order = default_byte_order(vm)?;
             object(new_byte_buffer(
                 vm,
                 byte_buffer_bytes(vm, this),
@@ -1149,7 +1199,7 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
                 length,
                 0,
                 length,
-                byte_buffer_order(vm, this),
+                order,
                 byte_buffer_read_only(vm, this),
             )?)
         },
@@ -1160,6 +1210,7 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
+            let order = default_byte_order(vm)?;
             object(new_byte_buffer(
                 vm,
                 byte_buffer_bytes(vm, this),
@@ -1167,7 +1218,7 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
                 buffer_capacity(vm, this),
                 buffer_position(vm, this),
                 buffer_limit(vm, this),
-                byte_buffer_order(vm, this),
+                order,
                 byte_buffer_read_only(vm, this),
             )?)
         },
@@ -1178,6 +1229,7 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
+            let order = default_byte_order(vm)?;
             object(new_byte_buffer(
                 vm,
                 byte_buffer_bytes(vm, this),
@@ -1185,7 +1237,7 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
                 buffer_capacity(vm, this),
                 buffer_position(vm, this),
                 buffer_limit(vm, this),
-                byte_buffer_order(vm, this),
+                order,
                 true,
             )?)
         },
@@ -1195,33 +1247,38 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
         "()Ljava/nio/CharBuffer;",
         ACC_PUBLIC,
         |vm, _, args| {
-            // The view reads the remaining bytes in pairs, most significant byte first.
+            // The view reads the remaining bytes in pairs, in this buffer's byte order.
             let this = receiver(args);
             let bytes = byte_buffer_bytes(vm, this);
             let offset = byte_buffer_offset(vm, this);
             let position = buffer_position(vm, this);
             let limit = buffer_limit(vm, this);
+            let little = byte_order_little(vm, byte_buffer_order(vm, this));
             let count = ((limit - position).max(0) / 2) as usize;
             let chars = vm.allocate_array_of(ArrayComponent::Char, count)?;
             for index in 0..count {
-                let high = vm
-                    .array_get(bytes, offset + position + index as i32 * 2)?
-                    .as_int();
-                let low = vm
-                    .array_get(bytes, offset + position + index as i32 * 2 + 1)?
-                    .as_int();
-                let unit = ((high as u32 & 0xFF) << 8) | (low as u32 & 0xFF);
+                let base = offset + position + index as i32 * 2;
+                let b0 = vm.array_get(bytes, base)?.as_int() as u32 & 0xFF;
+                let b1 = vm.array_get(bytes, base + 1)?.as_int() as u32 & 0xFF;
+                let unit = if little {
+                    (b1 << 8) | b0
+                } else {
+                    (b0 << 8) | b1
+                };
                 vm.array_set(chars, index as i32, Value::Int(unit as i32), false)?;
             }
-            object(new_char_buffer(
+            let view = new_char_buffer(
                 vm,
                 chars,
                 0,
                 count as i32,
                 0,
                 count as i32,
-                false,
-            )?)
+                byte_buffer_read_only(vm, this),
+            )?;
+            let order = byte_buffer_order(vm, this);
+            set_typed_buffer_order(vm, view, order)?;
+            object(view)
         },
     ),
     method(
@@ -1428,15 +1485,143 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
                 }
                 vm.array_set(ints, index as i32, Value::Int(value as i32), false)?;
             }
-            object(new_int_buffer(
+            let view = new_int_buffer(
                 vm,
                 ints,
                 0,
                 count as i32,
                 0,
                 count as i32,
-                false,
-            )?)
+                byte_buffer_read_only(vm, this),
+            )?;
+            let order = byte_buffer_order(vm, this);
+            set_typed_buffer_order(vm, view, order)?;
+            object(view)
+        },
+    ),
+    method(
+        "asShortBuffer",
+        "()Ljava/nio/ShortBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            // The view reads the remaining bytes in pairs, in this buffer's byte order.
+            let this = receiver(args);
+            let bytes = byte_buffer_bytes(vm, this);
+            let offset = byte_buffer_offset(vm, this);
+            let position = buffer_position(vm, this);
+            let limit = buffer_limit(vm, this);
+            let little = byte_order_little(vm, byte_buffer_order(vm, this));
+            let count = ((limit - position).max(0) / 2) as usize;
+            let shorts = vm.allocate_array_of(ArrayComponent::Short, count)?;
+            for index in 0..count {
+                let base = offset + position + index as i32 * 2;
+                let b0 = vm.array_get(bytes, base)?.as_int() as u32 & 0xFF;
+                let b1 = vm.array_get(bytes, base + 1)?.as_int() as u32 & 0xFF;
+                let unit = if little {
+                    (b1 << 8) | b0
+                } else {
+                    (b0 << 8) | b1
+                };
+                vm.array_set(shorts, index as i32, Value::Int(unit as i16 as i32), false)?;
+            }
+            let view = new_short_buffer(
+                vm,
+                shorts,
+                0,
+                count as i32,
+                0,
+                count as i32,
+                byte_buffer_read_only(vm, this),
+            )?;
+            let order = byte_buffer_order(vm, this);
+            set_typed_buffer_order(vm, view, order)?;
+            object(view)
+        },
+    ),
+    method(
+        "asFloatBuffer",
+        "()Ljava/nio/FloatBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            // The view reads the remaining bytes in groups of four, in this buffer's byte order.
+            let this = receiver(args);
+            let bytes = byte_buffer_bytes(vm, this);
+            let offset = byte_buffer_offset(vm, this);
+            let position = buffer_position(vm, this);
+            let limit = buffer_limit(vm, this);
+            let little = byte_order_little(vm, byte_buffer_order(vm, this));
+            let count = ((limit - position).max(0) / 4) as usize;
+            let floats = vm.allocate_array_of(ArrayComponent::Float, count)?;
+            for index in 0..count {
+                let base = offset + position + index as i32 * 4;
+                let mut value = 0u32;
+                for k in 0..4 {
+                    let b = vm.array_get(bytes, base + k)?.as_int() as u32 & 0xFF;
+                    let shift = if little { k * 8 } else { (3 - k) * 8 };
+                    value |= b << shift;
+                }
+                vm.array_set(
+                    floats,
+                    index as i32,
+                    Value::Float(f32::from_bits(value)),
+                    false,
+                )?;
+            }
+            let view = new_float_buffer(
+                vm,
+                floats,
+                0,
+                count as i32,
+                0,
+                count as i32,
+                byte_buffer_read_only(vm, this),
+            )?;
+            let order = byte_buffer_order(vm, this);
+            set_typed_buffer_order(vm, view, order)?;
+            object(view)
+        },
+    ),
+    method(
+        "asDoubleBuffer",
+        "()Ljava/nio/DoubleBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            // The view reads the remaining bytes in groups of eight, in this buffer's byte order.
+            let this = receiver(args);
+            let bytes = byte_buffer_bytes(vm, this);
+            let offset = byte_buffer_offset(vm, this);
+            let position = buffer_position(vm, this);
+            let limit = buffer_limit(vm, this);
+            let little = byte_order_little(vm, byte_buffer_order(vm, this));
+            let count = ((limit - position).max(0) / 8) as usize;
+            let doubles = vm.allocate_array_of(ArrayComponent::Double, count)?;
+            for index in 0..count {
+                let base = offset + position + index as i32 * 8;
+                let mut value = 0u64;
+                for k in 0..8 {
+                    let b = vm.array_get(bytes, base + k)?.as_int() as u64 & 0xFF;
+                    let shift = if little { k * 8 } else { (7 - k) * 8 };
+                    value |= b << shift;
+                }
+                vm.array_set(
+                    doubles,
+                    index as i32,
+                    Value::Double(f64::from_bits(value)),
+                    false,
+                )?;
+            }
+            let view = new_double_buffer(
+                vm,
+                doubles,
+                0,
+                count as i32,
+                0,
+                count as i32,
+                byte_buffer_read_only(vm, this),
+            )?;
+            let order = byte_buffer_order(vm, this);
+            set_typed_buffer_order(vm, view, order)?;
+            object(view)
         },
     ),
 ];
@@ -1898,7 +2083,7 @@ const CHAR_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
                 return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
             }
             let offset = char_buffer_offset(vm, this) + buffer_position(vm, this) + start;
-            object(new_char_buffer(
+            let copy = new_char_buffer(
                 vm,
                 char_buffer_chars(vm, this),
                 offset,
@@ -1906,7 +2091,9 @@ const CHAR_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
                 0,
                 end - start,
                 char_buffer_read_only(vm, this),
-            )?)
+            )?;
+            copy_typed_buffer_order(vm, this, copy)?;
+            object(copy)
         },
     ),
     method("position", "()I", ACC_PUBLIC, |vm, _, args| {
@@ -2108,6 +2295,7 @@ const CHAR_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
                 char_buffer_read_only(vm, this),
             )?;
             set_mark(vm, duplicate, buffer_mark(vm, this));
+            copy_typed_buffer_order(vm, this, duplicate)?;
             object(duplicate)
         },
     ),
@@ -2122,7 +2310,7 @@ const CHAR_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
             let this = receiver(args);
             let remaining = buffer_remaining(vm, this);
             let offset = char_buffer_offset(vm, this) + buffer_position(vm, this);
-            object(new_char_buffer(
+            let copy = new_char_buffer(
                 vm,
                 char_buffer_chars(vm, this),
                 offset,
@@ -2130,7 +2318,9 @@ const CHAR_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
                 0,
                 remaining,
                 char_buffer_read_only(vm, this),
-            )?)
+            )?;
+            copy_typed_buffer_order(vm, this, copy)?;
+            object(copy)
         },
     ),
     method(
@@ -2145,7 +2335,7 @@ const CHAR_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
                 return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
             }
             let offset = char_buffer_offset(vm, this) + index;
-            object(new_char_buffer(
+            let copy = new_char_buffer(
                 vm,
                 char_buffer_chars(vm, this),
                 offset,
@@ -2153,7 +2343,9 @@ const CHAR_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
                 0,
                 length,
                 char_buffer_read_only(vm, this),
-            )?)
+            )?;
+            copy_typed_buffer_order(vm, this, copy)?;
+            object(copy)
         },
     ),
     method(
@@ -2162,7 +2354,7 @@ const CHAR_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            object(new_char_buffer(
+            let copy = new_char_buffer(
                 vm,
                 char_buffer_chars(vm, this),
                 char_buffer_offset(vm, this),
@@ -2170,16 +2362,17 @@ const CHAR_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
                 buffer_position(vm, this),
                 buffer_limit(vm, this),
                 true,
-            )?)
+            )?;
+            copy_typed_buffer_order(vm, this, copy)?;
+            object(copy)
         },
     ),
-    method("order", "()Ljava/nio/ByteOrder;", ACC_PUBLIC, |vm, _, _| {
-        let class = vm.resolve_class("java/nio/ByteOrder")?;
-        let (declaring, method) = vm
-            .find_method(class, "nativeOrder", "()Ljava/nio/ByteOrder;")
-            .ok_or_else(|| VmError::internal("ByteOrder.nativeOrder missing"))?;
-        vm.invoke_method(declaring, method, vec![])
-    }),
+    method(
+        "order",
+        "()Ljava/nio/ByteOrder;",
+        ACC_PUBLIC,
+        |vm, _, args| typed_buffer_order(vm, receiver(args)),
+    ),
     method(
         "mark",
         "()Ljava/nio/CharBuffer;",
@@ -2253,6 +2446,7 @@ pub(crate) const CHAR_BUFFER: oxjvm_vm::NativeClass = class(
         field("chars", "[C", ACC_PRIVATE, None),
         field("offset", "I", ACC_PRIVATE, None),
         field("readOnly", "I", ACC_PRIVATE, None),
+        field("order", "Ljava/nio/ByteOrder;", ACC_PRIVATE, None),
     ],
     &CHAR_BUFFER_METHODS,
     None,
@@ -2405,7 +2599,7 @@ fn int_buffer_put_ints(
     Ok(())
 }
 
-const INT_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
+const INT_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
     method(
         "allocate",
         "(I)Ljava/nio/IntBuffer;",
@@ -2443,6 +2637,12 @@ const INT_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
             }
             object(new_int_buffer(vm, ints, offset, length, 0, length, false)?)
         },
+    ),
+    method(
+        "order",
+        "()Ljava/nio/ByteOrder;",
+        ACC_PUBLIC,
+        |vm, _, args| typed_buffer_order(vm, receiver(args)),
     ),
     method("get", "()I", ACC_PUBLIC, |vm, _, args| {
         int(int_buffer_get(vm, receiver(args))?)
@@ -2593,7 +2793,7 @@ const INT_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            object(new_int_buffer(
+            let copy = new_int_buffer(
                 vm,
                 int_buffer_ints(vm, this),
                 int_buffer_offset(vm, this),
@@ -2601,7 +2801,9 @@ const INT_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
                 buffer_position(vm, this),
                 buffer_limit(vm, this),
                 int_buffer_read_only(vm, this),
-            )?)
+            )?;
+            copy_typed_buffer_order(vm, this, copy)?;
+            object(copy)
         },
     ),
     method(
@@ -2612,7 +2814,7 @@ const INT_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
             let this = receiver(args);
             let pos = buffer_position(vm, this);
             let remaining = buffer_remaining(vm, this);
-            object(new_int_buffer(
+            let copy = new_int_buffer(
                 vm,
                 int_buffer_ints(vm, this),
                 int_buffer_offset(vm, this) + pos,
@@ -2620,7 +2822,9 @@ const INT_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
                 0,
                 remaining,
                 int_buffer_read_only(vm, this),
-            )?)
+            )?;
+            copy_typed_buffer_order(vm, this, copy)?;
+            object(copy)
         },
     ),
     method(
@@ -2629,7 +2833,7 @@ const INT_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            object(new_int_buffer(
+            let copy = new_int_buffer(
                 vm,
                 int_buffer_ints(vm, this),
                 int_buffer_offset(vm, this),
@@ -2637,7 +2841,9 @@ const INT_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
                 buffer_position(vm, this),
                 buffer_limit(vm, this),
                 true,
-            )?)
+            )?;
+            copy_typed_buffer_order(vm, this, copy)?;
+            object(copy)
         },
     ),
     method(
@@ -2784,6 +2990,7 @@ pub(crate) const INT_BUFFER: oxjvm_vm::NativeClass = class(
         field("ints", "[I", ACC_PRIVATE, None),
         field("offset", "I", ACC_PRIVATE, None),
         field("readOnly", "I", ACC_PRIVATE, None),
+        field("order", "Ljava/nio/ByteOrder;", ACC_PRIVATE, None),
     ],
     &INT_BUFFER_METHODS,
     None,
@@ -2932,7 +3139,7 @@ fn long_buffer_put_ints(
     Ok(())
 }
 
-const LONG_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
+const LONG_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
     method(
         "allocate",
         "(I)Ljava/nio/LongBuffer;",
@@ -2970,6 +3177,12 @@ const LONG_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
             }
             object(new_long_buffer(vm, ints, offset, length, 0, length, false)?)
         },
+    ),
+    method(
+        "order",
+        "()Ljava/nio/ByteOrder;",
+        ACC_PUBLIC,
+        |vm, _, args| typed_buffer_order(vm, receiver(args)),
     ),
     method("get", "()J", ACC_PUBLIC, |vm, _, args| {
         long(long_buffer_get(vm, receiver(args))?)
@@ -3120,7 +3333,7 @@ const LONG_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            object(new_long_buffer(
+            let copy = new_long_buffer(
                 vm,
                 long_buffer_ints(vm, this),
                 long_buffer_offset(vm, this),
@@ -3128,7 +3341,9 @@ const LONG_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
                 buffer_position(vm, this),
                 buffer_limit(vm, this),
                 long_buffer_read_only(vm, this),
-            )?)
+            )?;
+            copy_typed_buffer_order(vm, this, copy)?;
+            object(copy)
         },
     ),
     method(
@@ -3139,7 +3354,7 @@ const LONG_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
             let this = receiver(args);
             let pos = buffer_position(vm, this);
             let remaining = buffer_remaining(vm, this);
-            object(new_long_buffer(
+            let copy = new_long_buffer(
                 vm,
                 long_buffer_ints(vm, this),
                 long_buffer_offset(vm, this) + pos,
@@ -3147,7 +3362,9 @@ const LONG_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
                 0,
                 remaining,
                 long_buffer_read_only(vm, this),
-            )?)
+            )?;
+            copy_typed_buffer_order(vm, this, copy)?;
+            object(copy)
         },
     ),
     method(
@@ -3156,7 +3373,7 @@ const LONG_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            object(new_long_buffer(
+            let copy = new_long_buffer(
                 vm,
                 long_buffer_ints(vm, this),
                 long_buffer_offset(vm, this),
@@ -3164,7 +3381,9 @@ const LONG_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
                 buffer_position(vm, this),
                 buffer_limit(vm, this),
                 true,
-            )?)
+            )?;
+            copy_typed_buffer_order(vm, this, copy)?;
+            object(copy)
         },
     ),
     method(
@@ -3312,6 +3531,7 @@ pub(crate) const LONG_BUFFER: oxjvm_vm::NativeClass = class(
         field("longs", "[J", ACC_PRIVATE, None),
         field("offset", "I", ACC_PRIVATE, None),
         field("readOnly", "I", ACC_PRIVATE, None),
+        field("order", "Ljava/nio/ByteOrder;", ACC_PRIVATE, None),
     ],
     &LONG_BUFFER_METHODS,
     None,
@@ -3460,7 +3680,7 @@ fn double_buffer_put_ints(
     Ok(())
 }
 
-const DOUBLE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
+const DOUBLE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
     method(
         "allocate",
         "(I)Ljava/nio/DoubleBuffer;",
@@ -3500,6 +3720,12 @@ const DOUBLE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
                 vm, ints, offset, length, 0, length, false,
             )?)
         },
+    ),
+    method(
+        "order",
+        "()Ljava/nio/ByteOrder;",
+        ACC_PUBLIC,
+        |vm, _, args| typed_buffer_order(vm, receiver(args)),
     ),
     method("get", "()D", ACC_PUBLIC, |vm, _, args| {
         double(double_buffer_get(vm, receiver(args))?)
@@ -3650,7 +3876,7 @@ const DOUBLE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            object(new_double_buffer(
+            let copy = new_double_buffer(
                 vm,
                 double_buffer_ints(vm, this),
                 double_buffer_offset(vm, this),
@@ -3658,7 +3884,9 @@ const DOUBLE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
                 buffer_position(vm, this),
                 buffer_limit(vm, this),
                 double_buffer_read_only(vm, this),
-            )?)
+            )?;
+            copy_typed_buffer_order(vm, this, copy)?;
+            object(copy)
         },
     ),
     method(
@@ -3669,7 +3897,7 @@ const DOUBLE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
             let this = receiver(args);
             let pos = buffer_position(vm, this);
             let remaining = buffer_remaining(vm, this);
-            object(new_double_buffer(
+            let copy = new_double_buffer(
                 vm,
                 double_buffer_ints(vm, this),
                 double_buffer_offset(vm, this) + pos,
@@ -3677,7 +3905,9 @@ const DOUBLE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
                 0,
                 remaining,
                 double_buffer_read_only(vm, this),
-            )?)
+            )?;
+            copy_typed_buffer_order(vm, this, copy)?;
+            object(copy)
         },
     ),
     method(
@@ -3686,7 +3916,7 @@ const DOUBLE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            object(new_double_buffer(
+            let copy = new_double_buffer(
                 vm,
                 double_buffer_ints(vm, this),
                 double_buffer_offset(vm, this),
@@ -3694,7 +3924,9 @@ const DOUBLE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
                 buffer_position(vm, this),
                 buffer_limit(vm, this),
                 true,
-            )?)
+            )?;
+            copy_typed_buffer_order(vm, this, copy)?;
+            object(copy)
         },
     ),
     method(
@@ -3845,6 +4077,7 @@ pub(crate) const DOUBLE_BUFFER: oxjvm_vm::NativeClass = class(
         field("doubles", "[D", ACC_PRIVATE, None),
         field("offset", "I", ACC_PRIVATE, None),
         field("readOnly", "I", ACC_PRIVATE, None),
+        field("order", "Ljava/nio/ByteOrder;", ACC_PRIVATE, None),
     ],
     &DOUBLE_BUFFER_METHODS,
     None,
@@ -3853,6 +4086,1100 @@ pub(crate) const DOUBLE_BUFFER: oxjvm_vm::NativeClass = class(
 pub(crate) const OJVM_DOUBLE_BUFFER: oxjvm_vm::NativeClass = class(
     "java/nio/OjvmDoubleBuffer",
     Some("java/nio/DoubleBuffer"),
+    &["java/lang/Comparable"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[],
+    &[],
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// ShortBuffer
+// -------------------------------------------------------------------------------------------
+
+fn short_buffer_shorts(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "shorts", "[S")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn short_buffer_offset(vm: &Vm<'_>, this: ObjectRef) -> i32 {
+    crate::lang::read_int_field(vm, this, "offset")
+}
+
+fn short_buffer_read_only(vm: &Vm<'_>, this: ObjectRef) -> bool {
+    crate::lang::read_int_field(vm, this, "readOnly") != 0
+}
+
+fn new_short_buffer(
+    vm: &mut Vm<'_>,
+    shorts: ObjectRef,
+    offset: i32,
+    capacity: i32,
+    position: i32,
+    limit: i32,
+    read_only: bool,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/nio/OjvmShortBuffer")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "shorts", "[S")?;
+    vm.set_instance_ref(instance, declaring, field, shorts);
+    set_field_int(vm, instance, "offset", offset);
+    set_field_int(vm, instance, "capacity", capacity);
+    set_field_int(vm, instance, "position", position);
+    set_field_int(vm, instance, "limit", limit);
+    set_field_int(vm, instance, "mark", -1);
+    set_field_int(vm, instance, "readOnly", i32::from(read_only));
+    Ok(instance)
+}
+
+fn short_buffer_at(vm: &mut Vm<'_>, this: ObjectRef, index: i32) -> Result<i32, VmError> {
+    let shorts = short_buffer_shorts(vm, this);
+    Ok(vm
+        .array_get(shorts, short_buffer_offset(vm, this) + index)?
+        .as_int())
+}
+
+fn short_buffer_put_at(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    index: i32,
+    value: i32,
+) -> Result<(), VmError> {
+    let shorts = short_buffer_shorts(vm, this);
+    vm.array_set(
+        shorts,
+        short_buffer_offset(vm, this) + index,
+        Value::Int(value as i16 as i32),
+        true,
+    )
+}
+
+fn short_buffer_get(vm: &mut Vm<'_>, this: ObjectRef) -> Result<i32, VmError> {
+    if buffer_remaining(vm, this) <= 0 {
+        return Err(vm.throw_new("java/nio/BufferUnderflowException", None));
+    }
+    let value = short_buffer_at(vm, this, buffer_position(vm, this))?;
+    set_position(vm, this, buffer_position(vm, this) + 1);
+    Ok(value)
+}
+
+fn short_buffer_put(vm: &mut Vm<'_>, this: ObjectRef, value: i32) -> Result<(), VmError> {
+    if short_buffer_read_only(vm, this) {
+        return Err(vm.throw_new("java/nio/ReadOnlyBufferException", None));
+    }
+    if buffer_remaining(vm, this) <= 0 {
+        return Err(vm.throw_new("java/nio/BufferOverflowException", None));
+    }
+    let pos = buffer_position(vm, this);
+    short_buffer_put_at(vm, this, pos, value)?;
+    set_position(vm, this, pos + 1);
+    Ok(())
+}
+
+fn short_buffer_get_shorts(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    dst: ObjectRef,
+    offset: i32,
+    length: i32,
+) -> Result<(), VmError> {
+    if dst.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let total = vm.array_length(dst)? as i32;
+    if offset < 0 || length < 0 || offset + length > total {
+        return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+    }
+    let pos = buffer_position(vm, this);
+    if length > buffer_limit(vm, this) - pos {
+        return Err(vm.throw_new("java/nio/BufferUnderflowException", None));
+    }
+    for index in 0..length {
+        let value = short_buffer_at(vm, this, pos + index)?;
+        vm.array_set(dst, offset + index, Value::Int(value as i16 as i32), true)?;
+    }
+    set_position(vm, this, pos + length);
+    Ok(())
+}
+
+fn short_buffer_put_shorts(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    src: ObjectRef,
+    offset: i32,
+    length: i32,
+) -> Result<(), VmError> {
+    if src.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    if short_buffer_read_only(vm, this) {
+        return Err(vm.throw_new("java/nio/ReadOnlyBufferException", None));
+    }
+    let total = vm.array_length(src)? as i32;
+    if offset < 0 || length < 0 || offset + length > total {
+        return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+    }
+    if length > buffer_remaining(vm, this) {
+        return Err(vm.throw_new("java/nio/BufferOverflowException", None));
+    }
+    let pos = buffer_position(vm, this);
+    for index in 0..length {
+        let value = vm.array_get(src, offset + index)?.as_int();
+        short_buffer_put_at(vm, this, pos + index, value)?;
+    }
+    set_position(vm, this, pos + length);
+    Ok(())
+}
+
+const SHORT_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
+    method(
+        "allocate",
+        "(I)Ljava/nio/ShortBuffer;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let length = crate::int_arg(args, 0);
+            if length < 0 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            let shorts = vm.allocate_array_of(ArrayComponent::Short, length as usize)?;
+            object(new_short_buffer(vm, shorts, 0, length, 0, length, false)?)
+        },
+    ),
+    method(
+        "wrap",
+        "([S)Ljava/nio/ShortBuffer;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let shorts = ref_arg(args, 0);
+            let length = vm.array_length(shorts)? as i32;
+            object(new_short_buffer(vm, shorts, 0, length, 0, length, false)?)
+        },
+    ),
+    method(
+        "wrap",
+        "([SII)Ljava/nio/ShortBuffer;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let shorts = ref_arg(args, 0);
+            let offset = crate::int_arg(args, 1);
+            let length = crate::int_arg(args, 2);
+            let total = vm.array_length(shorts)? as i32;
+            if offset < 0 || length < 0 || offset + length > total {
+                return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+            }
+            object(new_short_buffer(
+                vm, shorts, offset, length, 0, length, false,
+            )?)
+        },
+    ),
+    method(
+        "order",
+        "()Ljava/nio/ByteOrder;",
+        ACC_PUBLIC,
+        |vm, _, args| typed_buffer_order(vm, receiver(args)),
+    ),
+    method("get", "()S", ACC_PUBLIC, |vm, _, args| {
+        int(short_buffer_get(vm, receiver(args))?)
+    }),
+    method("get", "(I)S", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let index = crate::int_arg(args, 1);
+        if index < 0 || index >= buffer_limit(vm, this) {
+            return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+        }
+        int(short_buffer_at(vm, this, index)?)
+    }),
+    method(
+        "get",
+        "([S)Ljava/nio/ShortBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let dst = ref_arg(args, 1);
+            let length = vm.array_length(dst)? as i32;
+            short_buffer_get_shorts(vm, this, dst, 0, length)?;
+            object(this)
+        },
+    ),
+    method(
+        "get",
+        "([SII)Ljava/nio/ShortBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            short_buffer_get_shorts(
+                vm,
+                this,
+                ref_arg(args, 1),
+                crate::int_arg(args, 2),
+                crate::int_arg(args, 3),
+            )?;
+            object(this)
+        },
+    ),
+    method(
+        "put",
+        "(S)Ljava/nio/ShortBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            short_buffer_put(vm, this, crate::int_arg(args, 1))?;
+            object(this)
+        },
+    ),
+    method(
+        "put",
+        "(IS)Ljava/nio/ShortBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let index = crate::int_arg(args, 1);
+            if short_buffer_read_only(vm, this) {
+                return Err(vm.throw_new("java/nio/ReadOnlyBufferException", None));
+            }
+            if index < 0 || index >= buffer_limit(vm, this) {
+                return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+            }
+            short_buffer_put_at(vm, this, index, crate::int_arg(args, 2))?;
+            object(this)
+        },
+    ),
+    method(
+        "put",
+        "([S)Ljava/nio/ShortBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let src = ref_arg(args, 1);
+            let length = vm.array_length(src)? as i32;
+            short_buffer_put_shorts(vm, this, src, 0, length)?;
+            object(this)
+        },
+    ),
+    method(
+        "put",
+        "([SII)Ljava/nio/ShortBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            short_buffer_put_shorts(
+                vm,
+                this,
+                ref_arg(args, 1),
+                crate::int_arg(args, 2),
+                crate::int_arg(args, 3),
+            )?;
+            object(this)
+        },
+    ),
+    method(
+        "put",
+        "(Ljava/nio/ShortBuffer;)Ljava/nio/ShortBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let src = ref_arg(args, 1);
+            if src == this {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            if short_buffer_read_only(vm, this) {
+                return Err(vm.throw_new("java/nio/ReadOnlyBufferException", None));
+            }
+            let length = buffer_remaining(vm, src);
+            if length > buffer_remaining(vm, this) {
+                return Err(vm.throw_new("java/nio/BufferOverflowException", None));
+            }
+            let pos = buffer_position(vm, this);
+            let src_pos = buffer_position(vm, src);
+            for index in 0..length {
+                let value = short_buffer_at(vm, src, src_pos + index)?;
+                short_buffer_put_at(vm, this, pos + index, value)?;
+            }
+            set_position(vm, this, pos + length);
+            set_position(vm, src, src_pos + length);
+            object(this)
+        },
+    ),
+    method("hasArray", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(!short_buffer_read_only(vm, receiver(args)))
+    }),
+    method("array", "()[S", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if short_buffer_read_only(vm, this) {
+            return Err(vm.throw_new("java/nio/ReadOnlyBufferException", None));
+        }
+        object(short_buffer_shorts(vm, this))
+    }),
+    method("arrayOffset", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if short_buffer_read_only(vm, this) {
+            return Err(vm.throw_new("java/nio/ReadOnlyBufferException", None));
+        }
+        int(short_buffer_offset(vm, this))
+    }),
+    method("isReadOnly", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(short_buffer_read_only(vm, receiver(args)))
+    }),
+    method("isDirect", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method(
+        "duplicate",
+        "()Ljava/nio/ShortBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let copy = new_short_buffer(
+                vm,
+                short_buffer_shorts(vm, this),
+                short_buffer_offset(vm, this),
+                crate::lang::read_int_field(vm, this, "capacity"),
+                buffer_position(vm, this),
+                buffer_limit(vm, this),
+                short_buffer_read_only(vm, this),
+            )?;
+            copy_typed_buffer_order(vm, this, copy)?;
+            object(copy)
+        },
+    ),
+    method(
+        "slice",
+        "()Ljava/nio/ShortBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let pos = buffer_position(vm, this);
+            let remaining = buffer_remaining(vm, this);
+            let copy = new_short_buffer(
+                vm,
+                short_buffer_shorts(vm, this),
+                short_buffer_offset(vm, this) + pos,
+                remaining,
+                0,
+                remaining,
+                short_buffer_read_only(vm, this),
+            )?;
+            copy_typed_buffer_order(vm, this, copy)?;
+            object(copy)
+        },
+    ),
+    method(
+        "asReadOnlyBuffer",
+        "()Ljava/nio/ShortBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let copy = new_short_buffer(
+                vm,
+                short_buffer_shorts(vm, this),
+                short_buffer_offset(vm, this),
+                crate::lang::read_int_field(vm, this, "capacity"),
+                buffer_position(vm, this),
+                buffer_limit(vm, this),
+                true,
+            )?;
+            copy_typed_buffer_order(vm, this, copy)?;
+            object(copy)
+        },
+    ),
+    method(
+        "compareTo",
+        "(Ljava/nio/ShortBuffer;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let n = buffer_remaining(vm, this).min(buffer_remaining(vm, other));
+            let a = buffer_position(vm, this);
+            let b = buffer_position(vm, other);
+            for index in 0..n {
+                let x = short_buffer_at(vm, this, a + index)?;
+                let y = short_buffer_at(vm, other, b + index)?;
+                if x != y {
+                    return int(x.cmp(&y) as i32);
+                }
+            }
+            int(buffer_remaining(vm, this) - buffer_remaining(vm, other))
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if other.is_null() || vm.class_name(vm.class_of(other)) != "java/nio/OjvmShortBuffer" {
+                return boolean(false);
+            }
+            if buffer_remaining(vm, this) != buffer_remaining(vm, other) {
+                return boolean(false);
+            }
+            let n = buffer_remaining(vm, this);
+            let a = buffer_position(vm, this);
+            let b = buffer_position(vm, other);
+            for index in 0..n {
+                if short_buffer_at(vm, this, a + index)? != short_buffer_at(vm, other, b + index)? {
+                    return boolean(false);
+                }
+            }
+            boolean(true)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let mut hash = 1i32;
+        let n = buffer_remaining(vm, this);
+        let pos = buffer_position(vm, this);
+        for index in 0..n {
+            hash = 31i32
+                .wrapping_mul(hash)
+                .wrapping_add(short_buffer_at(vm, this, pos + index)?);
+        }
+        int(hash)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = alloc::format!(
+                "java.nio.HeapShortBuffer[pos={} lim={} cap={}]",
+                buffer_position(vm, this),
+                buffer_limit(vm, this),
+                crate::lang::read_int_field(vm, this, "capacity")
+            );
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "position",
+        "(I)Ljava/nio/ShortBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            check_position(vm, this, crate::int_arg(args, 1))?;
+            set_position(vm, this, crate::int_arg(args, 1));
+            if buffer_mark(vm, this) > crate::int_arg(args, 1) {
+                set_mark(vm, this, -1);
+            }
+            object(this)
+        },
+    ),
+    method(
+        "limit",
+        "(I)Ljava/nio/ShortBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            check_limit(vm, this, crate::int_arg(args, 1))?;
+            set_limit(vm, this, crate::int_arg(args, 1));
+            if buffer_mark(vm, this) > crate::int_arg(args, 1) {
+                set_mark(vm, this, -1);
+            }
+            object(this)
+        },
+    ),
+    method(
+        "mark",
+        "()Ljava/nio/ShortBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            set_mark(vm, this, buffer_position(vm, this));
+            object(this)
+        },
+    ),
+    method(
+        "reset",
+        "()Ljava/nio/ShortBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| buffer_reset(vm, receiver(args)),
+    ),
+    method(
+        "clear",
+        "()Ljava/nio/ShortBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| Ok(buffer_clear(vm, receiver(args))),
+    ),
+    method(
+        "flip",
+        "()Ljava/nio/ShortBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| Ok(buffer_flip(vm, receiver(args))),
+    ),
+    method(
+        "rewind",
+        "()Ljava/nio/ShortBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| Ok(buffer_rewind(vm, receiver(args))),
+    ),
+];
+
+pub(crate) const SHORT_BUFFER: oxjvm_vm::NativeClass = class(
+    "java/nio/ShortBuffer",
+    Some("java/nio/Buffer"),
+    &["java/lang/Comparable"],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[
+        field("shorts", "[S", ACC_PRIVATE, None),
+        field("offset", "I", ACC_PRIVATE, None),
+        field("readOnly", "I", ACC_PRIVATE, None),
+        field("order", "Ljava/nio/ByteOrder;", ACC_PRIVATE, None),
+    ],
+    &SHORT_BUFFER_METHODS,
+    None,
+);
+
+pub(crate) const OJVM_SHORT_BUFFER: oxjvm_vm::NativeClass = class(
+    "java/nio/OjvmShortBuffer",
+    Some("java/nio/ShortBuffer"),
+    &["java/lang/Comparable"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[],
+    &[],
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// FloatBuffer
+// -------------------------------------------------------------------------------------------
+
+fn float_buffer_floats(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "floats", "[F")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn float_buffer_offset(vm: &Vm<'_>, this: ObjectRef) -> i32 {
+    crate::lang::read_int_field(vm, this, "offset")
+}
+
+fn float_buffer_read_only(vm: &Vm<'_>, this: ObjectRef) -> bool {
+    crate::lang::read_int_field(vm, this, "readOnly") != 0
+}
+
+fn new_float_buffer(
+    vm: &mut Vm<'_>,
+    floats: ObjectRef,
+    offset: i32,
+    capacity: i32,
+    position: i32,
+    limit: i32,
+    read_only: bool,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/nio/OjvmFloatBuffer")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "floats", "[F")?;
+    vm.set_instance_ref(instance, declaring, field, floats);
+    set_field_int(vm, instance, "offset", offset);
+    set_field_int(vm, instance, "capacity", capacity);
+    set_field_int(vm, instance, "position", position);
+    set_field_int(vm, instance, "limit", limit);
+    set_field_int(vm, instance, "mark", -1);
+    set_field_int(vm, instance, "readOnly", i32::from(read_only));
+    Ok(instance)
+}
+
+fn float_buffer_at(vm: &mut Vm<'_>, this: ObjectRef, index: i32) -> Result<f32, VmError> {
+    let floats = float_buffer_floats(vm, this);
+    Ok(vm
+        .array_get(floats, float_buffer_offset(vm, this) + index)?
+        .as_float())
+}
+
+fn float_buffer_put_at(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    index: i32,
+    value: f32,
+) -> Result<(), VmError> {
+    let floats = float_buffer_floats(vm, this);
+    vm.array_set(
+        floats,
+        float_buffer_offset(vm, this) + index,
+        Value::Float(value),
+        true,
+    )
+}
+
+fn float_buffer_get(vm: &mut Vm<'_>, this: ObjectRef) -> Result<f32, VmError> {
+    if buffer_remaining(vm, this) <= 0 {
+        return Err(vm.throw_new("java/nio/BufferUnderflowException", None));
+    }
+    let value = float_buffer_at(vm, this, buffer_position(vm, this))?;
+    set_position(vm, this, buffer_position(vm, this) + 1);
+    Ok(value)
+}
+
+fn float_buffer_put(vm: &mut Vm<'_>, this: ObjectRef, value: f32) -> Result<(), VmError> {
+    if float_buffer_read_only(vm, this) {
+        return Err(vm.throw_new("java/nio/ReadOnlyBufferException", None));
+    }
+    if buffer_remaining(vm, this) <= 0 {
+        return Err(vm.throw_new("java/nio/BufferOverflowException", None));
+    }
+    let pos = buffer_position(vm, this);
+    float_buffer_put_at(vm, this, pos, value)?;
+    set_position(vm, this, pos + 1);
+    Ok(())
+}
+
+fn float_buffer_get_floats(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    dst: ObjectRef,
+    offset: i32,
+    length: i32,
+) -> Result<(), VmError> {
+    if dst.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let total = vm.array_length(dst)? as i32;
+    if offset < 0 || length < 0 || offset + length > total {
+        return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+    }
+    let pos = buffer_position(vm, this);
+    if length > buffer_limit(vm, this) - pos {
+        return Err(vm.throw_new("java/nio/BufferUnderflowException", None));
+    }
+    for index in 0..length {
+        let value = float_buffer_at(vm, this, pos + index)?;
+        vm.array_set(dst, offset + index, Value::Float(value), true)?;
+    }
+    set_position(vm, this, pos + length);
+    Ok(())
+}
+
+fn float_buffer_put_floats(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    src: ObjectRef,
+    offset: i32,
+    length: i32,
+) -> Result<(), VmError> {
+    if src.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    if float_buffer_read_only(vm, this) {
+        return Err(vm.throw_new("java/nio/ReadOnlyBufferException", None));
+    }
+    let total = vm.array_length(src)? as i32;
+    if offset < 0 || length < 0 || offset + length > total {
+        return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+    }
+    if length > buffer_remaining(vm, this) {
+        return Err(vm.throw_new("java/nio/BufferOverflowException", None));
+    }
+    let pos = buffer_position(vm, this);
+    for index in 0..length {
+        let value = vm.array_get(src, offset + index)?.as_float();
+        float_buffer_put_at(vm, this, pos + index, value)?;
+    }
+    set_position(vm, this, pos + length);
+    Ok(())
+}
+
+const FLOAT_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
+    method(
+        "allocate",
+        "(I)Ljava/nio/FloatBuffer;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let length = crate::int_arg(args, 0);
+            if length < 0 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            let floats = vm.allocate_array_of(ArrayComponent::Float, length as usize)?;
+            object(new_float_buffer(vm, floats, 0, length, 0, length, false)?)
+        },
+    ),
+    method(
+        "wrap",
+        "([F)Ljava/nio/FloatBuffer;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let floats = ref_arg(args, 0);
+            let length = vm.array_length(floats)? as i32;
+            object(new_float_buffer(vm, floats, 0, length, 0, length, false)?)
+        },
+    ),
+    method(
+        "wrap",
+        "([FII)Ljava/nio/FloatBuffer;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let floats = ref_arg(args, 0);
+            let offset = crate::int_arg(args, 1);
+            let length = crate::int_arg(args, 2);
+            let total = vm.array_length(floats)? as i32;
+            if offset < 0 || length < 0 || offset + length > total {
+                return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+            }
+            object(new_float_buffer(
+                vm, floats, offset, length, 0, length, false,
+            )?)
+        },
+    ),
+    method(
+        "order",
+        "()Ljava/nio/ByteOrder;",
+        ACC_PUBLIC,
+        |vm, _, args| typed_buffer_order(vm, receiver(args)),
+    ),
+    method("get", "()F", ACC_PUBLIC, |vm, _, args| {
+        float(float_buffer_get(vm, receiver(args))?)
+    }),
+    method("get", "(I)F", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let index = crate::int_arg(args, 1);
+        if index < 0 || index >= buffer_limit(vm, this) {
+            return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+        }
+        float(float_buffer_at(vm, this, index)?)
+    }),
+    method(
+        "get",
+        "([F)Ljava/nio/FloatBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let dst = ref_arg(args, 1);
+            let length = vm.array_length(dst)? as i32;
+            float_buffer_get_floats(vm, this, dst, 0, length)?;
+            object(this)
+        },
+    ),
+    method(
+        "get",
+        "([FII)Ljava/nio/FloatBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            float_buffer_get_floats(
+                vm,
+                this,
+                ref_arg(args, 1),
+                crate::int_arg(args, 2),
+                crate::int_arg(args, 3),
+            )?;
+            object(this)
+        },
+    ),
+    method(
+        "put",
+        "(F)Ljava/nio/FloatBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            float_buffer_put(vm, this, crate::float_arg(args, 1))?;
+            object(this)
+        },
+    ),
+    method(
+        "put",
+        "(IF)Ljava/nio/FloatBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let index = crate::int_arg(args, 1);
+            if float_buffer_read_only(vm, this) {
+                return Err(vm.throw_new("java/nio/ReadOnlyBufferException", None));
+            }
+            if index < 0 || index >= buffer_limit(vm, this) {
+                return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+            }
+            float_buffer_put_at(vm, this, index, crate::float_arg(args, 2))?;
+            object(this)
+        },
+    ),
+    method(
+        "put",
+        "([F)Ljava/nio/FloatBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let src = ref_arg(args, 1);
+            let length = vm.array_length(src)? as i32;
+            float_buffer_put_floats(vm, this, src, 0, length)?;
+            object(this)
+        },
+    ),
+    method(
+        "put",
+        "([FII)Ljava/nio/FloatBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            float_buffer_put_floats(
+                vm,
+                this,
+                ref_arg(args, 1),
+                crate::int_arg(args, 2),
+                crate::int_arg(args, 3),
+            )?;
+            object(this)
+        },
+    ),
+    method(
+        "put",
+        "(Ljava/nio/FloatBuffer;)Ljava/nio/FloatBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let src = ref_arg(args, 1);
+            if src == this {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            if float_buffer_read_only(vm, this) {
+                return Err(vm.throw_new("java/nio/ReadOnlyBufferException", None));
+            }
+            let length = buffer_remaining(vm, src);
+            if length > buffer_remaining(vm, this) {
+                return Err(vm.throw_new("java/nio/BufferOverflowException", None));
+            }
+            let pos = buffer_position(vm, this);
+            let src_pos = buffer_position(vm, src);
+            for index in 0..length {
+                let value = float_buffer_at(vm, src, src_pos + index)?;
+                float_buffer_put_at(vm, this, pos + index, value)?;
+            }
+            set_position(vm, this, pos + length);
+            set_position(vm, src, src_pos + length);
+            object(this)
+        },
+    ),
+    method("hasArray", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(!float_buffer_read_only(vm, receiver(args)))
+    }),
+    method("array", "()[F", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if float_buffer_read_only(vm, this) {
+            return Err(vm.throw_new("java/nio/ReadOnlyBufferException", None));
+        }
+        object(float_buffer_floats(vm, this))
+    }),
+    method("arrayOffset", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if float_buffer_read_only(vm, this) {
+            return Err(vm.throw_new("java/nio/ReadOnlyBufferException", None));
+        }
+        int(float_buffer_offset(vm, this))
+    }),
+    method("isReadOnly", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(float_buffer_read_only(vm, receiver(args)))
+    }),
+    method("isDirect", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+    method(
+        "duplicate",
+        "()Ljava/nio/FloatBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let copy = new_float_buffer(
+                vm,
+                float_buffer_floats(vm, this),
+                float_buffer_offset(vm, this),
+                crate::lang::read_int_field(vm, this, "capacity"),
+                buffer_position(vm, this),
+                buffer_limit(vm, this),
+                float_buffer_read_only(vm, this),
+            )?;
+            copy_typed_buffer_order(vm, this, copy)?;
+            object(copy)
+        },
+    ),
+    method(
+        "slice",
+        "()Ljava/nio/FloatBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let pos = buffer_position(vm, this);
+            let remaining = buffer_remaining(vm, this);
+            let copy = new_float_buffer(
+                vm,
+                float_buffer_floats(vm, this),
+                float_buffer_offset(vm, this) + pos,
+                remaining,
+                0,
+                remaining,
+                float_buffer_read_only(vm, this),
+            )?;
+            copy_typed_buffer_order(vm, this, copy)?;
+            object(copy)
+        },
+    ),
+    method(
+        "asReadOnlyBuffer",
+        "()Ljava/nio/FloatBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let copy = new_float_buffer(
+                vm,
+                float_buffer_floats(vm, this),
+                float_buffer_offset(vm, this),
+                crate::lang::read_int_field(vm, this, "capacity"),
+                buffer_position(vm, this),
+                buffer_limit(vm, this),
+                true,
+            )?;
+            copy_typed_buffer_order(vm, this, copy)?;
+            object(copy)
+        },
+    ),
+    method(
+        "compareTo",
+        "(Ljava/nio/FloatBuffer;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let n = buffer_remaining(vm, this).min(buffer_remaining(vm, other));
+            let a = buffer_position(vm, this);
+            let b = buffer_position(vm, other);
+            for index in 0..n {
+                let x = float_buffer_at(vm, this, a + index)?;
+                let y = float_buffer_at(vm, other, b + index)?;
+                if x != y {
+                    return int(x.partial_cmp(&y).map_or(0, |o| o as i32));
+                }
+            }
+            int(buffer_remaining(vm, this) - buffer_remaining(vm, other))
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if other.is_null() || vm.class_name(vm.class_of(other)) != "java/nio/OjvmFloatBuffer" {
+                return boolean(false);
+            }
+            if buffer_remaining(vm, this) != buffer_remaining(vm, other) {
+                return boolean(false);
+            }
+            let n = buffer_remaining(vm, this);
+            let a = buffer_position(vm, this);
+            let b = buffer_position(vm, other);
+            for index in 0..n {
+                if float_buffer_at(vm, this, a + index)? != float_buffer_at(vm, other, b + index)? {
+                    return boolean(false);
+                }
+            }
+            boolean(true)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let mut hash = 1i32;
+        let n = buffer_remaining(vm, this);
+        let pos = buffer_position(vm, this);
+        for index in 0..n {
+            hash = 31i32
+                .wrapping_mul(hash)
+                .wrapping_add(float_buffer_at(vm, this, pos + index)?.to_bits() as i32);
+        }
+        int(hash)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let text = alloc::format!(
+                "java.nio.HeapFloatBuffer[pos={} lim={} cap={}]",
+                buffer_position(vm, this),
+                buffer_limit(vm, this),
+                crate::lang::read_int_field(vm, this, "capacity")
+            );
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "position",
+        "(I)Ljava/nio/FloatBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            check_position(vm, this, crate::int_arg(args, 1))?;
+            set_position(vm, this, crate::int_arg(args, 1));
+            if buffer_mark(vm, this) > crate::int_arg(args, 1) {
+                set_mark(vm, this, -1);
+            }
+            object(this)
+        },
+    ),
+    method(
+        "limit",
+        "(I)Ljava/nio/FloatBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            check_limit(vm, this, crate::int_arg(args, 1))?;
+            set_limit(vm, this, crate::int_arg(args, 1));
+            if buffer_mark(vm, this) > crate::int_arg(args, 1) {
+                set_mark(vm, this, -1);
+            }
+            object(this)
+        },
+    ),
+    method(
+        "mark",
+        "()Ljava/nio/FloatBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            set_mark(vm, this, buffer_position(vm, this));
+            object(this)
+        },
+    ),
+    method(
+        "reset",
+        "()Ljava/nio/FloatBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| buffer_reset(vm, receiver(args)),
+    ),
+    method(
+        "clear",
+        "()Ljava/nio/FloatBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| Ok(buffer_clear(vm, receiver(args))),
+    ),
+    method(
+        "flip",
+        "()Ljava/nio/FloatBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| Ok(buffer_flip(vm, receiver(args))),
+    ),
+    method(
+        "rewind",
+        "()Ljava/nio/FloatBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| Ok(buffer_rewind(vm, receiver(args))),
+    ),
+];
+
+pub(crate) const FLOAT_BUFFER: oxjvm_vm::NativeClass = class(
+    "java/nio/FloatBuffer",
+    Some("java/nio/Buffer"),
+    &["java/lang/Comparable"],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[
+        field("floats", "[F", ACC_PRIVATE, None),
+        field("offset", "I", ACC_PRIVATE, None),
+        field("readOnly", "I", ACC_PRIVATE, None),
+        field("order", "Ljava/nio/ByteOrder;", ACC_PRIVATE, None),
+    ],
+    &FLOAT_BUFFER_METHODS,
+    None,
+);
+
+pub(crate) const OJVM_FLOAT_BUFFER: oxjvm_vm::NativeClass = class(
+    "java/nio/OjvmFloatBuffer",
+    Some("java/nio/FloatBuffer"),
     &["java/lang/Comparable"],
     ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
     &[],
