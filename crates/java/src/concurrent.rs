@@ -2210,12 +2210,28 @@ fn semaphore_release(vm: &mut Vm<'_>, this: ObjectRef, count: i32) -> Result<(),
         return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
     }
     let permits = semaphore_permits(vm, this);
-    crate::lang::write_int_field(vm, this, "permits", permits.saturating_add(count));
+    let Some(next) = permits.checked_add(count) else {
+        return Err(vm.throw_new("java/lang/Error", Some("Maximum permit count exceeded")));
+    };
+    crate::lang::write_int_field(vm, this, "permits", next);
     vm.monitor_notify(this, true);
     Ok(())
 }
 
-const SEMAPHORE_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+fn semaphore_reduce_permits(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    reduction: i32,
+) -> Result<(), VmError> {
+    let permits = semaphore_permits(vm, this);
+    let Some(next) = permits.checked_sub(reduction) else {
+        return Err(vm.throw_new("java/lang/Error", Some("Permit count underflow")));
+    };
+    crate::lang::write_int_field(vm, this, "permits", next);
+    Ok(())
+}
+
+const SEMAPHORE_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
         crate::lang::write_int_field(vm, receiver(args), "permits", crate::int_arg(args, 1));
         void()
@@ -2301,6 +2317,10 @@ const SEMAPHORE_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
     }),
     method("release", "(I)V", ACC_PUBLIC, |vm, _, args| {
         semaphore_release(vm, receiver(args), crate::int_arg(args, 1))?;
+        void()
+    }),
+    method("reducePermits", "(I)V", ACC_PROTECTED, |vm, _, args| {
+        semaphore_reduce_permits(vm, receiver(args), crate::int_arg(args, 1))?;
         void()
     }),
     method("availablePermits", "()I", ACC_PUBLIC, |vm, _, args| {
