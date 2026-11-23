@@ -7572,12 +7572,114 @@ pub(crate) const SYSTEM_LOGGER_IMPL: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const SYSTEM_LOGGER_LEVEL_METHODS: [oxjvm_vm::NativeMethodDef; 0] = [];
+/// The `System.Logger.Level` constants in declaration order, paired with the
+/// severity of the matching `java.util.logging.Level`.
+const SYSTEM_LOGGER_LEVELS: [(&str, i32); 7] = [
+    ("ALL", i32::MIN),
+    ("TRACE", 400),
+    ("DEBUG", 500),
+    ("INFO", 800),
+    ("WARNING", 900),
+    ("ERROR", 1000),
+    ("OFF", i32::MAX),
+];
+
+const SYSTEM_LOGGER_LEVEL_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method("name", "()Ljava/lang/String;", ACC_PUBLIC, |vm, _, args| {
+        let class = vm.class_of(receiver(args));
+        object(
+            vm.make_string(
+                &vm.read_string_field(receiver(args), class, "name")
+                    .unwrap_or_default(),
+            )?,
+        )
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            // An enum prints its name.
+            let class = vm.class_of(receiver(args));
+            object(
+                vm.make_string(
+                    &vm.read_string_field(receiver(args), class, "name")
+                        .unwrap_or_default(),
+                )?,
+            )
+        },
+    ),
+    method("ordinal", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_int_field(vm, receiver(args), "ordinal"))
+    }),
+    method(
+        "getName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class = vm.class_of(receiver(args));
+            object(
+                vm.make_string(
+                    &vm.read_string_field(receiver(args), class, "name")
+                        .unwrap_or_default(),
+                )?,
+            )
+        },
+    ),
+    method("getSeverity", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_int_field(vm, receiver(args), "severity"))
+    }),
+    method(
+        "values",
+        "()[Ljava/lang/System$Logger$Level;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, ctx, _| {
+            let class = ctx.class;
+            let array = vm.allocate_object_array(class, SYSTEM_LOGGER_LEVELS.len())?;
+            for (index, (name, _)) in SYSTEM_LOGGER_LEVELS.iter().enumerate() {
+                if let Some(value) =
+                    vm.read_static_ref_if_set(class, name, "Ljava/lang/System$Logger$Level;")
+                {
+                    vm.array_set_ref(array, index, value)?;
+                }
+            }
+            object(array)
+        },
+    ),
+    method(
+        "valueOf",
+        "(Ljava/lang/String;)Ljava/lang/System$Logger$Level;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, ctx, args| {
+            let name = vm.string_or_empty(ref_arg(args, 0));
+            let class = ctx.class;
+            if SYSTEM_LOGGER_LEVELS
+                .iter()
+                .any(|(n, _)| *n == name.as_str())
+            {
+                if let Some(value) =
+                    vm.read_static_ref_if_set(class, &name, "Ljava/lang/System$Logger$Level;")
+                {
+                    return object(value);
+                }
+            }
+            Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some(&alloc::format!(
+                    "No enum constant java.lang.System.Logger.Level.{name}"
+                )),
+            ))
+        },
+    ),
+];
 
 fn system_logger_level_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     let class = vm.resolve_class("java/lang/System$Logger$Level")?;
-    for name in ["ALL", "TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "OFF"] {
+    for (ordinal, (name, severity)) in SYSTEM_LOGGER_LEVELS.iter().enumerate() {
         let value = vm.new_instance(class)?;
+        vm.set_string_field(value, class, "name", name)?;
+        write_int_field(vm, value, "ordinal", ordinal as i32);
+        write_int_field(vm, value, "severity", *severity);
         vm.set_static_value(
             class,
             name,
@@ -7588,13 +7690,17 @@ fn system_logger_level_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     Ok(())
 }
 
-/// `System.Logger.Level`: the constants are objects with no additional state.
+/// `System.Logger.Level`: an enum whose constants carry a name, ordinal and
+/// the severity of the matching `java.util.logging.Level`.
 pub(crate) const SYSTEM_LOGGER_LEVEL: oxjvm_vm::NativeClass = class(
     "java/lang/System$Logger$Level",
     Some("java/lang/Object"),
     &[],
-    ACC_PUBLIC | ACC_FINAL,
+    ACC_PUBLIC | ACC_FINAL | ACC_ENUM,
     &[
+        field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("ordinal", "I", ACC_PRIVATE, None),
+        field("severity", "I", ACC_PRIVATE, None),
         field(
             "ALL",
             "Ljava/lang/System$Logger$Level;",
