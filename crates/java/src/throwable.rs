@@ -903,6 +903,21 @@ exception!(
     "java/lang/IllegalArgumentException"
 );
 exception!(
+    PROVIDER_EXCEPTION,
+    "java/security/ProviderException",
+    "java/lang/RuntimeException"
+);
+exception!(
+    CERT_PATH_BUILDER_EXCEPTION,
+    "java/security/cert/CertPathBuilderException",
+    "java/security/GeneralSecurityException"
+);
+exception!(
+    SSL_EXCEPTION,
+    "javax/net/ssl/SSLException",
+    "java/io/IOException"
+);
+exception!(
     WRONG_METHOD_TYPE_EXCEPTION,
     "java/lang/invoke/WrongMethodTypeException",
     "java/lang/RuntimeException"
