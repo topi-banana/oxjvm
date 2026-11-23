@@ -7432,6 +7432,228 @@ const FILTER_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     }),
 ];
 
+// -------------------------------------------------------------------------------------------
+// LineNumberInputStream
+// -------------------------------------------------------------------------------------------
+
+/// `LineNumberInputStream.read()`: normalizes `\r` and `\r\n` to `\n` and counts lines.
+fn line_number_input_read(vm: &mut Vm<'_>, this: ObjectRef) -> Result<i32, VmError> {
+    let mut c = read_int_field(vm, this, "pushBack");
+    if c != -1 {
+        write_int_field(vm, this, "pushBack", -1);
+    } else {
+        c = delegate_input(
+            vm,
+            this,
+            "read",
+            "()I",
+            vec![Value::Ref(filter_input_stream_in(vm, this))],
+        )?
+        .as_int();
+    }
+    if c == '\r' as i32 {
+        let next = delegate_input(
+            vm,
+            this,
+            "read",
+            "()I",
+            vec![Value::Ref(filter_input_stream_in(vm, this))],
+        )?
+        .as_int();
+        write_int_field(
+            vm,
+            this,
+            "pushBack",
+            if next == '\n' as i32 { -1 } else { next },
+        );
+        write_int_field(
+            vm,
+            this,
+            "lineNumber",
+            read_int_field(vm, this, "lineNumber") + 1,
+        );
+        return Ok('\n' as i32);
+    }
+    if c == '\n' as i32 {
+        write_int_field(
+            vm,
+            this,
+            "lineNumber",
+            read_int_field(vm, this, "lineNumber") + 1,
+        );
+        return Ok('\n' as i32);
+    }
+    Ok(c)
+}
+
+/// `LineNumberInputStream.read(byte[], int, int)`: fills the buffer one normalized byte at
+/// a time, stopping early (without propagating) if a later read fails, like the JDK.
+fn line_number_input_read_bytes(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    target: ObjectRef,
+    off: i32,
+    len: i32,
+) -> Result<Value, VmError> {
+    reader_check_range(vm, target, off, len)?;
+    if len == 0 {
+        return int(0);
+    }
+    let c = line_number_input_read(vm, this)?;
+    if c == -1 {
+        return int(-1);
+    }
+    vm.array_set(target, off, Value::Int(c), false)?;
+    let mut i = 1;
+    while i < len {
+        let c = match line_number_input_read(vm, this) {
+            Ok(c) => c,
+            Err(_) => break,
+        };
+        if c == -1 {
+            break;
+        }
+        vm.array_set(target, off + i, Value::Int(c), false)?;
+        i += 1;
+    }
+    int(i)
+}
+
+const LINE_NUMBER_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+    method(
+        "<init>",
+        "(Ljava/io/InputStream;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "in", "Ljava/io/InputStream;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            write_int_field(vm, this, "pushBack", -1);
+            write_int_field(vm, this, "markPushBack", -1);
+            void()
+        },
+    ),
+    method("read", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(line_number_input_read(vm, receiver(args))?)
+    }),
+    method("read", "([B)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let target = ref_arg(args, 1);
+        let len = vm.array_length_or_throw(target)? as i32;
+        line_number_input_read_bytes(vm, this, target, 0, len)
+    }),
+    method("read", "([BII)I", ACC_PUBLIC, |vm, _, args| {
+        line_number_input_read_bytes(
+            vm,
+            receiver(args),
+            ref_arg(args, 1),
+            int_arg(args, 2),
+            int_arg(args, 3),
+        )
+    }),
+    method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let n = crate::long_arg(args, 1);
+        if n <= 0 {
+            return long(0);
+        }
+        let chunk = 2048i32;
+        let data = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, chunk as usize)?;
+        let mut remaining = n;
+        while remaining > 0 {
+            let want = remaining.min(i64::from(chunk)) as i32;
+            let nr = line_number_input_read_bytes(vm, this, data, 0, want)?.as_int();
+            if nr < 0 {
+                break;
+            }
+            remaining -= i64::from(nr);
+        }
+        long(n - remaining)
+    }),
+    method("setLineNumber", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        write_int_field(vm, receiver(args), "lineNumber", int_arg(args, 1));
+        void()
+    }),
+    method("getLineNumber", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(read_int_field(vm, receiver(args), "lineNumber"))
+    }),
+    method("available", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let avail = delegate_input(
+            vm,
+            this,
+            "available",
+            "()I",
+            vec![Value::Ref(filter_input_stream_in(vm, this))],
+        )?
+        .as_int();
+        let half = avail / 2;
+        int(if read_int_field(vm, this, "pushBack") == -1 {
+            half
+        } else {
+            half + 1
+        })
+    }),
+    method("mark", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        write_int_field(
+            vm,
+            this,
+            "markLineNumber",
+            read_int_field(vm, this, "lineNumber"),
+        );
+        write_int_field(
+            vm,
+            this,
+            "markPushBack",
+            read_int_field(vm, this, "pushBack"),
+        );
+        let stream = filter_input_stream_in(vm, this);
+        let (class, method) = vm.resolve_virtual_method(stream, "mark", "(I)V")?;
+        vm.invoke_method(
+            class,
+            method,
+            vec![Value::Ref(stream), Value::Int(int_arg(args, 1))],
+        )?;
+        void()
+    }),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        write_int_field(
+            vm,
+            this,
+            "lineNumber",
+            read_int_field(vm, this, "markLineNumber"),
+        );
+        write_int_field(
+            vm,
+            this,
+            "pushBack",
+            read_int_field(vm, this, "markPushBack"),
+        );
+        let stream = filter_input_stream_in(vm, this);
+        let (class, method) = vm.resolve_virtual_method(stream, "reset", "()V")?;
+        vm.invoke_method(class, method, vec![Value::Ref(stream)])?;
+        void()
+    }),
+];
+
+pub(crate) const LINE_NUMBER_INPUT_STREAM: oxjvm_vm::NativeClass = class(
+    "java/io/LineNumberInputStream",
+    Some("java/io/FilterInputStream"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("pushBack", "I", ACC_PRIVATE, None),
+        field("lineNumber", "I", ACC_PRIVATE, None),
+        field("markLineNumber", "I", ACC_PRIVATE, None),
+        field("markPushBack", "I", ACC_PRIVATE, None),
+    ],
+    &LINE_NUMBER_INPUT_STREAM_METHODS,
+    None,
+);
+
 pub(crate) const FILTER_INPUT_STREAM: oxjvm_vm::NativeClass = class(
     "java/io/FilterInputStream",
     Some("java/io/InputStream"),
