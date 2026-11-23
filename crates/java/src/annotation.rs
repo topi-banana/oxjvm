@@ -207,7 +207,7 @@ macro_rules! annotation_interface {
             $name,
             Some("java/lang/Object"),
             &["java/lang/annotation/Annotation"],
-            ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+            ACC_PUBLIC | ACC_ANNOTATION | ACC_INTERFACE | ACC_ABSTRACT,
             &[],
             $methods,
             None,
