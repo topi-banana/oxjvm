@@ -1269,7 +1269,7 @@ pub(crate) const FORK_JOIN_POOL: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const EXECUTORS_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+const EXECUTORS_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
     method(
         "newSingleThreadExecutor",
         "()Ljava/util/concurrent/ExecutorService;",
@@ -1280,19 +1280,37 @@ const EXECUTORS_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
         "newSingleThreadExecutor",
         "(Ljava/util/concurrent/ThreadFactory;)Ljava/util/concurrent/ExecutorService;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| object(new_executor(vm)?),
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(new_executor(vm)?)
+        },
     ),
     method(
         "newFixedThreadPool",
         "(I)Ljava/util/concurrent/ExecutorService;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| object(new_executor(vm)?),
+        |vm, _, args| {
+            if crate::int_arg(args, 0) <= 0 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            object(new_executor(vm)?)
+        },
     ),
     method(
         "newFixedThreadPool",
         "(ILjava/util/concurrent/ThreadFactory;)Ljava/util/concurrent/ExecutorService;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| object(new_executor(vm)?),
+        |vm, _, args| {
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            if crate::int_arg(args, 0) <= 0 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            object(new_executor(vm)?)
+        },
     ),
     method(
         "newCachedThreadPool",
@@ -1304,19 +1322,37 @@ const EXECUTORS_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
         "newCachedThreadPool",
         "(Ljava/util/concurrent/ThreadFactory;)Ljava/util/concurrent/ExecutorService;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| object(new_executor(vm)?),
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(new_executor(vm)?)
+        },
     ),
     method(
         "newScheduledThreadPool",
         "(I)Ljava/util/concurrent/ScheduledExecutorService;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| object(new_executor(vm)?),
+        |vm, _, args| {
+            if crate::int_arg(args, 0) < 0 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            object(new_executor(vm)?)
+        },
     ),
     method(
         "newScheduledThreadPool",
         "(ILjava/util/concurrent/ThreadFactory;)Ljava/util/concurrent/ScheduledExecutorService;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| object(new_executor(vm)?),
+        |vm, _, args| {
+            if ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            if crate::int_arg(args, 0) < 0 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            object(new_executor(vm)?)
+        },
     ),
     method(
         "newSingleThreadScheduledExecutor",
@@ -1328,7 +1364,12 @@ const EXECUTORS_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
         "newSingleThreadScheduledExecutor",
         "(Ljava/util/concurrent/ThreadFactory;)Ljava/util/concurrent/ScheduledExecutorService;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| object(new_executor(vm)?),
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(new_executor(vm)?)
+        },
     ),
     method(
         "newWorkStealingPool",
@@ -1353,11 +1394,99 @@ const EXECUTORS_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
         "(Ljava/lang/Runnable;)Ljava/util/concurrent/Callable;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
+            if ref_arg(args, 0).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let class = vm.resolve_class("java/util/concurrent/OjvmCallable")?;
             let callable = vm.new_instance(class)?;
             let (declaring, field) = vm.find_field(class, "runnable", "Ljava/lang/Runnable;")?;
             vm.set_instance_ref(callable, declaring, field, ref_arg(args, 0));
             object(callable)
+        },
+    ),
+    method(
+        "callable",
+        "(Ljava/lang/Runnable;Ljava/lang/Object;)Ljava/util/concurrent/Callable;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let class = vm.resolve_class("java/util/concurrent/OjvmCallable")?;
+            let callable = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "runnable", "Ljava/lang/Runnable;")?;
+            vm.set_instance_ref(callable, declaring, field, ref_arg(args, 0));
+            let (declaring, field) = vm.find_field(class, "result", "Ljava/lang/Object;")?;
+            vm.set_instance_ref(callable, declaring, field, ref_arg(args, 1));
+            object(callable)
+        },
+    ),
+    method(
+        "callable",
+        "(Ljava/security/PrivilegedAction;)Ljava/util/concurrent/Callable;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let class = vm.resolve_class("java/util/concurrent/OjvmCallable")?;
+            let callable = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "action", "Ljava/lang/Object;")?;
+            vm.set_instance_ref(callable, declaring, field, ref_arg(args, 0));
+            object(callable)
+        },
+    ),
+    method(
+        "callable",
+        "(Ljava/security/PrivilegedExceptionAction;)Ljava/util/concurrent/Callable;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let class = vm.resolve_class("java/util/concurrent/OjvmCallable")?;
+            let callable = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "action", "Ljava/lang/Object;")?;
+            vm.set_instance_ref(callable, declaring, field, ref_arg(args, 0));
+            object(callable)
+        },
+    ),
+    method(
+        "privilegedCallable",
+        "(Ljava/util/concurrent/Callable;)Ljava/util/concurrent/Callable;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let class = vm.resolve_class("java/util/concurrent/OjvmCallable")?;
+            let callable = vm.new_instance(class)?;
+            let (declaring, field) =
+                vm.find_field(class, "delegate", "Ljava/util/concurrent/Callable;")?;
+            vm.set_instance_ref(callable, declaring, field, ref_arg(args, 0));
+            object(callable)
+        },
+    ),
+    method(
+        "unconfigurableExecutorService",
+        "(Ljava/util/concurrent/ExecutorService;)Ljava/util/concurrent/ExecutorService;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(ref_arg(args, 0))
+        },
+    ),
+    method(
+        "unconfigurableScheduledExecutorService",
+        "(Ljava/util/concurrent/ScheduledExecutorService;)Ljava/util/concurrent/ScheduledExecutorService;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(ref_arg(args, 0))
         },
     ),
     method(
@@ -1387,14 +1516,34 @@ const OJVM_CALLABLE_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
     ACC_PUBLIC,
     |vm, _, args| {
         let this = receiver(args);
+        let class = vm.class_of(this);
+        let delegate = vm
+            .read_ref_field(this, class, "delegate", "Ljava/util/concurrent/Callable;")
+            .unwrap_or(ObjectRef::NULL);
+        if !delegate.is_null() {
+            let (declaring, method) =
+                vm.resolve_virtual_method(delegate, "call", "()Ljava/lang/Object;")?;
+            return vm.invoke_method(declaring, method, vec![Value::Ref(delegate)]);
+        }
+        let action = vm
+            .read_ref_field(this, class, "action", "Ljava/lang/Object;")
+            .unwrap_or(ObjectRef::NULL);
+        if !action.is_null() {
+            let (declaring, method) =
+                vm.resolve_virtual_method(action, "run", "()Ljava/lang/Object;")?;
+            return vm.invoke_method(declaring, method, vec![Value::Ref(action)]);
+        }
         let runnable = vm
-            .read_ref_field(this, vm.class_of(this), "runnable", "Ljava/lang/Runnable;")
+            .read_ref_field(this, class, "runnable", "Ljava/lang/Runnable;")
             .unwrap_or(ObjectRef::NULL);
         if !runnable.is_null() {
             let (class, method) = vm.resolve_virtual_method(runnable, "run", "()V")?;
             vm.invoke_method(class, method, vec![Value::Ref(runnable)])?;
         }
-        object(ObjectRef::NULL)
+        object(
+            vm.read_ref_field(this, class, "result", "Ljava/lang/Object;")
+                .unwrap_or(ObjectRef::NULL),
+        )
     },
 )];
 
@@ -1403,7 +1552,17 @@ pub(crate) const OJVM_CALLABLE: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &["java/util/concurrent/Callable"],
     ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
-    &[field("runnable", "Ljava/lang/Runnable;", ACC_PRIVATE, None)],
+    &[
+        field("runnable", "Ljava/lang/Runnable;", ACC_PRIVATE, None),
+        field("result", "Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("action", "Ljava/lang/Object;", ACC_PRIVATE, None),
+        field(
+            "delegate",
+            "Ljava/util/concurrent/Callable;",
+            ACC_PRIVATE,
+            None,
+        ),
+    ],
     &OJVM_CALLABLE_METHODS,
     None,
 );
@@ -1945,3 +2104,94 @@ pub(crate) const EXECUTOR_COMPLETION_SERVICE: oxjvm_vm::NativeClass = class(
     &EXECUTOR_COMPLETION_SERVICE_METHODS,
     None,
 );
+
+/// `RejectedExecutionHandler`: the hook invoked when a task cannot be accepted.
+pub(crate) const REJECTED_EXECUTION_HANDLER: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/RejectedExecutionHandler",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &REJECTED_EXECUTION_HANDLER_METHODS,
+    None,
+);
+
+const REJECTED_EXECUTION_HANDLER_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "rejectedExecution",
+    "(Ljava/lang/Runnable;Ljava/util/concurrent/ThreadPoolExecutor;)V",
+    ACC_PUBLIC | ACC_ABSTRACT,
+    crate::lang::abstract_method_pub,
+)];
+
+fn scheduled_tpe_init(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    core: i32,
+    queue: ObjectRef,
+) -> Result<Value, VmError> {
+    if core < 0 {
+        return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+    }
+    thread_pool_executor_init(vm, this, core, i32::MAX, 0, queue)
+}
+
+fn scheduled_tpe_queue(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/concurrent/LinkedBlockingQueue")?;
+    let queue = vm.new_instance(class)?;
+    let (declaring, method) = vm.resolve_virtual_method(queue, "<init>", "()V")?;
+    vm.invoke_method(declaring, method, vec![Value::Ref(queue)])?;
+    Ok(queue)
+}
+
+pub(crate) const SCHEDULED_THREAD_POOL_EXECUTOR: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/ScheduledThreadPoolExecutor",
+    Some("java/util/concurrent/ThreadPoolExecutor"),
+    &["java/util/concurrent/ScheduledExecutorService"],
+    ACC_PUBLIC,
+    &[],
+    &SCHEDULED_THREAD_POOL_EXECUTOR_METHODS,
+    None,
+);
+
+const SCHEDULED_THREAD_POOL_EXECUTOR_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let queue = scheduled_tpe_queue(vm)?;
+        scheduled_tpe_init(vm, receiver(args), crate::int_arg(args, 1), queue)
+    }),
+    method(
+        "<init>",
+        "(ILjava/util/concurrent/ThreadFactory;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            if ref_arg(args, 2).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let queue = scheduled_tpe_queue(vm)?;
+            scheduled_tpe_init(vm, receiver(args), crate::int_arg(args, 1), queue)
+        },
+    ),
+    method(
+        "<init>",
+        "(ILjava/util/concurrent/RejectedExecutionHandler;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            if ref_arg(args, 2).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let queue = scheduled_tpe_queue(vm)?;
+            scheduled_tpe_init(vm, receiver(args), crate::int_arg(args, 1), queue)
+        },
+    ),
+    method(
+        "<init>",
+        "(ILjava/util/concurrent/ThreadFactory;Ljava/util/concurrent/RejectedExecutionHandler;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            if ref_arg(args, 2).is_null() || ref_arg(args, 3).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let queue = scheduled_tpe_queue(vm)?;
+            scheduled_tpe_init(vm, receiver(args), crate::int_arg(args, 1), queue)
+        },
+    ),
+];
