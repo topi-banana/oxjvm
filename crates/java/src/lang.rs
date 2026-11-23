@@ -1184,6 +1184,11 @@ fn class_for_name_with(
     initialize: bool,
 ) -> Result<Value, VmError> {
     let name = string_arg(vm, args[0])?;
+    // Binary names use '.' separators; a '/' is only legal inside an array
+    // descriptor such as "[Ljava/lang/Object;".
+    if name.contains('/') && !name.starts_with('[') {
+        return Err(vm.throw_new("java/lang/ClassNotFoundException", Some(&name)));
+    }
     let internal = name.replace('.', "/");
     match vm.resolve_class(&internal) {
         Ok(class) => {
