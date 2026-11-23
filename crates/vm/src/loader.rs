@@ -923,6 +923,13 @@ impl<'a> Vm<'a> {
         if let Some(id) = self.classes.by_name(descriptor) {
             return Ok(id);
         }
+        // The JVM limits array classes to 255 dimensions.
+        if descriptor.bytes().filter(|&byte| byte == b'[').count() > 255 {
+            return Err(self.throw_new(
+                "java/lang/ClassNotFoundException",
+                Some(&descriptor.replace('/', ".")),
+            ));
+        }
         let (component, component_class) = self.parse_component(descriptor)?;
         let name = descriptor.to_string();
         let object = ClassId::OBJECT;
