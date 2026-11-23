@@ -94,7 +94,7 @@ fn atomic_reference_apply(
 // AtomicInteger
 // -------------------------------------------------------------------------------------------
 
-const ATOMIC_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
+const ATOMIC_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), 0);
         void()
@@ -107,6 +107,12 @@ const ATOMIC_INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
         int(read_value_int(vm, receiver(args)))
     }),
     method("set", "(I)V", ACC_PUBLIC | ACC_FINAL, |vm, _, args| {
+        write_value_int(vm, receiver(args), crate::int_arg(args, 1));
+        void()
+    }),
+    // lazySet is a relaxed-ordering store; with no concurrent memory model it
+    // behaves like set.
+    method("lazySet", "(I)V", ACC_PUBLIC | ACC_FINAL, |vm, _, args| {
         write_value_int(vm, receiver(args), crate::int_arg(args, 1));
         void()
     }),
@@ -330,7 +336,7 @@ pub(crate) const ATOMIC_INTEGER: oxjvm_vm::NativeClass = class(
 // AtomicLong
 // -------------------------------------------------------------------------------------------
 
-const ATOMIC_LONG_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
+const ATOMIC_LONG_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         write_value_long(vm, receiver(args), 0);
         void()
@@ -343,6 +349,10 @@ const ATOMIC_LONG_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
         long(read_value_long(vm, receiver(args)))
     }),
     method("set", "(J)V", ACC_PUBLIC | ACC_FINAL, |vm, _, args| {
+        write_value_long(vm, receiver(args), crate::long_arg(args, 1));
+        void()
+    }),
+    method("lazySet", "(J)V", ACC_PUBLIC | ACC_FINAL, |vm, _, args| {
         write_value_long(vm, receiver(args), crate::long_arg(args, 1));
         void()
     }),
@@ -549,7 +559,7 @@ pub(crate) const ATOMIC_LONG: oxjvm_vm::NativeClass = class(
 // AtomicBoolean
 // -------------------------------------------------------------------------------------------
 
-const ATOMIC_BOOLEAN_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const ATOMIC_BOOLEAN_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), 0);
         void()
@@ -562,6 +572,10 @@ const ATOMIC_BOOLEAN_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         boolean(read_value_int(vm, receiver(args)) != 0)
     }),
     method("set", "(Z)V", ACC_PUBLIC | ACC_FINAL, |vm, _, args| {
+        write_value_int(vm, receiver(args), i32::from(crate::bool_arg(args, 1)));
+        void()
+    }),
+    method("lazySet", "(Z)V", ACC_PUBLIC | ACC_FINAL, |vm, _, args| {
         write_value_int(vm, receiver(args), i32::from(crate::bool_arg(args, 1)));
         void()
     }),
