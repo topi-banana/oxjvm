@@ -1784,12 +1784,6 @@ fn publish_from_logger(
     logger: ObjectRef,
     record: ObjectRef,
 ) -> Result<(), VmError> {
-    // Attach the effective resource bundle once, mirroring Logger.doLog /
-    // getEffectiveLoggerBundle.
-    let attached = record_get_ref(vm, record, "resourceBundle", "Ljava/util/ResourceBundle;");
-    if attached.is_null() {
-        attach_effective_bundle(vm, logger, record)?;
-    }
     // getHandlers() is overridable, so call it virtually rather than reading
     // the handler list field directly.
     let (handlers_class, handlers_method) =
@@ -1973,6 +1967,8 @@ fn logger_log_message(
         "Ljava/lang/String;",
         source_method,
     );
+    // Convenience methods attach the logger's effective bundle, as doLog(lr) does.
+    attach_effective_bundle(vm, logger, record)?;
     publish_from_logger(vm, logger, record)
 }
 
@@ -2020,6 +2016,103 @@ fn logger_logp(
     let name = logger_name(vm, logger);
     let name_ref = vm.make_string(&name)?;
     record_set_ref(vm, record, "loggerName", "Ljava/lang/String;", name_ref);
+    // logp attaches the logger's effective bundle, as doLog(lr) does.
+    attach_effective_bundle(vm, logger, record)?;
+    publish_from_logger(vm, logger, record)
+}
+
+/// Publish a record localized with a resource bundle, as the `logrb` family
+/// does. Either a bundle instance or a bundle name is supplied; the other is
+/// null. Mirrors Logger.doLog(LogRecord, ResourceBundle) / (LogRecord, String).
+#[allow(clippy::too_many_arguments)]
+fn logger_logrb(
+    vm: &mut Vm<'_>,
+    logger: ObjectRef,
+    level: ObjectRef,
+    source_class: ObjectRef,
+    source_method: ObjectRef,
+    bundle: ObjectRef,
+    bundle_name: ObjectRef,
+    message: ObjectRef,
+    parameters: ObjectRef,
+    thrown: ObjectRef,
+) -> Result<(), VmError> {
+    if level.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    if level_int(vm, level) < effective_level(vm, logger) {
+        return Ok(());
+    }
+    let class = vm.resolve_class(LOG_RECORD_CLASS)?;
+    let record = vm.new_instance(class)?;
+    record_set_ref(vm, record, "level", "Ljava/util/logging/Level;", level);
+    record_set_ref(vm, record, "message", "Ljava/lang/String;", message);
+    record_set_ref(vm, record, "thrown", "Ljava/lang/Throwable;", thrown);
+    record_set_ref(vm, record, "parameters", "[Ljava/lang/Object;", parameters);
+    // Overloads without an explicit source infer the caller, as the LogRecord
+    // constructor does.
+    let (source_class, source_method) = if source_class.is_null() {
+        infer_caller_source(vm)?
+    } else {
+        (source_class, source_method)
+    };
+    record_set_ref(
+        vm,
+        record,
+        "sourceClassName",
+        "Ljava/lang/String;",
+        source_class,
+    );
+    record_set_ref(
+        vm,
+        record,
+        "sourceMethodName",
+        "Ljava/lang/String;",
+        source_method,
+    );
+    let millis = vm.host_time_millis();
+    crate::lang::write_long_field(vm, record, "millis", millis);
+    stamp_record(vm, record);
+    let name = logger_name(vm, logger);
+    let name_ref = vm.make_string(&name)?;
+    record_set_ref(vm, record, "loggerName", "Ljava/lang/String;", name_ref);
+    if !bundle.is_null() {
+        let (base_class, base_method) =
+            vm.resolve_virtual_method(bundle, "getBaseBundleName", "()Ljava/lang/String;")?;
+        let base_name = vm
+            .invoke_method(base_class, base_method, vec![Value::Ref(bundle)])?
+            .as_ref();
+        record_set_ref(
+            vm,
+            record,
+            "resourceBundleName",
+            "Ljava/lang/String;",
+            base_name,
+        );
+        record_set_ref(
+            vm,
+            record,
+            "resourceBundle",
+            "Ljava/util/ResourceBundle;",
+            bundle,
+        );
+    } else if !bundle_name.is_null() {
+        record_set_ref(
+            vm,
+            record,
+            "resourceBundleName",
+            "Ljava/lang/String;",
+            bundle_name,
+        );
+        let loaded = resource_bundle_get(vm, bundle_name, ObjectRef::NULL)?.as_ref();
+        record_set_ref(
+            vm,
+            record,
+            "resourceBundle",
+            "Ljava/util/ResourceBundle;",
+            loaded,
+        );
+    }
     publish_from_logger(vm, logger, record)
 }
 
@@ -2059,7 +2152,7 @@ fn level_named(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
         .ok_or_else(|| VmError::internal("Level constant missing"))
 }
 
-const LOGGER_METHODS: [oxjvm_vm::NativeMethodDef; 43] = [
+const LOGGER_METHODS: [oxjvm_vm::NativeMethodDef; 51] = [
     method(
         "getLogger",
         "(Ljava/lang/String;)Ljava/util/logging/Logger;",
@@ -2739,6 +2832,167 @@ const LOGGER_METHODS: [oxjvm_vm::NativeMethodDef; 43] = [
                 message,
                 params,
                 ObjectRef::NULL,
+            )?;
+            void()
+        },
+    ),
+    method(
+        "logrb",
+        "(Ljava/util/logging/Level;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            logger_logrb(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                ref_arg(args, 3),
+                ObjectRef::NULL,
+                ref_arg(args, 4),
+                ref_arg(args, 5),
+                ObjectRef::NULL,
+                ObjectRef::NULL,
+            )?;
+            void()
+        },
+    ),
+    method(
+        "logrb",
+        "(Ljava/util/logging/Level;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let params = single_param_array(vm, ref_arg(args, 6))?;
+            logger_logrb(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                ref_arg(args, 3),
+                ObjectRef::NULL,
+                ref_arg(args, 4),
+                ref_arg(args, 5),
+                params,
+                ObjectRef::NULL,
+            )?;
+            void()
+        },
+    ),
+    method(
+        "logrb",
+        "(Ljava/util/logging/Level;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            logger_logrb(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                ref_arg(args, 3),
+                ObjectRef::NULL,
+                ref_arg(args, 4),
+                ref_arg(args, 5),
+                ref_arg(args, 6),
+                ObjectRef::NULL,
+            )?;
+            void()
+        },
+    ),
+    method(
+        "logrb",
+        "(Ljava/util/logging/Level;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/Throwable;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            logger_logrb(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                ref_arg(args, 3),
+                ObjectRef::NULL,
+                ref_arg(args, 4),
+                ref_arg(args, 5),
+                ObjectRef::NULL,
+                ref_arg(args, 6),
+            )?;
+            void()
+        },
+    ),
+    method(
+        "logrb",
+        "(Ljava/util/logging/Level;Ljava/lang/String;Ljava/lang/String;Ljava/util/ResourceBundle;Ljava/lang/String;[Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            logger_logrb(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                ref_arg(args, 3),
+                ref_arg(args, 4),
+                ObjectRef::NULL,
+                ref_arg(args, 5),
+                ref_arg(args, 6),
+                ObjectRef::NULL,
+            )?;
+            void()
+        },
+    ),
+    method(
+        "logrb",
+        "(Ljava/util/logging/Level;Ljava/util/ResourceBundle;Ljava/lang/String;[Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            logger_logrb(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                ObjectRef::NULL,
+                ObjectRef::NULL,
+                ref_arg(args, 2),
+                ObjectRef::NULL,
+                ref_arg(args, 3),
+                ref_arg(args, 4),
+                ObjectRef::NULL,
+            )?;
+            void()
+        },
+    ),
+    method(
+        "logrb",
+        "(Ljava/util/logging/Level;Ljava/lang/String;Ljava/lang/String;Ljava/util/ResourceBundle;Ljava/lang/String;Ljava/lang/Throwable;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            logger_logrb(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                ref_arg(args, 3),
+                ref_arg(args, 4),
+                ObjectRef::NULL,
+                ref_arg(args, 5),
+                ObjectRef::NULL,
+                ref_arg(args, 6),
+            )?;
+            void()
+        },
+    ),
+    method(
+        "logrb",
+        "(Ljava/util/logging/Level;Ljava/util/ResourceBundle;Ljava/lang/String;Ljava/lang/Throwable;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            logger_logrb(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                ObjectRef::NULL,
+                ObjectRef::NULL,
+                ref_arg(args, 2),
+                ObjectRef::NULL,
+                ref_arg(args, 3),
+                ObjectRef::NULL,
+                ref_arg(args, 4),
             )?;
             void()
         },
