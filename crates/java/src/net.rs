@@ -5148,3 +5148,396 @@ pub(crate) const INET6_ADDRESS: oxjvm_vm::NativeClass = class(
     &INET6_ADDRESS_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// java.net.IDN — Internationalized Domain Names (RFC 3490 / RFC 3492 Punycode).
+// -------------------------------------------------------------------------------------------
+
+const IDN_ALLOW_UNASSIGNED: i32 = 0x01;
+const IDN_USE_STD3_ASCII_RULES: i32 = 0x02;
+const IDN_ACE_PREFIX: &str = "xn--";
+const IDN_MAX_LABEL_LENGTH: usize = 63;
+
+/// The four characters IDNA treats as label separators (RFC 3490 §3.1).
+fn idn_is_label_separator(c: char) -> bool {
+    c == '.' || c == '\u{3002}' || c == '\u{FF0E}' || c == '\u{FF61}'
+}
+
+fn idn_is_all_ascii(s: &str) -> bool {
+    s.chars().all(|c| (c as u32) <= 0x7F)
+}
+
+/// Non-LDH ASCII code points: 0..2C, 2E..2F, 3A..40, 5B..60, 7B..7F.
+fn idn_is_non_ldh(c: u32) -> bool {
+    c <= 0x2C
+        || (0x2E..=0x2F).contains(&c)
+        || (0x3A..=0x40).contains(&c)
+        || (0x5B..=0x60).contains(&c)
+        || (0x7B..=0x7F).contains(&c)
+}
+
+fn idn_starts_with_ace(s: &str) -> bool {
+    let prefix: Vec<char> = IDN_ACE_PREFIX.chars().collect();
+    let chars: Vec<char> = s.chars().take(prefix.len()).collect();
+    chars.len() == prefix.len()
+        && chars
+            .iter()
+            .zip(prefix.iter())
+            .all(|(a, b)| a.to_ascii_lowercase() == *b)
+}
+
+/// A simplified nameprep: fold ASCII case and pass other code points through.
+/// The full StringPrep profile (NFKC + Unicode case folding + prohibited/bidi
+/// checks) needs the Unicode tables; for the code points these paths exercise
+/// the profile is the identity, so this matches the reference JDK on them.
+fn idn_nameprep(label: &str) -> String {
+    label
+        .chars()
+        .map(|c| {
+            if c.is_ascii_uppercase() {
+                c.to_ascii_lowercase()
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// RFC 3492 Punycode digit (0..25 -> a..z, 26..35 -> 0..9).
+fn punycode_digit(d: u64) -> char {
+    if d < 26 {
+        (b'a' + d as u8) as char
+    } else {
+        (b'0' + (d - 26) as u8) as char
+    }
+}
+
+/// Reverse of [`punycode_digit`]; accepts upper and lower case.
+fn punycode_value(c: char) -> Result<u64, String> {
+    match c {
+        'a'..='z' => Ok(c as u64 - 'a' as u64),
+        'A'..='Z' => Ok(c as u64 - 'A' as u64),
+        '0'..='9' => Ok(c as u64 - '0' as u64 + 26),
+        _ => Err(alloc::format!("invalid Punycode digit '{c}'")),
+    }
+}
+
+/// RFC 3492 bias adaptation function.
+fn punycode_adapt(mut delta: u64, numpoints: u64, firsttime: bool) -> u64 {
+    const BASE: u64 = 36;
+    const TMIN: u64 = 1;
+    const TMAX: u64 = 26;
+    const SKEW: u64 = 38;
+    const DAMP: u64 = 700;
+    delta = if firsttime { delta / DAMP } else { delta / 2 };
+    delta += delta / numpoints;
+    let mut k = 0;
+    while delta > ((BASE - TMIN) * TMAX) / 2 {
+        delta /= BASE - TMIN;
+        k += BASE;
+    }
+    k + (BASE - TMIN + 1) * delta / (delta + SKEW)
+}
+
+/// Encode a single label's code points to Punycode (without the ACE prefix).
+fn punycode_encode(input: &str) -> Result<String, String> {
+    const BASE: u64 = 36;
+    const TMIN: u64 = 1;
+    const TMAX: u64 = 26;
+    let input: Vec<u32> = input.chars().map(|c| c as u32).collect();
+    let mut output = String::new();
+    let mut basic = 0usize;
+    for &c in &input {
+        if c < 0x80 {
+            output.push(char::from_u32(c).unwrap());
+            basic += 1;
+        }
+    }
+    let mut h = basic;
+    if basic > 0 {
+        output.push('-');
+    }
+    let mut n: u32 = 0x80;
+    let mut delta: u64 = 0;
+    let mut bias: u64 = 72;
+    while h < input.len() {
+        let m = *input.iter().filter(|&&c| c >= n).min().unwrap();
+        delta += (m as u64 - n as u64) * (h as u64 + 1);
+        n = m;
+        for &c in &input {
+            if c < n {
+                delta += 1;
+            }
+            if c == n {
+                let mut q = delta;
+                let mut k = BASE;
+                loop {
+                    let t = if k <= bias {
+                        TMIN
+                    } else if k >= bias + TMAX {
+                        TMAX
+                    } else {
+                        k - bias
+                    };
+                    if q < t {
+                        break;
+                    }
+                    output.push(punycode_digit(t + (q - t) % (BASE - t)));
+                    q = (q - t) / (BASE - t);
+                    k += BASE;
+                }
+                output.push(punycode_digit(q));
+                bias = punycode_adapt(delta, h as u64 + 1, h == basic);
+                delta = 0;
+                h += 1;
+            }
+        }
+        delta += 1;
+        n += 1;
+    }
+    Ok(output)
+}
+
+/// Decode a Punycode label (without the ACE prefix) back to code points.
+fn punycode_decode(input: &str) -> Result<String, String> {
+    const BASE: u64 = 36;
+    const TMIN: u64 = 1;
+    const TMAX: u64 = 26;
+    let chars: Vec<char> = input.chars().collect();
+    let mut output: Vec<u32> = Vec::new();
+    let dash = chars.iter().rposition(|&c| c == '-');
+    let basic_end = dash.unwrap_or(0);
+    for &c in chars.iter().take(basic_end) {
+        if c as u32 >= 0x80 {
+            return Err(String::from("non-basic code point in basic section"));
+        }
+        output.push(c as u32);
+    }
+    let mut pos = if dash.is_some() { basic_end + 1 } else { 0 };
+    let mut n: u32 = 0x80;
+    let mut i: u64 = 0;
+    let mut bias: u64 = 72;
+    while pos < chars.len() {
+        let oldi = i;
+        let mut w: u64 = 1;
+        let mut k = BASE;
+        loop {
+            if pos >= chars.len() {
+                return Err(String::from("truncated Punycode input"));
+            }
+            let digit = punycode_value(chars[pos])?;
+            pos += 1;
+            i += digit * w;
+            let t = if k <= bias {
+                TMIN
+            } else if k >= bias + TMAX {
+                TMAX
+            } else {
+                k - bias
+            };
+            if digit < t {
+                break;
+            }
+            w *= BASE - t;
+            k += BASE;
+        }
+        let out_len = output.len() as u64 + 1;
+        bias = punycode_adapt(i - oldi, out_len, oldi == 0);
+        n += (i / out_len) as u32;
+        i %= out_len;
+        output.insert(i as usize, n);
+        i += 1;
+    }
+    let mut result = String::new();
+    for c in output {
+        result.push(char::from_u32(c).ok_or_else(|| String::from("invalid code point"))?);
+    }
+    Ok(result)
+}
+
+/// ToASCII for a single label (RFC 3490 §4.1).
+fn idn_to_ascii_label(label: &str, flag: i32) -> Result<String, String> {
+    let is_ascii = idn_is_all_ascii(label);
+    let mut dest = if is_ascii {
+        String::from(label)
+    } else {
+        idn_nameprep(label)
+    };
+    if dest.is_empty() {
+        return Err(String::from("Empty label is not a legal name"));
+    }
+    if (flag & IDN_USE_STD3_ASCII_RULES) != 0 {
+        for c in dest.chars() {
+            if idn_is_non_ldh(c as u32) {
+                return Err(String::from("Contains non-LDH ASCII characters"));
+            }
+        }
+        if dest.starts_with('-') || dest.ends_with('-') {
+            return Err(String::from("Has leading or trailing hyphen"));
+        }
+    }
+    if !is_ascii && !idn_is_all_ascii(&dest) {
+        if idn_starts_with_ace(&dest) {
+            return Err(String::from("The input starts with the ACE Prefix"));
+        }
+        let encoded = punycode_encode(&dest)?;
+        dest = alloc::format!("{IDN_ACE_PREFIX}{}", encoded.to_ascii_lowercase());
+    }
+    if dest.chars().count() > IDN_MAX_LABEL_LENGTH {
+        return Err(String::from("The label in the input is too long"));
+    }
+    Ok(dest)
+}
+
+/// ToUnicode for a single label; never fails (returns the input on any error).
+fn idn_to_unicode_label(label: &str, flag: i32) -> String {
+    let is_ascii = idn_is_all_ascii(label);
+    let dest = if is_ascii {
+        String::from(label)
+    } else {
+        idn_nameprep(label)
+    };
+    if idn_starts_with_ace(&dest) {
+        let temp: String = dest.chars().skip(IDN_ACE_PREFIX.len()).collect();
+        if let Ok(decoded) = punycode_decode(&temp) {
+            if let Ok(to_ascii_out) = idn_to_ascii(&decoded, flag) {
+                if to_ascii_out.eq_ignore_ascii_case(&dest) {
+                    return decoded;
+                }
+            }
+        }
+    }
+    String::from(label)
+}
+
+/// Split on IDNA label separators and apply `f` to each label, rejoining with '.'.
+fn idn_map_labels(
+    input: &str,
+    mut f: impl FnMut(&str) -> Result<String, String>,
+) -> Result<String, String> {
+    let chars: Vec<char> = input.chars().collect();
+    if chars.len() == 1 && idn_is_label_separator(chars[0]) {
+        return Ok(String::from("."));
+    }
+    let mut out = String::new();
+    let mut p = 0;
+    while p < chars.len() {
+        let mut q = p;
+        while q < chars.len() && !idn_is_label_separator(chars[q]) {
+            q += 1;
+        }
+        let label: String = chars[p..q].iter().collect();
+        out.push_str(&f(&label)?);
+        if q != chars.len() {
+            out.push('.');
+        }
+        p = q + 1;
+    }
+    Ok(out)
+}
+
+fn idn_to_ascii(input: &str, flag: i32) -> Result<String, String> {
+    idn_map_labels(input, |label| idn_to_ascii_label(label, flag))
+}
+
+fn idn_to_unicode(input: &str, flag: i32) -> String {
+    // ToUnicode never fails; a label that errors is returned unchanged.
+    let chars: Vec<char> = input.chars().collect();
+    if chars.len() == 1 && idn_is_label_separator(chars[0]) {
+        return String::from(".");
+    }
+    let mut out = String::new();
+    let mut p = 0;
+    while p < chars.len() {
+        let mut q = p;
+        while q < chars.len() && !idn_is_label_separator(chars[q]) {
+            q += 1;
+        }
+        let label: String = chars[p..q].iter().collect();
+        out.push_str(&idn_to_unicode_label(&label, flag));
+        if q != chars.len() {
+            out.push('.');
+        }
+        p = q + 1;
+    }
+    out
+}
+
+/// Read the input String argument, throwing NullPointerException when null.
+fn idn_input(vm: &mut Vm<'_>, value: Value) -> Result<String, VmError> {
+    string_arg(vm, value).map_err(|_| vm.throw_new("java/lang/NullPointerException", None))
+}
+
+pub(crate) const IDN: oxjvm_vm::NativeClass = class(
+    "java/net/IDN",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field(
+            "ALLOW_UNASSIGNED",
+            "I",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            Some(oxjvm_vm::NativeConstant::Int(IDN_ALLOW_UNASSIGNED)),
+        ),
+        field(
+            "USE_STD3_ASCII_RULES",
+            "I",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            Some(oxjvm_vm::NativeConstant::Int(IDN_USE_STD3_ASCII_RULES)),
+        ),
+    ],
+    &IDN_METHODS,
+    None,
+);
+
+const IDN_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "toASCII",
+        "(Ljava/lang/String;I)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let input = idn_input(vm, args[0])?;
+            let flag = int_arg(args, 1);
+            match idn_to_ascii(&input, flag) {
+                Ok(text) => object(vm.make_string(&text)?),
+                Err(message) => {
+                    Err(vm.throw_new("java/lang/IllegalArgumentException", Some(&message)))
+                }
+            }
+        },
+    ),
+    method(
+        "toASCII",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let input = idn_input(vm, args[0])?;
+            match idn_to_ascii(&input, 0) {
+                Ok(text) => object(vm.make_string(&text)?),
+                Err(message) => {
+                    Err(vm.throw_new("java/lang/IllegalArgumentException", Some(&message)))
+                }
+            }
+        },
+    ),
+    method(
+        "toUnicode",
+        "(Ljava/lang/String;I)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let input = idn_input(vm, args[0])?;
+            let flag = int_arg(args, 1);
+            object(vm.make_string(&idn_to_unicode(&input, flag))?)
+        },
+    ),
+    method(
+        "toUnicode",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let input = idn_input(vm, args[0])?;
+            object(vm.make_string(&idn_to_unicode(&input, 0))?)
+        },
+    ),
+];
