@@ -608,7 +608,16 @@ const URI_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
                 .map(|authority| authority.rsplit('@').next().unwrap_or(authority))
             {
                 Some(host) => {
-                    let host = host.split(':').next().unwrap_or(host);
+                    // An IPv6 literal stays bracketed; only a reg-name host splits
+                    // at its ":" port separator.
+                    let host = if host.starts_with('[') {
+                        match host.find(']') {
+                            Some(end) => &host[..end + 1],
+                            None => host,
+                        }
+                    } else {
+                        host.split(':').next().unwrap_or(host)
+                    };
                     if host.is_empty() {
                         return object(ObjectRef::NULL);
                     }
