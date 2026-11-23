@@ -3421,12 +3421,47 @@ fn new_file_system_provider(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
     vm.new_instance(class)
 }
 
-const FILE_SYSTEM_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const FILE_SYSTEM_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method(
         "getPath",
         "(Ljava/lang/String;[Ljava/lang/String;)Ljava/nio/file/Path;",
         ACC_PUBLIC,
         |vm, _, args| path_of(vm, args),
+    ),
+    method(
+        "getPathMatcher",
+        "(Ljava/lang/String;)Ljava/nio/file/PathMatcher;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let spec = string_arg(vm, args[1])?;
+            let Some(colon) = spec.find(':') else {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("Expected 'syntax:pattern'"),
+                ));
+            };
+            let syntax = &spec[..colon];
+            let pattern = &spec[colon + 1..];
+            if syntax.is_empty() {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            let regex = if syntax.eq_ignore_ascii_case("glob") {
+                glob_to_regex(vm, pattern)?
+            } else if syntax.eq_ignore_ascii_case("regex") {
+                String::from(pattern)
+            } else {
+                return Err(vm.throw_new(
+                    "java/lang/UnsupportedOperationException",
+                    Some(&alloc::format!("Syntax '{syntax}' not recognized")),
+                ));
+            };
+            // Compile eagerly so a bad pattern fails here, as the JDK does.
+            let _ = crate::regex::compile_from_str(vm, &regex)?;
+            let class = vm.resolve_class("java/nio/file/OjvmPathMatcher")?;
+            let matcher = vm.new_instance(class)?;
+            vm.set_string_field(matcher, class, "regex", &regex)?;
+            object(matcher)
+        },
     ),
     method(
         "getSeparator",
@@ -3491,6 +3526,53 @@ pub(crate) const FILE_SYSTEM: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC | ACC_ABSTRACT,
     &[],
     &FILE_SYSTEM_METHODS,
+    None,
+);
+
+const PATH_MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "matches",
+    "(Ljava/nio/file/Path;)Z",
+    ACC_PUBLIC | ACC_ABSTRACT,
+    crate::lang::abstract_method_pub,
+)];
+
+pub(crate) const PATH_MATCHER: oxjvm_vm::NativeClass = class(
+    "java/nio/file/PathMatcher",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_ABSTRACT | ACC_INTERFACE,
+    &[],
+    &PATH_MATCHER_METHODS,
+    None,
+);
+
+const OJVM_PATH_MATCHER_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "matches",
+    "(Ljava/nio/file/Path;)Z",
+    ACC_PUBLIC,
+    |vm, _, args| {
+        let this = receiver(args);
+        let path = ref_arg(args, 1);
+        let regex = vm
+            .read_string_field(this, vm.class_of(this), "regex")
+            .unwrap_or_default();
+        let (class, method) =
+            vm.resolve_virtual_method(path, "toString", "()Ljava/lang/String;")?;
+        let value = vm.invoke_method(class, method, vec![Value::Ref(path)])?;
+        let text = vm.string_value(value.as_ref()).unwrap_or_default();
+        let compiled = crate::regex::compile_from_str(vm, &regex)?;
+        let units: Vec<u16> = text.encode_utf16().collect();
+        boolean(crate::regex::match_at(&compiled, &units, true).is_some())
+    },
+)];
+
+pub(crate) const OJVM_PATH_MATCHER: oxjvm_vm::NativeClass = class(
+    "java/nio/file/OjvmPathMatcher",
+    Some("java/lang/Object"),
+    &["java/nio/file/PathMatcher"],
+    ACC_PUBLIC | ACC_FINAL,
+    &[field("regex", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &OJVM_PATH_MATCHER_METHODS,
     None,
 );
 
@@ -3795,6 +3877,155 @@ pub(crate) const OJVM_FILE_SYSTEM_PROVIDER: oxjvm_vm::NativeClass = class(
 // -------------------------------------------------------------------------------------------
 // DirectoryStream implementation
 // -------------------------------------------------------------------------------------------
+
+/// Translate a glob pattern to a regex, following the JDK's `sun.nio.fs.Globs`
+/// (Unix flavour). Bad patterns raise `PatternSyntaxException`.
+fn glob_to_regex(vm: &mut Vm<'_>, glob: &str) -> Result<String, VmError> {
+    let chars: Vec<char> = glob.chars().collect();
+    let bad = |vm: &mut Vm<'_>, message: &str, index: usize| -> VmError {
+        vm.throw_new(
+            "java/util/regex/PatternSyntaxException",
+            Some(&alloc::format!("{message} near index {index}\n{glob}")),
+        )
+    };
+    let regex_meta = |c: char| ".^$+{[]|()".contains(c);
+    let glob_meta = |c: char| "\\*?[{".contains(c);
+    let next = |i: usize| -> char { chars.get(i).copied().unwrap_or('\0') };
+    let mut regex = String::from("^");
+    let mut in_group = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        i += 1;
+        match c {
+            '\\' => {
+                if i == chars.len() {
+                    return Err(bad(vm, "No character to escape", i - 1));
+                }
+                let n = chars[i];
+                i += 1;
+                if glob_meta(n) || regex_meta(n) {
+                    regex.push('\\');
+                }
+                regex.push(n);
+            }
+            '[' => {
+                // Build a flat character class. The JDK wraps the class in an
+                // intersection `[[^/]&&[...]]` to exclude the name separator; this
+                // regex engine has no intersection, so fold the separator into the
+                // class directly (positive classes never contain '/', negated ones
+                // gain it).
+                let mut body = String::new();
+                let mut negated = false;
+                if next(i) == '^' {
+                    body.push_str("\\^");
+                    i += 1;
+                } else {
+                    if next(i) == '!' {
+                        negated = true;
+                        i += 1;
+                    }
+                    if next(i) == '-' {
+                        body.push('-');
+                        i += 1;
+                    }
+                }
+                let mut has_range_start = false;
+                let mut last = '\0';
+                let mut closed = false;
+                while i < chars.len() {
+                    let c = chars[i];
+                    i += 1;
+                    if c == ']' {
+                        closed = true;
+                        break;
+                    }
+                    if c == '/' {
+                        return Err(bad(vm, "Explicit 'name separator' in class", i - 1));
+                    }
+                    if c == '\\' || c == '[' || (c == '&' && next(i) == '&') {
+                        body.push('\\');
+                    }
+                    body.push(c);
+                    if c == '-' {
+                        if !has_range_start {
+                            return Err(bad(vm, "Invalid range", i - 1));
+                        }
+                        let n = next(i);
+                        i += 1;
+                        if n == ']' {
+                            closed = true;
+                            break;
+                        }
+                        if n == '\0' {
+                            break;
+                        }
+                        if n < last {
+                            return Err(bad(vm, "Invalid range", i - 3));
+                        }
+                        body.push(n);
+                        has_range_start = false;
+                    } else {
+                        has_range_start = true;
+                        last = c;
+                    }
+                }
+                if !closed {
+                    return Err(bad(vm, "Missing ']'", i - 1));
+                }
+                if negated {
+                    regex.push_str("[^/");
+                } else {
+                    regex.push('[');
+                }
+                regex.push_str(&body);
+                regex.push(']');
+            }
+            '{' => {
+                if in_group {
+                    return Err(bad(vm, "Cannot nest groups", i - 1));
+                }
+                regex.push_str("(?:(?:");
+                in_group = true;
+            }
+            '}' => {
+                if in_group {
+                    regex.push_str("))");
+                    in_group = false;
+                } else {
+                    regex.push('}');
+                }
+            }
+            ',' => {
+                if in_group {
+                    regex.push_str(")|(?:");
+                } else {
+                    regex.push(',');
+                }
+            }
+            '*' => {
+                if next(i) == '*' {
+                    regex.push_str(".*");
+                    i += 1;
+                } else {
+                    regex.push_str("[^/]*");
+                }
+            }
+            '?' => regex.push_str("[^/]"),
+            _ => {
+                if regex_meta(c) {
+                    regex.push('\\');
+                }
+                regex.push(c);
+            }
+        }
+    }
+    if in_group {
+        return Err(bad(vm, "Missing '}'", i - 1));
+    }
+    regex.push('$');
+    Ok(regex)
+}
 
 fn glob_matches(pattern: &str, name: &str) -> bool {
     let pattern: Vec<char> = pattern.chars().collect();
