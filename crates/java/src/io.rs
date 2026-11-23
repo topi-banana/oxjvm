@@ -2591,14 +2591,26 @@ fn writer_write_string(
     }
     let value = vm.string_value(text).unwrap_or_default();
     let this = receiver(args);
-    for unit in value.encode_utf16() {
-        let (declaring, method) = vm.resolve_virtual_method(this, "write", "(I)V")?;
-        vm.invoke_method(
-            declaring,
-            method,
-            vec![Value::Ref(this), Value::Int(i32::from(unit))],
-        )?;
+    // The JDK routes write(String) through write(char[], int, int), not the
+    // single-unit write(int), so a subclass that only overrides the array
+    // form still receives the text.
+    let units: Vec<u16> = value.encode_utf16().collect();
+    let len = units.len();
+    let cbuf = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Char, len)?;
+    for (index, unit) in units.into_iter().enumerate() {
+        vm.array_set(cbuf, index as i32, Value::Int(i32::from(unit)), false)?;
     }
+    let (declaring, method) = vm.resolve_virtual_method(this, "write", "([CII)V")?;
+    vm.invoke_method(
+        declaring,
+        method,
+        vec![
+            Value::Ref(this),
+            Value::Ref(cbuf),
+            Value::Int(0),
+            Value::Int(len as i32),
+        ],
+    )?;
     void()
 }
 
@@ -6085,8 +6097,12 @@ const BUFFERED_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         if read_int_field(vm, this, "closed") != 0 {
             return void();
         }
-        buffered_writer_call(vm, this, "close", "()V", Vec::new())?;
+        // The JDK marks the writer closed even when the underlying close
+        // fails (try/finally), so later writes report "Stream closed" here
+        // rather than reaching the underlying writer.
+        let result = buffered_writer_call(vm, this, "close", "()V", Vec::new());
         write_int_field(vm, this, "closed", 1);
+        result?;
         void()
     }),
     method(
