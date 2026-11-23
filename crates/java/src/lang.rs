@@ -7694,7 +7694,7 @@ fn system_logger_level_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
 /// the severity of the matching `java.util.logging.Level`.
 pub(crate) const SYSTEM_LOGGER_LEVEL: oxjvm_vm::NativeClass = class(
     "java/lang/System$Logger$Level",
-    Some("java/lang/Object"),
+    Some("java/lang/Enum"),
     &[],
     ACC_PUBLIC | ACC_FINAL | ACC_ENUM,
     &[
