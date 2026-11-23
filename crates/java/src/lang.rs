@@ -1293,10 +1293,17 @@ fn class_modifiers(vm: &Vm<'_>, class: ClassId) -> u16 {
     match definition.kind {
         oxjvm_vm::ClassKind::Primitive => ACC_PUBLIC | ACC_FINAL | ACC_ABSTRACT,
         oxjvm_vm::ClassKind::Array => {
-            let component = definition.component_class.map_or(0, |component| {
-                class_modifiers(vm, component) & (ACC_PUBLIC | ACC_PROTECTED | ACC_PRIVATE)
-            });
-            ACC_PUBLIC | ACC_FINAL | ACC_ABSTRACT | component
+            // An array inherits only the public/protected/private bits of its
+            // component type; final and abstract are always set, and a
+            // package-private component yields no access bit at all. A primitive
+            // component has no ClassId but is always public.
+            let component = match definition.component_class {
+                Some(component) => {
+                    class_modifiers(vm, component) & (ACC_PUBLIC | ACC_PROTECTED | ACC_PRIVATE)
+                }
+                None => ACC_PUBLIC,
+            };
+            ACC_FINAL | ACC_ABSTRACT | component
         }
         _ => definition
             .inner_class_access_flags
