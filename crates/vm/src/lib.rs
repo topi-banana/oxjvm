@@ -389,6 +389,8 @@ impl<'a> Vm<'a> {
                 inner_class_access_flags: None,
                 has_enclosing_method: false,
                 inner_simple_name: None,
+                enclosing_method_name: None,
+                enclosing_method_descriptor: None,
                 member_classes: Vec::new(),
                 permitted_subclasses: Vec::new(),
                 is_enum: false,

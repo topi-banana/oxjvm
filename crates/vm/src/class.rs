@@ -393,6 +393,11 @@ pub struct Class {
     /// The simple name from the class's own `InnerClasses` entry, when present;
     /// `None` for anonymous classes (whose `inner_name_index` is zero).
     pub inner_simple_name: Option<String>,
+    /// The enclosing method name from `EnclosingMethod` (`<init>` for constructors);
+    /// `None` when the class is enclosed in an initializer or has no attribute.
+    pub enclosing_method_name: Option<String>,
+    /// The enclosing method descriptor from `EnclosingMethod`.
+    pub enclosing_method_descriptor: Option<String>,
     /// Member classes declared in this class, from `InnerClasses` entries whose
     /// outer class is this class: (inner class name, member access flags).
     pub member_classes: Vec<(String, u16)>,

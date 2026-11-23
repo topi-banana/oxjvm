@@ -723,13 +723,66 @@ const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 72] = [
         "getEnclosingMethod",
         "()Ljava/lang/reflect/Method;",
         ACC_PUBLIC,
-        |_, _, _| object(ObjectRef::NULL),
+        |vm, _, args| {
+            let class = class_argument(vm, receiver(args))?;
+            let definition = vm.classes.get(class);
+            let method_name = definition.enclosing_method_name.clone();
+            let descriptor = definition.enclosing_method_descriptor.clone();
+            let enclosing_name = definition.enclosing_class_name.clone();
+            // Only classes immediately enclosed by a method (not a constructor or
+            // initializer) report an enclosing method.
+            let Some(method_name) = method_name.filter(|name| name != "<init>") else {
+                return object(ObjectRef::NULL);
+            };
+            let Some(descriptor) = descriptor else {
+                return object(ObjectRef::NULL);
+            };
+            let Some(enclosing) = enclosing_name.and_then(|name| vm.resolve_class_lenient(&name))
+            else {
+                return object(ObjectRef::NULL);
+            };
+            let count = vm.classes.get(enclosing).methods.len();
+            for slot in 0..count {
+                let entry = &vm.classes.get(enclosing).methods[slot];
+                if entry.name == method_name && entry.descriptor == descriptor {
+                    let method = crate::reflect::new_method(vm, enclosing, slot as u32)?;
+                    return object(method);
+                }
+            }
+            object(ObjectRef::NULL)
+        },
     ),
     method(
         "getEnclosingConstructor",
         "()Ljava/lang/reflect/Constructor;",
         ACC_PUBLIC,
-        |_, _, _| object(ObjectRef::NULL),
+        |vm, _, args| {
+            let class = class_argument(vm, receiver(args))?;
+            let definition = vm.classes.get(class);
+            let method_name = definition.enclosing_method_name.clone();
+            let descriptor = definition.enclosing_method_descriptor.clone();
+            let enclosing_name = definition.enclosing_class_name.clone();
+            // Only classes immediately enclosed by a constructor report one.
+            if method_name.as_deref() != Some("<init>") {
+                return object(ObjectRef::NULL);
+            }
+            let Some(descriptor) = descriptor else {
+                return object(ObjectRef::NULL);
+            };
+            let Some(enclosing) = enclosing_name.and_then(|name| vm.resolve_class_lenient(&name))
+            else {
+                return object(ObjectRef::NULL);
+            };
+            let count = vm.classes.get(enclosing).methods.len();
+            for slot in 0..count {
+                let entry = &vm.classes.get(enclosing).methods[slot];
+                if entry.name == "<init>" && entry.descriptor == descriptor {
+                    let constructor = crate::reflect::new_constructor(vm, enclosing, slot as u32)?;
+                    return object(constructor);
+                }
+            }
+            object(ObjectRef::NULL)
+        },
     ),
     method(
         "getDeclaringClass",

@@ -2819,7 +2819,11 @@ pub(crate) const MODIFIER: oxjvm_vm::NativeClass = class(
 // Constructor
 // -------------------------------------------------------------------------------------------
 
-fn new_constructor(vm: &mut Vm<'_>, class: ClassId, slot: u32) -> Result<ObjectRef, VmError> {
+pub(crate) fn new_constructor(
+    vm: &mut Vm<'_>,
+    class: ClassId,
+    slot: u32,
+) -> Result<ObjectRef, VmError> {
     let constructor_class = vm.resolve_class("java/lang/reflect/Constructor")?;
     let instance = vm.new_instance(constructor_class)?;
     let class_object = vm.class_object(class)?;
