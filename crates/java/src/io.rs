@@ -856,13 +856,32 @@ pub(crate) fn write_bytes_array(vm: &mut Vm<'_>, bytes: &[u8]) -> Result<ObjectR
     Ok(array)
 }
 
-/// Write a value to a print stream, flushing is left to the host.
+/// Write a value to a print stream, flushing is left to the host. Text is
+/// encoded with the stream's charset when one was supplied; the platform
+/// streams (System.out/err) carry no charset and use UTF-8.
 pub(crate) fn print_text(
     vm: &mut Vm<'_>,
     print_stream: ObjectRef,
     text: &str,
 ) -> Result<Value, VmError> {
-    print_stream_write(vm, print_stream, text.as_bytes())
+    let charset = vm
+        .read_ref_field(
+            print_stream,
+            vm.class_of(print_stream),
+            "charset",
+            "Ljava/nio/charset/Charset;",
+        )
+        .unwrap_or(ObjectRef::NULL);
+    let bytes = if charset.is_null() {
+        text.as_bytes().to_vec()
+    } else {
+        let name = crate::charset::name_of(vm, charset);
+        match crate::charset::canonical_name(&name) {
+            Some(canonical) => crate::charset::encode(text, canonical),
+            None => text.as_bytes().to_vec(),
+        }
+    };
+    print_stream_write(vm, print_stream, &bytes)
 }
 
 /// `PrintStream.printf`/`format`: the formatted string, without a newline.
@@ -3585,7 +3604,7 @@ pub(crate) const NULL_WRITER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PRINT_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
+const PRINT_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
     method(
         "<init>",
         "(Ljava/io/Writer;)V",
@@ -3793,13 +3812,25 @@ const PRINT_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
         "<init>",
         "(Ljava/io/File;Ljava/lang/String;)V",
         ACC_PUBLIC,
-        print_writer_init_file,
+        print_writer_init_file_charset,
     ),
     method(
         "<init>",
         "(Ljava/lang/String;Ljava/lang/String;)V",
         ACC_PUBLIC,
-        print_writer_init_string,
+        print_writer_init_string_charset,
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/File;Ljava/nio/charset/Charset;)V",
+        ACC_PUBLIC,
+        print_writer_init_file_charset,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/nio/charset/Charset;)V",
+        ACC_PUBLIC,
+        print_writer_init_string_charset,
     ),
     method(
         "<init>",
@@ -4531,6 +4562,94 @@ fn print_writer_init_file(
 ) -> Result<Value, VmError> {
     let this = receiver(args);
     print_writer_wrap_file_writer(vm, this, "(Ljava/io/File;)V", ref_arg(args, 1))
+}
+
+/// Validate the charset argument of a file-backed `PrintWriter` constructor and
+/// wrap a `FileOutputStream` in an `OutputStreamWriter` using it. A null charset
+/// raises `NullPointerException` and an unsupported name raises
+/// `UnsupportedEncodingException`, exactly as the JDK does.
+fn print_writer_wrap_charset(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    path: &str,
+    charset_arg: Value,
+) -> Result<Value, VmError> {
+    let reference = charset_arg.as_ref();
+    if reference.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let charset_class = vm.resolve_class("java/nio/charset/Charset")?;
+    let is_charset = vm.is_instance(reference, charset_class);
+    let name = if is_charset {
+        None
+    } else {
+        let text = vm
+            .string_value(reference)
+            .ok_or_else(|| vm.throw_new("java/lang/NullPointerException", None))?;
+        if crate::charset::canonical_name(&text).is_none() {
+            return Err(vm.throw_new("java/io/UnsupportedEncodingException", Some(&text)));
+        }
+        Some(text)
+    };
+    let fos = new_file_output_stream(vm, path)?;
+    let osw_class = vm.resolve_class("java/io/OutputStreamWriter")?;
+    let osw = vm.new_instance(osw_class)?;
+    if is_charset {
+        let (declaring, ctor) = vm
+            .find_method(
+                osw_class,
+                "<init>",
+                "(Ljava/io/OutputStream;Ljava/nio/charset/Charset;)V",
+            )
+            .ok_or_else(|| VmError::internal("OutputStreamWriter(OutputStream,Charset) missing"))?;
+        vm.invoke_method(
+            declaring,
+            ctor,
+            vec![Value::Ref(osw), Value::Ref(fos), Value::Ref(reference)],
+        )?;
+    } else {
+        let (declaring, ctor) = vm
+            .find_method(
+                osw_class,
+                "<init>",
+                "(Ljava/io/OutputStream;Ljava/lang/String;)V",
+            )
+            .ok_or_else(|| VmError::internal("OutputStreamWriter(OutputStream,String) missing"))?;
+        let text = vm.make_string(name.as_deref().unwrap_or("UTF-8"))?;
+        vm.invoke_method(
+            declaring,
+            ctor,
+            vec![Value::Ref(osw), Value::Ref(fos), Value::Ref(text)],
+        )?;
+    }
+    let print_writer_class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(print_writer_class, "out", "Ljava/io/Writer;")?;
+    vm.set_instance_ref(this, declaring, field, osw);
+    void()
+}
+
+fn print_writer_init_string_charset(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let path = crate::string_arg(vm, args[1])?;
+    print_writer_wrap_charset(vm, this, &path, args[2])
+}
+
+fn print_writer_init_file_charset(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let file = ref_arg(args, 1);
+    if file.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let path = crate::file::file_path(vm, file);
+    print_writer_wrap_charset(vm, this, &path, args[2])
 }
 
 // -------------------------------------------------------------------------------------------

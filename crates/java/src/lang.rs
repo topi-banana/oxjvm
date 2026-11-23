@@ -4452,7 +4452,7 @@ pub(crate) const FORMATTER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const FORMATTER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const FORMATTER_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         formatter_init(vm, receiver(args), ObjectRef::NULL, ObjectRef::NULL)
     }),
@@ -4460,30 +4460,159 @@ const FORMATTER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "<init>",
         "(Ljava/util/Locale;)V",
         ACC_PUBLIC,
-        |vm, _, args| formatter_init(vm, receiver(args), ObjectRef::NULL, ref_arg(args, 1)),
+        |vm, _, args| formatter_store(vm, receiver(args), ObjectRef::NULL, ref_arg(args, 1)),
     ),
     method(
         "<init>",
         "(Ljava/lang/Appendable;)V",
         ACC_PUBLIC,
-        |vm, _, args| {
-            let out = ref_arg(args, 1);
-            if out.is_null() {
-                return Err(vm.throw_new("java/lang/NullPointerException", None));
-            }
-            formatter_init(vm, receiver(args), out, ObjectRef::NULL)
-        },
+        |vm, _, args| formatter_init(vm, receiver(args), ref_arg(args, 1), ObjectRef::NULL),
     ),
     method(
         "<init>",
         "(Ljava/lang/Appendable;Ljava/util/Locale;)V",
         ACC_PUBLIC,
+        |vm, _, args| formatter_store(vm, receiver(args), ref_arg(args, 1), ref_arg(args, 2)),
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
         |vm, _, args| {
-            let out = ref_arg(args, 1);
-            if out.is_null() {
+            let path = string_arg(vm, args[1])?;
+            let out = formatter_file_output(vm, &path, None)?;
+            formatter_init(vm, receiver(args), out, ObjectRef::NULL)
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let path = string_arg(vm, args[1])?;
+            let csn = string_arg(vm, args[2])?;
+            let out = formatter_file_output(vm, &path, Some(&csn))?;
+            formatter_init(vm, receiver(args), out, ObjectRef::NULL)
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/util/Locale;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let path = string_arg(vm, args[1])?;
+            let csn = string_arg(vm, args[2])?;
+            let out = formatter_file_output(vm, &path, Some(&csn))?;
+            formatter_store(vm, receiver(args), out, ref_arg(args, 3))
+        },
+    ),
+    method("<init>", "(Ljava/io/File;)V", ACC_PUBLIC, |vm, _, args| {
+        let path = formatter_file_path(vm, ref_arg(args, 1))?;
+        let out = formatter_file_output(vm, &path, None)?;
+        formatter_init(vm, receiver(args), out, ObjectRef::NULL)
+    }),
+    method(
+        "<init>",
+        "(Ljava/io/File;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let path = formatter_file_path(vm, ref_arg(args, 1))?;
+            let csn = string_arg(vm, args[2])?;
+            let out = formatter_file_output(vm, &path, Some(&csn))?;
+            formatter_init(vm, receiver(args), out, ObjectRef::NULL)
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/File;Ljava/lang/String;Ljava/util/Locale;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let path = formatter_file_path(vm, ref_arg(args, 1))?;
+            let csn = string_arg(vm, args[2])?;
+            let out = formatter_file_output(vm, &path, Some(&csn))?;
+            formatter_store(vm, receiver(args), out, ref_arg(args, 3))
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let os = ref_arg(args, 1);
+            if os.is_null() {
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
-            formatter_init(vm, receiver(args), out, ref_arg(args, 2))
+            let out = formatter_wrap_output(vm, os, None)?;
+            formatter_init(vm, receiver(args), out, ObjectRef::NULL)
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let os = ref_arg(args, 1);
+            if os.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let csn = string_arg(vm, args[2])?;
+            let out = formatter_wrap_output(vm, os, Some(&csn))?;
+            formatter_init(vm, receiver(args), out, ObjectRef::NULL)
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;Ljava/lang/String;Ljava/util/Locale;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let os = ref_arg(args, 1);
+            if os.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let csn = string_arg(vm, args[2])?;
+            let out = formatter_wrap_output(vm, os, Some(&csn))?;
+            formatter_store(vm, receiver(args), out, ref_arg(args, 3))
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;Ljava/nio/charset/Charset;Ljava/util/Locale;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let os = ref_arg(args, 1);
+            if os.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let charset = ref_arg(args, 2);
+            if charset.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let out = formatter_wrap_output_charset(vm, os, charset)?;
+            formatter_store(vm, receiver(args), out, ref_arg(args, 3))
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/PrintStream;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let ps = ref_arg(args, 1);
+            if ps.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            formatter_init(vm, receiver(args), ps, ObjectRef::NULL)
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/PrintStream;Ljava/util/Locale;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let ps = ref_arg(args, 1);
+            if ps.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            formatter_store(vm, receiver(args), ps, ref_arg(args, 2))
         },
     ),
     method(
@@ -4580,7 +4709,10 @@ const FORMATTER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
 ];
 
 /// Set up a formatter's destination and locale, creating a builder when none was given.
-fn formatter_init(
+/// Store the formatter's destination and locale verbatim. A null destination
+/// becomes a fresh StringBuilder; a null locale stays null, which is what the
+/// constructors that take an explicit Locale argument must preserve.
+fn formatter_store(
     vm: &mut Vm<'_>,
     this: ObjectRef,
     out: ObjectRef,
@@ -4595,16 +4727,125 @@ fn formatter_init(
     } else {
         out
     };
-    let locale = if locale.is_null() {
-        crate::format::default_locale(vm)
-    } else {
-        locale
-    };
     let (declaring, field) = vm.find_field(class, "a", "Ljava/lang/Appendable;")?;
     vm.set_instance_ref(this, declaring, field, out);
     let (declaring, field) = vm.find_field(class, "locale", "Ljava/util/Locale;")?;
     vm.set_instance_ref(this, declaring, field, locale);
     void()
+}
+
+/// Initialize a formatter that has no explicit Locale argument: a null locale
+/// resolves to the default FORMAT-category locale.
+fn formatter_init(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    out: ObjectRef,
+    locale: ObjectRef,
+) -> Result<Value, VmError> {
+    let locale = if locale.is_null() {
+        crate::format::default_locale(vm)
+    } else {
+        locale
+    };
+    formatter_store(vm, this, out, locale)
+}
+
+/// Wrap an OutputStream in OutputStreamWriter + BufferedWriter, the destination
+/// `java.util.Formatter` uses for its OutputStream and file constructors.
+fn formatter_wrap_output(
+    vm: &mut Vm<'_>,
+    os: ObjectRef,
+    charset: Option<&str>,
+) -> Result<ObjectRef, VmError> {
+    let osw_class = vm.resolve_class("java/io/OutputStreamWriter")?;
+    let osw = vm.new_instance(osw_class)?;
+    match charset {
+        Some(csn) => {
+            let (declaring, ctor) = vm
+                .find_method(
+                    osw_class,
+                    "<init>",
+                    "(Ljava/io/OutputStream;Ljava/lang/String;)V",
+                )
+                .ok_or_else(|| {
+                    VmError::internal("OutputStreamWriter(OutputStream,String) missing")
+                })?;
+            let text = vm.make_string(csn)?;
+            vm.invoke_method(
+                declaring,
+                ctor,
+                vec![Value::Ref(osw), Value::Ref(os), Value::Ref(text)],
+            )?;
+        }
+        None => {
+            let (declaring, ctor) = vm
+                .find_method(osw_class, "<init>", "(Ljava/io/OutputStream;)V")
+                .ok_or_else(|| VmError::internal("OutputStreamWriter(OutputStream) missing"))?;
+            vm.invoke_method(declaring, ctor, vec![Value::Ref(osw), Value::Ref(os)])?;
+        }
+    }
+    let bw_class = vm.resolve_class("java/io/BufferedWriter")?;
+    let bw = vm.new_instance(bw_class)?;
+    let (declaring, ctor) = vm
+        .find_method(bw_class, "<init>", "(Ljava/io/Writer;)V")
+        .ok_or_else(|| VmError::internal("BufferedWriter(Writer) missing"))?;
+    vm.invoke_method(declaring, ctor, vec![Value::Ref(bw), Value::Ref(osw)])?;
+    Ok(bw)
+}
+
+/// Wrap an OutputStream using an explicit Charset object, the destination the
+/// `Formatter(OutputStream, Charset, Locale)` constructor uses.
+fn formatter_wrap_output_charset(
+    vm: &mut Vm<'_>,
+    os: ObjectRef,
+    charset: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    let osw_class = vm.resolve_class("java/io/OutputStreamWriter")?;
+    let osw = vm.new_instance(osw_class)?;
+    let (declaring, ctor) = vm
+        .find_method(
+            osw_class,
+            "<init>",
+            "(Ljava/io/OutputStream;Ljava/nio/charset/Charset;)V",
+        )
+        .ok_or_else(|| VmError::internal("OutputStreamWriter(OutputStream,Charset) missing"))?;
+    vm.invoke_method(
+        declaring,
+        ctor,
+        vec![Value::Ref(osw), Value::Ref(os), Value::Ref(charset)],
+    )?;
+    let bw_class = vm.resolve_class("java/io/BufferedWriter")?;
+    let bw = vm.new_instance(bw_class)?;
+    let (declaring, ctor) = vm
+        .find_method(bw_class, "<init>", "(Ljava/io/Writer;)V")
+        .ok_or_else(|| VmError::internal("BufferedWriter(Writer) missing"))?;
+    vm.invoke_method(declaring, ctor, vec![Value::Ref(bw), Value::Ref(osw)])?;
+    Ok(bw)
+}
+
+/// Open `path` for writing and wrap it as the Formatter's BufferedWriter destination.
+fn formatter_file_output(
+    vm: &mut Vm<'_>,
+    path: &str,
+    charset: Option<&str>,
+) -> Result<ObjectRef, VmError> {
+    let fos_class = vm.resolve_class("java/io/FileOutputStream")?;
+    let fos = vm.new_instance(fos_class)?;
+    let (declaring, ctor) = vm
+        .find_method(fos_class, "<init>", "(Ljava/lang/String;)V")
+        .ok_or_else(|| VmError::internal("FileOutputStream(String) missing"))?;
+    let text = vm.make_string(path)?;
+    vm.invoke_method(declaring, ctor, vec![Value::Ref(fos), Value::Ref(text)])?;
+    formatter_wrap_output(vm, fos, charset)
+}
+
+/// Read a File's path, throwing NullPointerException when the File is null.
+fn formatter_file_path(vm: &mut Vm<'_>, file: ObjectRef) -> Result<String, VmError> {
+    if file.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    vm.read_string_field(file, vm.class_of(file), "path")
+        .ok_or_else(|| vm.throw_new("java/lang/NullPointerException", None))
 }
 
 /// The appendable a formatter writes to.
