@@ -6973,6 +6973,9 @@ const RANDOM_ACCESS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
     }),
     method("read", "([B)I", ACC_PUBLIC, |vm, _, args| {
         let target = ref_arg(args, 1);
+        if target.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
         let length = vm.array_length(target)? as i32;
         raf_read_into(vm, receiver(args), target, 0, length)
     }),
@@ -6987,6 +6990,9 @@ const RANDOM_ACCESS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
     }),
     method("readFully", "([B)V", ACC_PUBLIC, |vm, _, args| {
         let target = ref_arg(args, 1);
+        if target.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
         let length = vm.array_length(target)? as i32;
         raf_read_fully(vm, receiver(args), target, 0, length)
     }),
@@ -7012,11 +7018,19 @@ const RANDOM_ACCESS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
         raf_write(vm, receiver(args), &[int_arg(args, 1) as u8])
     }),
     method("write", "([B)V", ACC_PUBLIC, |vm, _, args| {
-        let bytes = crate::lang::array_bytes(vm, ref_arg(args, 1))?;
+        let buffer = ref_arg(args, 1);
+        if buffer.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let bytes = crate::lang::array_bytes(vm, buffer)?;
         raf_write(vm, receiver(args), &bytes)
     }),
     method("write", "([BII)V", ACC_PUBLIC, |vm, _, args| {
-        let bytes = crate::lang::array_bytes(vm, ref_arg(args, 1))?;
+        let buffer = ref_arg(args, 1);
+        if buffer.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let bytes = crate::lang::array_bytes(vm, buffer)?;
         let offset = int_arg(args, 2);
         let count = int_arg(args, 3);
         if offset < 0 || count < 0 || (offset + count) as usize > bytes.len() {
@@ -7273,6 +7287,9 @@ fn raf_read_into(
     offset: i32,
     length: i32,
 ) -> Result<Value, VmError> {
+    if target.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
     let total = vm.array_length(target)? as i32;
     if offset < 0 || length < 0 || offset + length > total {
         return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
