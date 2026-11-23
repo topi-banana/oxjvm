@@ -5473,7 +5473,7 @@ fn char_is_identifier_ignorable(cp: u32) -> bool {
     idx > 0 && IGNORABLE_RANGES[idx - 1].1 >= cp
 }
 
-const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 76] = [
+const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 79] = [
     method("<init>", "(C)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), int_arg(args, 1));
         void()
@@ -5821,6 +5821,24 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 76] = [
         },
     ),
     method(
+        "highSurrogate",
+        "(I)C",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let code_point = int_arg(args, 0) as u32;
+            int((0xD800 + ((code_point - 0x10000) >> 10)) as i32)
+        },
+    ),
+    method(
+        "lowSurrogate",
+        "(I)C",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let code_point = int_arg(args, 0) as u32;
+            int((0xDC00 + (code_point & 0x3FF)) as i32)
+        },
+    ),
+    method(
         "charCount",
         "(I)I",
         ACC_PUBLIC | ACC_STATIC,
@@ -5836,6 +5854,15 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 76] = [
         |_, _, args| {
             let code_point = int_arg(args, 0) as u32;
             boolean(code_point <= 0xFFFF)
+        },
+    ),
+    method(
+        "isSupplementaryCodePoint",
+        "(I)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let code_point = int_arg(args, 0) as u32;
+            boolean((0x10000..=0x10FFFF).contains(&code_point))
         },
     ),
     method(
