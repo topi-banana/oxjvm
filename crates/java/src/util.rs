@@ -31552,7 +31552,11 @@ fn observable_notify(vm: &mut Vm<'_>, this: ObjectRef, arg: ObjectRef) -> Result
         .invoke_method(class, method, vec![Value::Ref(list)])?
         .as_ref();
     let length = vm.array_length(array).unwrap_or(0);
-    for index in 0..length {
+    // The JDK clears the changed flag (via a virtual clearChanged() call, so a
+    // subclass override runs) before notifying, and notifies in reverse order.
+    let (class, method) = vm.resolve_virtual_method(this, "clearChanged", "()V")?;
+    vm.invoke_method(class, method, vec![Value::Ref(this)])?;
+    for index in (0..length).rev() {
         let observer = vm.array_get(array, index as i32)?.as_ref();
         if observer.is_null() {
             continue;
@@ -31568,7 +31572,6 @@ fn observable_notify(vm: &mut Vm<'_>, this: ObjectRef, arg: ObjectRef) -> Result
             vec![Value::Ref(observer), Value::Ref(this), Value::Ref(arg)],
         )?;
     }
-    crate::lang::write_int_field(vm, this, "changed", 0);
     void()
 }
 
