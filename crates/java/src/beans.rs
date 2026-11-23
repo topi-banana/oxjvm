@@ -132,7 +132,7 @@ fn setup_property_descriptor(
     Ok(())
 }
 
-const PROPERTY_DESCRIPTOR_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
+const PROPERTY_DESCRIPTOR_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
     method(
         "<init>",
         "(Ljava/lang/String;Ljava/lang/Class;)V",
@@ -380,10 +380,49 @@ const PROPERTY_DESCRIPTOR_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         "(Ljava/lang/Object;)Ljava/beans/PropertyEditor;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let type_object =
-                property_ref(vm, receiver(args), "propertyType", "Ljava/lang/Class;")?.as_ref();
+            let this = receiver(args);
+            let editor_class_ref =
+                property_ref(vm, this, "editorClass", "Ljava/lang/Class;")?.as_ref();
+            if !editor_class_ref.is_null() {
+                let editor_class = class_argument(vm, editor_class_ref)?;
+                let editor = vm.new_instance(editor_class)?;
+                let bean = ref_arg(args, 1);
+                match vm.resolve_virtual_method(editor, "<init>", "(Ljava/lang/Object;)V") {
+                    Ok((class, method)) => {
+                        vm.invoke_method(
+                            class,
+                            method,
+                            vec![Value::Ref(editor), Value::Ref(bean)],
+                        )?;
+                    }
+                    Err(_) => {
+                        let (class, method) = vm.resolve_virtual_method(editor, "<init>", "()V")?;
+                        vm.invoke_method(class, method, vec![Value::Ref(editor)])?;
+                    }
+                }
+                return object(editor);
+            }
+            let type_object = property_ref(vm, this, "propertyType", "Ljava/lang/Class;")?.as_ref();
             property_editor_for(vm, type_object)
         },
+    ),
+    method(
+        "setPropertyEditorClass",
+        "(Ljava/lang/Class;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "editorClass", "Ljava/lang/Class;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method(
+        "getPropertyEditorClass",
+        "()Ljava/lang/Class;",
+        ACC_PUBLIC,
+        |vm, _, args| property_ref(vm, receiver(args), "editorClass", "Ljava/lang/Class;"),
     ),
     method(
         "toString",
@@ -486,6 +525,7 @@ pub(crate) const PROPERTY_DESCRIPTOR: oxjvm_vm::NativeClass = class(
             None,
         ),
         field("propertyType", "Ljava/lang/Class;", ACC_PRIVATE, None),
+        field("editorClass", "Ljava/lang/Class;", ACC_PRIVATE, None),
         field("displayName", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("shortDescription", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("flags", "I", ACC_PRIVATE, None),
@@ -676,6 +716,36 @@ pub(crate) const PROPERTY_EDITOR_SUPPORT: oxjvm_vm::NativeClass = class(
 );
 
 fn property_editor_for(vm: &mut Vm<'_>, type_object: ObjectRef) -> Result<Value, VmError> {
+    if type_object.is_null() {
+        return object(ObjectRef::NULL);
+    }
+    let type_class = class_argument(vm, type_object)?;
+    let type_name = vm.classes.get(type_class).name.clone();
+    let builtin = matches!(
+        type_name.as_str(),
+        "boolean"
+            | "byte"
+            | "char"
+            | "short"
+            | "int"
+            | "long"
+            | "float"
+            | "double"
+            | "void"
+            | "java/lang/Boolean"
+            | "java/lang/Byte"
+            | "java/lang/Character"
+            | "java/lang/Short"
+            | "java/lang/Integer"
+            | "java/lang/Long"
+            | "java/lang/Float"
+            | "java/lang/Double"
+            | "java/lang/Void"
+            | "java/lang/String"
+    );
+    if !builtin {
+        return object(ObjectRef::NULL);
+    }
     let class = vm.resolve_class("java/beans/OjvmPropertyEditor")?;
     let editor = vm.new_instance(class)?;
     if let Some((declaring, field)) = vm.find_field_opt(class, "type", "Ljava/lang/Class;") {
@@ -787,15 +857,33 @@ const PROPERTY_EDITOR_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         "()[Ljava/lang/String;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _| {
-            let class = vm.resolve_class("java/lang/String")?;
-            object(vm.allocate_object_array(class, 0)?)
+            let class = vm.resolve_class("java/beans/PropertyEditorManager")?;
+            if let Some(path) =
+                vm.read_static_ref_if_set(class, "searchPath", "[Ljava/lang/String;")
+            {
+                return object(path);
+            }
+            let string_class = vm.resolve_class("java/lang/String")?;
+            let array = vm.allocate_object_array(string_class, 1)?;
+            let name = vm.make_string("sun.beans.editors")?;
+            vm.array_set_ref(array, 0, name)?;
+            object(array)
         },
     ),
     method(
         "setEditorSearchPath",
         "([Ljava/lang/String;)V",
         ACC_PUBLIC | ACC_STATIC,
-        |_, _, _| void(),
+        |vm, _, args| {
+            let class = vm.resolve_class("java/beans/PropertyEditorManager")?;
+            let mut path = ref_arg(args, 0);
+            if path.is_null() {
+                let string_class = vm.resolve_class("java/lang/String")?;
+                path = vm.allocate_object_array(string_class, 0)?;
+            }
+            vm.set_static_value(class, "searchPath", "[Ljava/lang/String;", Value::Ref(path));
+            void()
+        },
     ),
     method(
         "findEditor",
@@ -816,7 +904,12 @@ pub(crate) const PROPERTY_EDITOR_MANAGER: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC,
-    &[],
+    &[field(
+        "searchPath",
+        "[Ljava/lang/String;",
+        ACC_PRIVATE | ACC_STATIC,
+        None,
+    )],
     &PROPERTY_EDITOR_MANAGER_METHODS,
     None,
 );
