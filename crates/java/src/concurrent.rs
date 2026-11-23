@@ -3287,3 +3287,401 @@ const LINKED_TRANSFER_QUEUE_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
         int(0)
     }),
 ];
+
+// -------------------------------------------------------------------------------------------
+// Delayed / DelayQueue
+// -------------------------------------------------------------------------------------------
+
+/// `Delayed`: a `Comparable` element with a remaining delay.
+pub(crate) const DELAYED: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/Delayed",
+    Some("java/lang/Object"),
+    &["java/lang/Comparable"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &DELAYED_METHODS,
+    None,
+);
+
+const DELAYED_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "getDelay",
+        "(Ljava/util/concurrent/TimeUnit;)J",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "compareTo",
+        "(Ljava/util/concurrent/Delayed;)I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
+fn delay_queue_pq(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "q", "Ljava/util/PriorityQueue;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn delay_queue_init(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    let pq_class = vm.resolve_class("java/util/PriorityQueue")?;
+    let pq = vm.new_instance(pq_class)?;
+    let (class, method) = vm.resolve_virtual_method(pq, "<init>", "()V")?;
+    vm.invoke_method(class, method, vec![Value::Ref(pq)])?;
+    let (declaring, field) = vm.find_field(vm.class_of(this), "q", "Ljava/util/PriorityQueue;")?;
+    vm.set_instance_ref(this, declaring, field, pq);
+    Ok(())
+}
+
+fn delay_queue_head_expired(vm: &mut Vm<'_>, head: ObjectRef) -> Result<bool, VmError> {
+    let unit = time_unit_constant(vm, "NANOSECONDS")?;
+    let (class, method) =
+        vm.resolve_virtual_method(head, "getDelay", "(Ljava/util/concurrent/TimeUnit;)J")?;
+    let delay = vm
+        .invoke_method(class, method, vec![Value::Ref(head), Value::Ref(unit)])?
+        .as_long();
+    Ok(delay <= 0)
+}
+
+/// Poll the head only when its delay has expired, as the JDK does.
+fn delay_queue_poll_expired(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError> {
+    let pq = delay_queue_pq(vm, this);
+    let (class, method) = vm.resolve_virtual_method(pq, "peek", "()Ljava/lang/Object;")?;
+    let head = vm
+        .invoke_method(class, method, vec![Value::Ref(pq)])?
+        .as_ref();
+    if head.is_null() || !delay_queue_head_expired(vm, head)? {
+        return object(ObjectRef::NULL);
+    }
+    let (class, method) = vm.resolve_virtual_method(pq, "poll", "()Ljava/lang/Object;")?;
+    vm.invoke_method(class, method, vec![Value::Ref(pq)])
+}
+
+fn delay_queue_offer(vm: &mut Vm<'_>, this: ObjectRef, element: ObjectRef) -> Result<(), VmError> {
+    let pq = delay_queue_pq(vm, this);
+    let (class, method) = vm.resolve_virtual_method(pq, "offer", "(Ljava/lang/Object;)Z")?;
+    vm.invoke_method(class, method, vec![Value::Ref(pq), Value::Ref(element)])?;
+    Ok(())
+}
+
+fn delay_queue_add_all(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    source: ObjectRef,
+) -> Result<bool, VmError> {
+    let (class, method) =
+        vm.resolve_virtual_method(source, "iterator", "()Ljava/util/Iterator;")?;
+    let iterator = vm
+        .invoke_method(class, method, vec![Value::Ref(source)])?
+        .as_ref();
+    let mut changed = false;
+    loop {
+        let (class, method) = vm.resolve_virtual_method(iterator, "hasNext", "()Z")?;
+        if !vm
+            .invoke_method(class, method, vec![Value::Ref(iterator)])?
+            .as_boolean()
+        {
+            break;
+        }
+        let (class, method) =
+            vm.resolve_virtual_method(iterator, "next", "()Ljava/lang/Object;")?;
+        let element = vm
+            .invoke_method(class, method, vec![Value::Ref(iterator)])?
+            .as_ref();
+        delay_queue_offer(vm, this, element)?;
+        changed = true;
+    }
+    Ok(changed)
+}
+
+pub(crate) const DELAY_QUEUE: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/DelayQueue",
+    Some("java/lang/Object"),
+    &["java/util/concurrent/BlockingQueue", "java/io/Serializable"],
+    ACC_PUBLIC,
+    &[field("q", "Ljava/util/PriorityQueue;", ACC_PRIVATE, None)],
+    &DELAY_QUEUE_METHODS,
+    None,
+);
+
+const DELAY_QUEUE_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        delay_queue_init(vm, receiver(args))?;
+        void()
+    }),
+    method(
+        "<init>",
+        "(Ljava/util/Collection;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            delay_queue_init(vm, this)?;
+            delay_queue_add_all(vm, this, ref_arg(args, 1))?;
+            void()
+        },
+    ),
+    method("add", "(Ljava/lang/Object;)Z", ACC_PUBLIC, |vm, _, args| {
+        delay_queue_offer(vm, receiver(args), ref_arg(args, 1))?;
+        boolean(true)
+    }),
+    method(
+        "add",
+        "(Ljava/util/concurrent/Delayed;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            delay_queue_offer(vm, receiver(args), ref_arg(args, 1))?;
+            boolean(true)
+        },
+    ),
+    method(
+        "offer",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            delay_queue_offer(vm, receiver(args), ref_arg(args, 1))?;
+            boolean(true)
+        },
+    ),
+    method(
+        "offer",
+        "(Ljava/util/concurrent/Delayed;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            delay_queue_offer(vm, receiver(args), ref_arg(args, 1))?;
+            boolean(true)
+        },
+    ),
+    method(
+        "offer",
+        "(Ljava/lang/Object;JLjava/util/concurrent/TimeUnit;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            delay_queue_offer(vm, receiver(args), ref_arg(args, 1))?;
+            boolean(true)
+        },
+    ),
+    method(
+        "offer",
+        "(Ljava/util/concurrent/Delayed;JLjava/util/concurrent/TimeUnit;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            delay_queue_offer(vm, receiver(args), ref_arg(args, 1))?;
+            boolean(true)
+        },
+    ),
+    method("put", "(Ljava/lang/Object;)V", ACC_PUBLIC, |vm, _, args| {
+        delay_queue_offer(vm, receiver(args), ref_arg(args, 1))?;
+        void()
+    }),
+    method(
+        "put",
+        "(Ljava/util/concurrent/Delayed;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            delay_queue_offer(vm, receiver(args), ref_arg(args, 1))?;
+            void()
+        },
+    ),
+    method("poll", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        delay_queue_poll_expired(vm, receiver(args))
+    }),
+    method(
+        "poll",
+        "(JLjava/util/concurrent/TimeUnit;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| delay_queue_poll_expired(vm, receiver(args)),
+    ),
+    method("take", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        loop {
+            let head = delay_queue_poll_expired(vm, this)?.as_ref();
+            if !head.is_null() {
+                return object(head);
+            }
+            vm.park_until_notified(this, None)?;
+        }
+    }),
+    method("peek", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let pq = delay_queue_pq(vm, receiver(args));
+        let (class, method) = vm.resolve_virtual_method(pq, "peek", "()Ljava/lang/Object;")?;
+        vm.invoke_method(class, method, vec![Value::Ref(pq)])
+    }),
+    method(
+        "element",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let pq = delay_queue_pq(vm, receiver(args));
+            let (class, method) = vm.resolve_virtual_method(pq, "peek", "()Ljava/lang/Object;")?;
+            let head = vm
+                .invoke_method(class, method, vec![Value::Ref(pq)])?
+                .as_ref();
+            if head.is_null() {
+                return Err(vm.throw_new("java/util/NoSuchElementException", None));
+            }
+            object(head)
+        },
+    ),
+    method(
+        "remove",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let head = delay_queue_poll_expired(vm, receiver(args))?.as_ref();
+            if head.is_null() {
+                return Err(vm.throw_new("java/util/NoSuchElementException", None));
+            }
+            object(head)
+        },
+    ),
+    method("size", "()I", ACC_PUBLIC, |vm, _, args| {
+        let pq = delay_queue_pq(vm, receiver(args));
+        let (class, method) = vm.resolve_virtual_method(pq, "size", "()I")?;
+        vm.invoke_method(class, method, vec![Value::Ref(pq)])
+    }),
+    method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let pq = delay_queue_pq(vm, receiver(args));
+        let (class, method) = vm.resolve_virtual_method(pq, "isEmpty", "()Z")?;
+        vm.invoke_method(class, method, vec![Value::Ref(pq)])
+    }),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
+        let pq = delay_queue_pq(vm, receiver(args));
+        let (class, method) = vm.resolve_virtual_method(pq, "clear", "()V")?;
+        vm.invoke_method(class, method, vec![Value::Ref(pq)])?;
+        void()
+    }),
+    method(
+        "contains",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let pq = delay_queue_pq(vm, receiver(args));
+            let (class, method) =
+                vm.resolve_virtual_method(pq, "contains", "(Ljava/lang/Object;)Z")?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![Value::Ref(pq), Value::Ref(ref_arg(args, 1))],
+            )
+        },
+    ),
+    method(
+        "remove",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let pq = delay_queue_pq(vm, receiver(args));
+            let (class, method) =
+                vm.resolve_virtual_method(pq, "remove", "(Ljava/lang/Object;)Z")?;
+            vm.invoke_method(
+                class,
+                method,
+                vec![Value::Ref(pq), Value::Ref(ref_arg(args, 1))],
+            )
+        },
+    ),
+    method(
+        "addAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let changed = delay_queue_add_all(vm, receiver(args), ref_arg(args, 1))?;
+            boolean(changed)
+        },
+    ),
+    method(
+        "iterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let pq = delay_queue_pq(vm, this);
+            let (class, method) =
+                vm.resolve_virtual_method(pq, "toArray", "()[Ljava/lang/Object;")?;
+            let array = vm
+                .invoke_method(class, method, vec![Value::Ref(pq)])?
+                .as_ref();
+            let itr_class = vm.resolve_class("java/util/concurrent/DelayQueue$Itr")?;
+            let iterator = vm.new_instance(itr_class)?;
+            let (declaring, field) = vm.find_field(itr_class, "array", "[Ljava/lang/Object;")?;
+            vm.set_instance_ref(iterator, declaring, field, array);
+            let (declaring, field) =
+                vm.find_field(itr_class, "queue", "Ljava/util/concurrent/DelayQueue;")?;
+            vm.set_instance_ref(iterator, declaring, field, this);
+            crate::lang::write_int_field(vm, iterator, "cursor", 0);
+            crate::lang::write_int_field(vm, iterator, "lastRet", -1);
+            object(iterator)
+        },
+    ),
+];
+
+/// `java.util.concurrent.DelayQueue$Itr`: the JDK snapshot iterator, so it keeps
+/// traversing the elements captured at creation even after the queue is cleared.
+pub(crate) const DELAY_QUEUE_ITR: oxjvm_vm::NativeClass = class(
+    "java/util/concurrent/DelayQueue$Itr",
+    Some("java/lang/Object"),
+    &["java/util/Iterator"],
+    ACC_PUBLIC,
+    &[
+        field("array", "[Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("cursor", "I", ACC_PRIVATE, None),
+        field("lastRet", "I", ACC_PRIVATE, None),
+        field(
+            "queue",
+            "Ljava/util/concurrent/DelayQueue;",
+            ACC_PRIVATE,
+            None,
+        ),
+    ],
+    &DELAY_QUEUE_ITR_METHODS,
+    None,
+);
+
+const DELAY_QUEUE_ITR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method("hasNext", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let array = vm
+            .read_ref_field(this, vm.class_of(this), "array", "[Ljava/lang/Object;")
+            .unwrap_or(ObjectRef::NULL);
+        let cursor = crate::lang::read_int_field(vm, this, "cursor");
+        boolean((cursor as usize) < vm.array_length(array)?)
+    }),
+    method("next", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let array = vm
+            .read_ref_field(this, vm.class_of(this), "array", "[Ljava/lang/Object;")
+            .unwrap_or(ObjectRef::NULL);
+        let cursor = crate::lang::read_int_field(vm, this, "cursor");
+        if (cursor as usize) >= vm.array_length(array)? {
+            return Err(vm.throw_new("java/util/NoSuchElementException", None));
+        }
+        let element = vm.array_get(array, cursor)?.as_ref();
+        crate::lang::write_int_field(vm, this, "lastRet", cursor);
+        crate::lang::write_int_field(vm, this, "cursor", cursor + 1);
+        object(element)
+    }),
+    method("remove", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let last_ret = crate::lang::read_int_field(vm, this, "lastRet");
+        if last_ret < 0 {
+            return Err(vm.throw_new("java/lang/IllegalStateException", None));
+        }
+        let array = vm
+            .read_ref_field(this, vm.class_of(this), "array", "[Ljava/lang/Object;")
+            .unwrap_or(ObjectRef::NULL);
+        let element = vm.array_get(array, last_ret)?.as_ref();
+        let queue = vm
+            .read_ref_field(
+                this,
+                vm.class_of(this),
+                "queue",
+                "Ljava/util/concurrent/DelayQueue;",
+            )
+            .unwrap_or(ObjectRef::NULL);
+        let (class, method) =
+            vm.resolve_virtual_method(queue, "remove", "(Ljava/lang/Object;)Z")?;
+        vm.invoke_method(class, method, vec![Value::Ref(queue), Value::Ref(element)])?;
+        crate::lang::write_int_field(vm, this, "lastRet", -1);
+        void()
+    }),
+];
