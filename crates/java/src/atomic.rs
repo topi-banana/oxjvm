@@ -7,7 +7,7 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 
 use oxjvm_classfile::flags::*;
-use oxjvm_vm::{ObjectRef, Value, Vm, VmError, format};
+use oxjvm_vm::{ClassId, ObjectRef, Value, Vm, VmError, format};
 
 use crate::boxed::{read_value_int, read_value_long, write_value_int, write_value_long};
 use crate::{
@@ -1696,13 +1696,81 @@ pub(crate) const ATOMIC_REFERENCE_ARRAY: oxjvm_vm::NativeClass = class(
 fn field_updater_new(
     vm: &mut Vm<'_>,
     class_name: &str,
+    target: ObjectRef,
     name: ObjectRef,
+    expected: &str,
 ) -> Result<ObjectRef, VmError> {
+    // Mirror the JDK newUpdater validation: the named field must be a
+    // non-static volatile field of the right type, accessible to the caller.
+    let field_name = crate::string_arg(vm, Value::Ref(name))?;
+    let target_class = crate::lang::class_argument(vm, target)?;
+    let entry = vm
+        .classes
+        .get(target_class)
+        .fields
+        .iter()
+        .find(|f| f.name == field_name);
+    let Some(entry) = entry else {
+        return Err(vm.throw_new("java/lang/RuntimeException", Some(&field_name)));
+    };
+    let flags = entry.access_flags;
+    let descriptor = entry.descriptor.clone();
+    if flags & ACC_STATIC != 0 || flags & ACC_VOLATILE == 0 {
+        return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+    }
+    let type_ok = if expected.is_empty() {
+        descriptor.starts_with('L') || descriptor.starts_with('[')
+    } else {
+        descriptor == expected
+    };
+    if !type_ok {
+        return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+    }
+    if !updater_field_accessible(vm, target_class, flags) {
+        return Err(vm.throw_new("java/lang/IllegalAccessException", None));
+    }
     let class = vm.resolve_class(class_name)?;
     let instance = vm.new_instance(class)?;
     let (declaring, field) = vm.find_field(class, "fieldName", "Ljava/lang/String;")?;
     vm.set_instance_ref(instance, declaring, field, name);
     Ok(instance)
+}
+
+/// Whether the current Java caller may access a field of `declaring`, per the
+/// JLS member-access rules used by the atomic field updaters.
+fn updater_field_accessible(vm: &Vm<'_>, declaring: ClassId, flags: u16) -> bool {
+    if flags & ACC_PUBLIC != 0 {
+        return true;
+    }
+    let Some(caller) = vm.caller_class() else {
+        return false;
+    };
+    if vm.nest_host(caller) == vm.nest_host(declaring) {
+        return true;
+    }
+    if flags & ACC_PRIVATE != 0 {
+        return false;
+    }
+    let package_of = |class: ClassId| {
+        vm.class_name(class)
+            .rsplit_once('/')
+            .map(|(package, _)| package)
+            .unwrap_or("")
+            .to_string()
+    };
+    if package_of(caller) == package_of(declaring) {
+        return true;
+    }
+    if flags & ACC_PROTECTED != 0 {
+        let mut current = Some(caller);
+        while let Some(id) = current {
+            if id == declaring {
+                return true;
+            }
+            current = vm.classes.get(id).super_class;
+        }
+    }
+    false
 }
 
 fn updater_field_name(vm: &Vm<'_>, this: ObjectRef) -> String {
@@ -1719,7 +1787,9 @@ const ATOMIC_INTEGER_FIELD_UPDATER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
             object(field_updater_new(
                 vm,
                 "java/util/concurrent/atomic/AtomicIntegerFieldUpdater",
+                ref_arg(args, 0),
                 ref_arg(args, 1),
+                "I",
             )?)
         },
     ),
@@ -1876,7 +1946,9 @@ const ATOMIC_LONG_FIELD_UPDATER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
             object(field_updater_new(
                 vm,
                 "java/util/concurrent/atomic/AtomicLongFieldUpdater",
+                ref_arg(args, 0),
                 ref_arg(args, 1),
+                "J",
             )?)
         },
     ),
@@ -2033,7 +2105,9 @@ const ATOMIC_REFERENCE_FIELD_UPDATER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
             object(field_updater_new(
                 vm,
                 "java/util/concurrent/atomic/AtomicReferenceFieldUpdater",
+                ref_arg(args, 0),
                 ref_arg(args, 2),
+                "",
             )?)
         },
     ),
