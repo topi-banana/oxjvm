@@ -2677,7 +2677,56 @@ pub(crate) const SIMPLE_BEAN_INFO: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const BEANS_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+/// Allocate an exception instance without throwing it, for use as a cause.
+fn beans_exception(
+    vm: &mut Vm<'_>,
+    class_name: &str,
+    message: Option<&str>,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class(class_name)?;
+    let (ctor_class, ctor) = if message.is_some() {
+        vm.find_method(class, "<init>", "(Ljava/lang/String;)V")
+    } else {
+        vm.find_method(class, "<init>", "()V")
+    }
+    .ok_or_else(|| VmError::internal("exception constructor missing"))?;
+    let object = vm.new_instance(class)?;
+    let mut args = vec![Value::Ref(object)];
+    if let Some(text) = message {
+        args.push(Value::Ref(vm.intern(text)?));
+    }
+    vm.invoke_method(ctor_class, ctor, args)?;
+    Ok(object)
+}
+
+/// A `ClassNotFoundException` carrying both a message and a cause, as
+/// `Beans.instantiate` reports a failed class instantiation.
+fn beans_cnfe(vm: &mut Vm<'_>, message: &str, cause: ObjectRef) -> VmError {
+    let result = (|| -> Result<ObjectRef, VmError> {
+        let class = vm.resolve_class("java/lang/ClassNotFoundException")?;
+        let (ctor_class, ctor) = vm
+            .find_method(
+                class,
+                "<init>",
+                "(Ljava/lang/String;Ljava/lang/Throwable;)V",
+            )
+            .ok_or_else(|| VmError::internal("ClassNotFoundException constructor missing"))?;
+        let object = vm.new_instance(class)?;
+        let message = vm.intern(message)?;
+        vm.invoke_method(
+            ctor_class,
+            ctor,
+            vec![Value::Ref(object), Value::Ref(message), Value::Ref(cause)],
+        )?;
+        Ok(object)
+    })();
+    match result {
+        Ok(exception) => VmError::Thrown(exception),
+        Err(error) => error,
+    }
+}
+
+const BEANS_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
     method(
         "isInstanceOf",
         "(Ljava/lang/Object;Ljava/lang/Class;)Z",
@@ -2710,6 +2759,45 @@ const BEANS_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
             if let Some((declaring, ctor)) = vm.find_method(class, "<init>", "()V") {
                 vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
             }
+            object(instance)
+        },
+    ),
+    method(
+        "instantiate",
+        "(Ljava/lang/ClassLoader;Ljava/lang/String;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let bean_name = vm.string_value(ref_arg(args, 1)).unwrap_or_default();
+            // Loading a serialized `.ser` resource requires object serialization,
+            // which is not supported; fall through to instantiating the class.
+            let binary = bean_name.replace('.', "/");
+            let Some(class) = vm.resolve_class_lenient(&binary) else {
+                return Err(vm.throw_new("java/lang/ClassNotFoundException", Some(&bean_name)));
+            };
+            let modifiers = {
+                let definition = vm.classes.get(class);
+                definition
+                    .inner_class_access_flags
+                    .unwrap_or(definition.access_flags & !ACC_SUPER)
+            };
+            if modifiers & ACC_PUBLIC == 0 {
+                let message = alloc::format!("class {binary} : no public access");
+                return Err(vm.throw_new("java/lang/ClassNotFoundException", Some(&message)));
+            }
+            let Some((ctor_class, ctor)) = vm.find_method(class, "<init>", "()V") else {
+                let cause = beans_exception(vm, "java/lang/InstantiationException", Some(&binary))?;
+                let message = alloc::format!("class {binary} : java.lang.InstantiationException");
+                return Err(beans_cnfe(vm, &message, cause));
+            };
+            let (_, _, flags) = crate::reflect::method_entry(vm, ctor_class, ctor);
+            if flags & ACC_PUBLIC == 0 {
+                let cause = beans_exception(vm, "java/lang/IllegalAccessException", Some(&binary))?;
+                let message = alloc::format!("class {binary} : java.lang.IllegalAccessException");
+                return Err(beans_cnfe(vm, &message, cause));
+            }
+            vm.ensure_initialized(class)?;
+            let instance = vm.new_instance(class)?;
+            vm.invoke_method(ctor_class, ctor, vec![Value::Ref(instance)])?;
             object(instance)
         },
     ),
