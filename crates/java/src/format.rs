@@ -1790,6 +1790,8 @@ const FIELD_POSITION_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
 const PARSE_POSITION_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
         write_int_field(vm, receiver(args), "index", int_arg(args, 1));
+        // The JDK starts with no error; a successful parse leaves this untouched.
+        write_int_field(vm, receiver(args), "errorIndex", -1);
         void()
     }),
     method("getIndex", "()I", ACC_PUBLIC, |vm, _, args| {

@@ -648,7 +648,39 @@ fn non_lenient_field_error(pattern: &str, text: &str) -> Option<usize> {
 /// names (including the AM/PM marker, which the loose numeric scan ignores) so
 /// times of day parse correctly. Falls back to the loose scan when the pattern
 /// yields no field at all.
-fn sdf_parse_millis(pattern: &str, text: &str, two_digit_start: i64) -> i64 {
+/// A `ParseException` carrying the offset where a date parse went wrong.
+fn parse_exception(vm: &mut Vm<'_>, offset: usize) -> VmError {
+    let result = (|| -> Result<ObjectRef, VmError> {
+        let class = vm.resolve_class("java/text/ParseException")?;
+        let (ctor_class, ctor) = vm
+            .find_method(class, "<init>", "(Ljava/lang/String;I)V")
+            .ok_or_else(|| {
+                VmError::internal("ParseException lacks its (String,int) constructor")
+            })?;
+        let instance = vm.new_instance(class)?;
+        let message = vm.intern("Unparsable date")?;
+        vm.invoke_method(
+            ctor_class,
+            ctor,
+            vec![
+                Value::Ref(instance),
+                Value::Ref(message),
+                int(offset as i32)?,
+            ],
+        )?;
+        Ok(instance)
+    })();
+    match result {
+        Ok(exception) => VmError::Thrown(exception),
+        Err(error) => error,
+    }
+}
+
+fn sdf_parse_millis(
+    pattern: &str,
+    text: &str,
+    two_digit_start: i64,
+) -> Result<(i64, usize), usize> {
     let p: Vec<char> = pattern.chars().collect();
     let t: Vec<char> = text.chars().collect();
     let mut pi = 0;
@@ -773,7 +805,15 @@ fn sdf_parse_millis(pattern: &str, text: &str, two_digit_start: i64) -> i64 {
                     break;
                 }
             }
-        } else if matches!(ch, 'E' | 'z' | 'Z') || (ch == 'Q' && run >= 3) {
+        } else if ch == 'z' {
+            // A general zone name must be recognizable; an unknown one is where the
+            // parse fails, reported through the error index.
+            let rest: String = t[ti..].iter().collect();
+            match crate::lang::match_zone_name(&rest) {
+                Some(len) => ti += len,
+                None => return Err(ti),
+            }
+        } else if matches!(ch, 'E' | 'Z') || (ch == 'Q' && run >= 3) {
             while ti < t.len() && t[ti].is_alphabetic() {
                 ti += 1;
             }
@@ -787,7 +827,7 @@ fn sdf_parse_millis(pattern: &str, text: &str, two_digit_start: i64) -> i64 {
         pi += run;
     }
     if !any {
-        return crate::format::parse_date_text(text);
+        return Ok((crate::format::parse_date_text(text), t.len()));
     }
     let hour = match (hour, pm) {
         (None, Some(is_pm)) => i64::from(is_pm) * 12,
@@ -795,14 +835,15 @@ fn sdf_parse_millis(pattern: &str, text: &str, two_digit_start: i64) -> i64 {
         (Some(h), _) => h,
         (None, None) => 0,
     };
-    crate::format::millis_from_civil(
+    let millis = crate::format::millis_from_civil(
         year.unwrap_or(1970),
         month.unwrap_or(1),
         day.unwrap_or(1),
         hour,
         minute.unwrap_or(0),
         second.unwrap_or(0),
-    ) + milli.unwrap_or(0)
+    ) + milli.unwrap_or(0);
+    Ok((millis, ti))
 }
 
 fn simple_date_format_millis(vm: &mut Vm<'_>, date: ObjectRef) -> Result<i64, VmError> {
@@ -937,11 +978,14 @@ const SIMPLE_DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
                 }
             }
             let pattern = simple_date_format_pattern(vm, receiver(args));
-            let millis = sdf_parse_millis(
+            let (millis, _) = match sdf_parse_millis(
                 &pattern,
                 &input,
                 sdf_two_digit_start_year(vm, receiver(args)),
-            );
+            ) {
+                Ok(parsed) => parsed,
+                Err(pos) => return Err(parse_exception(vm, pos)),
+            };
             let class = vm.resolve_class("java/util/Date")?;
             let instance = vm.new_instance(class)?;
             crate::lang::write_long_field(vm, instance, "time", millis);
@@ -955,27 +999,36 @@ const SIMPLE_DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
         |vm, _, args| {
             let position = ref_arg(args, 2);
             let input = vm.string_or_empty(ref_arg(args, 1));
-            if input.is_empty() {
-                write_int_field(vm, position, "errorIndex", 0);
+            let start = read_int_field(vm, position, "index").max(0) as usize;
+            let chars: Vec<char> = input.chars().collect();
+            if start >= chars.len() {
+                write_int_field(vm, position, "errorIndex", start as i32);
                 return object(ObjectRef::NULL);
             }
+            let text: String = chars[start..].iter().collect();
             if sdf_non_lenient(vm, receiver(args)) {
                 let pattern = simple_date_format_pattern(vm, receiver(args));
-                if let Some(error) = non_lenient_field_error(&pattern, &input) {
-                    write_int_field(vm, position, "errorIndex", error as i32);
+                if let Some(error) = non_lenient_field_error(&pattern, &text) {
+                    write_int_field(vm, position, "errorIndex", (start + error) as i32);
                     return object(ObjectRef::NULL);
                 }
             }
             let pattern = simple_date_format_pattern(vm, receiver(args));
-            let millis = sdf_parse_millis(
+            let (millis, consumed) = match sdf_parse_millis(
                 &pattern,
-                &input,
+                &text,
                 sdf_two_digit_start_year(vm, receiver(args)),
-            );
+            ) {
+                Ok(parsed) => parsed,
+                Err(pos) => {
+                    write_int_field(vm, position, "errorIndex", (start + pos) as i32);
+                    return object(ObjectRef::NULL);
+                }
+            };
             let class = vm.resolve_class("java/util/Date")?;
             let instance = vm.new_instance(class)?;
             crate::lang::write_long_field(vm, instance, "time", millis);
-            write_int_field(vm, position, "index", input.chars().count() as i32);
+            write_int_field(vm, position, "index", (start + consumed) as i32);
             object(instance)
         },
     ),

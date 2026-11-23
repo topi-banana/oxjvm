@@ -12211,6 +12211,57 @@ fn zone_id_valid(text: &str) -> bool {
     false
 }
 
+/// The number of characters a leading numeric zone offset (`+09:00`, `-0500`, `+09`)
+/// spans, validated the same way [`zone_offset_parse`] reads it.
+fn zone_offset_len(text: &str) -> Option<usize> {
+    let mut best = None;
+    for len in [3, 5, 6, 7, 9] {
+        if text.chars().count() >= len {
+            let prefix: String = text.chars().take(len).collect();
+            if zone_offset_parse(&prefix).is_some() {
+                best = Some(len);
+            }
+        }
+    }
+    best
+}
+
+/// The length of the time-zone name a `z` pattern field reads at the start of `text`,
+/// matching region ids, short ids and common abbreviations the way
+/// `SimpleDateFormat.subParseZoneString` does. `None` when no zone name starts here,
+/// which is where a parse reports its error index.
+pub(crate) fn match_zone_name(text: &str) -> Option<usize> {
+    let mut best = 0usize;
+    for id in ZONE_REGION_IDS {
+        if text.starts_with(id) {
+            best = best.max(id.chars().count());
+        }
+    }
+    for (short, _) in ZONE_SHORT_IDS {
+        if text.starts_with(short) {
+            best = best.max(short.chars().count());
+        }
+    }
+    for abbrev in [
+        "UTC", "GMT", "UT", "EST", "EDT", "CST", "CDT", "MST", "MDT", "PST", "PDT", "JST", "KST",
+        "CET", "CEST", "EET", "EEST", "WET", "WEST", "BST", "IST", "HST", "AKST", "AKDT", "NST",
+        "NDT", "AEST", "AEDT", "ACST", "ACDT", "AWST",
+    ] {
+        if text.starts_with(abbrev) {
+            best = best.max(abbrev.chars().count());
+        }
+    }
+    // A GMT/UTC prefix may carry a numeric offset, as in "GMT+09:00".
+    for prefix in ["GMT", "UTC", "UT"] {
+        if let Some(rest) = text.strip_prefix(prefix) {
+            if let Some(offset_len) = zone_offset_len(rest) {
+                best = best.max(prefix.chars().count() + offset_len);
+            }
+        }
+    }
+    if best > 0 { Some(best) } else { None }
+}
+
 fn zone_id_new(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
     let mut text = string_arg(vm, args[0])?;
     if args.len() > 1 {
