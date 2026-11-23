@@ -705,7 +705,189 @@ pub(crate) const CODER_RESULT: oxjvm_vm::NativeClass = class(
     Some(coder_result_clinit),
 );
 
-const CHARSET_ENCODER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+// -------------------------------------------------------------------------------------------
+// CodingErrorAction
+// -------------------------------------------------------------------------------------------
+
+const CODING_ERROR_ACTION_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "toString",
+    "()Ljava/lang/String;",
+    ACC_PUBLIC,
+    |vm, _, args| {
+        let this = receiver(args);
+        let name = vm
+            .read_string_field(this, vm.class_of(this), "name")
+            .unwrap_or_default();
+        object(vm.make_string(&name)?)
+    },
+)];
+
+fn coding_error_action_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/nio/charset/CodingErrorAction")?;
+    for name in ["REPLACE", "IGNORE", "REPORT"] {
+        let instance = vm.new_instance(class)?;
+        let string = vm.make_string(name)?;
+        let (declaring, field) = vm.find_field(class, "name", "Ljava/lang/String;")?;
+        vm.set_instance_ref(instance, declaring, field, string);
+        vm.set_static_value(
+            class,
+            name,
+            "Ljava/nio/charset/CodingErrorAction;",
+            Value::Ref(instance),
+        );
+    }
+    Ok(())
+}
+
+pub(crate) const CODING_ERROR_ACTION: oxjvm_vm::NativeClass = class(
+    "java/nio/charset/CodingErrorAction",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field(
+            "REPLACE",
+            "Ljava/nio/charset/CodingErrorAction;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "IGNORE",
+            "Ljava/nio/charset/CodingErrorAction;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "REPORT",
+            "Ljava/nio/charset/CodingErrorAction;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+    ],
+    &CODING_ERROR_ACTION_METHODS,
+    Some(coding_error_action_clinit),
+);
+
+/// The shared `CodingErrorAction` constant `name` (e.g. `REPLACE`).
+fn coding_error_action(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/nio/charset/CodingErrorAction")?;
+    vm.ensure_initialized(class)?;
+    Ok(vm
+        .read_static_ref_if_set(class, name, "Ljava/nio/charset/CodingErrorAction;")
+        .unwrap_or(ObjectRef::NULL))
+}
+
+/// Store a coder's malformed/unmappable action, rejecting `null` as the JDK does.
+fn set_coder_action(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    field_name: &str,
+    action: ObjectRef,
+) -> Result<(), VmError> {
+    if action.is_null() {
+        return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+    }
+    let (declaring, field) = vm.find_field(
+        vm.class_of(this),
+        field_name,
+        "Ljava/nio/charset/CodingErrorAction;",
+    )?;
+    vm.set_instance_ref(this, declaring, field, action);
+    Ok(())
+}
+
+/// Read a coder's action, defaulting to `REPORT` when it has not been set.
+fn get_coder_action(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    field_name: &str,
+) -> Result<ObjectRef, VmError> {
+    let action = vm
+        .read_ref_field(
+            this,
+            vm.class_of(this),
+            field_name,
+            "Ljava/nio/charset/CodingErrorAction;",
+        )
+        .unwrap_or(ObjectRef::NULL);
+    if action.is_null() {
+        coding_error_action(vm, "REPORT")
+    } else {
+        Ok(action)
+    }
+}
+
+/// Whether a UTF-16 unit sequence has no unpaired surrogate.
+fn utf16_units_valid(units: &[u16]) -> bool {
+    let mut index = 0;
+    while index < units.len() {
+        let unit = units[index];
+        if (0xD800..0xDC00).contains(&unit) {
+            match units.get(index + 1) {
+                Some(&low) if (0xDC00..0xE000).contains(&low) => index += 2,
+                _ => return false,
+            }
+        } else if (0xDC00..0xE000).contains(&unit) {
+            return false;
+        } else {
+            index += 1;
+        }
+    }
+    true
+}
+
+/// `CharsetEncoder.isLegalReplacement`: the bytes must be a well-formed encoded
+/// sequence for the charset (no malformed input, no unpaired surrogate).
+fn is_legal_replacement(bytes: &[u8], canonical: &str) -> bool {
+    match canonical {
+        "US-ASCII" => bytes.iter().all(|&byte| byte < 0x80),
+        "ISO-8859-1" => true,
+        "UTF-16" | "UTF-16BE" | "UTF-16LE" => {
+            let mut body = bytes;
+            let mut little = canonical == "UTF-16LE";
+            if canonical == "UTF-16" {
+                little = false;
+                if bytes.len() >= 2 {
+                    match (bytes[0], bytes[1]) {
+                        (0xFE, 0xFF) => body = &bytes[2..],
+                        (0xFF, 0xFE) => {
+                            body = &bytes[2..];
+                            little = true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if body.len() % 2 != 0 {
+                return false;
+            }
+            let combine = if little {
+                u16::from_le_bytes
+            } else {
+                u16::from_be_bytes
+            };
+            utf16_units_valid(&utf16_units(body, combine))
+        }
+        "UTF-8" => core::str::from_utf8(bytes).is_ok(),
+        _ => true,
+    }
+}
+
+/// Read a `byte[]` argument into a Rust byte vector.
+fn byte_array_bytes(vm: &mut Vm<'_>, array: ObjectRef) -> Result<Vec<u8>, VmError> {
+    if array.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let length = vm.array_length(array)?;
+    let mut bytes = Vec::with_capacity(length);
+    for index in 0..length {
+        bytes.push(vm.array_get(array, index as i32)?.as_int() as u8);
+    }
+    Ok(bytes)
+}
+
+const CHARSET_ENCODER_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method(
         "charset",
         "()Ljava/nio/charset/Charset;",
@@ -784,6 +966,58 @@ const CHARSET_ENCODER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         |_, _, _| boolean(true),
     ),
     method("canEncode", "(C)Z", ACC_PUBLIC, |_, _, _| boolean(true)),
+    method(
+        "onMalformedInput",
+        "(Ljava/nio/charset/CodingErrorAction;)Ljava/nio/charset/CharsetEncoder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            set_coder_action(vm, this, "malformedInputAction", ref_arg(args, 1))?;
+            object(this)
+        },
+    ),
+    method(
+        "onUnmappableCharacter",
+        "(Ljava/nio/charset/CodingErrorAction;)Ljava/nio/charset/CharsetEncoder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            set_coder_action(vm, this, "unmappableCharacterAction", ref_arg(args, 1))?;
+            object(this)
+        },
+    ),
+    method(
+        "malformedInputAction",
+        "()Ljava/nio/charset/CodingErrorAction;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(get_coder_action(
+                vm,
+                receiver(args),
+                "malformedInputAction",
+            )?)
+        },
+    ),
+    method(
+        "unmappableCharacterAction",
+        "()Ljava/nio/charset/CodingErrorAction;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(get_coder_action(
+                vm,
+                receiver(args),
+                "unmappableCharacterAction",
+            )?)
+        },
+    ),
+    method("isLegalReplacement", "([B)Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let name = vm
+            .read_string_field(this, vm.class_of(this), "charset")
+            .unwrap_or_default();
+        let bytes = byte_array_bytes(vm, ref_arg(args, 1))?;
+        boolean(is_legal_replacement(&bytes, &name))
+    }),
 ];
 
 fn coder_result(vm: &mut Vm<'_>, kind: i32) -> Result<ObjectRef, VmError> {
@@ -800,7 +1034,21 @@ pub(crate) const CHARSET_ENCODER: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_ABSTRACT,
-    &[field("charset", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &[
+        field("charset", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field(
+            "malformedInputAction",
+            "Ljava/nio/charset/CodingErrorAction;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field(
+            "unmappableCharacterAction",
+            "Ljava/nio/charset/CodingErrorAction;",
+            ACC_PRIVATE,
+            None,
+        ),
+    ],
     &CHARSET_ENCODER_METHODS,
     None,
 );
@@ -815,7 +1063,7 @@ pub(crate) const OJVM_CHARSET_ENCODER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const CHARSET_DECODER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+const CHARSET_DECODER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method(
         "charset",
         "()Ljava/nio/charset/Charset;",
@@ -879,6 +1127,50 @@ const CHARSET_DECODER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
             object(coder_result(vm, 1)?)
         },
     ),
+    method(
+        "onMalformedInput",
+        "(Ljava/nio/charset/CodingErrorAction;)Ljava/nio/charset/CharsetDecoder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            set_coder_action(vm, this, "malformedInputAction", ref_arg(args, 1))?;
+            object(this)
+        },
+    ),
+    method(
+        "onUnmappableCharacter",
+        "(Ljava/nio/charset/CodingErrorAction;)Ljava/nio/charset/CharsetDecoder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            set_coder_action(vm, this, "unmappableCharacterAction", ref_arg(args, 1))?;
+            object(this)
+        },
+    ),
+    method(
+        "malformedInputAction",
+        "()Ljava/nio/charset/CodingErrorAction;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(get_coder_action(
+                vm,
+                receiver(args),
+                "malformedInputAction",
+            )?)
+        },
+    ),
+    method(
+        "unmappableCharacterAction",
+        "()Ljava/nio/charset/CodingErrorAction;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(get_coder_action(
+                vm,
+                receiver(args),
+                "unmappableCharacterAction",
+            )?)
+        },
+    ),
 ];
 
 pub(crate) const CHARSET_DECODER: oxjvm_vm::NativeClass = class(
@@ -886,7 +1178,21 @@ pub(crate) const CHARSET_DECODER: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_ABSTRACT,
-    &[field("charset", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &[
+        field("charset", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field(
+            "malformedInputAction",
+            "Ljava/nio/charset/CodingErrorAction;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field(
+            "unmappableCharacterAction",
+            "Ljava/nio/charset/CodingErrorAction;",
+            ACC_PRIVATE,
+            None,
+        ),
+    ],
     &CHARSET_DECODER_METHODS,
     None,
 );
