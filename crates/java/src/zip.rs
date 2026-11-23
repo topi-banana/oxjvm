@@ -1984,15 +1984,82 @@ fn gzip_header_end(comp: &[u8]) -> Result<usize, VmError> {
     Ok(pos)
 }
 
+/// Read one unsigned byte from `input` via its single-byte `read()`, validating
+/// the result range exactly as `GZIPInputStream.readUByte` does: EOF raises
+/// `EOFException`, and a value outside `-1..255` raises `IOException`.
+fn read_ubyte(vm: &mut Vm<'_>, input: ObjectRef) -> Result<u8, VmError> {
+    let (class, method) = vm.resolve_virtual_method(input, "read", "()I")?;
+    let byte = vm
+        .invoke_method(class, method, vec![Value::Ref(input)])?
+        .as_int();
+    if byte == -1 {
+        return Err(vm.throw_new("java/io/EOFException", None));
+    }
+    if !(-1..=255).contains(&byte) {
+        let name = vm.class_name(vm.class_of(input)).replace('/', ".");
+        let message = alloc::format!("{name}.read() returned value out of range -1..255: {byte}");
+        return Err(vm.throw_new("java/io/IOException", Some(&message)));
+    }
+    Ok(byte as u8)
+}
+
+/// Read a GZIP member header eagerly (as the JDK constructor does), returning
+/// the header bytes so the decompression path can prepend them to the rest of
+/// the stream.
+fn read_gzip_header_eager(vm: &mut Vm<'_>, input: ObjectRef) -> Result<Vec<u8>, VmError> {
+    let mut hdr = Vec::new();
+    for _ in 0..10 {
+        hdr.push(read_ubyte(vm, input)?);
+    }
+    if hdr[0] != 0x1f || hdr[1] != 0x8b || hdr[2] != 8 {
+        return Err(vm.throw_new("java/util/zip/ZipException", Some("Not in GZIP format")));
+    }
+    let flg = hdr[3];
+    if flg & 0x04 != 0 {
+        let lo = read_ubyte(vm, input)?;
+        let hi = read_ubyte(vm, input)?;
+        hdr.push(lo);
+        hdr.push(hi);
+        let xlen = u16::from_le_bytes([lo, hi]) as usize;
+        for _ in 0..xlen {
+            hdr.push(read_ubyte(vm, input)?);
+        }
+    }
+    for mask in [0x08, 0x10] {
+        if flg & mask != 0 {
+            loop {
+                let byte = read_ubyte(vm, input)?;
+                hdr.push(byte);
+                if byte == 0 {
+                    break;
+                }
+            }
+        }
+    }
+    if flg & 0x02 != 0 {
+        hdr.push(read_ubyte(vm, input)?);
+        hdr.push(read_ubyte(vm, input)?);
+    }
+    Ok(hdr)
+}
+
 fn ensure_decompressed(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
     if read_int_field(vm, this, "filled") != 0 {
         return Ok(());
     }
     let input = filter_in(vm, this);
-    let comp = read_all_input(vm, input)?;
+    let mut comp = read_all_input(vm, input)?;
     let inf =
         read_ref_field(vm, this, "inf", "Ljava/util/zip/Inflater;").unwrap_or(ObjectRef::NULL);
     let gzip = read_int_field(vm, this, "gzip") != 0;
+    if gzip {
+        let header = read_buf_field(vm, this, "gzhdr");
+        if !header.is_empty() {
+            let mut full = header;
+            full.extend_from_slice(&comp);
+            comp = full;
+        }
+    }
     let data: Vec<u8>;
     let mut trailer_crc = 0u32;
     let mut trailer_size = 0u32;
@@ -2233,6 +2300,8 @@ const GZIP_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
             let (class, method) = vm.resolve_virtual_method(inf, "<init>", "(Z)V")?;
             vm.invoke_method(class, method, vec![Value::Ref(inf), Value::Int(1)])?;
             inflater_stream_ctor(vm, this, ref_arg(args, 1), inf, true)?;
+            let header = read_gzip_header_eager(vm, ref_arg(args, 1))?;
+            write_buf_field(vm, this, "gzhdr", &header)?;
             void()
         },
     ),
@@ -2249,6 +2318,8 @@ const GZIP_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
             let (class, method) = vm.resolve_virtual_method(inf, "<init>", "(Z)V")?;
             vm.invoke_method(class, method, vec![Value::Ref(inf), Value::Int(1)])?;
             inflater_stream_ctor(vm, this, ref_arg(args, 1), inf, true)?;
+            let header = read_gzip_header_eager(vm, ref_arg(args, 1))?;
+            write_buf_field(vm, this, "gzhdr", &header)?;
             void()
         },
     ),
@@ -2259,7 +2330,7 @@ pub(crate) const GZIP_INPUT_STREAM: oxjvm_vm::NativeClass = class(
     Some("java/util/zip/InflaterInputStream"),
     &[],
     ACC_PUBLIC,
-    &[],
+    &[field("gzhdr", "[B", ACC_PRIVATE, None)],
     &GZIP_INPUT_STREAM_METHODS,
     None,
 );
