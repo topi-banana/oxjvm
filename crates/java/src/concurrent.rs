@@ -2932,7 +2932,11 @@ pub(crate) const PRIORITY_BLOCKING_QUEUE: oxjvm_vm::NativeClass = class(
     Some("java/util/PriorityQueue"),
     &["java/util/concurrent/BlockingQueue", "java/io/Serializable"],
     ACC_PUBLIC,
-    &[],
+    &[
+        field("queue", "[Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("size", "I", ACC_PRIVATE, None),
+        field("comparator", "Ljava/util/Comparator;", ACC_PRIVATE, None),
+    ],
     &PRIORITY_BLOCKING_QUEUE_METHODS,
     None,
 );

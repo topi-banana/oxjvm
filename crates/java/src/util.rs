@@ -6984,12 +6984,11 @@ fn collection_remove_if(
 
 pub(crate) fn array_list_elements(vm: &Vm<'_>, this: ObjectRef) -> Vec<ObjectRef> {
     let size = crate::lang::read_int_field(vm, this, "size").max(0) as usize;
-    match vm.read_ref_field(
-        this,
-        vm.class_of(this),
-        "elementData",
-        "[Ljava/lang/Object;",
-    ) {
+    let class = vm.class_of(this);
+    let array = vm
+        .read_ref_field(this, class, "queue", "[Ljava/lang/Object;")
+        .or_else(|| vm.read_ref_field(this, class, "elementData", "[Ljava/lang/Object;"));
+    match array {
         Some(array) => match vm.heap.get(array).map(|object| &object.data) {
             Some(ObjectData::Array(ArrayData::Reference(elements))) => {
                 let mut elements = elements.clone();
@@ -7008,7 +7007,10 @@ pub(crate) fn array_list_store(
     elements: &[ObjectRef],
 ) -> Result<(), VmError> {
     let class = vm.class_of(this);
-    let (declaring, field) = vm.find_field(class, "elementData", "[Ljava/lang/Object;")?;
+    let (declaring, field) = match vm.find_field_opt(class, "queue", "[Ljava/lang/Object;") {
+        Some(found) => found,
+        None => vm.find_field(class, "elementData", "[Ljava/lang/Object;")?,
+    };
     let object_class = vm.resolve_class("java/lang/Object")?;
     let array = vm.allocate_object_array(object_class, elements.len().max(1))?;
     for (index, element) in elements.iter().enumerate() {
@@ -8343,7 +8345,7 @@ pub(crate) const PRIORITY_QUEUE: oxjvm_vm::NativeClass = class(
     &["java/io/Serializable"],
     ACC_PUBLIC,
     &[
-        field("elementData", "[Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("queue", "[Ljava/lang/Object;", ACC_PRIVATE, None),
         field("size", "I", ACC_PRIVATE, None),
         field("comparator", "Ljava/util/Comparator;", ACC_PRIVATE, None),
         field("modCount", "I", ACC_PRIVATE, None),
