@@ -693,6 +693,606 @@ const KEY_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
     ),
 ];
 
+// -------------------------------------------------------------------------------------------
+// java.security.Principal / Certificate (deprecated) / Identity / IdentityScope
+// -------------------------------------------------------------------------------------------
+
+pub(crate) const PRINCIPAL: oxjvm_vm::NativeClass = class(
+    "java/security/Principal",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &PRINCIPAL_METHODS,
+    None,
+);
+
+const PRINCIPAL_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "getName",
+    "()Ljava/lang/String;",
+    ACC_PUBLIC | ACC_ABSTRACT,
+    crate::lang::abstract_method_pub,
+)];
+
+pub(crate) const SECURITY_CERTIFICATE: oxjvm_vm::NativeClass = class(
+    "java/security/Certificate",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &SECURITY_CERTIFICATE_METHODS,
+    None,
+);
+
+const SECURITY_CERTIFICATE_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method(
+        "getGuarantor",
+        "()Ljava/security/Principal;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getPrincipal",
+        "()Ljava/security/Principal;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getPublicKey",
+        "()Ljava/security/PublicKey;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "encode",
+        "(Ljava/io/OutputStream;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "decode",
+        "(Ljava/io/InputStream;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getFormat",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "toString",
+        "(Z)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
+/// Identity.keyEquals: formats must match ignoring case (or both be null)
+/// and the encoded key bytes must be identical.
+fn identity_key_equals(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmError> {
+    if a.is_null() || b.is_null() {
+        return Ok(false);
+    }
+    let (declaring, get_format) =
+        vm.resolve_virtual_method(a, "getFormat", "()Ljava/lang/String;")?;
+    let format_a = vm.invoke_method(declaring, get_format, vec![Value::Ref(a)])?;
+    let format_b = vm.invoke_method(declaring, get_format, vec![Value::Ref(b)])?;
+    let text_a = format_a.as_ref();
+    let text_b = format_b.as_ref();
+    if text_a.is_null() != text_b.is_null() {
+        return Ok(false);
+    }
+    if !text_a.is_null() {
+        let sa = vm.string_value(text_a).unwrap_or_default();
+        let sb = vm.string_value(text_b).unwrap_or_default();
+        if !sa.eq_ignore_ascii_case(&sb) {
+            return Ok(false);
+        }
+    }
+    let (declaring, get_encoded) = vm.resolve_virtual_method(a, "getEncoded", "()[B")?;
+    let encoded_a = vm.invoke_method(declaring, get_encoded, vec![Value::Ref(a)])?;
+    let encoded_b = vm.invoke_method(declaring, get_encoded, vec![Value::Ref(b)])?;
+    let bytes_a = encoded_a.as_ref();
+    let bytes_b = encoded_b.as_ref();
+    if bytes_a.is_null() || bytes_b.is_null() {
+        return Ok(bytes_a.is_null() && bytes_b.is_null());
+    }
+    let len_a = vm.array_length(bytes_a)?;
+    let len_b = vm.array_length(bytes_b)?;
+    if len_a != len_b {
+        return Ok(false);
+    }
+    for index in 0..len_a {
+        if vm.array_get(bytes_a, index as i32)?.as_int()
+            != vm.array_get(bytes_b, index as i32)?.as_int()
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn identity_full_name(vm: &Vm<'_>, this: ObjectRef) -> String {
+    let name = string_field(vm, this, "name");
+    let scope = ref_field(vm, this, "scope", "Ljava/security/IdentityScope;");
+    if scope.is_null() {
+        name
+    } else {
+        alloc::format!("{name}.{}", string_field(vm, scope, "name"))
+    }
+}
+
+pub(crate) const IDENTITY: oxjvm_vm::NativeClass = class(
+    "java/security/Identity",
+    Some("java/lang/Object"),
+    &["java/security/Principal", "java/io/Serializable"],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[
+        field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("scope", "Ljava/security/IdentityScope;", ACC_PRIVATE, None),
+        field("publicKey", "Ljava/security/PublicKey;", ACC_PRIVATE, None),
+        field("info", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("certs", "Ljava/util/ArrayList;", ACC_PRIVATE, None),
+    ],
+    &IDENTITY_METHODS,
+    None,
+);
+
+const IDENTITY_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+    method("<init>", "()V", ACC_PROTECTED, |vm, _, args| {
+        let class = vm.resolve_class("java/security/Identity")?;
+        let (declaring, ctor) = vm
+            .find_method(class, "<init>", "(Ljava/lang/String;)V")
+            .ok_or_else(|| VmError::internal("Identity lacks <init>"))?;
+        let name = vm.make_string("restoring...")?;
+        vm.invoke_method(declaring, ctor, vec![args[0], Value::Ref(name)])?;
+        void()
+    }),
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            set_ref_field(
+                vm,
+                receiver(args),
+                "name",
+                "Ljava/lang/String;",
+                ref_arg(args, 1),
+            )?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/security/IdentityScope;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.resolve_class("java/security/Identity")?;
+            let (declaring, ctor) = vm
+                .find_method(class, "<init>", "(Ljava/lang/String;)V")
+                .ok_or_else(|| VmError::internal("Identity lacks <init>"))?;
+            vm.invoke_method(declaring, ctor, vec![args[0], args[1]])?;
+            let scope = ref_arg(args, 2);
+            if !scope.is_null() {
+                let (declaring, add) =
+                    vm.resolve_virtual_method(scope, "addIdentity", "(Ljava/security/Identity;)V")?;
+                vm.invoke_method(declaring, add, vec![Value::Ref(scope), Value::Ref(this)])?;
+            }
+            set_ref_field(vm, this, "scope", "Ljava/security/IdentityScope;", scope)?;
+            void()
+        },
+    ),
+    method(
+        "getName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| object(ref_field(vm, receiver(args), "name", "Ljava/lang/String;")),
+    ),
+    method(
+        "getScope",
+        "()Ljava/security/IdentityScope;",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "scope",
+                "Ljava/security/IdentityScope;",
+            ))
+        },
+    ),
+    method(
+        "getPublicKey",
+        "()Ljava/security/PublicKey;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "publicKey",
+                "Ljava/security/PublicKey;",
+            ))
+        },
+    ),
+    method(
+        "setPublicKey",
+        "(Ljava/security/PublicKey;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            set_ref_field(
+                vm,
+                this,
+                "publicKey",
+                "Ljava/security/PublicKey;",
+                ref_arg(args, 1),
+            )?;
+            let list = new_array_list(vm)?;
+            set_ref_field(vm, this, "certs", "Ljava/util/ArrayList;", list)?;
+            void()
+        },
+    ),
+    method(
+        "setInfo",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            set_ref_field(
+                vm,
+                receiver(args),
+                "info",
+                "Ljava/lang/String;",
+                ref_arg(args, 1),
+            )?;
+            void()
+        },
+    ),
+    method(
+        "getInfo",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| object(ref_field(vm, receiver(args), "info", "Ljava/lang/String;")),
+    ),
+    method(
+        "addCertificate",
+        "(Ljava/security/Certificate;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let certificate = ref_arg(args, 1);
+            let mut list = ref_field(vm, this, "certs", "Ljava/util/ArrayList;");
+            if list.is_null() {
+                list = new_array_list(vm)?;
+                set_ref_field(vm, this, "certs", "Ljava/util/ArrayList;", list)?;
+            }
+            let (declaring, get_public_key) = vm.resolve_virtual_method(
+                certificate,
+                "getPublicKey",
+                "()Ljava/security/PublicKey;",
+            )?;
+            let cert_key =
+                vm.invoke_method(declaring, get_public_key, vec![Value::Ref(certificate)])?;
+            let public_key = ref_field(vm, this, "publicKey", "Ljava/security/PublicKey;");
+            if !public_key.is_null() {
+                if !identity_key_equals(vm, public_key, cert_key.as_ref())? {
+                    return Err(vm.throw_new(
+                        "java/security/KeyManagementException",
+                        Some("public key different from cert public key"),
+                    ));
+                }
+            } else {
+                set_ref_field(
+                    vm,
+                    this,
+                    "publicKey",
+                    "Ljava/security/PublicKey;",
+                    cert_key.as_ref(),
+                )?;
+            }
+            list_add(vm, list, certificate)?;
+            void()
+        },
+    ),
+    method(
+        "removeCertificate",
+        "(Ljava/security/Certificate;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let list = ref_field(vm, receiver(args), "certs", "Ljava/util/ArrayList;");
+            if !list.is_null() {
+                let (declaring, remove) =
+                    vm.resolve_virtual_method(list, "remove", "(Ljava/lang/Object;)Z")?;
+                vm.invoke_method(declaring, remove, vec![Value::Ref(list), args[1]])?;
+            }
+            void()
+        },
+    ),
+    method(
+        "certificates",
+        "()[Ljava/security/Certificate;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let list = ref_field(vm, receiver(args), "certs", "Ljava/util/ArrayList;");
+            let elements = if list.is_null() {
+                Vec::new()
+            } else {
+                crate::util::array_list_elements(vm, list)
+            };
+            let cert_class = vm.resolve_class("java/security/Certificate")?;
+            let array = vm.allocate_object_array(cert_class, elements.len())?;
+            for (index, element) in elements.iter().enumerate() {
+                vm.array_set_ref(array, index, *element)?;
+            }
+            object(array)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC | ACC_FINAL,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if this == other {
+                return boolean(true);
+            }
+            let identity = vm.resolve_class("java/security/Identity")?;
+            if other.is_null() || !vm.is_instance(other, identity) {
+                return boolean(false);
+            }
+            if identity_full_name(vm, this) == identity_full_name(vm, other) {
+                return boolean(true);
+            }
+            let (declaring, identity_equals) =
+                vm.resolve_virtual_method(this, "identityEquals", "(Ljava/security/Identity;)Z")?;
+            let value = vm.invoke_method(
+                declaring,
+                identity_equals,
+                vec![Value::Ref(this), Value::Ref(other)],
+            )?;
+            boolean(value.as_int() != 0)
+        },
+    ),
+    method(
+        "identityEquals",
+        "(Ljava/security/Identity;)Z",
+        ACC_PROTECTED,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let this_name = string_field(vm, this, "name");
+            let other_name = string_field(vm, other, "name");
+            if !this_name.eq_ignore_ascii_case(&other_name) {
+                return boolean(false);
+            }
+            let this_key = ref_field(vm, this, "publicKey", "Ljava/security/PublicKey;");
+            let other_key = ref_field(vm, other, "publicKey", "Ljava/security/PublicKey;");
+            if this_key.is_null() != other_key.is_null() {
+                return boolean(false);
+            }
+            if !this_key.is_null() {
+                return boolean(ref_equals(vm, this_key, other_key)?);
+            }
+            boolean(true)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let name = string_field(vm, receiver(args), "name");
+        let units: Vec<u16> = name.encode_utf16().collect();
+        int(crate::lang::java_string_hash(&units))
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let name = string_field(vm, this, "name");
+            let scope = ref_field(vm, this, "scope", "Ljava/security/IdentityScope;");
+            let text = if scope.is_null() {
+                name
+            } else {
+                alloc::format!("{name}[{}]", string_field(vm, scope, "name"))
+            };
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "toString",
+        "(Z)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, to_string) =
+                vm.resolve_virtual_method(this, "toString", "()Ljava/lang/String;")?;
+            let value = vm.invoke_method(declaring, to_string, vec![Value::Ref(this)])?;
+            let mut out = vm.string_value(value.as_ref()).unwrap_or_default();
+            if args[1].as_int() != 0 {
+                let public_key = ref_field(vm, this, "publicKey", "Ljava/security/PublicKey;");
+                out += "\n";
+                out += if public_key.is_null() {
+                    "\tno public key"
+                } else {
+                    "\tpublic key initialized"
+                };
+                out += "\n";
+                let list = ref_field(vm, this, "certs", "Ljava/util/ArrayList;");
+                if list.is_null() {
+                    out += "\tno certificates";
+                } else {
+                    out += "\tcertificates: \n";
+                    for (index, cert) in crate::util::array_list_elements(vm, list)
+                        .iter()
+                        .enumerate()
+                    {
+                        let (declaring, get_principal) = vm.resolve_virtual_method(
+                            *cert,
+                            "getPrincipal",
+                            "()Ljava/security/Principal;",
+                        )?;
+                        let principal =
+                            vm.invoke_method(declaring, get_principal, vec![Value::Ref(*cert)])?;
+                        let (declaring, get_guarantor) = vm.resolve_virtual_method(
+                            *cert,
+                            "getGuarantor",
+                            "()Ljava/security/Principal;",
+                        )?;
+                        let guarantor =
+                            vm.invoke_method(declaring, get_guarantor, vec![Value::Ref(*cert)])?;
+                        out += &alloc::format!(
+                            "\tcertificate {}\tfor  : {}\n\t\t\tfrom : {}\n",
+                            index + 1,
+                            permission_display(vm, principal.as_ref())?,
+                            permission_display(vm, guarantor.as_ref())?
+                        );
+                    }
+                }
+                match opt_string_field(vm, this, "info") {
+                    Some(info) => out += &alloc::format!("\n\t{info}"),
+                    None => out += "\n\tno additional information available.",
+                }
+            }
+            object(vm.make_string(&out)?)
+        },
+    ),
+];
+
+pub(crate) const IDENTITY_SCOPE: oxjvm_vm::NativeClass = class(
+    "java/security/IdentityScope",
+    Some("java/security/Identity"),
+    &[],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[],
+    &IDENTITY_SCOPE_METHODS,
+    None,
+);
+
+const IDENTITY_SCOPE_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+    method("<init>", "()V", ACC_PROTECTED, |vm, _, args| {
+        let class = vm.resolve_class("java/security/IdentityScope")?;
+        let (declaring, ctor) = vm
+            .find_method(class, "<init>", "(Ljava/lang/String;)V")
+            .ok_or_else(|| VmError::internal("IdentityScope lacks <init>"))?;
+        let name = vm.make_string("restoring...")?;
+        vm.invoke_method(declaring, ctor, vec![args[0], Value::Ref(name)])?;
+        void()
+    }),
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let parent = vm.resolve_class("java/security/Identity")?;
+            let (declaring, ctor) = vm
+                .find_method(parent, "<init>", "(Ljava/lang/String;)V")
+                .ok_or_else(|| VmError::internal("Identity lacks <init>"))?;
+            vm.invoke_method(declaring, ctor, vec![args[0], args[1]])?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/security/IdentityScope;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let parent = vm.resolve_class("java/security/Identity")?;
+            let (declaring, ctor) = vm
+                .find_method(
+                    parent,
+                    "<init>",
+                    "(Ljava/lang/String;Ljava/security/IdentityScope;)V",
+                )
+                .ok_or_else(|| VmError::internal("Identity lacks <init>"))?;
+            vm.invoke_method(declaring, ctor, args.to_vec())?;
+            void()
+        },
+    ),
+    method(
+        "getSystemScope",
+        "()Ljava/security/IdentityScope;",
+        ACC_PUBLIC | ACC_STATIC,
+        // No system.scope security property is set, so the JDK leaves the
+        // system scope null.
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "size",
+        "()I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getIdentity",
+        "(Ljava/lang/String;)Ljava/security/Identity;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getIdentity",
+        "(Ljava/security/PublicKey;)Ljava/security/Identity;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getIdentity",
+        "(Ljava/security/Principal;)Ljava/security/Identity;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let principal = ref_arg(args, 1);
+            let (declaring, get_name) =
+                vm.resolve_virtual_method(principal, "getName", "()Ljava/lang/String;")?;
+            let name = vm.invoke_method(declaring, get_name, vec![Value::Ref(principal)])?;
+            let (declaring, get_identity) = vm.resolve_virtual_method(
+                this,
+                "getIdentity",
+                "(Ljava/lang/String;)Ljava/security/Identity;",
+            )?;
+            let value = vm.invoke_method(declaring, get_identity, vec![Value::Ref(this), name])?;
+            object(value.as_ref())
+        },
+    ),
+    method(
+        "addIdentity",
+        "(Ljava/security/Identity;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "removeIdentity",
+        "(Ljava/security/Identity;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "identities",
+        "()Ljava/util/Enumeration;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let identity = vm.resolve_class("java/security/Identity")?;
+            let (declaring, to_string) = vm
+                .find_method(identity, "toString", "()Ljava/lang/String;")
+                .ok_or_else(|| VmError::internal("Identity lacks toString"))?;
+            let value = vm.invoke_method(declaring, to_string, vec![Value::Ref(this)])?;
+            let base = vm.string_value(value.as_ref()).unwrap_or_default();
+            let (declaring, size) = vm.resolve_virtual_method(this, "size", "()I")?;
+            let count = vm.invoke_method(declaring, size, vec![Value::Ref(this)])?;
+            object(vm.make_string(&alloc::format!("{base}[{}]", count.as_int()))?)
+        },
+    ),
+];
+
 pub(crate) const KEY: oxjvm_vm::NativeClass = class(
     "java/security/Key",
     Some("java/io/Serializable"),
