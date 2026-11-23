@@ -92,7 +92,7 @@ fn primitive_descriptor(descriptor: &str) -> bool {
     matches!(descriptor, "Z" | "B" | "C" | "S" | "I" | "J" | "F" | "D")
 }
 
-fn method_entry(vm: &Vm<'_>, class: ClassId, slot: u32) -> (String, String, u16) {
+pub(crate) fn method_entry(vm: &Vm<'_>, class: ClassId, slot: u32) -> (String, String, u16) {
     let entry = &vm.classes.get(class).methods[slot as usize];
     (
         entry.name.clone(),
@@ -4625,7 +4625,10 @@ fn declared_methods(vm: &mut Vm<'_>, class: ClassId) -> Result<Vec<(ClassId, u32
 ///
 /// Later occurrences of a signature (from superclasses or interfaces) are dropped so that the
 /// most specific declaration wins, mirroring `Class.getMethods`.
-fn class_methods(vm: &mut Vm<'_>, class: ClassId) -> Result<Vec<(ClassId, u32)>, VmError> {
+pub(crate) fn class_methods(
+    vm: &mut Vm<'_>,
+    class: ClassId,
+) -> Result<Vec<(ClassId, u32)>, VmError> {
     let mut found = Vec::new();
     let mut seen: Vec<(String, String)> = Vec::new();
     let mut interface_roots = Vec::new();

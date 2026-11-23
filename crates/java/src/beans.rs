@@ -3080,3 +3080,543 @@ const VETOABLE_CHANGE_LISTENER_PROXY_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
         },
     ),
 ];
+
+// -------------------------------------------------------------------------------------------
+// Statement / Expression
+// -------------------------------------------------------------------------------------------
+
+/// Parameter class used for assignability, with primitives replaced by their
+/// wrappers as the JDK's `PrimitiveWrapperMap` does.
+fn statement_param_class(
+    vm: &mut Vm<'_>,
+    param: &oxjvm_classfile::FieldType,
+) -> Result<ClassId, VmError> {
+    let descriptor = crate::reflect::field_type_descriptor(param);
+    let wrapper = match descriptor.as_str() {
+        "Z" => "java/lang/Boolean",
+        "B" => "java/lang/Byte",
+        "C" => "java/lang/Character",
+        "S" => "java/lang/Short",
+        "I" => "java/lang/Integer",
+        "J" => "java/lang/Long",
+        "F" => "java/lang/Float",
+        "D" => "java/lang/Double",
+        _ => return crate::annotation::class_for_descriptor(vm, &descriptor),
+    };
+    vm.resolve_class(wrapper)
+}
+
+/// Whether every non-null argument is a subtype of its parameter.
+fn statement_args_fit(vm: &Vm<'_>, params: &[ClassId], args: &[Option<ClassId>]) -> bool {
+    if params.len() != args.len() {
+        return false;
+    }
+    for (param, arg) in params.iter().zip(args) {
+        if let Some(actual) = arg {
+            if !vm.class_is_subtype(*actual, *param) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// `min[i].isAssignableFrom(max[i])` for every position with a non-null argument.
+fn statement_params_fit(
+    vm: &Vm<'_>,
+    min: &[ClassId],
+    max: &[ClassId],
+    args: &[Option<ClassId>],
+) -> bool {
+    for (index, arg) in args.iter().enumerate() {
+        if arg.is_some() && !vm.class_is_subtype(max[index], min[index]) {
+            return false;
+        }
+    }
+    true
+}
+
+/// A method/constructor candidate: declaring class, slot, parameter classes,
+/// and whether it is synthetic.
+type StatementCandidate = (ClassId, u32, Vec<ClassId>, bool);
+
+/// Pick the most specific candidate, mirroring `AbstractFinder.find`.
+fn statement_most_specific(
+    vm: &Vm<'_>,
+    candidates: &[StatementCandidate],
+    args: &[Option<ClassId>],
+) -> Option<(ClassId, u32)> {
+    let mut old: Option<usize> = None;
+    let mut ambiguous = false;
+    for index in 0..candidates.len() {
+        let params = candidates[index].2.clone();
+        let synthetic = candidates[index].3;
+        match old {
+            None => old = Some(index),
+            Some(previous) => {
+                let old_params = &candidates[previous].2;
+                let old_synthetic = candidates[previous].3;
+                let mut use_new = statement_params_fit(vm, old_params, &params, args);
+                let mut use_old = statement_params_fit(vm, &params, old_params, args);
+                if use_old && use_new {
+                    use_new = !synthetic;
+                    use_old = !old_synthetic;
+                }
+                if use_old == use_new {
+                    ambiguous = true;
+                } else if use_new {
+                    old = Some(index);
+                    ambiguous = false;
+                }
+            }
+        }
+    }
+    if ambiguous {
+        return None;
+    }
+    old.map(|index| (candidates[index].0, candidates[index].1))
+}
+
+/// Public methods of `class` named `name` whose parameters accept `args`.
+fn statement_method_candidates(
+    vm: &mut Vm<'_>,
+    class: ClassId,
+    name: &str,
+    args: &[Option<ClassId>],
+) -> Result<Vec<StatementCandidate>, VmError> {
+    let mut candidates = Vec::new();
+    for (declaring, slot) in crate::reflect::class_methods(vm, class)? {
+        let (candidate_name, descriptor, flags) = crate::reflect::method_entry(vm, declaring, slot);
+        if candidate_name != name {
+            continue;
+        }
+        let Ok(parsed) = MethodDescriptor::parse(&descriptor) else {
+            continue;
+        };
+        if parsed.parameters.len() != args.len() {
+            continue;
+        }
+        let mut params = Vec::new();
+        for param in &parsed.parameters {
+            params.push(statement_param_class(vm, param)?);
+        }
+        if statement_args_fit(vm, &params, args) {
+            candidates.push((declaring, slot, params, flags & ACC_SYNTHETIC != 0));
+        }
+    }
+    Ok(candidates)
+}
+
+/// Public constructors of `class` whose parameters accept `args`.
+fn statement_find_constructor(
+    vm: &mut Vm<'_>,
+    class: ClassId,
+    args: &[Option<ClassId>],
+) -> Result<Option<(ClassId, u32)>, VmError> {
+    let count = vm.classes.get(class).methods.len();
+    let mut candidates = Vec::new();
+    for slot in 0..count {
+        let (name, descriptor, flags) = {
+            let entry = &vm.classes.get(class).methods[slot];
+            (
+                entry.name.clone(),
+                entry.descriptor.clone(),
+                entry.access_flags,
+            )
+        };
+        if name != "<init>" || flags & ACC_PUBLIC == 0 {
+            continue;
+        }
+        let Ok(parsed) = MethodDescriptor::parse(&descriptor) else {
+            continue;
+        };
+        if parsed.parameters.len() != args.len() {
+            continue;
+        }
+        let mut params = Vec::new();
+        for param in &parsed.parameters {
+            params.push(statement_param_class(vm, param)?);
+        }
+        if statement_args_fit(vm, &params, args) {
+            candidates.push((class, slot as u32, params, flags & ACC_SYNTHETIC != 0));
+        }
+    }
+    Ok(statement_most_specific(vm, &candidates, args))
+}
+
+/// Invoke a found method, boxing the result (null for a void return).
+fn statement_call_method(
+    vm: &mut Vm<'_>,
+    declaring: ClassId,
+    slot: u32,
+    arg_values: &[ObjectRef],
+    receiver: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    let (_, descriptor, flags) = crate::reflect::method_entry(vm, declaring, slot);
+    let parsed =
+        MethodDescriptor::parse(&descriptor).map_err(|_| VmError::internal("bad descriptor"))?;
+    let mut call_args = Vec::new();
+    if flags & ACC_STATIC == 0 {
+        call_args.push(Value::Ref(receiver));
+    }
+    for (index, param) in parsed.parameters.iter().enumerate() {
+        call_args.push(crate::boxed::unbox_call_argument(
+            vm,
+            arg_values[index],
+            &crate::reflect::field_type_descriptor(param),
+        )?);
+    }
+    let result = vm.invoke_method(declaring, slot, call_args)?;
+    let return_descriptor = parsed
+        .returns
+        .as_ref()
+        .map(crate::reflect::field_type_descriptor)
+        .unwrap_or_else(|| String::from("V"));
+    if return_descriptor == "V" {
+        return Ok(ObjectRef::NULL);
+    }
+    Ok(crate::boxed::box_value(vm, result, &return_descriptor)?.as_ref())
+}
+
+/// Allocate an instance and run the chosen constructor.
+fn statement_new_instance(
+    vm: &mut Vm<'_>,
+    class: ClassId,
+    slot: u32,
+    arg_values: &[ObjectRef],
+) -> Result<ObjectRef, VmError> {
+    let (_, descriptor, _) = crate::reflect::method_entry(vm, class, slot);
+    let parsed =
+        MethodDescriptor::parse(&descriptor).map_err(|_| VmError::internal("bad descriptor"))?;
+    vm.ensure_initialized(class)?;
+    let instance = vm.new_instance(class)?;
+    vm.protect(instance);
+    let mut call_args = vec![Value::Ref(instance)];
+    for (index, param) in parsed.parameters.iter().enumerate() {
+        call_args.push(crate::boxed::unbox_call_argument(
+            vm,
+            arg_values[index],
+            &crate::reflect::field_type_descriptor(param),
+        )?);
+    }
+    vm.invoke_method(class, slot, call_args)?;
+    vm.unprotect(instance);
+    Ok(instance)
+}
+
+/// The shared `Statement.invoke` logic: find and run the method, returning its
+/// boxed result (null for void).
+fn statement_invoke(vm: &mut Vm<'_>, this: ObjectRef) -> Result<ObjectRef, VmError> {
+    let owner = vm.class_of(this);
+    let target = vm
+        .read_ref_field(this, owner, "target", "Ljava/lang/Object;")
+        .unwrap_or(ObjectRef::NULL);
+    let name_ref = vm
+        .read_ref_field(this, owner, "methodName", "Ljava/lang/String;")
+        .unwrap_or(ObjectRef::NULL);
+    if target.is_null() {
+        return Err(vm.throw_new(
+            "java/lang/NullPointerException",
+            Some("target should not be null"),
+        ));
+    }
+    if name_ref.is_null() {
+        return Err(vm.throw_new(
+            "java/lang/NullPointerException",
+            Some("methodName should not be null"),
+        ));
+    }
+    let method_name = vm.string_value(name_ref).unwrap_or_default();
+    let arguments = vm
+        .read_ref_field(this, owner, "arguments", "[Ljava/lang/Object;")
+        .unwrap_or(ObjectRef::NULL);
+    let mut arg_values: Vec<ObjectRef> = Vec::new();
+    let mut arg_classes: Vec<Option<ClassId>> = Vec::new();
+    if !arguments.is_null() {
+        let length = vm.array_length(arguments)?;
+        for index in 0..length {
+            let value = vm.array_get(arguments, index as i32)?.as_ref();
+            arg_classes.push(if value.is_null() {
+                None
+            } else {
+                Some(vm.class_of(value))
+            });
+            arg_values.push(value);
+        }
+    }
+    let class_class = vm.resolve_class("java/lang/Class")?;
+    if vm.is_instance(target, class_class) {
+        let target_class = class_argument(vm, target)?;
+        let mut name = method_name.clone();
+        if name == "new" {
+            name = String::from("newInstance");
+        }
+        if name == "newInstance" {
+            if let Some((declaring, slot)) =
+                statement_find_constructor(vm, target_class, &arg_classes)?
+            {
+                return statement_new_instance(vm, declaring, slot, &arg_values);
+            }
+        }
+        let mut search = Vec::new();
+        if target_class != class_class {
+            search.push(target_class);
+        }
+        search.push(class_class);
+        for search_class in search {
+            let candidates = statement_method_candidates(vm, search_class, &name, &arg_classes)?;
+            if let Some((declaring, slot)) = statement_most_specific(vm, &candidates, &arg_classes)
+            {
+                return statement_call_method(vm, declaring, slot, &arg_values, target);
+            }
+        }
+        return Err(vm.throw_new("java/lang/NoSuchMethodException", Some(&method_name)));
+    }
+    let target_class = vm.class_of(target);
+    let candidates = statement_method_candidates(vm, target_class, &method_name, &arg_classes)?;
+    if let Some((declaring, slot)) = statement_most_specific(vm, &candidates, &arg_classes) {
+        return statement_call_method(vm, declaring, slot, &arg_values, target);
+    }
+    Err(vm.throw_new("java/lang/NoSuchMethodException", Some(&method_name)))
+}
+
+/// Store the three Statement properties on a fresh instance.
+fn statement_init(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    target: ObjectRef,
+    name: ObjectRef,
+    arguments: ObjectRef,
+) -> Result<(), VmError> {
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, "target", "Ljava/lang/Object;")?;
+    vm.set_instance_ref(this, declaring, field, target);
+    let (declaring, field) = vm.find_field(class, "methodName", "Ljava/lang/String;")?;
+    vm.set_instance_ref(this, declaring, field, name);
+    let (declaring, field) = vm.find_field(class, "arguments", "[Ljava/lang/Object;")?;
+    vm.set_instance_ref(this, declaring, field, arguments);
+    Ok(())
+}
+
+pub(crate) const STATEMENT: oxjvm_vm::NativeClass = class(
+    "java/beans/Statement",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("target", "Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("methodName", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("arguments", "[Ljava/lang/Object;", ACC_PRIVATE, None),
+    ],
+    &STATEMENT_METHODS,
+    None,
+);
+
+const STATEMENT_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+    method(
+        "<init>",
+        "(Ljava/lang/Object;Ljava/lang/String;[Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            statement_init(
+                vm,
+                this,
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                ref_arg(args, 3),
+            )?;
+            void()
+        },
+    ),
+    method(
+        "getTarget",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(
+                vm.read_ref_field(this, vm.class_of(this), "target", "Ljava/lang/Object;")
+                    .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method(
+        "getMethodName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(
+                vm.read_ref_field(this, vm.class_of(this), "methodName", "Ljava/lang/String;")
+                    .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method(
+        "getArguments",
+        "()[Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(
+                vm.read_ref_field(this, vm.class_of(this), "arguments", "[Ljava/lang/Object;")
+                    .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method(
+        "setTarget",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "target", "Ljava/lang/Object;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method(
+        "setMethodName",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "methodName", "Ljava/lang/String;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method(
+        "setArguments",
+        "([Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "arguments", "[Ljava/lang/Object;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            void()
+        },
+    ),
+    method("execute", "()V", ACC_PUBLIC, |vm, _, args| {
+        statement_invoke(vm, receiver(args))?;
+        void()
+    }),
+];
+
+pub(crate) const EXPRESSION: oxjvm_vm::NativeClass = class(
+    "java/beans/Expression",
+    Some("java/beans/Statement"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("value", "Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("valueSet", "I", ACC_PRIVATE, None),
+    ],
+    &EXPRESSION_METHODS,
+    None,
+);
+
+const EXPRESSION_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method(
+        "<init>",
+        "(Ljava/lang/Object;Ljava/lang/String;[Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let super_class = vm.resolve_class("java/beans/Statement")?;
+            let (declaring, ctor) = vm
+                .find_method(
+                    super_class,
+                    "<init>",
+                    "(Ljava/lang/Object;Ljava/lang/String;[Ljava/lang/Object;)V",
+                )
+                .ok_or_else(|| VmError::internal("Statement ctor missing"))?;
+            vm.invoke_method(
+                declaring,
+                ctor,
+                vec![
+                    Value::Ref(this),
+                    Value::Ref(ref_arg(args, 1)),
+                    Value::Ref(ref_arg(args, 2)),
+                    Value::Ref(ref_arg(args, 3)),
+                ],
+            )?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/String;[Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let super_class = vm.resolve_class("java/beans/Statement")?;
+            let (declaring, ctor) = vm
+                .find_method(
+                    super_class,
+                    "<init>",
+                    "(Ljava/lang/Object;Ljava/lang/String;[Ljava/lang/Object;)V",
+                )
+                .ok_or_else(|| VmError::internal("Statement ctor missing"))?;
+            vm.invoke_method(
+                declaring,
+                ctor,
+                vec![
+                    Value::Ref(this),
+                    Value::Ref(ref_arg(args, 2)),
+                    Value::Ref(ref_arg(args, 3)),
+                    Value::Ref(ref_arg(args, 4)),
+                ],
+            )?;
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "value", "Ljava/lang/Object;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            crate::lang::write_int_field(vm, this, "valueSet", 1);
+            void()
+        },
+    ),
+    method(
+        "getValue",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if crate::lang::read_int_field(vm, this, "valueSet") == 0 {
+                let result = statement_invoke(vm, this)?;
+                let (declaring, field) =
+                    vm.find_field(vm.class_of(this), "value", "Ljava/lang/Object;")?;
+                vm.set_instance_ref(this, declaring, field, result);
+                crate::lang::write_int_field(vm, this, "valueSet", 1);
+            }
+            object(
+                vm.read_ref_field(this, vm.class_of(this), "value", "Ljava/lang/Object;")
+                    .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method(
+        "setValue",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (declaring, field) =
+                vm.find_field(vm.class_of(this), "value", "Ljava/lang/Object;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            crate::lang::write_int_field(vm, this, "valueSet", 1);
+            void()
+        },
+    ),
+    method("execute", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let result = statement_invoke(vm, this)?;
+        let (declaring, field) = vm.find_field(vm.class_of(this), "value", "Ljava/lang/Object;")?;
+        vm.set_instance_ref(this, declaring, field, result);
+        crate::lang::write_int_field(vm, this, "valueSet", 1);
+        void()
+    }),
+];

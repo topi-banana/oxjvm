@@ -167,7 +167,7 @@ pub fn is_non_writable_property(key: &str) -> bool {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 1185] = [
+static REGISTRY: [NativeClass; 1187] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -1266,6 +1266,8 @@ static REGISTRY: [NativeClass; 1185] = [
     beans::PROPERTY_CHANGE_LISTENER_PROXY,
     beans::VETOABLE_CHANGE_SUPPORT,
     beans::VETOABLE_CHANGE_LISTENER_PROXY,
+    beans::STATEMENT,
+    beans::EXPRESSION,
     beans::PROPERTY_VETO_EXCEPTION,
     beans::BEAN_DESCRIPTOR,
     beans::METHOD_DESCRIPTOR,
