@@ -2470,11 +2470,23 @@ const PERMISSION_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let text = alloc::format!(
-                "({} {})",
-                vm.class_name(vm.class_of(receiver(args))),
-                string_field(vm, receiver(args), "name")
-            );
+            let this = receiver(args);
+            let class_name = crate::binary_name(vm, vm.class_of(this));
+            let name = string_field(vm, this, "name");
+            let (declaring, get_actions) =
+                vm.resolve_virtual_method(this, "getActions", "()Ljava/lang/String;")?;
+            let actions_value = vm.invoke_method(declaring, get_actions, vec![Value::Ref(this)])?;
+            let actions = match actions_value {
+                Value::Ref(reference) if !reference.is_null() => {
+                    vm.string_value(reference).unwrap_or_default()
+                }
+                _ => String::new(),
+            };
+            let text = if actions.is_empty() {
+                alloc::format!("(\"{class_name}\" \"{name}\")")
+            } else {
+                alloc::format!("(\"{class_name}\" \"{name}\" \"{actions}\")")
+            };
             object(vm.make_string(&text)?)
         },
     ),
