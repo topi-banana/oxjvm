@@ -271,7 +271,7 @@ fn record_message(vm: &Vm<'_>, record: ObjectRef) -> String {
         .unwrap_or_default()
 }
 
-const LOG_RECORD_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
+const LOG_RECORD_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
     method(
         "<init>",
         "(Ljava/util/logging/Level;Ljava/lang/String;)V",
@@ -523,6 +523,39 @@ const LOG_RECORD_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         crate::lang::write_long_field(vm, receiver(args), "millis", crate::long_arg(args, 1));
         void()
     }),
+    method(
+        "getInstant",
+        "()Ljava/time/Instant;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let millis = crate::lang::read_long_field(vm, this, "millis");
+            let nano_adjustment = crate::lang::read_int_field(vm, this, "nanoAdjustment");
+            let epoch_second = millis.div_euclid(1000);
+            let nano_of_second = (millis.rem_euclid(1000) as i32) * 1_000_000 + nano_adjustment;
+            crate::time::instant_new(vm, epoch_second, nano_of_second)
+        },
+    ),
+    method(
+        "setInstant",
+        "(Ljava/time/Instant;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let instant = ref_arg(args, 1);
+            if instant.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let epoch_second = crate::lang::read_long_field(vm, instant, "epochSecond");
+            let nano = crate::lang::read_int_field(vm, instant, "nano");
+            let millis = epoch_second
+                .saturating_mul(1000)
+                .saturating_add(i64::from(nano / 1_000_000));
+            crate::lang::write_long_field(vm, this, "millis", millis);
+            crate::lang::write_int_field(vm, this, "nanoAdjustment", nano % 1_000_000);
+            void()
+        },
+    ),
     method("getSequenceNumber", "()J", ACC_PUBLIC, |vm, _, args| {
         long(crate::lang::read_long_field(vm, receiver(args), "sequence"))
     }),
@@ -604,6 +637,7 @@ pub(crate) const LOG_RECORD: oxjvm_vm::NativeClass = class(
             None,
         ),
         field("millis", "J", ACC_PRIVATE, None),
+        field("nanoAdjustment", "I", ACC_PRIVATE, None),
         field("sequence", "J", ACC_PRIVATE, None),
         field("threadID", "J", ACC_PRIVATE, None),
         field("parameters", "[Ljava/lang/Object;", ACC_PRIVATE, None),
@@ -1406,6 +1440,15 @@ const SIMPLE_FORMATTER_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
         let level = record_get_ref(vm, record, "level", "Ljava/util/logging/Level;");
         let name = level_name(vm, level);
         let millis = crate::lang::read_long_field(vm, record, "millis");
+        let nano_adjustment = crate::lang::read_int_field(vm, record, "nanoAdjustment");
+        let nano_of_second = (millis.rem_euclid(1000) as i32) * 1_000_000 + nano_adjustment;
+        // The JDK's default SimpleFormatter format omits sub-second digits; a
+        // custom java.util.logging.SimpleFormatter.format with a %tN specifier
+        // asks for the nine-digit nano-of-second field.
+        let show_nanos =
+            crate::lang::system_property(vm, "java.util.logging.SimpleFormatter.format")
+                .map(|format| format.contains("tN"))
+                .unwrap_or(false);
         let source_class = vm
             .string_value(record_get_ref(
                 vm,
@@ -1422,7 +1465,7 @@ const SIMPLE_FORMATTER_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
                 "Ljava/lang/String;",
             ))
             .unwrap_or_default();
-        let mut text = simple_formatter_date(millis);
+        let mut text = simple_formatter_date(millis, nano_of_second, show_nanos);
         if !source_class.is_empty() {
             text.push(' ');
             text.push_str(&source_class);
@@ -2528,7 +2571,7 @@ fn single_param_array(vm: &mut Vm<'_>, value: ObjectRef) -> Result<ObjectRef, Vm
 }
 
 /// The date prefix `SimpleFormatter` prints, in UTC (the only zone oxjvm models).
-fn simple_formatter_date(millis: i64) -> String {
+fn simple_formatter_date(millis: i64, nano_of_second: i32, show_nanos: bool) -> String {
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
@@ -2545,7 +2588,13 @@ fn simple_formatter_date(millis: i64) -> String {
     };
     let ampm = if hour24 < 12 { "AM" } else { "PM" };
     let month_name = MONTHS.get((month - 1) as usize).copied().unwrap_or("Jan");
-    format!("{month_name} {day}, {year} {hour12}:{minute:02}:{second:02} {ampm}")
+    if show_nanos {
+        format!(
+            "{month_name} {day}, {year} {hour12}:{minute:02}:{second:02}.{nano_of_second:09} {ampm}"
+        )
+    } else {
+        format!("{month_name} {day}, {year} {hour12}:{minute:02}:{second:02} {ampm}")
+    }
 }
 
 fn level_named(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
