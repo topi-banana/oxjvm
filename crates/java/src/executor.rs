@@ -43,25 +43,55 @@ fn future_task_run(vm: &mut Vm<'_>, task: ObjectRef) -> Result<(), VmError> {
     let callable = vm
         .read_ref_field(task, class, "callable", "Ljava/lang/Object;")
         .unwrap_or(ObjectRef::NULL);
-    if !callable.is_null() {
+    let outcome = if !callable.is_null() {
         let (declaring, method) =
             vm.resolve_virtual_method(callable, "call", "()Ljava/lang/Object;")?;
-        let result = vm
-            .invoke_method(declaring, method, vec![Value::Ref(callable)])?
-            .as_ref();
-        let (declaring, field) = vm.find_field(class, "result", "Ljava/lang/Object;")?;
-        vm.set_instance_ref(task, declaring, field, result);
+        vm.invoke_method(declaring, method, vec![Value::Ref(callable)])
     } else {
         let runnable = vm
             .read_ref_field(task, class, "runnable", "Ljava/lang/Object;")
             .unwrap_or(ObjectRef::NULL);
-        if !runnable.is_null() {
-            let (declaring, method) = vm.resolve_virtual_method(runnable, "run", "()V")?;
-            vm.invoke_method(declaring, method, vec![Value::Ref(runnable)])?;
+        if runnable.is_null() {
+            return Ok(());
         }
+        let (declaring, method) = vm.resolve_virtual_method(runnable, "run", "()V")?;
+        vm.invoke_method(declaring, method, vec![Value::Ref(runnable)])
+    };
+    match outcome {
+        Ok(value) => {
+            let result = if callable.is_null() {
+                vm.read_ref_field(task, class, "result", "Ljava/lang/Object;")
+                    .unwrap_or(ObjectRef::NULL)
+            } else {
+                value.as_ref()
+            };
+            let (declaring, method) =
+                vm.resolve_virtual_method(task, "set", "(Ljava/lang/Object;)V")?;
+            vm.invoke_method(
+                declaring,
+                method,
+                vec![Value::Ref(task), Value::Ref(result)],
+            )?;
+        }
+        Err(VmError::Thrown(exception)) => {
+            let (declaring, method) =
+                vm.resolve_virtual_method(task, "setException", "(Ljava/lang/Throwable;)V")?;
+            vm.invoke_method(
+                declaring,
+                method,
+                vec![Value::Ref(task), Value::Ref(exception)],
+            )?;
+        }
+        Err(error) => return Err(error),
     }
-    let (declaring, field) = vm.find_field(class, "state", "I")?;
-    vm.set_instance_int(task, declaring, field, 1);
+    Ok(())
+}
+
+/// Invoke the protected `done()` hook virtually so subclass overrides run and
+/// any exception they throw propagates to the caller, as in the JDK.
+fn future_task_done(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    let (class, method) = vm.resolve_virtual_method(this, "done", "()V")?;
+    vm.invoke_method(class, method, vec![Value::Ref(this)])?;
     Ok(())
 }
 
@@ -165,7 +195,7 @@ pub(crate) const SCHEDULED_FUTURE: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const FUTURE_TASK_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const FUTURE_TASK_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method(
         "<init>",
         "(Ljava/util/concurrent/Callable;)V",
@@ -204,7 +234,18 @@ const FUTURE_TASK_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "get",
         "(JLjava/util/concurrent/TimeUnit;)Ljava/lang/Object;",
         ACC_PUBLIC,
-        |vm, _, args| future_task_get(vm, receiver(args)),
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            if vm
+                .read_instance_int_named(this, class, "state", "I")
+                .unwrap_or(0)
+                == 0
+            {
+                return Err(vm.throw_new("java/util/concurrent/TimeoutException", None));
+            }
+            future_task_get(vm, this)
+        },
     ),
     method("isDone", "()Z", ACC_PUBLIC, |vm, _, args| {
         boolean(
@@ -231,8 +272,52 @@ const FUTURE_TASK_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         }
         let (declaring, field) = vm.find_field(class, "state", "I")?;
         vm.set_instance_int(this, declaring, field, 2);
+        future_task_done(vm, this)?;
         boolean(true)
     }),
+    method("runAndReset", "()Z", ACC_PROTECTED, |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        if vm
+            .read_instance_int_named(this, class, "state", "I")
+            .unwrap_or(0)
+            != 0
+        {
+            return boolean(false);
+        }
+        let callable = vm
+            .read_ref_field(this, class, "callable", "Ljava/lang/Object;")
+            .unwrap_or(ObjectRef::NULL);
+        let outcome = if !callable.is_null() {
+            let (declaring, method) =
+                vm.resolve_virtual_method(callable, "call", "()Ljava/lang/Object;")?;
+            vm.invoke_method(declaring, method, vec![Value::Ref(callable)])
+        } else {
+            let runnable = vm
+                .read_ref_field(this, class, "runnable", "Ljava/lang/Object;")
+                .unwrap_or(ObjectRef::NULL);
+            if runnable.is_null() {
+                return boolean(false);
+            }
+            let (declaring, method) = vm.resolve_virtual_method(runnable, "run", "()V")?;
+            vm.invoke_method(declaring, method, vec![Value::Ref(runnable)])
+        };
+        match outcome {
+            Ok(_) => boolean(true),
+            Err(VmError::Thrown(exception)) => {
+                let (declaring, method) =
+                    vm.resolve_virtual_method(this, "setException", "(Ljava/lang/Throwable;)V")?;
+                vm.invoke_method(
+                    declaring,
+                    method,
+                    vec![Value::Ref(this), Value::Ref(exception)],
+                )?;
+                boolean(false)
+            }
+            Err(error) => Err(error),
+        }
+    }),
+    method("done", "()V", ACC_PROTECTED, |_, _, _| void()),
     method(
         "toString",
         "()Ljava/lang/String;",
@@ -252,10 +337,18 @@ const FUTURE_TASK_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         |vm, _, args| {
             let this = receiver(args);
             let class = vm.class_of(this);
+            if vm
+                .read_instance_int_named(this, class, "state", "I")
+                .unwrap_or(0)
+                != 0
+            {
+                return void();
+            }
             let (declaring, field) = vm.find_field(class, "result", "Ljava/lang/Object;")?;
             vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
             let (declaring, field) = vm.find_field(class, "state", "I")?;
             vm.set_instance_int(this, declaring, field, 1);
+            future_task_done(vm, this)?;
             void()
         },
     ),
@@ -266,10 +359,18 @@ const FUTURE_TASK_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         |vm, _, args| {
             let this = receiver(args);
             let class = vm.class_of(this);
+            if vm
+                .read_instance_int_named(this, class, "state", "I")
+                .unwrap_or(0)
+                != 0
+            {
+                return void();
+            }
             let (declaring, field) = vm.find_field(class, "exception", "Ljava/lang/Throwable;")?;
             vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
             let (declaring, field) = vm.find_field(class, "state", "I")?;
             vm.set_instance_int(this, declaring, field, 1);
+            future_task_done(vm, this)?;
             void()
         },
     ),
