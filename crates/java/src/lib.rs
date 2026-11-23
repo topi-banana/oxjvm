@@ -47,6 +47,7 @@ pub(crate) mod net;
 pub(crate) mod nio;
 pub(crate) mod optional;
 pub(crate) mod preconditions;
+pub(crate) mod prefs;
 pub(crate) mod primitive_stream;
 pub(crate) mod process;
 pub(crate) mod process_handle;
@@ -167,7 +168,7 @@ pub fn is_non_writable_property(key: &str) -> bool {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 1196] = [
+static REGISTRY: [NativeClass; 1206] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -657,6 +658,16 @@ static REGISTRY: [NativeClass; 1196] = [
     net::PROXY_TYPE,
     net::PROXY,
     net::INET6_ADDRESS,
+    prefs::BACKING_STORE_EXCEPTION,
+    prefs::INVALID_PREFERENCES_FORMAT_EXCEPTION,
+    prefs::NODE_CHANGE_LISTENER,
+    prefs::PREFERENCE_CHANGE_LISTENER,
+    prefs::PREFERENCES_FACTORY,
+    prefs::NODE_CHANGE_EVENT,
+    prefs::PREFERENCE_CHANGE_EVENT,
+    prefs::PREFERENCES,
+    prefs::ABSTRACT_PREFERENCES,
+    prefs::IN_MEMORY_PREFERENCES,
     beans::FEATURE_DESCRIPTOR,
     beans::EXCEPTION_LISTENER,
     // Tier 2.2 (java.security shells)
