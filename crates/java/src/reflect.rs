@@ -183,7 +183,7 @@ fn set_instance_value(
 // Method
 // -------------------------------------------------------------------------------------------
 
-const METHOD_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
+const METHOD_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -208,6 +208,16 @@ const METHOD_METHODS: [oxjvm_vm::NativeMethodDef; 33] = [
         let (_, _, flags) = method_entry(vm, class, slot);
         int(i32::from(flags))
     }),
+    method(
+        "accessFlags",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (class, slot) = method_parts(vm, receiver(args));
+            let (_, _, flags) = method_entry(vm, class, slot);
+            object(access_flag_set_from_mask(vm, flags, METHOD_ACCESS_FLAGS)?)
+        },
+    ),
     method(
         "getParameterTypes",
         "()[Ljava/lang/Class;",
@@ -912,7 +922,7 @@ fn reflect_field_set_primitive(
     void()
 }
 
-const FIELD_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
+const FIELD_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -998,6 +1008,16 @@ const FIELD_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
         let (_, _, flags) = field_entry(vm, class, slot);
         int(i32::from(flags))
     }),
+    method(
+        "accessFlags",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (class, slot) = field_parts(vm, receiver(args));
+            let (_, _, flags) = field_entry(vm, class, slot);
+            object(access_flag_set_from_mask(vm, flags, FIELD_ACCESS_FLAGS)?)
+        },
+    ),
     method("setAccessible", "(Z)V", ACC_PUBLIC, set_accessible),
     method(
         "get",
@@ -3324,7 +3344,7 @@ fn constructor_new_instance(
     object(instance)
 }
 
-const CONSTRUCTOR_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
+const CONSTRUCTOR_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
     method(
         "getName",
         "()Ljava/lang/String;",
@@ -3349,6 +3369,16 @@ const CONSTRUCTOR_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
         let (_, _, flags) = method_entry(vm, class, slot);
         int(i32::from(flags))
     }),
+    method(
+        "accessFlags",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let (class, slot) = constructor_parts(vm, receiver(args));
+            let (_, _, flags) = method_entry(vm, class, slot);
+            object(access_flag_set_from_mask(vm, flags, METHOD_ACCESS_FLAGS)?)
+        },
+    ),
     method(
         "getParameterTypes",
         "()[Ljava/lang/Class;",
@@ -3899,7 +3929,16 @@ const PARAMETER_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
         "accessFlags",
         "()Ljava/util/Set;",
         ACC_PUBLIC,
-        |vm, _, _| object(crate::util::hash_set_from(vm, &[])?),
+        |vm, _, args| {
+            let (executable, slot) = parameter_parts(vm, receiver(args));
+            let (class, method_slot) = executable_parts(vm, executable)?;
+            let flags = parameter_flags(vm, class, method_slot, slot);
+            object(access_flag_set_from_mask(
+                vm,
+                flags,
+                METHOD_PARAMETER_ACCESS_FLAGS,
+            )?)
+        },
     ),
     method(
         "getDeclaringExecutable",
@@ -4970,7 +5009,9 @@ const ACCESS_FLAG_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
                 "SUPER",
                 "SYNCHRONIZED",
                 "VOLATILE",
+                "BRIDGE",
                 "TRANSIENT",
+                "VARARGS",
                 "NATIVE",
                 "INTERFACE",
                 "ABSTRACT",
@@ -5015,6 +5056,63 @@ const ACCESS_FLAG_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     }),
 ];
 
+/// The `AccessFlag` constants valid at the `FIELD` location, with their bits.
+const FIELD_ACCESS_FLAGS: &[(&str, u16)] = &[
+    ("PUBLIC", ACC_PUBLIC),
+    ("PRIVATE", ACC_PRIVATE),
+    ("PROTECTED", ACC_PROTECTED),
+    ("STATIC", ACC_STATIC),
+    ("FINAL", ACC_FINAL),
+    ("VOLATILE", ACC_VOLATILE),
+    ("TRANSIENT", ACC_TRANSIENT),
+    ("SYNTHETIC", ACC_SYNTHETIC),
+    ("ENUM", ACC_ENUM),
+];
+
+/// The `AccessFlag` constants valid at the `METHOD` location, with their bits.
+const METHOD_ACCESS_FLAGS: &[(&str, u16)] = &[
+    ("PUBLIC", ACC_PUBLIC),
+    ("PRIVATE", ACC_PRIVATE),
+    ("PROTECTED", ACC_PROTECTED),
+    ("STATIC", ACC_STATIC),
+    ("FINAL", ACC_FINAL),
+    ("SYNCHRONIZED", ACC_SYNCHRONIZED),
+    ("BRIDGE", ACC_BRIDGE),
+    ("VARARGS", ACC_VARARGS),
+    ("NATIVE", ACC_NATIVE),
+    ("ABSTRACT", ACC_ABSTRACT),
+    ("SYNTHETIC", ACC_SYNTHETIC),
+];
+
+/// The `AccessFlag` constants valid at the `METHOD_PARAMETER` location.
+const METHOD_PARAMETER_ACCESS_FLAGS: &[(&str, u16)] = &[
+    ("FINAL", ACC_FINAL),
+    ("SYNTHETIC", ACC_SYNTHETIC),
+    ("MANDATED", ACC_MANDATED),
+];
+
+/// Build a `Set<AccessFlag>` from a modifier mask and the (name, bit) pairs
+/// valid at a particular `AccessFlag.Location`.
+fn access_flag_set_from_mask(
+    vm: &mut Vm<'_>,
+    mask: u16,
+    flags: &[(&str, u16)],
+) -> Result<ObjectRef, VmError> {
+    let access_flag_class = vm.resolve_class("java/lang/reflect/AccessFlag")?;
+    vm.ensure_initialized(access_flag_class)?;
+    let mut elements = Vec::new();
+    for (name, bit) in flags {
+        if mask & bit != 0 {
+            if let Some(value) =
+                vm.read_static_ref_if_set(access_flag_class, name, "Ljava/lang/reflect/AccessFlag;")
+            {
+                elements.push(value);
+            }
+        }
+    }
+    crate::util::hash_set_from(vm, &elements)
+}
+
 fn access_flag_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     let class = vm.resolve_class("java/lang/reflect/AccessFlag")?;
     for (name, mask) in [
@@ -5026,7 +5124,9 @@ fn access_flag_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
         ("SUPER", 0x0020),
         ("SYNCHRONIZED", 0x0020),
         ("VOLATILE", 0x0040),
+        ("BRIDGE", 0x0040),
         ("TRANSIENT", 0x0080),
+        ("VARARGS", 0x0080),
         ("NATIVE", 0x0100),
         ("INTERFACE", 0x0200),
         ("ABSTRACT", 0x0400),
@@ -5109,7 +5209,19 @@ pub(crate) const ACCESS_FLAG: oxjvm_vm::NativeClass = class(
             None,
         ),
         field(
+            "BRIDGE",
+            "Ljava/lang/reflect/AccessFlag;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
             "TRANSIENT",
+            "Ljava/lang/reflect/AccessFlag;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "VARARGS",
             "Ljava/lang/reflect/AccessFlag;",
             ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
             None,
