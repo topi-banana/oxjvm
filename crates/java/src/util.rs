@@ -7302,6 +7302,24 @@ fn array_list_clear(
     void()
 }
 
+/// Throw `ConcurrentModificationException` when a tracked list's modCount has
+/// changed since the iterator captured it. Only lists that carry a modCount
+/// field (Vector) are tracked; ArrayList has none, so the check is a no-op there.
+fn iterator_check_comodification(
+    vm: &mut Vm<'_>,
+    list: ObjectRef,
+    expected: i32,
+) -> Result<(), VmError> {
+    let class = vm.class_of(list);
+    if vm.find_field_opt(class, "modCount", "I").is_some() {
+        let actual = crate::lang::read_int_field(vm, list, "modCount");
+        if actual != expected {
+            return Err(vm.throw_new("java/util/ConcurrentModificationException", None));
+        }
+    }
+    Ok(())
+}
+
 fn array_list_iterator(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
@@ -7312,6 +7330,8 @@ fn array_list_iterator(
     let (declaring, field) = vm.find_field(class, "list", "Ljava/util/List;")?;
     vm.set_instance_ref(iterator, declaring, field, receiver(args));
     crate::lang::write_int_field(vm, iterator, "cursor", 0);
+    let expected = crate::lang::read_int_field(vm, receiver(args), "modCount");
+    crate::lang::write_int_field(vm, iterator, "expectedModCount", expected);
     object(iterator)
 }
 
@@ -10987,6 +11007,8 @@ const ITR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
         let list = vm
             .read_ref_field(this, vm.class_of(this), "list", "Ljava/util/List;")
             .unwrap_or(ObjectRef::NULL);
+        let expected = crate::lang::read_int_field(vm, this, "expectedModCount");
+        iterator_check_comodification(vm, list, expected)?;
         let cursor = crate::lang::read_int_field(vm, this, "cursor");
         let elements = array_list_elements(vm, list);
         if cursor < 0 || cursor as usize >= elements.len() {
@@ -11026,6 +11048,7 @@ pub(crate) const ARRAY_LIST_ITERATOR: oxjvm_vm::NativeClass = class(
     &[
         field("list", "Ljava/util/List;", ACC_PRIVATE, None),
         field("cursor", "I", ACC_PRIVATE, None),
+        field("expectedModCount", "I", ACC_PRIVATE, None),
     ],
     &ITR_METHODS,
     None,
@@ -17745,7 +17768,10 @@ const VECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 45] = [
         },
     ),
     method("removeAllElements", "()V", ACC_PUBLIC, |vm, _, args| {
-        array_list_store(vm, receiver(args), &[])?;
+        let this = receiver(args);
+        array_list_store(vm, this, &[])?;
+        let count = crate::lang::read_int_field(vm, this, "modCount");
+        crate::lang::write_int_field(vm, this, "modCount", count.wrapping_add(1));
         void()
     }),
     method(
@@ -18002,6 +18028,7 @@ pub(crate) const VECTOR: oxjvm_vm::NativeClass = class(
     &[
         field("elementData", "[Ljava/lang/Object;", ACC_PRIVATE, None),
         field("size", "I", ACC_PRIVATE, None),
+        field("modCount", "I", ACC_PRIVATE, None),
     ],
     &VECTOR_METHODS,
     None,
