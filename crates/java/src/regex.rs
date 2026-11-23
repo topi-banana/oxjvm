@@ -524,6 +524,23 @@ impl<'a> Parser<'a> {
             _ if ch == b'r' as u16 => Ok(Node::Char(0x0D)),
             _ if ch == b't' as u16 => Ok(Node::Char(0x09)),
             _ if ch == b'f' as u16 => Ok(Node::Char(0x0C)),
+            _ if ch == b'Q' as u16 => {
+                // `\Q ... \E` quotes a literal section: every character is taken
+                // verbatim until the terminating `\E` (or the end of the pattern).
+                let mut nodes = Vec::new();
+                while let Some(c) = self.next() {
+                    if c == b'\\' as u16 && self.peek() == Some(b'E' as u16) {
+                        self.pos += 1;
+                        break;
+                    }
+                    nodes.push(Node::Char(c));
+                }
+                Ok(match nodes.len() {
+                    0 => Node::Empty,
+                    1 => nodes.pop().expect("one node"),
+                    _ => Node::Concat(nodes),
+                })
+            }
             _ if (b'1' as u16..=b'9' as u16).contains(&ch) => {
                 Err(("Backreferences are not supported".into(), self.pos - 1))
             }
