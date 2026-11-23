@@ -219,18 +219,54 @@ const FILTER_OUTPUT_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
     }),
     method("close", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        // FilterOutputStream.close flushes through the virtual flush() so
-        // buffering subclasses drain before the underlying stream closes.
-        let (flush_class, flush_method) = vm.resolve_virtual_method(this, "flush", "()V")?;
-        vm.invoke_method(flush_class, flush_method, vec![Value::Ref(this)])?;
+        if read_int_field(vm, this, "closed") != 0 {
+            return void();
+        }
+        write_int_field(vm, this, "closed", 1);
         let out = vm
             .read_ref_field(this, vm.class_of(this), "out", "Ljava/io/OutputStream;")
             .unwrap_or(ObjectRef::NULL);
-        if !out.is_null() {
-            let (declaring, method) = vm.resolve_virtual_method(out, "close", "()V")?;
-            vm.invoke_method(declaring, method, vec![Value::Ref(out)])?;
+        // FilterOutputStream.close flushes through the virtual flush() so buffering
+        // subclasses drain before the underlying stream closes. A flush failure still
+        // closes the underlying stream; when that also fails with a different exception,
+        // the close exception is primary and carries the flush exception as suppressed.
+        let (flush_class, flush_method) = vm.resolve_virtual_method(this, "flush", "()V")?;
+        let flush_exception =
+            match vm.invoke_method(flush_class, flush_method, vec![Value::Ref(this)]) {
+                Ok(_) => None,
+                Err(VmError::Thrown(exception)) => Some(exception),
+                Err(error) => return Err(error),
+            };
+        if out.is_null() {
+            return match flush_exception {
+                Some(exception) => Err(VmError::Thrown(exception)),
+                None => void(),
+            };
         }
-        void()
+        let (close_class, close_method) = vm.resolve_virtual_method(out, "close", "()V")?;
+        let close_result = vm.invoke_method(close_class, close_method, vec![Value::Ref(out)]);
+        match flush_exception {
+            None => close_result,
+            Some(flush_exception) => match close_result {
+                Ok(_) => Err(VmError::Thrown(flush_exception)),
+                Err(VmError::Thrown(close_exception)) => {
+                    if close_exception != flush_exception {
+                        let (declaring, method) = vm.resolve_virtual_method(
+                            close_exception,
+                            "addSuppressed",
+                            "(Ljava/lang/Throwable;)V",
+                        )?;
+                        vm.invoke_method(
+                            declaring,
+                            method,
+                            vec![Value::Ref(close_exception), Value::Ref(flush_exception)],
+                        )?;
+                    }
+                    Err(VmError::Thrown(close_exception))
+                }
+                Err(error) => Err(error),
+            },
+        }
     }),
 ];
 
@@ -239,7 +275,10 @@ pub(crate) const FILTER_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
     Some("java/io/OutputStream"),
     &[],
     ACC_PUBLIC,
-    &[field("out", "Ljava/io/OutputStream;", ACC_PROTECTED, None)],
+    &[
+        field("out", "Ljava/io/OutputStream;", ACC_PROTECTED, None),
+        field("closed", "I", ACC_PRIVATE, None),
+    ],
     &FILTER_OUTPUT_METHODS,
     None,
 );
