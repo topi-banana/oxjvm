@@ -5963,7 +5963,7 @@ pub(crate) const HTTP_COOKIE: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const HTTP_COOKIE_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
+const HTTP_COOKIE_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
     method(
         "<init>",
         "(Ljava/lang/String;Ljava/lang/String;)V",
@@ -6227,7 +6227,845 @@ const HTTP_COOKIE_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
         },
     ),
     method("hasExpired", "()Z", ACC_PUBLIC, |vm, _, args| {
-        let max_age = crate::lang::read_long_field(vm, receiver(args), "maxAge");
-        boolean(max_age == 0)
+        boolean(cookie_has_expired(vm, receiver(args)))
     }),
+    method("getCreationTime", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(crate::lang::read_long_field(
+            vm,
+            receiver(args),
+            "whenCreated",
+        ))
+    }),
+];
+
+// -------------------------------------------------------------------------------------------
+// java.net.CookiePolicy / CookieStore / InMemoryCookieStore / CookieManager.
+// -------------------------------------------------------------------------------------------
+
+/// Invoke an instance method on `obj`, passing it as the receiver.
+fn cookie_invoke(
+    vm: &mut Vm<'_>,
+    obj: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    extra: Vec<Value>,
+) -> Result<Value, VmError> {
+    let (class, method) = vm.resolve_virtual_method(obj, name, descriptor)?;
+    let mut args = vec![Value::Ref(obj)];
+    args.extend(extra);
+    vm.invoke_method(class, method, args)
+}
+
+fn cookie_uri_string(
+    vm: &mut Vm<'_>,
+    uri: ObjectRef,
+    getter: &str,
+) -> Result<Option<String>, VmError> {
+    let value = cookie_invoke(vm, uri, getter, "()Ljava/lang/String;", vec![])?;
+    Ok(vm.string_value(value.as_ref()))
+}
+
+/// The effective URI for cookie indexing is `http://host` (path is matched separately).
+fn cookie_effective_uri(vm: &mut Vm<'_>, uri: ObjectRef) -> Result<String, VmError> {
+    let host = cookie_uri_string(vm, uri, "getHost")?.unwrap_or_default();
+    Ok(alloc::format!("http://{host}"))
+}
+
+/// Like `cookie_domain_matches` but without rejecting a dotted `H` part (Netscape cookies).
+fn cookie_netscape_domain_matches(domain: &str, host: &str) -> bool {
+    let is_local_domain = domain.eq_ignore_ascii_case(".local");
+    let mut embedded_dot = domain.find('.');
+    if embedded_dot == Some(0) {
+        embedded_dot = domain[1..].find('.').map(|i| i + 1);
+    }
+    let embedded_dot = embedded_dot.map(|i| i as i32).unwrap_or(-1);
+    if !is_local_domain && (embedded_dot == -1 || embedded_dot == domain.len() as i32 - 1) {
+        return false;
+    }
+    if host.find('.').is_none() && is_local_domain {
+        return true;
+    }
+    let length_diff = host.len() as i32 - domain.len() as i32;
+    if length_diff == 0 {
+        host.eq_ignore_ascii_case(domain)
+    } else if length_diff > 0 {
+        host[length_diff as usize..].eq_ignore_ascii_case(domain)
+    } else if length_diff == -1 {
+        domain.starts_with('.') && host.eq_ignore_ascii_case(&domain[1..])
+    } else {
+        false
+    }
+}
+
+fn cookie_equals(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmError> {
+    let value = cookie_invoke(
+        vm,
+        a,
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        vec![Value::Ref(b)],
+    )?;
+    Ok(value.as_boolean())
+}
+
+fn cookie_has_expired(vm: &mut Vm<'_>, cookie: ObjectRef) -> bool {
+    let max_age = crate::lang::read_long_field(vm, cookie, "maxAge");
+    if max_age == 0 {
+        return true;
+    }
+    if max_age < 0 {
+        return false;
+    }
+    let when_created = crate::lang::read_long_field(vm, cookie, "whenCreated");
+    let delta = (vm.host_time_millis() - when_created) / 1000;
+    delta > max_age
+}
+
+/// Collect the elements of a Java `Collection` (List or Set) via its iterator.
+fn cookie_collection_elements(vm: &mut Vm<'_>, coll: ObjectRef) -> Result<Vec<ObjectRef>, VmError> {
+    let it = cookie_invoke(vm, coll, "iterator", "()Ljava/util/Iterator;", vec![])?;
+    let it = it.as_ref();
+    let mut out = Vec::new();
+    loop {
+        let has_next = cookie_invoke(vm, it, "hasNext", "()Z", vec![])?;
+        if !has_next.as_boolean() {
+            break;
+        }
+        let next = cookie_invoke(vm, it, "next", "()Ljava/lang/Object;", vec![])?;
+        out.push(next.as_ref());
+    }
+    Ok(out)
+}
+
+fn cookie_create_uri(vm: &mut Vm<'_>, text: &str) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/net/URI")?;
+    let uri = vm.new_instance(class)?;
+    let string = vm.make_string(text)?;
+    let (declaring, method) = vm
+        .find_method(class, "<init>", "(Ljava/lang/String;)V")
+        .ok_or_else(|| VmError::internal("URI lacks its String constructor"))?;
+    vm.invoke_method(declaring, method, vec![Value::Ref(uri), Value::Ref(string)])?;
+    Ok(uri)
+}
+
+fn cookie_store_lists(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(ObjectRef, ObjectRef), VmError> {
+    let class = vm.class_of(this);
+    let jar = vm
+        .read_ref_field(this, class, "cookieJar", "Ljava/util/List;")
+        .unwrap_or(ObjectRef::NULL);
+    let index = vm
+        .read_ref_field(this, class, "uriIndex", "Ljava/util/List;")
+        .unwrap_or(ObjectRef::NULL);
+    Ok((jar, index))
+}
+
+pub(crate) const COOKIE_POLICY: oxjvm_vm::NativeClass = class(
+    "java/net/CookiePolicy",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("kind", "I", ACC_PRIVATE, None),
+        field(
+            "ACCEPT_ALL",
+            "Ljava/net/CookiePolicy;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "ACCEPT_NONE",
+            "Ljava/net/CookiePolicy;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "ACCEPT_ORIGINAL_SERVER",
+            "Ljava/net/CookiePolicy;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+    ],
+    &COOKIE_POLICY_METHODS,
+    Some(cookie_policy_clinit),
+);
+
+fn cookie_policy_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/net/CookiePolicy")?;
+    for (name, kind) in [
+        ("ACCEPT_ALL", 0),
+        ("ACCEPT_NONE", 1),
+        ("ACCEPT_ORIGINAL_SERVER", 2),
+    ] {
+        let instance = vm.new_instance(class)?;
+        crate::lang::write_int_field(vm, instance, "kind", kind);
+        vm.set_static_value(class, name, "Ljava/net/CookiePolicy;", Value::Ref(instance));
+    }
+    Ok(())
+}
+
+const COOKIE_POLICY_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "shouldAccept",
+    "(Ljava/net/URI;Ljava/net/HttpCookie;)Z",
+    ACC_PUBLIC,
+    |vm, _, args| {
+        let this = receiver(args);
+        let uri = ref_arg(args, 1);
+        let cookie = ref_arg(args, 2);
+        let kind = crate::lang::read_int_field(vm, this, "kind");
+        let accept = match kind {
+            0 => true,
+            1 => false,
+            _ => {
+                if uri.is_null() || cookie.is_null() {
+                    false
+                } else {
+                    let domain = vm.read_string_field_any(cookie, "domain");
+                    let host = cookie_uri_string(vm, uri, "getHost")?;
+                    match (domain, host) {
+                        (Some(d), Some(h)) => cookie_domain_matches(&d, &h),
+                        _ => false,
+                    }
+                }
+            }
+        };
+        boolean(accept)
+    },
+)];
+
+pub(crate) const COOKIE_STORE: oxjvm_vm::NativeClass = class(
+    "java/net/CookieStore",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &COOKIE_STORE_METHODS,
+    None,
+);
+
+const COOKIE_STORE_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method(
+        "add",
+        "(Ljava/net/URI;Ljava/net/HttpCookie;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "get",
+        "(Ljava/net/URI;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getCookies",
+        "()Ljava/util/List;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getURIs",
+        "()Ljava/util/List;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "remove",
+        "(Ljava/net/URI;Ljava/net/HttpCookie;)Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "removeAll",
+        "()Z",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
+
+pub(crate) const IN_MEMORY_COOKIE_STORE: oxjvm_vm::NativeClass = class(
+    "java/net/InMemoryCookieStore",
+    Some("java/lang/Object"),
+    &["java/net/CookieStore"],
+    ACC_PUBLIC,
+    &[
+        field("cookieJar", "Ljava/util/List;", ACC_PRIVATE, None),
+        field("uriIndex", "Ljava/util/List;", ACC_PRIVATE, None),
+    ],
+    &IN_MEMORY_COOKIE_STORE_METHODS,
+    None,
+);
+
+const IN_MEMORY_COOKIE_STORE_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let jar = crate::util::new_array_list(vm)?;
+        let index = crate::util::new_array_list(vm)?;
+        let class = vm.class_of(this);
+        let (d, f) = vm.find_field(class, "cookieJar", "Ljava/util/List;")?;
+        vm.set_instance_ref(this, d, f, jar);
+        let (d, f) = vm.find_field(class, "uriIndex", "Ljava/util/List;")?;
+        vm.set_instance_ref(this, d, f, index);
+        void()
+    }),
+    method(
+        "add",
+        "(Ljava/net/URI;Ljava/net/HttpCookie;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let uri = ref_arg(args, 1);
+            let cookie = ref_arg(args, 2);
+            if cookie.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", Some("cookie is null")));
+            }
+            let (jar, index) = cookie_store_lists(vm, this)?;
+            let mut cookies = crate::util::array_list_elements(vm, jar);
+            let mut uris = crate::util::array_list_elements(vm, index);
+            let mut i = 0;
+            while i < cookies.len() {
+                if cookie_equals(vm, cookies[i], cookie)? {
+                    cookies.remove(i);
+                    uris.remove(i);
+                } else {
+                    i += 1;
+                }
+            }
+            if crate::lang::read_long_field(vm, cookie, "maxAge") != 0 {
+                let effective = if uri.is_null() {
+                    ObjectRef::NULL
+                } else {
+                    let text = cookie_effective_uri(vm, uri)?;
+                    vm.make_string(&text)?
+                };
+                cookies.push(cookie);
+                uris.push(effective);
+            }
+            crate::util::array_list_store(vm, jar, &cookies)?;
+            crate::util::array_list_store(vm, index, &uris)?;
+            void()
+        },
+    ),
+    method(
+        "get",
+        "(Ljava/net/URI;)Ljava/util/List;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let uri = ref_arg(args, 1);
+            if uri.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", Some("uri is null")));
+            }
+            let (jar, index) = cookie_store_lists(vm, this)?;
+            let cookies = crate::util::array_list_elements(vm, jar);
+            let uris = crate::util::array_list_elements(vm, index);
+            let host = cookie_uri_string(vm, uri, "getHost")?.unwrap_or_default();
+            let scheme = cookie_uri_string(vm, uri, "getScheme")?.unwrap_or_default();
+            let secure_link = scheme.eq_ignore_ascii_case("https");
+            let effective = cookie_effective_uri(vm, uri)?;
+            let mut result: Vec<ObjectRef> = Vec::new();
+            for (i, cookie) in cookies.iter().enumerate() {
+                let version = crate::lang::read_int_field(vm, *cookie, "version");
+                let domain = vm.read_string_field_any(*cookie, "domain");
+                let domain_match = match domain {
+                    Some(d) => {
+                        if version == 0 {
+                            cookie_netscape_domain_matches(&d, &host)
+                        } else {
+                            cookie_domain_matches(&d, &host)
+                        }
+                    }
+                    None => false,
+                };
+                let uri_match = !uris[i].is_null()
+                    && vm.string_value(uris[i]).as_deref() == Some(effective.as_str());
+                if domain_match || uri_match {
+                    let secure = crate::lang::read_int_field(vm, *cookie, "secure") != 0;
+                    if !cookie_has_expired(vm, *cookie)
+                        && (secure_link || !secure)
+                        && !result.contains(cookie)
+                    {
+                        result.push(*cookie);
+                    }
+                }
+            }
+            let list = crate::util::new_array_list(vm)?;
+            crate::util::array_list_store(vm, list, &result)?;
+            object(list)
+        },
+    ),
+    method(
+        "getCookies",
+        "()Ljava/util/List;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (jar, index) = cookie_store_lists(vm, this)?;
+            let mut cookies = crate::util::array_list_elements(vm, jar);
+            let mut uris = crate::util::array_list_elements(vm, index);
+            let mut i = 0;
+            while i < cookies.len() {
+                if cookie_has_expired(vm, cookies[i]) {
+                    cookies.remove(i);
+                    uris.remove(i);
+                } else {
+                    i += 1;
+                }
+            }
+            crate::util::array_list_store(vm, jar, &cookies)?;
+            crate::util::array_list_store(vm, index, &uris)?;
+            object(jar)
+        },
+    ),
+    method(
+        "getURIs",
+        "()Ljava/util/List;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (_jar, index) = cookie_store_lists(vm, this)?;
+            let uris = crate::util::array_list_elements(vm, index);
+            let mut seen: Vec<String> = Vec::new();
+            let mut result: Vec<ObjectRef> = Vec::new();
+            for u in uris {
+                if u.is_null() {
+                    continue;
+                }
+                let text = vm.string_value(u).unwrap_or_default();
+                if !seen.contains(&text) {
+                    seen.push(text.clone());
+                    let uri = cookie_create_uri(vm, &text)?;
+                    result.push(uri);
+                }
+            }
+            let list = crate::util::new_array_list(vm)?;
+            crate::util::array_list_store(vm, list, &result)?;
+            object(list)
+        },
+    ),
+    method(
+        "remove",
+        "(Ljava/net/URI;Ljava/net/HttpCookie;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let cookie = ref_arg(args, 2);
+            if cookie.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", Some("cookie is null")));
+            }
+            let (jar, index) = cookie_store_lists(vm, this)?;
+            let mut cookies = crate::util::array_list_elements(vm, jar);
+            let mut uris = crate::util::array_list_elements(vm, index);
+            let mut modified = false;
+            let mut i = 0;
+            while i < cookies.len() {
+                if cookie_equals(vm, cookies[i], cookie)? {
+                    cookies.remove(i);
+                    uris.remove(i);
+                    modified = true;
+                } else {
+                    i += 1;
+                }
+            }
+            crate::util::array_list_store(vm, jar, &cookies)?;
+            crate::util::array_list_store(vm, index, &uris)?;
+            boolean(modified)
+        },
+    ),
+    method("removeAll", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let (jar, index) = cookie_store_lists(vm, this)?;
+        let cookies = crate::util::array_list_elements(vm, jar);
+        if cookies.is_empty() {
+            return boolean(false);
+        }
+        crate::util::array_list_store(vm, jar, &[])?;
+        crate::util::array_list_store(vm, index, &[])?;
+        boolean(true)
+    }),
+];
+
+fn cookie_path_matches(path: &str, path_to_match: Option<&str>) -> bool {
+    match path_to_match {
+        Some(p) => path == p || path.starts_with(p),
+        None => false,
+    }
+}
+
+fn cookie_is_in_port_list(list: &str, port: i32) -> bool {
+    for part in list.split(',') {
+        if let Ok(n) = part.trim().parse::<i32>() {
+            if n == port {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn cookie_uri_port(vm: &mut Vm<'_>, uri: ObjectRef) -> Result<i32, VmError> {
+    let value = cookie_invoke(vm, uri, "getPort", "()I", vec![])?;
+    let port = value.as_int();
+    if port != -1 {
+        return Ok(port);
+    }
+    let scheme = cookie_uri_string(vm, uri, "getScheme")?.unwrap_or_default();
+    Ok(if scheme == "https" { 443 } else { 80 })
+}
+
+/// Sort cookies by descending path length, then ascending creation time, and
+/// render the Cookie header values (RFC 2965 adds a leading $Version="1").
+fn cookie_sort_by_path_and_age(
+    vm: &mut Vm<'_>,
+    cookies: &mut [ObjectRef],
+) -> Result<Vec<ObjectRef>, VmError> {
+    let mut keyed: Vec<(usize, i64, ObjectRef)> = Vec::new();
+    for cookie in cookies.iter() {
+        let path_len = vm
+            .read_string_field_any(*cookie, "path")
+            .map(|p| p.len())
+            .unwrap_or(0);
+        let created = crate::lang::read_long_field(vm, *cookie, "whenCreated");
+        keyed.push((path_len, created, *cookie));
+    }
+    keyed.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let mut header: Vec<ObjectRef> = Vec::new();
+    for (i, (_, _, cookie)) in keyed.iter().enumerate() {
+        let version = crate::lang::read_int_field(vm, *cookie, "version");
+        if i == 0 && version > 0 {
+            let tag = vm.make_string("$Version=\"1\"")?;
+            header.push(tag);
+        }
+        let text = cookie_invoke(vm, *cookie, "toString", "()Ljava/lang/String;", vec![])?;
+        header.push(text.as_ref());
+    }
+    Ok(header)
+}
+
+pub(crate) const COOKIE_MANAGER: oxjvm_vm::NativeClass = class(
+    "java/net/CookieManager",
+    Some("java/net/CookieHandler"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("cookieJar", "Ljava/net/CookieStore;", ACC_PRIVATE, None),
+        field(
+            "policyCallback",
+            "Ljava/net/CookiePolicy;",
+            ACC_PRIVATE,
+            None,
+        ),
+    ],
+    &COOKIE_MANAGER_METHODS,
+    None,
+);
+
+fn cookie_manager_set_field(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+    desc: &str,
+    value: ObjectRef,
+) -> Result<(), VmError> {
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, name, desc)?;
+    vm.set_instance_ref(this, declaring, field, value);
+    Ok(())
+}
+
+fn cookie_manager_init(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    store: ObjectRef,
+    policy: ObjectRef,
+) -> Result<(), VmError> {
+    let policy = if policy.is_null() {
+        let class = vm.resolve_class("java/net/CookiePolicy")?;
+        vm.ensure_initialized(class)?;
+        vm.read_static_ref_if_set(class, "ACCEPT_ORIGINAL_SERVER", "Ljava/net/CookiePolicy;")
+            .unwrap_or(ObjectRef::NULL)
+    } else {
+        policy
+    };
+    let store = if store.is_null() {
+        let class = vm.resolve_class("java/net/InMemoryCookieStore")?;
+        let instance = vm.new_instance(class)?;
+        let (declaring, method) = vm
+            .find_method(class, "<init>", "()V")
+            .ok_or_else(|| VmError::internal("InMemoryCookieStore lacks its constructor"))?;
+        vm.invoke_method(declaring, method, vec![Value::Ref(instance)])?;
+        instance
+    } else {
+        store
+    };
+    cookie_manager_set_field(
+        vm,
+        this,
+        "policyCallback",
+        "Ljava/net/CookiePolicy;",
+        policy,
+    )?;
+    cookie_manager_set_field(vm, this, "cookieJar", "Ljava/net/CookieStore;", store)?;
+    Ok(())
+}
+
+const COOKIE_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        cookie_manager_init(vm, receiver(args), ObjectRef::NULL, ObjectRef::NULL)?;
+        void()
+    }),
+    method(
+        "<init>",
+        "(Ljava/net/CookieStore;Ljava/net/CookiePolicy;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            cookie_manager_init(vm, receiver(args), ref_arg(args, 1), ref_arg(args, 2))?;
+            void()
+        },
+    ),
+    method(
+        "getCookieStore",
+        "()Ljava/net/CookieStore;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let jar = vm
+                .read_ref_field(
+                    this,
+                    vm.class_of(this),
+                    "cookieJar",
+                    "Ljava/net/CookieStore;",
+                )
+                .unwrap_or(ObjectRef::NULL);
+            object(jar)
+        },
+    ),
+    method(
+        "setCookiePolicy",
+        "(Ljava/net/CookiePolicy;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let policy = ref_arg(args, 1);
+            if !policy.is_null() {
+                cookie_manager_set_field(
+                    vm,
+                    this,
+                    "policyCallback",
+                    "Ljava/net/CookiePolicy;",
+                    policy,
+                )?;
+            }
+            void()
+        },
+    ),
+    method(
+        "get",
+        "(Ljava/net/URI;Ljava/util/Map;)Ljava/util/Map;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let uri = ref_arg(args, 1);
+            let request_headers = ref_arg(args, 2);
+            if uri.is_null() || request_headers.is_null() {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("Argument is null"),
+                ));
+            }
+            let jar = vm
+                .read_ref_field(
+                    this,
+                    vm.class_of(this),
+                    "cookieJar",
+                    "Ljava/net/CookieStore;",
+                )
+                .unwrap_or(ObjectRef::NULL);
+            let scheme = cookie_uri_string(vm, uri, "getScheme")?.unwrap_or_default();
+            let secure_link = scheme.eq_ignore_ascii_case("https");
+            let mut path = cookie_uri_string(vm, uri, "getPath")?.unwrap_or_default();
+            if path.is_empty() {
+                path = String::from("/");
+            }
+            let mut matched: Vec<ObjectRef> = Vec::new();
+            if !jar.is_null() {
+                let stored = cookie_invoke(
+                    vm,
+                    jar,
+                    "get",
+                    "(Ljava/net/URI;)Ljava/util/List;",
+                    vec![Value::Ref(uri)],
+                )?;
+                let cookies = cookie_collection_elements(vm, stored.as_ref())?;
+                for cookie in cookies {
+                    let cookie_path = vm.read_string_field_any(cookie, "path");
+                    let secure = crate::lang::read_int_field(vm, cookie, "secure") != 0;
+                    if !cookie_path_matches(&path, cookie_path.as_deref())
+                        || (!secure_link && secure)
+                    {
+                        continue;
+                    }
+                    let http_only = crate::lang::read_int_field(vm, cookie, "httpOnly") != 0;
+                    if http_only
+                        && !scheme.eq_ignore_ascii_case("http")
+                        && !scheme.eq_ignore_ascii_case("https")
+                    {
+                        continue;
+                    }
+                    let ports = vm.read_string_field_any(cookie, "portlist");
+                    if let Some(ports) = ports {
+                        if !ports.is_empty() {
+                            let port = cookie_uri_port(vm, uri)?;
+                            if cookie_is_in_port_list(&ports, port) {
+                                matched.push(cookie);
+                            }
+                            continue;
+                        }
+                    }
+                    matched.push(cookie);
+                }
+            }
+            let header = cookie_sort_by_path_and_age(vm, &mut matched)?;
+            let header_list = crate::util::new_array_list(vm)?;
+            crate::util::array_list_store(vm, header_list, &header)?;
+            let map_class = vm.resolve_class("java/util/HashMap")?;
+            let map = vm.new_instance(map_class)?;
+            let key = vm.make_string("Cookie")?;
+            cookie_invoke(
+                vm,
+                map,
+                "put",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                vec![Value::Ref(key), Value::Ref(header_list)],
+            )?;
+            object(map)
+        },
+    ),
+    method(
+        "put",
+        "(Ljava/net/URI;Ljava/util/Map;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let uri = ref_arg(args, 1);
+            let response_headers = ref_arg(args, 2);
+            if uri.is_null() || response_headers.is_null() {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("Argument is null"),
+                ));
+            }
+            let jar = vm
+                .read_ref_field(
+                    this,
+                    vm.class_of(this),
+                    "cookieJar",
+                    "Ljava/net/CookieStore;",
+                )
+                .unwrap_or(ObjectRef::NULL);
+            if jar.is_null() {
+                return void();
+            }
+            let policy = vm
+                .read_ref_field(
+                    this,
+                    vm.class_of(this),
+                    "policyCallback",
+                    "Ljava/net/CookiePolicy;",
+                )
+                .unwrap_or(ObjectRef::NULL);
+            let key_set =
+                cookie_invoke(vm, response_headers, "keySet", "()Ljava/util/Set;", vec![])?;
+            let keys = cookie_collection_elements(vm, key_set.as_ref())?;
+            for key in keys {
+                let key_text = vm.string_value(key).unwrap_or_default();
+                if !key_text.eq_ignore_ascii_case("Set-Cookie2")
+                    && !key_text.eq_ignore_ascii_case("Set-Cookie")
+                {
+                    continue;
+                }
+                let values = cookie_invoke(
+                    vm,
+                    response_headers,
+                    "get",
+                    "(Ljava/lang/Object;)Ljava/lang/Object;",
+                    vec![Value::Ref(key)],
+                )?;
+                let headers = cookie_collection_elements(vm, values.as_ref())?;
+                for header in headers {
+                    let header_text = vm.string_value(header).unwrap_or_default();
+                    let cookies = match cookie_parse(vm, &header_text) {
+                        Ok(c) => c,
+                        Err(VmError::Thrown(exc)) => {
+                            let illegal = vm.resolve_class("java/lang/IllegalArgumentException")?;
+                            if vm.is_instance(exc, illegal) {
+                                Vec::new()
+                            } else {
+                                return Err(VmError::Thrown(exc));
+                            }
+                        }
+                        Err(e) => return Err(e),
+                    };
+                    for cookie in cookies {
+                        if vm.read_string_field_any(cookie, "path").is_none() {
+                            let mut path =
+                                cookie_uri_string(vm, uri, "getPath")?.unwrap_or_default();
+                            if !path.ends_with('/') {
+                                path = match path.rfind('/') {
+                                    Some(i) if i > 0 => String::from(&path[..i + 1]),
+                                    _ => String::from("/"),
+                                };
+                            }
+                            cookie_set_string_opt(vm, cookie, "path", Some(&path))?;
+                        }
+                        if vm.read_string_field_any(cookie, "domain").is_none() {
+                            let host = cookie_uri_string(vm, uri, "getHost")?;
+                            let host = host.map(|h| {
+                                if h.contains('.') {
+                                    h
+                                } else {
+                                    alloc::format!("{h}.local")
+                                }
+                            });
+                            let lower = host.as_deref().map(|h| h.to_lowercase());
+                            cookie_set_string_opt(vm, cookie, "domain", lower.as_deref())?;
+                        }
+                        let ports = vm.read_string_field_any(cookie, "portlist");
+                        let mut accept = true;
+                        if let Some(ports) = ports {
+                            let port = cookie_uri_port(vm, uri)?;
+                            if ports.is_empty() {
+                                cookie_set_string_opt(
+                                    vm,
+                                    cookie,
+                                    "portlist",
+                                    Some(&alloc::format!("{port}")),
+                                )?;
+                            } else if !cookie_is_in_port_list(&ports, port) {
+                                accept = false;
+                            }
+                        }
+                        if accept && !policy.is_null() {
+                            let result = cookie_invoke(
+                                vm,
+                                policy,
+                                "shouldAccept",
+                                "(Ljava/net/URI;Ljava/net/HttpCookie;)Z",
+                                vec![Value::Ref(uri), Value::Ref(cookie)],
+                            )?;
+                            accept = result.as_boolean();
+                        }
+                        if accept {
+                            cookie_invoke(
+                                vm,
+                                jar,
+                                "add",
+                                "(Ljava/net/URI;Ljava/net/HttpCookie;)V",
+                                vec![Value::Ref(uri), Value::Ref(cookie)],
+                            )?;
+                        }
+                    }
+                }
+            }
+            void()
+        },
+    ),
 ];
