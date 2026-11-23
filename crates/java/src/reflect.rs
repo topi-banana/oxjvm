@@ -2869,7 +2869,11 @@ fn class_array_types(vm: &mut Vm<'_>, array: ObjectRef) -> Result<Vec<ClassId>, 
     let mut types = Vec::with_capacity(length);
     for index in 0..length {
         let value = vm.array_get(array, index as i32)?;
-        types.push(class_argument(vm, value.as_ref())?);
+        let reference = value.as_ref();
+        if reference.is_null() {
+            return Err(vm.throw_new("java/lang/NoSuchMethodException", None));
+        }
+        types.push(class_argument(vm, reference)?);
     }
     Ok(types)
 }
@@ -4840,7 +4844,11 @@ fn parameter_descriptor(vm: &mut Vm<'_>, parameter_array: ObjectRef) -> Result<S
     };
     for index in 0..length {
         let value = vm.array_get(parameter_array, index as i32)?;
-        let parameter = class_argument(vm, value.as_ref())?;
+        let reference = value.as_ref();
+        if reference.is_null() {
+            return Err(vm.throw_new("java/lang/NoSuchMethodException", None));
+        }
+        let parameter = class_argument(vm, reference)?;
         descriptor.push_str(&class_field_descriptor(vm, parameter));
     }
     descriptor.push(')');
