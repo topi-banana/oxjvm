@@ -669,6 +669,7 @@ fn print_stream_init_file(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
+    print_stream_check_charset(vm, args)?;
     let path = crate::file::file_path(vm, ref_arg(args, 1));
     let stream = new_file_output_stream(vm, &path)?;
     print_stream_out(vm, receiver(args), stream)
@@ -680,9 +681,36 @@ fn print_stream_init_string(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
+    print_stream_check_charset(vm, args)?;
     let path = crate::string_arg(vm, args[1])?;
     let stream = new_file_output_stream(vm, &path)?;
     print_stream_out(vm, receiver(args), stream)
+}
+
+/// Validate the charset argument of a file-backed `PrintStream` constructor
+/// before the file is opened: a null name raises `NullPointerException` and an
+/// unsupported name raises `UnsupportedEncodingException`, leaving the file
+/// untouched, exactly as the JDK does.
+fn print_stream_check_charset(vm: &mut Vm<'_>, args: &[Value]) -> Result<(), VmError> {
+    let Some(arg) = args.get(2) else {
+        return Ok(());
+    };
+    let Value::Ref(reference) = arg else {
+        return Ok(());
+    };
+    if reference.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let charset_class = vm.resolve_class("java/nio/charset/Charset")?;
+    if vm.is_instance(*reference, charset_class) {
+        return Ok(());
+    }
+    if let Some(name) = vm.string_value(*reference) {
+        if crate::charset::canonical_name(&name).is_none() {
+            return Err(vm.throw_new("java/io/UnsupportedEncodingException", Some(&name)));
+        }
+    }
+    Ok(())
 }
 
 fn new_file_output_stream(vm: &mut Vm<'_>, path: &str) -> Result<ObjectRef, VmError> {
