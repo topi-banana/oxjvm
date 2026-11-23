@@ -1944,11 +1944,21 @@ pub(crate) const BYTE: oxjvm_vm::NativeClass = class(
     Some(byte_clinit),
 );
 
-const BOOLEAN_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const BOOLEAN_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method("<init>", "(Z)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), i32::from(bool_arg(args, 1)));
         void()
     }),
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let value = parse_boolean(vm.string_value(ref_arg(args, 1)).as_deref());
+            write_value_int(vm, receiver(args), i32::from(value));
+            void()
+        },
+    ),
     method("booleanValue", "()Z", ACC_PUBLIC, |vm, _, args| {
         boolean(read_value_int(vm, receiver(args)) != 0)
     }),
