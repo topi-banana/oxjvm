@@ -4444,6 +4444,217 @@ pub(crate) const SOCKET_PERMISSION: oxjvm_vm::NativeClass = class(
                 object(vm.make_string(&text)?)
             },
         ),
+        method(
+            "newPermissionCollection",
+            "()Ljava/security/PermissionCollection;",
+            ACC_PUBLIC,
+            |vm, _, _| {
+                let class = vm.resolve_class("java/net/SocketPermissionCollection")?;
+                let instance = vm.new_instance(class)?;
+                let (declaring, ctor) = vm
+                    .find_method(class, "<init>", "()V")
+                    .ok_or_else(|| VmError::internal("SocketPermissionCollection() missing"))?;
+                vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
+                object(instance)
+            },
+        ),
+    ],
+    None,
+);
+
+/// The ArrayList backing a SocketPermissionCollection.
+fn socket_collection_list(vm: &mut Vm<'_>, this: ObjectRef) -> Result<ObjectRef, VmError> {
+    let class = vm.class_of(this);
+    Ok(vm
+        .read_ref_field(this, class, "perms", "Ljava/util/ArrayList;")
+        .unwrap_or(ObjectRef::NULL))
+}
+
+/// SocketPermissionCollection.implies: union the action masks of every stored
+/// permission whose host matches and whose port range covers the query (a
+/// resolve-only query ignores ports), then check the union grants the query.
+fn socket_collection_implies(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let other = ref_arg(args, 1);
+    if other.is_null() || vm.class_name(vm.class_of(other)) != "java/net/SocketPermission" {
+        return boolean(false);
+    }
+    let list = socket_collection_list(vm, receiver(args))?;
+    if list.is_null() {
+        return boolean(false);
+    }
+    let perms = crate::util::array_list_elements(vm, list);
+    let other_name = vm.read_string_field_any(other, "name").unwrap_or_default();
+    let other_actions = vm
+        .read_string_field_any(other, "actions")
+        .unwrap_or_default();
+    let other_mask = socket_actions_mask(&other_actions);
+    let (other_host, other_low, other_high) = socket_permission_parts(&other_name);
+    let mut union = 0u32;
+    for perm in perms {
+        if perm.is_null() || vm.class_name(vm.class_of(perm)) != "java/net/SocketPermission" {
+            continue;
+        }
+        let name = vm.read_string_field_any(perm, "name").unwrap_or_default();
+        let actions = vm
+            .read_string_field_any(perm, "actions")
+            .unwrap_or_default();
+        let mask = socket_actions_mask(&actions);
+        let (host, low, high) = socket_permission_parts(&name);
+        if !socket_host_matches(&host, &other_host) {
+            continue;
+        }
+        if (other_mask & !8) != 0 && (other_low < low || other_high > high) {
+            continue;
+        }
+        union |= mask;
+    }
+    boolean((union & other_mask) == other_mask)
+}
+
+/// Render an action mask in the JDK's canonical order.
+fn socket_actions_render(mask: u32) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if mask & 2 != 0 {
+        parts.push("connect");
+    }
+    if mask & 4 != 0 {
+        parts.push("listen");
+    }
+    if mask & 1 != 0 {
+        parts.push("accept");
+    }
+    if mask & 8 != 0 {
+        parts.push("resolve");
+    }
+    parts.join(",")
+}
+
+/// Construct a SocketPermission natively (used when merging collection entries).
+fn new_socket_permission(vm: &mut Vm<'_>, name: &str, actions: &str) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/net/SocketPermission")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, ctor) = vm
+        .find_method(class, "<init>", "(Ljava/lang/String;Ljava/lang/String;)V")
+        .ok_or_else(|| VmError::internal("SocketPermission() missing"))?;
+    let name_val = vm.make_string(name)?;
+    let actions_val = vm.make_string(actions)?;
+    vm.invoke_method(
+        declaring,
+        ctor,
+        vec![
+            Value::Ref(instance),
+            Value::Ref(name_val),
+            Value::Ref(actions_val),
+        ],
+    )?;
+    Ok(instance)
+}
+
+/// SocketPermissionCollection.add: permissions with the same name are merged
+/// (their action masks unioned) rather than duplicated, like the JDK.
+fn socket_collection_add(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let perm = ref_arg(args, 1);
+    if perm.is_null() || vm.class_name(vm.class_of(perm)) != "java/net/SocketPermission" {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("invalid permission type"),
+        ));
+    }
+    let list = socket_collection_list(vm, receiver(args))?;
+    let name = vm.read_string_field_any(perm, "name").unwrap_or_default();
+    let actions = vm
+        .read_string_field_any(perm, "actions")
+        .unwrap_or_default();
+    let mask = socket_actions_mask(&actions);
+    let perms = crate::util::array_list_elements(vm, list);
+    let mut existing = None;
+    for (index, stored) in perms.iter().enumerate() {
+        if !stored.is_null()
+            && vm
+                .read_string_field_any(*stored, "name")
+                .unwrap_or_default()
+                == name
+        {
+            existing = Some(index);
+            break;
+        }
+    }
+    match existing {
+        Some(index) => {
+            let old_actions = vm
+                .read_string_field_any(perms[index], "actions")
+                .unwrap_or_default();
+            let merged = socket_actions_mask(&old_actions) | mask;
+            let merged_perm = new_socket_permission(vm, &name, &socket_actions_render(merged))?;
+            let (declaring, set) =
+                vm.resolve_virtual_method(list, "set", "(ILjava/lang/Object;)Ljava/lang/Object;")?;
+            vm.invoke_method(
+                declaring,
+                set,
+                vec![
+                    Value::Ref(list),
+                    int(index as i32)?,
+                    Value::Ref(merged_perm),
+                ],
+            )?;
+        }
+        None => {
+            let (declaring, add) =
+                vm.resolve_virtual_method(list, "add", "(Ljava/lang/Object;)Z")?;
+            vm.invoke_method(declaring, add, vec![Value::Ref(list), Value::Ref(perm)])?;
+        }
+    }
+    void()
+}
+
+pub(crate) const SOCKET_PERMISSION_COLLECTION: oxjvm_vm::NativeClass = class(
+    "java/net/SocketPermissionCollection",
+    Some("java/security/PermissionCollection"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[field("perms", "Ljava/util/ArrayList;", ACC_PRIVATE, None)],
+    &[
+        method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let list = vm.resolve_class("java/util/ArrayList")?;
+            let instance = vm.new_instance(list)?;
+            let (declaring, ctor) = vm
+                .find_method(list, "<init>", "()V")
+                .ok_or_else(|| VmError::internal("ArrayList() missing"))?;
+            vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
+            let (declaring, field) = vm.find_field(class, "perms", "Ljava/util/ArrayList;")?;
+            vm.set_instance_ref(this, declaring, field, instance);
+            void()
+        }),
+        method(
+            "add",
+            "(Ljava/security/Permission;)V",
+            ACC_PUBLIC,
+            |vm, _, args| socket_collection_add(vm, args),
+        ),
+        method(
+            "implies",
+            "(Ljava/security/Permission;)Z",
+            ACC_PUBLIC,
+            |vm, _, args| socket_collection_implies(vm, args),
+        ),
+        method(
+            "elements",
+            "()Ljava/util/Enumeration;",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let list = socket_collection_list(vm, receiver(args))?;
+                let perms = if list.is_null() {
+                    Vec::new()
+                } else {
+                    crate::util::array_list_elements(vm, list)
+                };
+                object(crate::util::new_enumeration(vm, &perms)?)
+            },
+        ),
+        method("isReadOnly", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+        method("setReadOnly", "()V", ACC_PUBLIC, |_, _, _| void()),
     ],
     None,
 );

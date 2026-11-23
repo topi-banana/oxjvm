@@ -2490,6 +2490,45 @@ pub(crate) const BASIC_PERMISSION: oxjvm_vm::NativeClass = class(
     None,
 );
 
+pub(crate) const SECURITY_PERMISSION: oxjvm_vm::NativeClass = class(
+    "java/security/SecurityPermission",
+    Some("java/security/BasicPermission"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[],
+    &SECURITY_PERMISSION_METHODS,
+    None,
+);
+
+const SECURITY_PERMISSION_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let parent = vm.resolve_class("java/security/BasicPermission")?;
+            let (declaring, ctor) = vm
+                .find_method(parent, "<init>", "(Ljava/lang/String;)V")
+                .ok_or_else(|| VmError::internal("BasicPermission lacks <init>"))?;
+            vm.invoke_method(declaring, ctor, args.to_vec())?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let parent = vm.resolve_class("java/security/BasicPermission")?;
+            let (declaring, ctor) = vm
+                .find_method(parent, "<init>", "(Ljava/lang/String;Ljava/lang/String;)V")
+                .ok_or_else(|| VmError::internal("BasicPermission lacks <init>"))?;
+            vm.invoke_method(declaring, ctor, args.to_vec())?;
+            void()
+        },
+    ),
+];
+
 const BASIC_PERMISSION_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     method(
         "<init>",
@@ -2578,9 +2617,32 @@ pub(crate) const PERMISSION_COLLECTION: oxjvm_vm::NativeClass = class(
     &["java/io/Serializable"],
     ACC_PUBLIC | ACC_ABSTRACT,
     &[],
-    &[],
+    &PERMISSION_COLLECTION_METHODS,
     None,
 );
+
+const PERMISSION_COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method(
+        "implies",
+        "(Ljava/security/Permission;)Z",
+        ACC_PUBLIC,
+        |_, _, _| boolean(false),
+    ),
+    method(
+        "add",
+        "(Ljava/security/Permission;)V",
+        ACC_PUBLIC,
+        |_, _, _| void(),
+    ),
+    method(
+        "elements",
+        "()Ljava/util/Enumeration;",
+        ACC_PUBLIC,
+        |vm, _, _| object(crate::util::new_enumeration(vm, &[])?),
+    ),
+    method("isReadOnly", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
+    method("setReadOnly", "()V", ACC_PUBLIC, |_, _, _| void()),
+];
 
 pub(crate) const PERMISSIONS: oxjvm_vm::NativeClass = class(
     "java/security/Permissions",
