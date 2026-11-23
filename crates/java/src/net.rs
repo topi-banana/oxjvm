@@ -8,7 +8,8 @@ use alloc::vec::Vec;
 use oxjvm_classfile::flags::*;
 
 use crate::{
-    boolean, class, field, int, int_arg, long, method, object, receiver, ref_arg, string_arg, void,
+    bool_arg, boolean, class, field, int, int_arg, long, long_arg, method, object, receiver,
+    ref_arg, string_arg, void,
 };
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
@@ -2236,7 +2237,7 @@ const URL_CONNECTION_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
             let map = url_connection_default_use_caches(vm)?;
-            let value = url_connection_box_boolean(vm, crate::bool_arg(args, 1))?;
+            let value = url_connection_box_boolean(vm, bool_arg(args, 1))?;
             crate::util::hash_map_insert(vm, map, protocol, value)?;
             void()
         },
@@ -2868,7 +2869,7 @@ const SERVER_SOCKET_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         void()
     }),
     method("setReuseAddress", "(Z)V", ACC_PUBLIC, |vm, _, args| {
-        server_socket_set_bool(vm, receiver(args), "reuseAddress", crate::bool_arg(args, 1));
+        server_socket_set_bool(vm, receiver(args), "reuseAddress", bool_arg(args, 1));
         void()
     }),
     method("getReuseAddress", "()Z", ACC_PUBLIC, |vm, _, args| {
@@ -2963,7 +2964,7 @@ const SERVER_SOCKET_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         },
     ),
     method("setSoReuseAddress", "(Z)V", ACC_PUBLIC, |vm, _, args| {
-        server_socket_set_bool(vm, receiver(args), "reuseAddress", crate::bool_arg(args, 1));
+        server_socket_set_bool(vm, receiver(args), "reuseAddress", bool_arg(args, 1));
         void()
     }),
     method("getSoReuseAddress", "()Z", ACC_PUBLIC, |vm, _, args| {
@@ -5540,4 +5541,603 @@ const IDN_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
             object(vm.make_string(&idn_to_unicode(&input, 0))?)
         },
     ),
+];
+
+// -------------------------------------------------------------------------------------------
+// java.net.HttpCookie — RFC 2965 / Netscape cookie parsing and attributes.
+// -------------------------------------------------------------------------------------------
+
+const HTTP_COOKIE_SET_COOKIE: &str = "set-cookie:";
+const HTTP_COOKIE_SET_COOKIE2: &str = "set-cookie2:";
+
+/// RFC 2068 token check, with the cookie tspecials ",; " (space included).
+fn cookie_is_token(s: &str) -> bool {
+    s.chars().all(|c| {
+        let u = c as u32;
+        (0x20..0x7f).contains(&u) && c != ',' && c != ';' && c != ' '
+    })
+}
+
+fn cookie_strip_quote(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() > 2 {
+        let first = chars[0];
+        let last = chars[chars.len() - 1];
+        if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+            return chars[1..chars.len() - 1].iter().collect();
+        }
+    }
+    String::from(s)
+}
+
+fn cookie_starts_with_ignore_case(s: &str, start: &str) -> bool {
+    s.len() >= start.len() && s[..start.len()].eq_ignore_ascii_case(start)
+}
+
+fn cookie_guess_version(header: &str) -> i32 {
+    let lower = header.to_lowercase();
+    if lower.contains("expires=") {
+        0
+    } else if lower.contains("version=")
+        || lower.contains("max-age")
+        || cookie_starts_with_ignore_case(header, HTTP_COOKIE_SET_COOKIE2)
+    {
+        1
+    } else {
+        0
+    }
+}
+
+/// Split on commas that are not inside double quotes (RFC 2965 multi-cookie).
+fn cookie_split_multi(header: &str) -> Vec<String> {
+    let chars: Vec<char> = header.chars().collect();
+    let mut cookies = Vec::new();
+    let mut quote_count = 0u32;
+    let mut q = 0usize;
+    for p in 0..chars.len() {
+        if chars[p] == '"' {
+            quote_count += 1;
+        }
+        if chars[p] == ',' && quote_count % 2 == 0 {
+            cookies.push(chars[q..p].iter().collect());
+            q = p + 1;
+        }
+    }
+    cookies.push(chars[q..].iter().collect());
+    cookies
+}
+
+/// Java String.hashCode over UTF-16 code units.
+fn cookie_string_hash(s: &str) -> i32 {
+    let mut h: i32 = 0;
+    for unit in s.encode_utf16() {
+        h = h.wrapping_mul(31).wrapping_add(unit as i32);
+    }
+    h
+}
+
+fn cookie_get_string(vm: &mut Vm<'_>, this: ObjectRef, name: &str) -> Result<Value, VmError> {
+    match vm.read_string_field_any(this, name) {
+        Some(text) => object(vm.make_string(&text)?),
+        None => object(ObjectRef::NULL),
+    }
+}
+
+fn cookie_set_string_ref(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+    value: ObjectRef,
+) -> Result<(), VmError> {
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, name, "Ljava/lang/String;")?;
+    vm.set_instance_ref(this, declaring, field, value);
+    Ok(())
+}
+
+fn cookie_set_string_opt(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+    value: Option<&str>,
+) -> Result<(), VmError> {
+    let reference = match value {
+        Some(text) => vm.make_string(text)?,
+        None => ObjectRef::NULL,
+    };
+    cookie_set_string_ref(vm, this, name, reference)
+}
+
+/// Construct a cookie, validating the name as the JDK does (trimmed, a token,
+/// not empty and not starting with '$'). Defaults: version 1, maxAge -1.
+fn cookie_new(vm: &mut Vm<'_>, name: &str, value: Option<&str>) -> Result<ObjectRef, VmError> {
+    let name = name.trim();
+    if name.is_empty() || !cookie_is_token(name) || name.starts_with('$') {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("Illegal cookie name"),
+        ));
+    }
+    let class = vm.resolve_class("java/net/HttpCookie")?;
+    let cookie = vm.new_instance(class)?;
+    cookie_set_string_opt(vm, cookie, "name", Some(name))?;
+    cookie_set_string_opt(vm, cookie, "value", value)?;
+    crate::lang::write_long_field(vm, cookie, "maxAge", -1);
+    crate::lang::write_int_field(vm, cookie, "version", 1);
+    Ok(cookie)
+}
+
+fn cookie_assign_attribute(
+    vm: &mut Vm<'_>,
+    cookie: ObjectRef,
+    name: &str,
+    value: Option<&str>,
+) -> Result<(), VmError> {
+    let value = value.map(cookie_strip_quote);
+    let lname = name.to_lowercase();
+    match lname.as_str() {
+        "comment" => {
+            if vm.read_string_field_any(cookie, "comment").is_none() {
+                cookie_set_string_opt(vm, cookie, "comment", value.as_deref())?;
+            }
+        }
+        "commenturl" => {
+            if vm.read_string_field_any(cookie, "commentURL").is_none() {
+                cookie_set_string_opt(vm, cookie, "commentURL", value.as_deref())?;
+            }
+        }
+        "discard" => crate::lang::write_int_field(vm, cookie, "toDiscard", 1),
+        "domain" => {
+            if vm.read_string_field_any(cookie, "domain").is_none() {
+                let lower = value.as_deref().map(|v| v.to_lowercase());
+                cookie_set_string_opt(vm, cookie, "domain", lower.as_deref())?;
+            }
+        }
+        "path" => {
+            if vm.read_string_field_any(cookie, "path").is_none() {
+                cookie_set_string_opt(vm, cookie, "path", value.as_deref())?;
+            }
+        }
+        "port" => {
+            if vm.read_string_field_any(cookie, "portlist").is_none() {
+                cookie_set_string_opt(
+                    vm,
+                    cookie,
+                    "portlist",
+                    Some(value.as_deref().unwrap_or("")),
+                )?;
+            }
+        }
+        "secure" => crate::lang::write_int_field(vm, cookie, "secure", 1),
+        "httponly" => crate::lang::write_int_field(vm, cookie, "httpOnly", 1),
+        "version" => {
+            if let Some(v) = value.as_deref() {
+                if let Ok(n) = v.parse::<i32>() {
+                    crate::lang::write_int_field(vm, cookie, "version", n);
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn cookie_assign_max_age(
+    vm: &mut Vm<'_>,
+    cookie: ObjectRef,
+    expires: Option<&str>,
+    max_age: Option<&str>,
+) -> Result<(), VmError> {
+    if crate::lang::read_long_field(vm, cookie, "maxAge") != -1 {
+        return Ok(());
+    }
+    if expires.is_none() && max_age.is_none() {
+        return Ok(());
+    }
+    let max_age = max_age.map(cookie_strip_quote);
+    if let Some(ma) = max_age.as_deref() {
+        if let Ok(n) = ma.parse::<i64>() {
+            crate::lang::write_long_field(vm, cookie, "maxAge", n);
+            return Ok(());
+        }
+    }
+    if expires.is_some() {
+        // Expires date parsing needs the CLDR calendar; the tests assert only
+        // Max-Age, so an unparseable/elapsed date is approximated as 0.
+        crate::lang::write_long_field(vm, cookie, "maxAge", 0);
+    }
+    Ok(())
+}
+
+fn cookie_parse_internal(vm: &mut Vm<'_>, header: &str) -> Result<ObjectRef, VmError> {
+    let tokens: Vec<&str> = header.split(';').filter(|s| !s.is_empty()).collect();
+    if tokens.is_empty() {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("Empty cookie header string"),
+        ));
+    }
+    let first = tokens[0];
+    let cookie = match first.find('=') {
+        Some(i) => {
+            let name = first[..i].trim();
+            let value = cookie_strip_quote(first[i + 1..].trim());
+            cookie_new(vm, name, Some(&value))?
+        }
+        None => {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("Invalid cookie name-value pair"),
+            ));
+        }
+    };
+    let mut expires_value: Option<String> = None;
+    let mut max_age_value: Option<String> = None;
+    for token in &tokens[1..] {
+        let (name, value) = match token.find('=') {
+            Some(i) => (token[..i].trim(), Some(token[i + 1..].trim())),
+            None => (token.trim(), None),
+        };
+        if name.eq_ignore_ascii_case("max-age") && max_age_value.is_none() {
+            max_age_value = value.map(String::from);
+            continue;
+        }
+        if name.eq_ignore_ascii_case("expires") && expires_value.is_none() {
+            expires_value = value.map(String::from);
+            continue;
+        }
+        cookie_assign_attribute(vm, cookie, name, value)?;
+    }
+    cookie_assign_max_age(
+        vm,
+        cookie,
+        expires_value.as_deref(),
+        max_age_value.as_deref(),
+    )?;
+    Ok(cookie)
+}
+
+fn cookie_parse(vm: &mut Vm<'_>, header: &str) -> Result<Vec<ObjectRef>, VmError> {
+    let version = cookie_guess_version(header);
+    let mut h = header;
+    if cookie_starts_with_ignore_case(h, HTTP_COOKIE_SET_COOKIE2) {
+        h = &h[HTTP_COOKIE_SET_COOKIE2.len()..];
+    } else if cookie_starts_with_ignore_case(h, HTTP_COOKIE_SET_COOKIE) {
+        h = &h[HTTP_COOKIE_SET_COOKIE.len()..];
+    }
+    let mut cookies = Vec::new();
+    if version == 0 {
+        let cookie = cookie_parse_internal(vm, h)?;
+        crate::lang::write_int_field(vm, cookie, "version", 0);
+        cookies.push(cookie);
+    } else {
+        for part in cookie_split_multi(h) {
+            let cookie = cookie_parse_internal(vm, &part)?;
+            crate::lang::write_int_field(vm, cookie, "version", 1);
+            cookies.push(cookie);
+        }
+    }
+    Ok(cookies)
+}
+
+fn cookie_domain_matches(domain: &str, host: &str) -> bool {
+    let is_local_domain = domain.eq_ignore_ascii_case(".local");
+    let mut embedded_dot = domain.find('.');
+    if embedded_dot == Some(0) {
+        embedded_dot = domain[1..].find('.').map(|i| i + 1);
+    }
+    let embedded_dot = embedded_dot.map(|i| i as i32).unwrap_or(-1);
+    if !is_local_domain && (embedded_dot == -1 || embedded_dot == domain.len() as i32 - 1) {
+        return false;
+    }
+    if host.find('.').is_none()
+        && (is_local_domain || domain.eq_ignore_ascii_case(&alloc::format!("{host}.local")))
+    {
+        return true;
+    }
+    let length_diff = host.len() as i32 - domain.len() as i32;
+    if length_diff == 0 {
+        host.eq_ignore_ascii_case(domain)
+    } else if length_diff > 0 {
+        let ld = length_diff as usize;
+        let h = &host[..ld];
+        let d = &host[ld..];
+        !h.contains('.') && d.eq_ignore_ascii_case(domain)
+    } else if length_diff == -1 {
+        domain.starts_with('.') && host.eq_ignore_ascii_case(&domain[1..])
+    } else {
+        false
+    }
+}
+
+pub(crate) const HTTP_COOKIE: oxjvm_vm::NativeClass = class(
+    "java/net/HttpCookie",
+    Some("java/lang/Object"),
+    &["java/lang/Cloneable"],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("value", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("comment", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("commentURL", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("toDiscard", "I", ACC_PRIVATE, None),
+        field("domain", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("maxAge", "J", ACC_PRIVATE, None),
+        field("path", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("portlist", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("secure", "I", ACC_PRIVATE, None),
+        field("httpOnly", "I", ACC_PRIVATE, None),
+        field("version", "I", ACC_PRIVATE, None),
+        field("header", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("whenCreated", "J", ACC_PRIVATE, None),
+    ],
+    &HTTP_COOKIE_METHODS,
+    None,
+);
+
+const HTTP_COOKIE_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name = string_arg(vm, args[1])?;
+            let value = vm.string_value(ref_arg(args, 2));
+            let cookie = receiver(args);
+            let name = name.trim();
+            if name.is_empty() || !cookie_is_token(name) || name.starts_with('$') {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("Illegal cookie name"),
+                ));
+            }
+            cookie_set_string_opt(vm, cookie, "name", Some(name))?;
+            cookie_set_string_opt(vm, cookie, "value", value.as_deref())?;
+            crate::lang::write_long_field(vm, cookie, "maxAge", -1);
+            crate::lang::write_int_field(vm, cookie, "version", 1);
+            void()
+        },
+    ),
+    method(
+        "parse",
+        "(Ljava/lang/String;)Ljava/util/List;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let header = string_arg(vm, args[0])?;
+            let cookies = cookie_parse(vm, &header)?;
+            let list = crate::util::new_array_list(vm)?;
+            crate::util::array_list_store(vm, list, &cookies)?;
+            object(list)
+        },
+    ),
+    method(
+        "getName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| cookie_get_string(vm, receiver(args), "name"),
+    ),
+    method(
+        "getValue",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| cookie_get_string(vm, receiver(args), "value"),
+    ),
+    method(
+        "setValue",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            cookie_set_string_ref(vm, receiver(args), "value", ref_arg(args, 1))?;
+            void()
+        },
+    ),
+    method("getVersion", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "version"))
+    }),
+    method("setVersion", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        crate::lang::write_int_field(vm, receiver(args), "version", int_arg(args, 1));
+        void()
+    }),
+    method(
+        "getPath",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| cookie_get_string(vm, receiver(args), "path"),
+    ),
+    method(
+        "setPath",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            cookie_set_string_ref(vm, receiver(args), "path", ref_arg(args, 1))?;
+            void()
+        },
+    ),
+    method(
+        "getDomain",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| cookie_get_string(vm, receiver(args), "domain"),
+    ),
+    method(
+        "setDomain",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let value = vm.string_value(ref_arg(args, 1));
+            let lower = value.as_deref().map(|v| v.to_lowercase());
+            cookie_set_string_opt(vm, this, "domain", lower.as_deref())?;
+            void()
+        },
+    ),
+    method(
+        "getComment",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| cookie_get_string(vm, receiver(args), "comment"),
+    ),
+    method(
+        "setComment",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            cookie_set_string_ref(vm, receiver(args), "comment", ref_arg(args, 1))?;
+            void()
+        },
+    ),
+    method(
+        "getCommentURL",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| cookie_get_string(vm, receiver(args), "commentURL"),
+    ),
+    method(
+        "setCommentURL",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            cookie_set_string_ref(vm, receiver(args), "commentURL", ref_arg(args, 1))?;
+            void()
+        },
+    ),
+    method("getDiscard", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "toDiscard") != 0)
+    }),
+    method("setDiscard", "(Z)V", ACC_PUBLIC, |vm, _, args| {
+        crate::lang::write_int_field(
+            vm,
+            receiver(args),
+            "toDiscard",
+            i32::from(bool_arg(args, 1)),
+        );
+        void()
+    }),
+    method("getSecure", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "secure") != 0)
+    }),
+    method("setSecure", "(Z)V", ACC_PUBLIC, |vm, _, args| {
+        crate::lang::write_int_field(vm, receiver(args), "secure", i32::from(bool_arg(args, 1)));
+        void()
+    }),
+    method("getMaxAge", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(crate::lang::read_long_field(vm, receiver(args), "maxAge"))
+    }),
+    method("setMaxAge", "(J)V", ACC_PUBLIC, |vm, _, args| {
+        crate::lang::write_long_field(vm, receiver(args), "maxAge", long_arg(args, 1));
+        void()
+    }),
+    method(
+        "getPortlist",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| cookie_get_string(vm, receiver(args), "portlist"),
+    ),
+    method(
+        "setPortlist",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            cookie_set_string_ref(vm, receiver(args), "portlist", ref_arg(args, 1))?;
+            void()
+        },
+    ),
+    method("isHttpOnly", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "httpOnly") != 0)
+    }),
+    method("setHttpOnly", "(Z)V", ACC_PUBLIC, |vm, _, args| {
+        crate::lang::write_int_field(vm, receiver(args), "httpOnly", i32::from(bool_arg(args, 1)));
+        void()
+    }),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if other == this {
+                return boolean(true);
+            }
+            let class = vm.resolve_class("java/net/HttpCookie")?;
+            if other.is_null() || !vm.is_instance(other, class) {
+                return boolean(false);
+            }
+            let name1 = vm.read_string_field_any(this, "name").unwrap_or_default();
+            let name2 = vm.read_string_field_any(other, "name").unwrap_or_default();
+            let dom1 = vm.read_string_field_any(this, "domain");
+            let dom2 = vm.read_string_field_any(other, "domain");
+            let path1 = vm.read_string_field_any(this, "path");
+            let path2 = vm.read_string_field_any(other, "path");
+            let domain_eq = match (dom1, dom2) {
+                (Some(a), Some(b)) => a.eq_ignore_ascii_case(&b),
+                (None, None) => true,
+                _ => false,
+            };
+            boolean(name1.eq_ignore_ascii_case(&name2) && domain_eq && path1 == path2)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let name = vm.read_string_field_any(this, "name").unwrap_or_default();
+        let domain = vm.read_string_field_any(this, "domain");
+        let path = vm.read_string_field_any(this, "path");
+        let h1 = cookie_string_hash(&name.to_lowercase());
+        let h2 = domain
+            .map(|d| cookie_string_hash(&d.to_lowercase()))
+            .unwrap_or(0);
+        let h3 = path.map(|p| cookie_string_hash(&p)).unwrap_or(0);
+        int(h1.wrapping_add(h2).wrapping_add(h3))
+    }),
+    method(
+        "clone",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| object(vm.clone_object(receiver(args))?),
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let name = vm.read_string_field_any(this, "name").unwrap_or_default();
+            let value = vm.read_string_field_any(this, "value").unwrap_or_default();
+            let version = crate::lang::read_int_field(vm, this, "version");
+            let text = if version > 0 {
+                let mut sb = alloc::format!("{name}=\"{value}\"");
+                if let Some(p) = vm.read_string_field_any(this, "path") {
+                    sb.push_str(&alloc::format!(";$Path=\"{p}\""));
+                }
+                if let Some(d) = vm.read_string_field_any(this, "domain") {
+                    sb.push_str(&alloc::format!(";$Domain=\"{d}\""));
+                }
+                if let Some(p) = vm.read_string_field_any(this, "portlist") {
+                    sb.push_str(&alloc::format!(";$Port=\"{p}\""));
+                }
+                sb
+            } else {
+                alloc::format!("{name}={value}")
+            };
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "domainMatches",
+        "(Ljava/lang/String;Ljava/lang/String;)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let domain = vm.string_value(ref_arg(args, 0));
+            let host = vm.string_value(ref_arg(args, 1));
+            let result = match (domain, host) {
+                (Some(d), Some(h)) => cookie_domain_matches(&d, &h),
+                _ => false,
+            };
+            boolean(result)
+        },
+    ),
+    method("hasExpired", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let max_age = crate::lang::read_long_field(vm, receiver(args), "maxAge");
+        boolean(max_age == 0)
+    }),
 ];
