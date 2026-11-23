@@ -139,6 +139,21 @@ fn list_set(
     Ok(())
 }
 
+/// PermissionCollection.add implementations call this after the type check:
+/// a collection marked readonly rejects further additions.
+pub(crate) fn ensure_collection_writable(
+    vm: &mut Vm<'_>,
+    collection: ObjectRef,
+) -> Result<(), VmError> {
+    if crate::lang::read_int_field(vm, collection, "readOnly") != 0 {
+        return Err(vm.throw_new(
+            "java/lang/SecurityException",
+            Some("attempt to add a Permission to a readonly PermissionCollection"),
+        ));
+    }
+    Ok(())
+}
+
 /// Render a permission for an exception message the way string concatenation
 /// would: null becomes "null", anything else uses its virtual toString().
 fn permission_display(vm: &mut Vm<'_>, permission: ObjectRef) -> Result<String, VmError> {
@@ -2541,6 +2556,317 @@ const PERMISSION_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
 ];
 
 // -------------------------------------------------------------------------------------------
+// java.security.AllPermission
+// -------------------------------------------------------------------------------------------
+
+pub(crate) const ALL_PERMISSION: oxjvm_vm::NativeClass = class(
+    "java/security/AllPermission",
+    Some("java/security/Permission"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[],
+    &ALL_PERMISSION_METHODS,
+    None,
+);
+
+const ALL_PERMISSION_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let parent = vm.resolve_class("java/security/Permission")?;
+        let (declaring, ctor) = vm
+            .find_method(parent, "<init>", "(Ljava/lang/String;)V")
+            .ok_or_else(|| VmError::internal("Permission lacks <init>"))?;
+        let name = vm.make_string("<all permissions>")?;
+        vm.invoke_method(declaring, ctor, vec![args[0], Value::Ref(name)])?;
+        void()
+    }),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            // The JDK ignores both arguments and delegates to AllPermission().
+            let class = vm.resolve_class("java/security/AllPermission")?;
+            let (declaring, ctor) = vm
+                .find_method(class, "<init>", "()V")
+                .ok_or_else(|| VmError::internal("AllPermission lacks <init>"))?;
+            vm.invoke_method(declaring, ctor, vec![args[0]])?;
+            void()
+        },
+    ),
+    method(
+        "implies",
+        "(Ljava/security/Permission;)Z",
+        ACC_PUBLIC,
+        |_, _, _| boolean(true),
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = ref_arg(args, 1);
+            let all = vm.resolve_class("java/security/AllPermission")?;
+            boolean(!other.is_null() && vm.is_instance(other, all))
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |_, _, _| int(1)),
+    method(
+        "getActions",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| object(vm.make_string("<all actions>")?),
+    ),
+    method(
+        "newPermissionCollection",
+        "()Ljava/security/PermissionCollection;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/security/AllPermissionCollection")?;
+            let instance = vm.new_instance(class)?;
+            let (declaring, ctor) = vm
+                .find_method(class, "<init>", "()V")
+                .ok_or_else(|| VmError::internal("AllPermissionCollection lacks <init>"))?;
+            vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
+            object(instance)
+        },
+    ),
+];
+
+pub(crate) const ALL_PERMISSION_COLLECTION: oxjvm_vm::NativeClass = class(
+    "java/security/AllPermissionCollection",
+    Some("java/security/PermissionCollection"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[field("allAllowed", "I", ACC_PRIVATE, None)],
+    &ALL_PERMISSION_COLLECTION_METHODS,
+    None,
+);
+
+const ALL_PERMISSION_COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "add",
+        "(Ljava/security/Permission;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let permission = ref_arg(args, 1);
+            let all = vm.resolve_class("java/security/AllPermission")?;
+            if permission.is_null() || !vm.is_instance(permission, all) {
+                let display = permission_display(vm, permission)?;
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some(&alloc::format!("invalid permission: {display}")),
+                ));
+            }
+            ensure_collection_writable(vm, this)?;
+            crate::lang::write_int_field(vm, this, "allAllowed", 1);
+            void()
+        },
+    ),
+    method(
+        "implies",
+        "(Ljava/security/Permission;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| boolean(crate::lang::read_int_field(vm, receiver(args), "allAllowed") != 0),
+    ),
+    method(
+        "elements",
+        "()Ljava/util/Enumeration;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            if crate::lang::read_int_field(vm, receiver(args), "allAllowed") == 0 {
+                return object(crate::util::new_enumeration(vm, &[])?);
+            }
+            let class = vm.resolve_class("java/security/AllPermission")?;
+            let instance = vm.new_instance(class)?;
+            let (declaring, ctor) = vm
+                .find_method(class, "<init>", "()V")
+                .ok_or_else(|| VmError::internal("AllPermission lacks <init>"))?;
+            vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
+            object(crate::util::new_enumeration(vm, &[instance])?)
+        },
+    ),
+];
+
+// -------------------------------------------------------------------------------------------
+// java.util.PropertyPermissionCollection
+// -------------------------------------------------------------------------------------------
+
+fn property_collection_mask(vm: &Vm<'_>, list: ObjectRef, name: &str) -> Option<i32> {
+    for existing in crate::util::array_list_elements(vm, list) {
+        if string_field(vm, existing, "name") == name {
+            return Some(crate::lang::read_int_field(vm, existing, "mask"));
+        }
+    }
+    None
+}
+
+/// The package-private PropertyPermission(String, int) constructor used when
+/// the collection merges two masks for the same property name.
+fn property_permission_with_mask(
+    vm: &mut Vm<'_>,
+    name: &str,
+    mask: i32,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/PropertyPermission")?;
+    let instance = vm.new_instance(class)?;
+    let basic = vm.resolve_class("java/security/BasicPermission")?;
+    let (declaring, ctor) = vm
+        .find_method(basic, "<init>", "(Ljava/lang/String;)V")
+        .ok_or_else(|| VmError::internal("BasicPermission lacks <init>"))?;
+    let name_value = vm.make_string(name)?;
+    vm.invoke_method(
+        declaring,
+        ctor,
+        vec![Value::Ref(instance), Value::Ref(name_value)],
+    )?;
+    crate::lang::write_int_field(vm, instance, "mask", mask);
+    Ok(instance)
+}
+
+pub(crate) const PROPERTY_PERMISSION_COLLECTION: oxjvm_vm::NativeClass = class(
+    "java/util/PropertyPermissionCollection",
+    Some("java/security/PermissionCollection"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("perms", "Ljava/util/ArrayList;", ACC_PRIVATE, None),
+        field("allAllowed", "I", ACC_PRIVATE, None),
+    ],
+    &PROPERTY_PERMISSION_COLLECTION_METHODS,
+    None,
+);
+
+const PROPERTY_PERMISSION_COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let list = new_array_list(vm)?;
+        set_ref_field(vm, this, "perms", "Ljava/util/ArrayList;", list)?;
+        void()
+    }),
+    method(
+        "add",
+        "(Ljava/security/Permission;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let permission = ref_arg(args, 1);
+            let property = vm.resolve_class("java/util/PropertyPermission")?;
+            if permission.is_null() || !vm.is_instance(permission, property) {
+                let display = permission_display(vm, permission)?;
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some(&alloc::format!("invalid permission: {display}")),
+                ));
+            }
+            ensure_collection_writable(vm, this)?;
+            let list = ref_field(vm, this, "perms", "Ljava/util/ArrayList;");
+            let name = string_field(vm, permission, "name");
+            let elements = crate::util::array_list_elements(vm, list);
+            let mut found = false;
+            for (index, existing) in elements.iter().enumerate() {
+                if string_field(vm, *existing, "name") != name {
+                    continue;
+                }
+                found = true;
+                let old_mask = crate::lang::read_int_field(vm, *existing, "mask");
+                let new_mask = crate::lang::read_int_field(vm, permission, "mask");
+                if old_mask != new_mask {
+                    let effective = old_mask | new_mask;
+                    if effective == new_mask {
+                        list_set(vm, list, index, permission)?;
+                    } else if effective != old_mask {
+                        let merged = property_permission_with_mask(vm, &name, effective)?;
+                        list_set(vm, list, index, merged)?;
+                    }
+                }
+                break;
+            }
+            if !found {
+                list_add(vm, list, permission)?;
+            }
+            if name == "*" {
+                crate::lang::write_int_field(vm, this, "allAllowed", 1);
+            }
+            void()
+        },
+    ),
+    method(
+        "implies",
+        "(Ljava/security/Permission;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let permission = ref_arg(args, 1);
+            let property = vm.resolve_class("java/util/PropertyPermission")?;
+            if permission.is_null() || !vm.is_instance(permission, property) {
+                return boolean(false);
+            }
+            let list = ref_field(vm, this, "perms", "Ljava/util/ArrayList;");
+            let desired = crate::lang::read_int_field(vm, permission, "mask");
+            let mut effective = 0;
+            if crate::lang::read_int_field(vm, this, "allAllowed") != 0 {
+                if let Some(mask) = property_collection_mask(vm, list, "*") {
+                    effective |= mask;
+                    if (effective & desired) == desired {
+                        return boolean(true);
+                    }
+                }
+            }
+            let name = string_field(vm, permission, "name");
+            if let Some(mask) = property_collection_mask(vm, list, &name) {
+                effective |= mask;
+                if (effective & desired) == desired {
+                    return boolean(true);
+                }
+            }
+            // Walk up the dotted name looking for a.b.* style entries.
+            let chars: Vec<char> = name.chars().collect();
+            let mut offset = chars.len() as isize - 1;
+            loop {
+                let mut last = -1isize;
+                let mut index = offset;
+                while index >= 0 {
+                    if chars[index as usize] == '.' {
+                        last = index;
+                        break;
+                    }
+                    index -= 1;
+                }
+                if last == -1 {
+                    break;
+                }
+                let prefix: String = chars[..(last + 1) as usize].iter().collect();
+                let wildcard = alloc::format!("{prefix}*");
+                if let Some(mask) = property_collection_mask(vm, list, &wildcard) {
+                    effective |= mask;
+                    if (effective & desired) == desired {
+                        return boolean(true);
+                    }
+                }
+                offset = last - 1;
+            }
+            boolean(false)
+        },
+    ),
+    method(
+        "elements",
+        "()Ljava/util/Enumeration;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let list = ref_field(vm, receiver(args), "perms", "Ljava/util/ArrayList;");
+            let perms = if list.is_null() {
+                Vec::new()
+            } else {
+                crate::util::array_list_elements(vm, list)
+            };
+            object(crate::util::new_enumeration(vm, &perms)?)
+        },
+    ),
+];
+
+// -------------------------------------------------------------------------------------------
 // java.io.FilePermission
 // -------------------------------------------------------------------------------------------
 
@@ -3038,6 +3364,7 @@ const FILE_PERMISSION_COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
                     Some(&alloc::format!("invalid permission: {display}")),
                 ));
             }
+            ensure_collection_writable(vm, this)?;
             let list = ref_field(vm, this, "perms", "Ljava/util/ArrayList;");
             let name = string_field(vm, permission, "name");
             let elements = crate::util::array_list_elements(vm, list);
@@ -3398,6 +3725,8 @@ const UNRESOLVED_PERMISSION_COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 4] =
                     Some(&alloc::format!("invalid permission: {display}")),
                 ));
             }
+            // The JDK's UnresolvedPermissionCollection.add has no readonly
+            // check, unlike the other collections.
             let list = ref_field(vm, this, "perms", "Ljava/util/ArrayList;");
             list_add(vm, list, permission)?;
             void()
@@ -3620,7 +3949,7 @@ pub(crate) const PROPERTY_PERMISSION: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PROPERTY_PERMISSION_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+const PROPERTY_PERMISSION_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     method(
         "<init>",
         "(Ljava/lang/String;Ljava/lang/String;)V",
@@ -3700,6 +4029,20 @@ const PROPERTY_PERMISSION_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
                 this_mask == other_mask
                     && string_field(vm, this, "name") == string_field(vm, other, "name"),
             )
+        },
+    ),
+    method(
+        "newPermissionCollection",
+        "()Ljava/security/PermissionCollection;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/util/PropertyPermissionCollection")?;
+            let instance = vm.new_instance(class)?;
+            let (declaring, ctor) = vm
+                .find_method(class, "<init>", "()V")
+                .ok_or_else(|| VmError::internal("PropertyPermissionCollection lacks <init>"))?;
+            vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
+            object(instance)
         },
     ),
 ];
@@ -3998,20 +4341,23 @@ fn basic_collection_add(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmErro
     let perm = ref_arg(args, 1);
     let basic = vm.resolve_class("java/security/BasicPermission")?;
     if perm.is_null() || !vm.is_instance(perm, basic) {
+        let display = permission_display(vm, perm)?;
         return Err(vm.throw_new(
             "java/lang/IllegalArgumentException",
-            Some("invalid permission"),
+            Some(&alloc::format!("invalid permission: {display}")),
         ));
     }
+    ensure_collection_writable(vm, receiver(args))?;
     let this = receiver(args);
     let perm_class = String::from(vm.class_name(vm.class_of(perm)));
     let stored_class = vm
         .read_string_field_any(this, "permClassName")
         .unwrap_or_default();
     if !stored_class.is_empty() && stored_class != perm_class {
+        let display = permission_display(vm, perm)?;
         return Err(vm.throw_new(
             "java/lang/IllegalArgumentException",
-            Some("invalid permission"),
+            Some(&alloc::format!("invalid permission: {display}")),
         ));
     }
     if stored_class.is_empty() {
@@ -4138,8 +4484,6 @@ pub(crate) const BASIC_PERMISSION_COLLECTION: oxjvm_vm::NativeClass = class(
                 object(crate::util::new_enumeration(vm, &perms)?)
             },
         ),
-        method("isReadOnly", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
-        method("setReadOnly", "()V", ACC_PUBLIC, |_, _, _| void()),
     ],
     None,
 );
@@ -4149,7 +4493,7 @@ pub(crate) const PERMISSION_COLLECTION: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &["java/io/Serializable"],
     ACC_PUBLIC | ACC_ABSTRACT,
-    &[],
+    &[field("readOnly", "I", ACC_PRIVATE, None)],
     &PERMISSION_COLLECTION_METHODS,
     None,
 );
@@ -4173,19 +4517,235 @@ const PERMISSION_COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         ACC_PUBLIC,
         |vm, _, _| object(crate::util::new_enumeration(vm, &[])?),
     ),
-    method("isReadOnly", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
-    method("setReadOnly", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("isReadOnly", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "readOnly") != 0)
+    }),
+    method("setReadOnly", "()V", ACC_PUBLIC, |vm, _, args| {
+        crate::lang::write_int_field(vm, receiver(args), "readOnly", 1);
+        void()
+    }),
 ];
+
+/// Find the homogeneous collection stored for a permission class name.
+fn permissions_collection_for(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    class_name: &str,
+) -> Result<ObjectRef, VmError> {
+    let names = ref_field(vm, this, "classNames", "Ljava/util/ArrayList;");
+    let collections = ref_field(vm, this, "perms", "Ljava/util/ArrayList;");
+    let name_elements = crate::util::array_list_elements(vm, names);
+    let collection_elements = crate::util::array_list_elements(vm, collections);
+    for (index, name) in name_elements.iter().enumerate() {
+        if vm.string_value(*name).unwrap_or_default() == class_name {
+            return Ok(collection_elements[index]);
+        }
+    }
+    Ok(ObjectRef::NULL)
+}
 
 pub(crate) const PERMISSIONS: oxjvm_vm::NativeClass = class(
     "java/security/Permissions",
     Some("java/security/PermissionCollection"),
     &[],
     ACC_PUBLIC | ACC_FINAL,
-    &[],
-    &[],
+    &[
+        field("perms", "Ljava/util/ArrayList;", ACC_PRIVATE, None),
+        field("classNames", "Ljava/util/ArrayList;", ACC_PRIVATE, None),
+        field("allPermission", "I", ACC_PRIVATE, None),
+    ],
+    &PERMISSIONS_METHODS,
     None,
 );
+
+const PERMISSIONS_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let perms = new_array_list(vm)?;
+        set_ref_field(vm, this, "perms", "Ljava/util/ArrayList;", perms)?;
+        let names = new_array_list(vm)?;
+        set_ref_field(vm, this, "classNames", "Ljava/util/ArrayList;", names)?;
+        void()
+    }),
+    method(
+        "add",
+        "(Ljava/security/Permission;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let permission = ref_arg(args, 1);
+            if crate::lang::read_int_field(vm, this, "readOnly") != 0 {
+                return Err(vm.throw_new(
+                    "java/lang/SecurityException",
+                    Some("attempt to add a Permission to a readonly Permissions object"),
+                ));
+            }
+            if permission.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let class_name = String::from(vm.class_name(vm.class_of(permission)));
+            let mut collection = permissions_collection_for(vm, this, &class_name)?;
+            if collection.is_null() {
+                let (declaring, new_collection) = vm.resolve_virtual_method(
+                    permission,
+                    "newPermissionCollection",
+                    "()Ljava/security/PermissionCollection;",
+                )?;
+                let value =
+                    vm.invoke_method(declaring, new_collection, vec![Value::Ref(permission)])?;
+                collection = value.as_ref();
+                if collection.is_null() {
+                    let hash = vm.resolve_class("java/security/PermissionsHash")?;
+                    collection = vm.new_instance(hash)?;
+                    let (declaring, ctor) = vm
+                        .find_method(hash, "<init>", "()V")
+                        .ok_or_else(|| VmError::internal("PermissionsHash lacks <init>"))?;
+                    vm.invoke_method(declaring, ctor, vec![Value::Ref(collection)])?;
+                }
+                let names = ref_field(vm, this, "classNames", "Ljava/util/ArrayList;");
+                let perms = ref_field(vm, this, "perms", "Ljava/util/ArrayList;");
+                let name_value = vm.make_string(&class_name)?;
+                list_add(vm, names, name_value)?;
+                list_add(vm, perms, collection)?;
+            }
+            let (declaring, add) =
+                vm.resolve_virtual_method(collection, "add", "(Ljava/security/Permission;)V")?;
+            vm.invoke_method(
+                declaring,
+                add,
+                vec![Value::Ref(collection), Value::Ref(permission)],
+            )?;
+            let all = vm.resolve_class("java/security/AllPermission")?;
+            if vm.is_instance(permission, all) {
+                crate::lang::write_int_field(vm, this, "allPermission", 1);
+            }
+            void()
+        },
+    ),
+    method(
+        "implies",
+        "(Ljava/security/Permission;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if crate::lang::read_int_field(vm, this, "allPermission") != 0 {
+                return boolean(true);
+            }
+            let permission = ref_arg(args, 1);
+            if permission.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let class_name = String::from(vm.class_name(vm.class_of(permission)));
+            let collection = permissions_collection_for(vm, this, &class_name)?;
+            if collection.is_null() {
+                return boolean(false);
+            }
+            let (declaring, implies) =
+                vm.resolve_virtual_method(collection, "implies", "(Ljava/security/Permission;)Z")?;
+            let value = vm.invoke_method(
+                declaring,
+                implies,
+                vec![Value::Ref(collection), Value::Ref(permission)],
+            )?;
+            boolean(value.as_int() != 0)
+        },
+    ),
+    method(
+        "elements",
+        "()Ljava/util/Enumeration;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let perms = ref_field(vm, receiver(args), "perms", "Ljava/util/ArrayList;");
+            let mut all = Vec::new();
+            for collection in crate::util::array_list_elements(vm, perms) {
+                let (declaring, elements) =
+                    vm.resolve_virtual_method(collection, "elements", "()Ljava/util/Enumeration;")?;
+                let value = vm.invoke_method(declaring, elements, vec![Value::Ref(collection)])?;
+                all.extend(crate::util::enumeration_elements(vm, value.as_ref())?);
+            }
+            object(crate::util::new_enumeration(vm, &all)?)
+        },
+    ),
+];
+
+/// Heterogeneous fallback collection used by Permissions when a permission
+/// class does not provide its own newPermissionCollection().
+pub(crate) const PERMISSIONS_HASH: oxjvm_vm::NativeClass = class(
+    "java/security/PermissionsHash",
+    Some("java/security/PermissionCollection"),
+    &[],
+    ACC_FINAL,
+    &[field("perms", "Ljava/util/ArrayList;", ACC_PRIVATE, None)],
+    &PERMISSIONS_HASH_METHODS,
+    None,
+);
+
+const PERMISSIONS_HASH_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let list = new_array_list(vm)?;
+        set_ref_field(vm, this, "perms", "Ljava/util/ArrayList;", list)?;
+        void()
+    }),
+    method(
+        "add",
+        "(Ljava/security/Permission;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let permission = ref_arg(args, 1);
+            let list = ref_field(vm, this, "perms", "Ljava/util/ArrayList;");
+            let elements = crate::util::array_list_elements(vm, list);
+            for (index, existing) in elements.iter().enumerate() {
+                if ref_equals(vm, *existing, permission)? {
+                    list_set(vm, list, index, permission)?;
+                    return void();
+                }
+            }
+            list_add(vm, list, permission)?;
+            void()
+        },
+    ),
+    method(
+        "implies",
+        "(Ljava/security/Permission;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let list = ref_field(vm, receiver(args), "perms", "Ljava/util/ArrayList;");
+            let permission = ref_arg(args, 1);
+            for existing in crate::util::array_list_elements(vm, list) {
+                let (declaring, implies) = vm.resolve_virtual_method(
+                    existing,
+                    "implies",
+                    "(Ljava/security/Permission;)Z",
+                )?;
+                let value = vm.invoke_method(
+                    declaring,
+                    implies,
+                    vec![Value::Ref(existing), Value::Ref(permission)],
+                )?;
+                if value.as_int() != 0 {
+                    return boolean(true);
+                }
+            }
+            boolean(false)
+        },
+    ),
+    method(
+        "elements",
+        "()Ljava/util/Enumeration;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let list = ref_field(vm, receiver(args), "perms", "Ljava/util/ArrayList;");
+            let perms = if list.is_null() {
+                Vec::new()
+            } else {
+                crate::util::array_list_elements(vm, list)
+            };
+            object(crate::util::new_enumeration(vm, &perms)?)
+        },
+    ),
+];
 
 pub(crate) const POLICY: oxjvm_vm::NativeClass = class(
     "java/security/Policy",

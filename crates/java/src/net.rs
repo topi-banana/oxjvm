@@ -4560,6 +4560,7 @@ fn socket_collection_add(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmErr
             Some("invalid permission type"),
         ));
     }
+    crate::security::ensure_collection_writable(vm, receiver(args))?;
     let list = socket_collection_list(vm, receiver(args))?;
     let name = vm.read_string_field_any(perm, "name").unwrap_or_default();
     let actions = vm
@@ -4653,8 +4654,6 @@ pub(crate) const SOCKET_PERMISSION_COLLECTION: oxjvm_vm::NativeClass = class(
                 object(crate::util::new_enumeration(vm, &perms)?)
             },
         ),
-        method("isReadOnly", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
-        method("setReadOnly", "()V", ACC_PUBLIC, |_, _, _| void()),
     ],
     None,
 );

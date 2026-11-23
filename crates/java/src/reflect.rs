@@ -4847,72 +4847,6 @@ pub(crate) fn class_reflect_method(
 // ProtectionDomain (stub)
 // -------------------------------------------------------------------------------------------
 
-const PERMISSION_COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
-    method(
-        "implies",
-        "(Ljava/security/Permission;)Z",
-        ACC_PUBLIC,
-        |_, _, _| boolean(false),
-    ),
-    method(
-        "add",
-        "(Ljava/security/Permission;)V",
-        ACC_PUBLIC,
-        |_, _, _| void(),
-    ),
-    method(
-        "elements",
-        "()Ljava/util/Enumeration;",
-        ACC_PUBLIC,
-        |vm, _, _| object(crate::util::new_enumeration(vm, &[])?),
-    ),
-    method("isReadOnly", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
-];
-
-/// `java.security.PermissionCollection`: an empty, read-only collection.
-pub(crate) const PERMISSION_COLLECTION: oxjvm_vm::NativeClass = class(
-    "java/security/PermissionCollection",
-    Some("java/lang/Object"),
-    &["java/io/Serializable"],
-    ACC_PUBLIC | ACC_ABSTRACT,
-    &[],
-    &PERMISSION_COLLECTION_METHODS,
-    None,
-);
-
-const PERMISSIONS_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
-    method(
-        "implies",
-        "(Ljava/security/Permission;)Z",
-        ACC_PUBLIC,
-        |_, _, _| boolean(false),
-    ),
-    method(
-        "add",
-        "(Ljava/security/Permission;)V",
-        ACC_PUBLIC,
-        |_, _, _| void(),
-    ),
-    method(
-        "elements",
-        "()Ljava/util/Enumeration;",
-        ACC_PUBLIC,
-        |vm, _, _| object(crate::util::new_enumeration(vm, &[])?),
-    ),
-    method("isReadOnly", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
-];
-
-/// `java.security.Permissions`: the concrete empty permission collection.
-pub(crate) const PERMISSIONS: oxjvm_vm::NativeClass = class(
-    "java/security/Permissions",
-    Some("java/security/PermissionCollection"),
-    &[],
-    ACC_PUBLIC | ACC_FINAL,
-    &[],
-    &PERMISSIONS_METHODS,
-    None,
-);
-
 const PROTECTION_DOMAIN_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
     method(
         "getPermissions",
@@ -4920,7 +4854,12 @@ const PROTECTION_DOMAIN_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         ACC_PUBLIC,
         |vm, _, _| {
             let class = vm.resolve_class("java/security/Permissions")?;
-            object(vm.new_instance(class)?)
+            let instance = vm.new_instance(class)?;
+            let (declaring, ctor) = vm
+                .find_method(class, "<init>", "()V")
+                .ok_or_else(|| VmError::internal("Permissions lacks <init>"))?;
+            vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
+            object(instance)
         },
     ),
     method(
