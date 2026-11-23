@@ -50,6 +50,146 @@ struct NumberPattern {
     min_exponent: usize,
     /// An explicit multiplier from `setMultiplier`, overriding the percent/per-mille default.
     multiplier: Option<i32>,
+    /// The prefix and suffix of an explicit negative subpattern (`;(...)`); `None` when the
+    /// pattern has no negative subpattern and negatives are written as `-` plus the prefix.
+    neg_prefix: Option<String>,
+    neg_suffix: Option<String>,
+}
+
+/// Split a pattern at its first unquoted `;`, the negative subpattern separator.
+fn split_subpatterns(pattern: &str) -> (&str, Option<&str>) {
+    let mut in_quote = false;
+    for (index, ch) in pattern.char_indices() {
+        if ch == '\'' {
+            in_quote = !in_quote;
+        } else if ch == ';' && !in_quote {
+            return (&pattern[..index], Some(&pattern[index + 1..]));
+        }
+    }
+    (pattern, None)
+}
+
+/// The unquoted characters of a pattern, the ones that carry syntax.
+fn unquoted_chars(part: &str) -> Vec<char> {
+    let mut chars = Vec::new();
+    let mut in_quote = false;
+    for ch in part.chars() {
+        if ch == '\'' {
+            in_quote = !in_quote;
+        } else if !in_quote {
+            chars.push(ch);
+        }
+    }
+    chars
+}
+
+/// Which positions of a pattern lie inside a quoted literal (quotes included).
+fn quoted_flags(chars: &[char]) -> Vec<bool> {
+    let mut flags = Vec::with_capacity(chars.len());
+    let mut in_quote = false;
+    for &ch in chars {
+        if ch == '\'' {
+            flags.push(true);
+            in_quote = !in_quote;
+        } else {
+            flags.push(in_quote);
+        }
+    }
+    flags
+}
+
+/// Strip the quoting from a literal: `'...'` sections become their text and `''`
+/// becomes a single quote.
+fn unquote_literal(text: &str) -> String {
+    let mut out = String::new();
+    let mut in_quote = false;
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\'' {
+            if chars.peek() == Some(&'\'') {
+                out.push('\'');
+                chars.next();
+            } else {
+                in_quote = !in_quote;
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// Reject the patterns the JDK's `applyPattern` refuses: an empty positive subpattern,
+/// a zero after a hash in either digit run, more than one decimal separator, grouping
+/// in the fraction, or repeated percent/per-mille signs.
+fn validate_number_pattern(pattern: &str) -> Result<(), &'static str> {
+    let (positive, negative) = split_subpatterns(pattern);
+    validate_subpattern(positive, true)?;
+    if let Some(negative) = negative {
+        validate_subpattern(negative, false)?;
+    }
+    Ok(())
+}
+
+fn validate_subpattern(part: &str, require_digits: bool) -> Result<(), &'static str> {
+    let chars = unquoted_chars(part);
+    let has_digit = chars.iter().any(|ch| ch.is_ascii_digit() || *ch == '#');
+    if require_digits && !has_digit {
+        return Err("missing positive subpattern");
+    }
+    if chars.iter().filter(|ch| **ch == '%').count() > 1 {
+        return Err("multiple percent signs");
+    }
+    if chars.iter().filter(|ch| **ch == '\u{2030}').count() > 1 {
+        return Err("multiple per mille signs");
+    }
+    if !has_digit {
+        return Ok(());
+    }
+    let start = chars
+        .iter()
+        .position(|ch| ch.is_ascii_digit() || *ch == '#')
+        .unwrap_or(0);
+    let end = chars
+        .iter()
+        .rposition(|ch| ch.is_ascii_digit() || *ch == '#')
+        .map_or(start, |index| index + 1);
+    // A decimal separator just before the first digit opens an empty integer part (`.00`).
+    let start = if start > 0 && chars[start - 1] == '.' {
+        start - 1
+    } else {
+        start
+    };
+    let number: String = chars[start..end].iter().collect();
+    let mantissa = number.split('E').next().unwrap_or("");
+    let mut parts = mantissa.split('.');
+    let integer = parts.next().unwrap_or("");
+    let fraction = parts.next().unwrap_or("");
+    if parts.next().is_some() {
+        return Err("multiple decimal separators");
+    }
+    if fraction.contains(',') {
+        return Err("grouping separator in fraction");
+    }
+    // In the integer part a hash may not follow a zero (`0#`); in the fraction a zero
+    // may not follow a hash (`0#0`). Grouping commas do not reset the run.
+    let mut saw_zero = false;
+    for ch in integer.chars() {
+        if ch == '0' {
+            saw_zero = true;
+        } else if ch == '#' && saw_zero {
+            return Err("hash after zero in integer");
+        }
+    }
+    let mut saw_hash = false;
+    for ch in fraction.chars() {
+        if ch == '#' {
+            saw_hash = true;
+        } else if ch == '0' && saw_hash {
+            return Err("zero after hash in fraction");
+        }
+    }
+    Ok(())
 }
 
 impl NumberPattern {
@@ -65,17 +205,23 @@ impl NumberPattern {
 
     /// Read a pattern such as `#,##0.00`, `0.##%` or `$#,##0`.
     fn parse(pattern: &str) -> Self {
-        let chars: Vec<char> = pattern.chars().collect();
-        let start = chars
-            .iter()
-            .position(|ch| ch.is_ascii_digit() || *ch == '#')
+        let (positive, negative) = split_subpatterns(pattern);
+        let chars: Vec<char> = positive.chars().collect();
+        let quoted = quoted_flags(&chars);
+        let is_number =
+            |index: usize| !quoted[index] && (chars[index].is_ascii_digit() || chars[index] == '#');
+        let mut start = (0..chars.len())
+            .find(|&index| is_number(index))
             .unwrap_or(0);
-        let end = chars
-            .iter()
-            .rposition(|ch| ch.is_ascii_digit() || *ch == '#')
+        let end = (0..chars.len())
+            .rfind(|&index| is_number(index))
             .map_or(start, |index| index + 1);
-        let prefix: String = chars[..start].iter().collect();
-        let suffix: String = chars[end..].iter().collect();
+        // A decimal separator just before the first digit opens an empty integer part (`.00`).
+        if start > 0 && !quoted[start - 1] && chars[start - 1] == '.' {
+            start -= 1;
+        }
+        let prefix = unquote_literal(&chars[..start].iter().collect::<String>());
+        let suffix = unquote_literal(&chars[end..].iter().collect::<String>());
         let number: String = chars[start..end].iter().collect();
         let (mantissa, exponent_part) = match number.split_once('E') {
             Some((mantissa, exponent)) => (mantissa, Some(exponent)),
@@ -107,6 +253,38 @@ impl NumberPattern {
             exponent_part.map_or(0, |part| part.chars().filter(|ch| *ch == '0').count());
         let percent = suffix.contains('%');
         let per_mille = suffix.contains('\u{2030}');
+        // A negative subpattern only supplies the prefix and suffix; the digit counts come
+        // from the positive subpattern. With no digits at all the whole subpattern is the
+        // prefix, and an empty prefix falls back to the default minus sign.
+        let (neg_prefix, neg_suffix) = match negative {
+            None => (None, None),
+            Some(negative) => {
+                let neg_chars: Vec<char> = negative.chars().collect();
+                let neg_quoted = quoted_flags(&neg_chars);
+                let is_number = |index: usize| {
+                    !neg_quoted[index]
+                        && (neg_chars[index].is_ascii_digit() || neg_chars[index] == '#')
+                };
+                let start = (0..neg_chars.len()).find(|&index| is_number(index));
+                let end = (0..neg_chars.len())
+                    .rfind(|&index| is_number(index))
+                    .map(|index| index + 1);
+                match (start, end) {
+                    (Some(start), Some(end)) => {
+                        let prefix =
+                            unquote_literal(&neg_chars[..start].iter().collect::<String>());
+                        let suffix = unquote_literal(&neg_chars[end..].iter().collect::<String>());
+                        let prefix = if prefix.is_empty() {
+                            String::from("-")
+                        } else {
+                            prefix
+                        };
+                        (Some(prefix), Some(suffix))
+                    }
+                    _ => (Some(unquote_literal(negative)), Some(String::new())),
+                }
+            }
+        };
         Self {
             source: pattern.to_string(),
             prefix,
@@ -121,6 +299,8 @@ impl NumberPattern {
             max_integer,
             min_exponent,
             multiplier: None,
+            neg_prefix,
+            neg_suffix,
         }
     }
 
@@ -234,9 +414,15 @@ impl NumberPattern {
         };
         let mut out = String::new();
         if negative {
-            out.push('-');
+            if let Some(prefix) = &self.neg_prefix {
+                out.push_str(prefix);
+            } else {
+                out.push('-');
+                out.push_str(&self.prefix);
+            }
+        } else {
+            out.push_str(&self.prefix);
         }
-        out.push_str(&self.prefix);
         out.push_str(&padded);
         if digits > 0 {
             while fraction_text.len() > self.min_fraction && fraction_text.ends_with('0') {
@@ -247,7 +433,15 @@ impl NumberPattern {
                 out.push_str(&fraction_text);
             }
         }
-        out.push_str(&self.suffix);
+        if negative {
+            if let Some(suffix) = &self.neg_suffix {
+                out.push_str(suffix);
+            } else {
+                out.push_str(&self.suffix);
+            }
+        } else {
+            out.push_str(&self.suffix);
+        }
         Some(out)
     }
 
@@ -689,9 +883,15 @@ fn format_exact_decimal(vm: &mut Vm<'_>, format: ObjectRef, text: &str) -> Resul
         |vm: &mut Vm<'_>| vm.throw_new("java/lang/ArithmeticException", Some("Rounding necessary"));
     let mut out = String::new();
     if negative {
-        out.push('-');
+        if let Some(prefix) = &pattern.neg_prefix {
+            out.push_str(prefix);
+        } else {
+            out.push('-');
+            out.push_str(&pattern.prefix);
+        }
+    } else {
+        out.push_str(&pattern.prefix);
     }
-    out.push_str(&pattern.prefix);
     if pattern.scientific {
         let max_int = pattern.max_integer.max(1);
         let significant = max_int + pattern.max_fraction;
@@ -759,7 +959,15 @@ fn format_exact_decimal(vm: &mut Vm<'_>, format: ObjectRef, text: &str) -> Resul
                 out.push_str(&fraction_text);
             }
         }
-        out.push_str(&pattern.suffix);
+        if negative {
+            if let Some(suffix) = &pattern.neg_suffix {
+                out.push_str(suffix);
+            } else {
+                out.push_str(&pattern.suffix);
+            }
+        } else {
+            out.push_str(&pattern.suffix);
+        }
         out.push('E');
         if exponent < 0 {
             out.push('-');
@@ -812,7 +1020,15 @@ fn format_exact_decimal(vm: &mut Vm<'_>, format: ObjectRef, text: &str) -> Resul
         out.push('.');
         out.push_str(&fraction_text);
     }
-    out.push_str(&pattern.suffix);
+    if negative {
+        if let Some(suffix) = &pattern.neg_suffix {
+            out.push_str(suffix);
+        } else {
+            out.push_str(&pattern.suffix);
+        }
+    } else {
+        out.push_str(&pattern.suffix);
+    }
     Ok(out)
 }
 
@@ -2359,10 +2575,7 @@ const DECIMAL_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
         |vm, _, args| {
             let this = receiver(args);
             init_number_format_state(vm, this);
-            let (declaring, field) =
-                vm.find_field(vm.class_of(this), "pattern", "Ljava/lang/String;")?;
-            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
-            void()
+            set_decimal_pattern(vm, this, ref_arg(args, 1))
         },
     ),
     method(
@@ -2372,10 +2585,7 @@ const DECIMAL_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
         |vm, _, args| {
             let this = receiver(args);
             init_number_format_state(vm, this);
-            let (declaring, field) =
-                vm.find_field(vm.class_of(this), "pattern", "Ljava/lang/String;")?;
-            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
-            void()
+            set_decimal_pattern(vm, this, ref_arg(args, 1))
         },
     ),
     method(
@@ -2400,25 +2610,13 @@ const DECIMAL_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
         "applyPattern",
         "(Ljava/lang/String;)V",
         ACC_PUBLIC,
-        |vm, _, args| {
-            let this = receiver(args);
-            let (declaring, field) =
-                vm.find_field(vm.class_of(this), "pattern", "Ljava/lang/String;")?;
-            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
-            void()
-        },
+        |vm, _, args| set_decimal_pattern(vm, receiver(args), ref_arg(args, 1)),
     ),
     method(
         "applyLocalizedPattern",
         "(Ljava/lang/String;)V",
         ACC_PUBLIC,
-        |vm, _, args| {
-            let this = receiver(args);
-            let (declaring, field) =
-                vm.find_field(vm.class_of(this), "pattern", "Ljava/lang/String;")?;
-            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
-            void()
-        },
+        |vm, _, args| set_decimal_pattern(vm, receiver(args), ref_arg(args, 1)),
     ),
     method(
         "parse",
@@ -2426,7 +2624,7 @@ const DECIMAL_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let text = vm.string_or_empty(ref_arg(args, 1));
-            number_parse_boxed(vm, &text)
+            decimal_parse(vm, receiver(args), &text)
         },
     ),
     method(
@@ -2557,6 +2755,79 @@ fn set_decimal_string(
     let (declaring, field) = vm.find_field(vm.class_of(this), name, "Ljava/lang/String;")?;
     vm.set_instance_ref(this, declaring, field, value);
     void()
+}
+
+/// Store a validated `DecimalFormat` pattern, the way `applyPattern` and the pattern
+/// constructors do.
+fn set_decimal_pattern(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    value: ObjectRef,
+) -> Result<Value, VmError> {
+    if value.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let text = vm.string_or_empty(value);
+    if let Err(message) = validate_number_pattern(&text) {
+        return Err(vm.throw_new("java/lang/IllegalArgumentException", Some(message)));
+    }
+    let (declaring, field) = vm.find_field(vm.class_of(this), "pattern", "Ljava/lang/String;")?;
+    vm.set_instance_ref(this, declaring, field, value);
+    // The affix getters read the fields, so applyPattern fills them in: without a negative
+    // subpattern the negative affixes are the minus sign plus the positive ones.
+    let parsed = NumberPattern::parse(&text);
+    let negative_prefix = parsed
+        .neg_prefix
+        .clone()
+        .unwrap_or_else(|| alloc::format!("-{}", parsed.prefix));
+    let negative_suffix = parsed.neg_suffix.clone().unwrap_or(parsed.suffix.clone());
+    let class = vm.class_of(this);
+    for (name, text) in [
+        ("positivePrefix", parsed.prefix),
+        ("positiveSuffix", parsed.suffix),
+        ("negativePrefix", negative_prefix),
+        ("negativeSuffix", negative_suffix),
+    ] {
+        let (declaring, field) = vm.find_field(class, name, "Ljava/lang/String;")?;
+        let string = vm.make_string(&text)?;
+        vm.set_instance_ref(this, declaring, field, string);
+    }
+    void()
+}
+
+/// `DecimalFormat.parse`: with an explicit negative subpattern the affixes decide the sign
+/// and stray characters are refused; without one the lenient number parse applies.
+fn decimal_parse(vm: &mut Vm<'_>, format: ObjectRef, text: &str) -> Result<Value, VmError> {
+    let (pattern, _) = number_format_state(vm, format);
+    let (Some(neg_prefix), Some(neg_suffix)) = (&pattern.neg_prefix, &pattern.neg_suffix) else {
+        return number_parse_boxed(vm, text);
+    };
+    let number_chars = |text: &str| {
+        text.chars()
+            .all(|ch| ch.is_ascii_digit() || matches!(ch, ',' | '.' | '+' | '-'))
+    };
+    if text.starts_with(neg_prefix.as_str())
+        && text.ends_with(neg_suffix.as_str())
+        && text.len() >= neg_prefix.len() + neg_suffix.len()
+    {
+        let middle = &text[neg_prefix.len()..text.len() - neg_suffix.len()];
+        if !middle.is_empty() && number_chars(middle) {
+            return number_parse_boxed(vm, &alloc::format!("-{middle}"));
+        }
+    }
+    if text.starts_with('-') {
+        return number_parse_boxed(vm, text);
+    }
+    if text.starts_with(pattern.prefix.as_str())
+        && text.ends_with(pattern.suffix.as_str())
+        && text.len() >= pattern.prefix.len() + pattern.suffix.len()
+    {
+        let middle = &text[pattern.prefix.len()..text.len() - pattern.suffix.len()];
+        if !middle.is_empty() && number_chars(middle) {
+            return number_parse_boxed(vm, middle);
+        }
+    }
+    Err(vm.throw_new("java/text/ParseException", Some("Unparsable number")))
 }
 
 const DECIMAL_FORMAT_SYMBOLS_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
