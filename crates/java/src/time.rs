@@ -703,7 +703,7 @@ pub(crate) const DURATION: oxjvm_vm::NativeClass = class(
     Some(duration_clinit),
 );
 
-const INSTANT_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
+const INSTANT_METHODS: [oxjvm_vm::NativeMethodDef; 32] = [
     method(
         "now",
         "()Ljava/time/Instant;",
@@ -724,6 +724,44 @@ const INSTANT_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
         |vm, _, args| {
             let (second, nano) = clock_instant_parts(vm, ref_arg(args, 0));
             instant_new(vm, second, nano)
+        },
+    ),
+    method(
+        "from",
+        "(Ljava/time/temporal/TemporalAccessor;)Ljava/time/Instant;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let temporal = ref_arg(args, 0);
+            if temporal.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let name = String::from(vm.class_name(vm.class_of(temporal)));
+            match name.as_str() {
+                "java/time/Instant" => object(temporal),
+                "java/time/OffsetDateTime" | "java/time/ZonedDateTime" => {
+                    let (class, method) =
+                        vm.resolve_virtual_method(temporal, "toInstant", "()Ljava/time/Instant;")?;
+                    vm.invoke_method(class, method, alloc::vec![Value::Ref(temporal)])
+                }
+                _ => {
+                    let epoch_second = vm.read_instance_long_named(
+                        temporal,
+                        vm.class_of(temporal),
+                        "epochSecond",
+                        "J",
+                    );
+                    match epoch_second {
+                        Some(seconds) => {
+                            let nano = read_int_field(vm, temporal, "nano");
+                            instant_new(vm, seconds, nano)
+                        }
+                        None => Err(vm.throw_new(
+                            "java/time/DateTimeException",
+                            Some("Unable to obtain Instant from TemporalAccessor"),
+                        )),
+                    }
+                }
+            }
         },
     ),
     method(
