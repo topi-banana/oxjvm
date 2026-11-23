@@ -7787,17 +7787,7 @@ const LINKED_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 56] = [
         "descendingIterator",
         "()Ljava/util/Iterator;",
         ACC_PUBLIC,
-        |vm, _, args| {
-            let mut elements = array_list_elements(vm, receiver(args));
-            elements.reverse();
-            let list = array_list_from(vm, &elements)?;
-            let class = vm.resolve_class("java/util/ArrayList$Itr")?;
-            let iterator = vm.new_instance(class)?;
-            let (declaring, field) = vm.find_field(class, "list", "Ljava/util/List;")?;
-            vm.set_instance_ref(iterator, declaring, field, list);
-            crate::lang::write_int_field(vm, iterator, "cursor", 0);
-            object(iterator)
-        },
+        |vm, _, args| deque_descending_iterator(vm, receiver(args)),
     ),
 ];
 
@@ -7806,6 +7796,7 @@ pub(crate) const LINKED_LIST: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &[
         "java/util/List",
+        "java/util/Deque",
         "java/lang/Cloneable",
         "java/io/Serializable",
     ],
@@ -7871,7 +7862,13 @@ pub(crate) const QUEUE: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const DEQUE_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
+const DEQUE_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
+    method(
+        "descendingIterator",
+        "()Ljava/util/Iterator;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
     method(
         "reversed",
         "()Ljava/util/Deque;",
@@ -8335,17 +8332,7 @@ const ARRAY_DEQUE_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
         "descendingIterator",
         "()Ljava/util/Iterator;",
         ACC_PUBLIC,
-        |vm, _, args| {
-            let mut elements = array_list_elements(vm, receiver(args));
-            elements.reverse();
-            let list = array_list_from(vm, &elements)?;
-            let class = vm.resolve_class("java/util/ArrayList$Itr")?;
-            let iterator = vm.new_instance(class)?;
-            let (declaring, field) = vm.find_field(class, "list", "Ljava/util/List;")?;
-            vm.set_instance_ref(iterator, declaring, field, list);
-            crate::lang::write_int_field(vm, iterator, "cursor", 0);
-            object(iterator)
-        },
+        |vm, _, args| deque_descending_iterator(vm, receiver(args)),
     ),
 ];
 
@@ -10874,6 +10861,77 @@ pub(crate) const ARRAY_LIST_ITERATOR: oxjvm_vm::NativeClass = class(
     &ITR_METHODS,
     None,
 );
+
+/// `java.util.ArrayDeque$DescendingIterator`: walks the backing element array
+/// from the last index down to zero. Unlike a reversed snapshot, `remove`
+/// deletes from the original deque so subsequent traversal reflects the change.
+const DESCENDING_ITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method("hasNext", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "cursor") > 0)
+    }),
+    method("next", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let list = vm
+            .read_ref_field(this, vm.class_of(this), "list", "Ljava/util/List;")
+            .unwrap_or(ObjectRef::NULL);
+        let cursor = crate::lang::read_int_field(vm, this, "cursor");
+        let elements = array_list_elements(vm, list);
+        if cursor <= 0 || cursor as usize > elements.len() {
+            return Err(vm.throw_new("java/util/NoSuchElementException", None));
+        }
+        let index = (cursor - 1) as usize;
+        crate::lang::write_int_field(vm, this, "cursor", cursor - 1);
+        crate::lang::write_int_field(vm, this, "lastRet", cursor - 1);
+        object(elements[index])
+    }),
+    method("remove", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let last = crate::lang::read_int_field(vm, this, "lastRet");
+        if last < 0 {
+            return Err(vm.throw_new("java/lang/IllegalStateException", None));
+        }
+        let list = vm
+            .read_ref_field(this, vm.class_of(this), "list", "Ljava/util/List;")
+            .unwrap_or(ObjectRef::NULL);
+        check_mutable(vm, list)?;
+        let elements = array_list_elements(vm, list);
+        let mut kept = Vec::with_capacity(elements.len().saturating_sub(1));
+        for (index, element) in elements.iter().enumerate() {
+            if index != last as usize {
+                kept.push(*element);
+            }
+        }
+        array_list_store(vm, list, &kept)?;
+        crate::lang::write_int_field(vm, this, "lastRet", -1);
+        void()
+    }),
+];
+
+pub(crate) const ARRAY_DEQUE_DESCENDING_ITERATOR: oxjvm_vm::NativeClass = class(
+    "java/util/ArrayDeque$DescendingIterator",
+    Some("java/lang/Object"),
+    &["java/util/Iterator"],
+    ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
+    &[
+        field("list", "Ljava/util/List;", ACC_PRIVATE, None),
+        field("cursor", "I", ACC_PRIVATE, None),
+        field("lastRet", "I", ACC_PRIVATE, None),
+    ],
+    &DESCENDING_ITERATOR_METHODS,
+    None,
+);
+
+/// Build a descending iterator over the deque's live element array.
+fn deque_descending_iterator(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/util/ArrayDeque$DescendingIterator")?;
+    let iterator = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "list", "Ljava/util/List;")?;
+    vm.set_instance_ref(iterator, declaring, field, this);
+    let size = crate::lang::read_int_field(vm, this, "size");
+    crate::lang::write_int_field(vm, iterator, "cursor", size);
+    crate::lang::write_int_field(vm, iterator, "lastRet", -1);
+    object(iterator)
+}
 
 const LIST_ITR_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method("next", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
