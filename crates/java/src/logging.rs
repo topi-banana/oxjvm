@@ -610,7 +610,7 @@ pub(crate) const LOG_RECORD: oxjvm_vm::NativeClass = class(
 // ResourceBundle (minimal)
 // -------------------------------------------------------------------------------------------
 
-const RESOURCE_BUNDLE_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+const RESOURCE_BUNDLE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method(
         "getBundle",
         "(Ljava/lang/String;)Ljava/util/ResourceBundle;",
@@ -645,6 +645,19 @@ const RESOURCE_BUNDLE_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         },
     ),
     method(
+        "getBaseBundleName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(record_get_ref(
+                vm,
+                receiver(args),
+                "baseBundleName",
+                "Ljava/lang/String;",
+            ))
+        },
+    ),
+    method(
         "handleGetObject",
         "(Ljava/lang/String;)Ljava/lang/Object;",
         ACC_PROTECTED,
@@ -671,12 +684,10 @@ pub(crate) const RESOURCE_BUNDLE: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_ABSTRACT,
-    &[field(
-        "parent",
-        "Ljava/util/ResourceBundle;",
-        ACC_PRIVATE,
-        None,
-    )],
+    &[
+        field("parent", "Ljava/util/ResourceBundle;", ACC_PRIVATE, None),
+        field("baseBundleName", "Ljava/lang/String;", ACC_PRIVATE, None),
+    ],
     &RESOURCE_BUNDLE_METHODS,
     None,
 );
@@ -716,6 +727,12 @@ fn resource_bundle_get(
             if let Some((declaring, ctor)) = vm.find_method(class, "<init>", "()V") {
                 vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
             }
+            // getBundle records the base name; a directly instantiated bundle
+            // (e.g. `new ListBundle()`) keeps a null base name, as in the JDK.
+            let base_ref = vm.make_string(&base)?;
+            let (declaring, field) =
+                vm.find_field(class, "baseBundleName", "Ljava/lang/String;")?;
+            vm.set_instance_ref(instance, declaring, field, base_ref);
             return object(instance);
         }
     }
@@ -1349,6 +1366,29 @@ fn publish_from_logger(
     logger: ObjectRef,
     record: ObjectRef,
 ) -> Result<(), VmError> {
+    // Attach the effective resource bundle once, mirroring Logger.doLog /
+    // getEffectiveLoggerBundle: this logger's bundle, or the nearest ancestor's.
+    let attached = record_get_ref(vm, record, "resourceBundle", "Ljava/util/ResourceBundle;");
+    if attached.is_null() {
+        let mut current = logger;
+        while !current.is_null() {
+            let bundle =
+                record_get_ref(vm, current, "resourceBundle", "Ljava/util/ResourceBundle;");
+            if !bundle.is_null() {
+                let name = record_get_ref(vm, current, "resourceBundleName", "Ljava/lang/String;");
+                record_set_ref(vm, record, "resourceBundleName", "Ljava/lang/String;", name);
+                record_set_ref(
+                    vm,
+                    record,
+                    "resourceBundle",
+                    "Ljava/util/ResourceBundle;",
+                    bundle,
+                );
+                break;
+            }
+            current = record_get_ref(vm, current, "parent", "Ljava/util/logging/Logger;");
+        }
+    }
     let handlers = logger_handlers(vm, logger);
     let count = hlist_len(vm, handlers)?;
     for index in 0..count {
@@ -1435,10 +1475,21 @@ fn logger_from_registry(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmErro
         "Ljava/util/ArrayList;",
         list_instance,
     );
-    // Link to the root logger (name "").
+    // Link to the nearest extant ancestor in the namespace (the JDK's
+    // getParent), falling back to the root logger (name "").
     if !name.is_empty() {
-        let root = logger_from_registry(vm, "")?;
-        record_set_ref(vm, logger, "parent", "Ljava/util/logging/Logger;", root);
+        let mut parent = logger_from_registry(vm, "")?;
+        let mut candidate = name;
+        while let Some(dot) = candidate.rfind('.') {
+            candidate = &candidate[..dot];
+            let ancestor_key = vm.make_string(candidate)?;
+            let found = crate::util::hash_map_lookup(vm, map, ancestor_key)?;
+            if !found.is_null() {
+                parent = found;
+                break;
+            }
+        }
+        record_set_ref(vm, logger, "parent", "Ljava/util/logging/Logger;", parent);
     }
     crate::util::hash_map_insert(vm, map, key, logger)?;
     Ok(logger)
@@ -1566,7 +1617,44 @@ const LOGGER_METHODS: [oxjvm_vm::NativeMethodDef; 43] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let name = crate::string_arg(vm, args[0])?;
-            object(logger_from_registry(vm, &name)?)
+            let logger = logger_from_registry(vm, &name)?;
+            let requested = ref_arg(args, 1);
+            let existing = record_get_ref(vm, logger, "resourceBundleName", "Ljava/lang/String;");
+            if !existing.is_null() {
+                // A logger that already has a bundle keeps it; a different (or
+                // null) requested name is rejected, as in setupResourceInfo.
+                let existing_name = vm.string_or_empty(existing);
+                let requested_name = vm.string_or_empty(requested);
+                if requested.is_null() || existing_name != requested_name {
+                    let shown = if requested.is_null() {
+                        String::from("null")
+                    } else {
+                        requested_name
+                    };
+                    return Err(vm.throw_new(
+                        "java/lang/IllegalArgumentException",
+                        Some(&format!("{existing_name} != {shown}")),
+                    ));
+                }
+            } else if !requested.is_null() {
+                // No bundle yet: load the requested bundle and record its name.
+                let bundle = resource_bundle_get(vm, requested, ObjectRef::NULL)?;
+                record_set_ref(
+                    vm,
+                    logger,
+                    "resourceBundle",
+                    "Ljava/util/ResourceBundle;",
+                    bundle.as_ref(),
+                );
+                record_set_ref(
+                    vm,
+                    logger,
+                    "resourceBundleName",
+                    "Ljava/lang/String;",
+                    requested,
+                );
+            }
+            object(logger)
         },
     ),
     method(
@@ -1796,6 +1884,35 @@ const LOGGER_METHODS: [oxjvm_vm::NativeMethodDef; 43] = [
         |vm, _, args| {
             let this = receiver(args);
             let bundle = ref_arg(args, 1);
+            // The JDK dereferences the bundle to read its base name, so a null
+            // bundle raises a NullPointerException.
+            if bundle.is_null() {
+                return Err(vm.throw_new(
+                    "java/lang/NullPointerException",
+                    Some(
+                        "Cannot invoke \"java.util.ResourceBundle.getBaseBundleName()\" \
+                         because \"bundle\" is null",
+                    ),
+                ));
+            }
+            let (base_class, base_method) =
+                vm.resolve_virtual_method(bundle, "getBaseBundleName", "()Ljava/lang/String;")?;
+            let base_value = vm.invoke_method(base_class, base_method, vec![Value::Ref(bundle)])?;
+            let base_name = vm.string_or_empty(base_value.as_ref());
+            if base_name.is_empty() {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("resource bundle must have a name"),
+                ));
+            }
+            let existing = record_get_ref(vm, this, "resourceBundleName", "Ljava/lang/String;");
+            let can_replace = existing.is_null() || vm.string_or_empty(existing) == base_name;
+            if !can_replace {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("can't replace resource bundle"),
+                ));
+            }
             record_set_ref(
                 vm,
                 this,
@@ -1803,15 +1920,14 @@ const LOGGER_METHODS: [oxjvm_vm::NativeMethodDef; 43] = [
                 "Ljava/util/ResourceBundle;",
                 bundle,
             );
-            if bundle.is_null() {
-                record_set_ref(
-                    vm,
-                    this,
-                    "resourceBundleName",
-                    "Ljava/lang/String;",
-                    ObjectRef::NULL,
-                );
-            }
+            let base_ref = vm.make_string(&base_name)?;
+            record_set_ref(
+                vm,
+                this,
+                "resourceBundleName",
+                "Ljava/lang/String;",
+                base_ref,
+            );
             void()
         },
     ),
