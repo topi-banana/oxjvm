@@ -5081,6 +5081,7 @@ const METHOD_ACCESS_FLAGS: &[(&str, u16)] = &[
     ("VARARGS", ACC_VARARGS),
     ("NATIVE", ACC_NATIVE),
     ("ABSTRACT", ACC_ABSTRACT),
+    ("STRICT", ACC_STRICT),
     ("SYNTHETIC", ACC_SYNTHETIC),
 ];
 
