@@ -100,6 +100,25 @@ fn uri_authority(text: &str) -> Option<&str> {
     Some(rest.split(['/', '?', '#']).next().unwrap_or(rest))
 }
 
+/// The host portion of a server-based authority, or `None` when the authority
+/// is registry-based. An unbracketed host carrying more than one ':' cannot be
+/// a reg-name plus port, so the JDK treats the whole authority as registry-based
+/// (getHost/getPort/getUserInfo all return null/-1).
+fn uri_server_host(authority: &str) -> Option<&str> {
+    let hostport = authority.rsplit('@').next().unwrap_or(authority);
+    if hostport.starts_with('[') {
+        return match hostport.find(']') {
+            Some(end) => Some(&hostport[..end + 1]),
+            None => Some(hostport),
+        };
+    }
+    if hostport.matches(':').count() > 1 {
+        return None;
+    }
+    let host = hostport.split(':').next().unwrap_or(hostport);
+    if host.is_empty() { None } else { Some(host) }
+}
+
 /// The part after `marker` and before `end` (or the string end).
 fn uri_part(text: &str, marker: char, end: char) -> Option<String> {
     let start = text.find(marker)? + marker.len_utf8();
@@ -142,12 +161,20 @@ fn uri_raw_path(text: &str) -> Option<&str> {
 }
 
 /// Percent-decode a URI path (`%20` becomes a space); malformed escapes stay as they are.
+/// A `%` inside square brackets (an IPv6 host's zone identifier) is left alone,
+/// matching the JDK's `decode(s, ignorePercentInBrackets = true)`.
 fn percent_decode(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut index = 0;
+    let mut between_brackets = false;
     while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len() {
+        match bytes[index] {
+            b'[' => between_brackets = true,
+            b']' if between_brackets => between_brackets = false,
+            _ => {}
+        }
+        if bytes[index] == b'%' && !between_brackets && index + 2 < bytes.len() {
             let hex = core::str::from_utf8(&bytes[index + 1..index + 3])
                 .ok()
                 .and_then(|hex| u8::from_str_radix(hex, 16).ok());
@@ -219,7 +246,13 @@ pub(crate) fn normalize_uri_path(path: &str) -> String {
         return String::new();
     }
     let absolute = path.starts_with('/');
-    let trailing = path.ends_with('/');
+    // A trailing dot segment ("." or "..") resolves to a directory, so it leaves
+    // a trailing slash just like an explicit '/' does (RFC 3986 5.2.4).
+    let trailing = path.ends_with('/')
+        || path.ends_with("/.")
+        || path.ends_with("/..")
+        || path == "."
+        || path == "..";
     let mut segments: Vec<&str> = Vec::new();
     for segment in path.split('/') {
         match segment {
@@ -353,7 +386,7 @@ fn uri_init_parts(
     let text = uri_parts_text(
         &scheme,
         &uri_quote(&user_info),
-        &host,
+        &uri_host_text(&host),
         port,
         &uri_quote_path(&path),
         &uri_quote(&query),
@@ -362,6 +395,17 @@ fn uri_init_parts(
     let this = receiver(args);
     vm.set_string_field(this, vm.class_of(this), "string", &text)?;
     void()
+}
+
+/// A host component containing ':' is an IPv6 literal; the JDK wraps it in
+/// square brackets when it was supplied without them. Authority strings
+/// (which may carry a `:port` suffix) must not go through this.
+fn uri_host_text(host: &str) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        alloc::format!("[{host}]")
+    } else {
+        String::from(host)
+    }
 }
 
 /// Assemble a URI string from its components (no quoting; the caller decides
@@ -405,23 +449,23 @@ fn uri_parts_text(
 
 /// Percent-encode characters outside the URI uric allowed set (used for the
 /// scheme-specific part, query, fragment, and user info), matching the JDK's
-/// component quoting (spaces become `%20`, etc.). The question mark is legal
-/// in these components.
+/// component quoting (spaces become `%20`, etc.). The question mark and the
+/// square brackets that delimit an IPv6 host are legal in these components.
 fn uri_quote(text: &str) -> String {
     uri_quote_impl(text, true)
 }
 
-/// Like [`uri_quote`], but for a path component, where `?` must be escaped
-/// because it delimits the query.
+/// Like [`uri_quote`], but for a path component, where `?`, `[`, and `]` must
+/// be escaped because they are not legal path characters.
 fn uri_quote_path(text: &str) -> String {
     uri_quote_impl(text, false)
 }
 
-fn uri_quote_impl(text: &str, allow_question: bool) -> String {
+fn uri_quote_impl(text: &str, uric: bool) -> String {
     let mut out = String::new();
     for byte in text.bytes() {
         let allowed = byte.is_ascii_alphanumeric()
-            || (allow_question && byte == b'?')
+            || (uric && matches!(byte, b'?' | b'[' | b']'))
             || matches!(
                 byte,
                 b'-' | b'_'
@@ -489,7 +533,7 @@ const URI_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
             let text = uri_parts_text(
                 &scheme,
                 "",
-                &host,
+                &uri_host_text(&host),
                 -1,
                 &uri_quote_path(&path),
                 "",
@@ -625,25 +669,8 @@ const URI_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let text = uri_text(vm, receiver(args));
-            match uri_authority(&text)
-                .map(|authority| authority.rsplit('@').next().unwrap_or(authority))
-            {
-                Some(host) => {
-                    // An IPv6 literal stays bracketed; only a reg-name host splits
-                    // at its ":" port separator.
-                    let host = if host.starts_with('[') {
-                        match host.find(']') {
-                            Some(end) => &host[..end + 1],
-                            None => host,
-                        }
-                    } else {
-                        host.split(':').next().unwrap_or(host)
-                    };
-                    if host.is_empty() {
-                        return object(ObjectRef::NULL);
-                    }
-                    object(vm.intern(host)?)
-                }
+            match uri_authority(&text).and_then(uri_server_host) {
+                Some(host) => object(vm.intern(host)?),
                 None => object(ObjectRef::NULL),
             }
         },
@@ -653,6 +680,9 @@ const URI_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
         let Some(authority) = uri_authority(&text) else {
             return int(-1);
         };
+        if uri_server_host(authority).is_none() {
+            return int(-1);
+        }
         let host = authority.rsplit('@').next().unwrap_or(authority);
         match host.rsplit_once(':') {
             Some((_, port)) if port.bytes().all(|byte| byte.is_ascii_digit()) => {
@@ -667,7 +697,10 @@ const URI_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let text = uri_text(vm, receiver(args));
-            match uri_authority(&text).and_then(|authority| authority.split_once('@')) {
+            match uri_authority(&text)
+                .filter(|authority| uri_server_host(authority).is_some())
+                .and_then(|authority| authority.split_once('@'))
+            {
                 Some((user, _)) => object(vm.intern(user)?),
                 None => object(ObjectRef::NULL),
             }
@@ -679,7 +712,10 @@ const URI_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let text = uri_text(vm, receiver(args));
-            match uri_authority(&text).and_then(|authority| authority.split_once('@')) {
+            match uri_authority(&text)
+                .filter(|authority| uri_server_host(authority).is_some())
+                .and_then(|authority| authority.split_once('@'))
+            {
                 Some((user, _)) => object(vm.intern(user)?),
                 None => object(ObjectRef::NULL),
             }
