@@ -327,7 +327,11 @@ fn v6_address(
 
 /// Resolve a literal IPv4 or IPv6 address, `localhost` or the empty string.
 /// The JDK does not trim whitespace, so a padded host is not a valid literal.
-fn resolve_address(vm: &mut Vm<'_>, class_name: &str, text: &str) -> Result<Value, VmError> {
+pub(crate) fn resolve_address(
+    vm: &mut Vm<'_>,
+    class_name: &str,
+    text: &str,
+) -> Result<Value, VmError> {
     if text.is_empty() {
         // The JDK answers an empty host with the cached loopback instance,
         // whose host name is "localhost".
@@ -1400,13 +1404,16 @@ const URL_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let protocol = string_arg(vm, args[1])?;
-            let host = if ref_arg(args, 2).is_null() {
+            let host_null = ref_arg(args, 2).is_null();
+            let host = if host_null {
                 String::new()
             } else {
                 string_arg(vm, args[2])?
             };
             let file = string_arg(vm, args[3])?;
-            url_set_parts(vm, receiver(args), &protocol, &host, -1, &file)?;
+            let this = receiver(args);
+            url_set_parts(vm, this, &protocol, &host, -1, &file)?;
+            crate::lang::write_int_field(vm, this, "partsHostNull", i32::from(host_null));
             void()
         },
     ),
@@ -1425,7 +1432,9 @@ const URL_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
             // A null host drops the authority, so the port is not retained.
             let port = if host_null { -1 } else { int_arg(args, 3) };
             let file = string_arg(vm, args[4])?;
-            url_set_parts(vm, receiver(args), &protocol, &host, port, &file)?;
+            let this = receiver(args);
+            url_set_parts(vm, this, &protocol, &host, port, &file)?;
+            crate::lang::write_int_field(vm, this, "partsHostNull", i32::from(host_null));
             void()
         },
     ),
@@ -1506,6 +1515,11 @@ const URL_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
+            // A URL built with an explicit null host keeps a null host, unlike
+            // a URL parsed from a string with no authority (empty host).
+            if crate::lang::read_int_field(vm, this, "partsHostNull") == 1 {
+                return object(ObjectRef::NULL);
+            }
             if let Some(host) = vm.read_string_field(this, vm.class_of(this), "partsHost") {
                 return object(vm.make_string(&host)?);
             }
@@ -1704,6 +1718,7 @@ pub(crate) const URL: oxjvm_vm::NativeClass = class(
     &[
         field("spec", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("partsHost", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("partsHostNull", "I", ACC_PRIVATE, None),
         field("partsPort", "I", ACC_PRIVATE, None),
         field("partsFile", "Ljava/lang/String;", ACC_PRIVATE, None),
     ],

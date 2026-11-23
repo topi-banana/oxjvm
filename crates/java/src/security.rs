@@ -2845,7 +2845,17 @@ const CODE_SOURCE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         "implies",
         "(Ljava/security/CodeSource;)Z",
         ACC_PUBLIC,
-        |_, _, _| boolean(true),
+        |vm, _, args| {
+            let this = receiver(args);
+            let that = ref_arg(args, 1);
+            if that.is_null() {
+                return boolean(false);
+            }
+            if !code_source_match_certs(vm, this, that)? {
+                return boolean(false);
+            }
+            boolean(code_source_match_location(vm, this, that)?)
+        },
     ),
     method("hashCode", "()I", ACC_PUBLIC, |_, _, _| int(0)),
     method(
@@ -2868,6 +2878,204 @@ fn via_code_source_to_string(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, V
         vm.string_value(value.as_ref()).unwrap_or_default()
     };
     object(vm.make_string(&text)?)
+}
+
+/// `CodeSource.matchCerts` (subset match): a source with no certs and no signers
+/// matches any key; otherwise each signer/cert on this side must equal some on
+/// the other side, and both sides must carry the same kind of credential.
+fn code_source_match_certs(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    that: ObjectRef,
+) -> Result<bool, VmError> {
+    let this_certs = ref_field(
+        vm,
+        this,
+        "certificates",
+        "[Ljava/security/cert/Certificate;",
+    );
+    let this_signers = ref_field(vm, this, "codeSigners", "[Ljava/security/CodeSigner;");
+    let that_certs = ref_field(
+        vm,
+        that,
+        "certificates",
+        "[Ljava/security/cert/Certificate;",
+    );
+    let that_signers = ref_field(vm, that, "codeSigners", "[Ljava/security/CodeSigner;");
+    if this_certs.is_null() && this_signers.is_null() {
+        return Ok(true);
+    }
+    if !this_signers.is_null() && !that_signers.is_null() {
+        return code_source_array_subset(vm, this_signers, that_signers);
+    }
+    if !this_certs.is_null() && !that_certs.is_null() {
+        return code_source_array_subset(vm, this_certs, that_certs);
+    }
+    Ok(false)
+}
+
+fn code_source_array_subset(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmError> {
+    let len_a = vm.array_length(a)?;
+    let len_b = vm.array_length(b)?;
+    for i in 0..len_a {
+        let ea = vm.array_get(a, i as i32)?.as_ref();
+        let mut found = false;
+        for j in 0..len_b {
+            let eb = vm.array_get(b, j as i32)?.as_ref();
+            if ref_equals(vm, ea, eb)? {
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// `CodeSource.matchLocation`: protocol (case-insensitive), port (default-port
+/// aware), file (recursive `/-`, flat `/*`, or exact), reference, and host.
+fn code_source_match_location(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    that: ObjectRef,
+) -> Result<bool, VmError> {
+    let this_loc = ref_field(vm, this, "location", "Ljava/net/URL;");
+    if this_loc.is_null() {
+        return Ok(true);
+    }
+    let that_loc = ref_field(vm, that, "location", "Ljava/net/URL;");
+    if that_loc.is_null() {
+        return Ok(false);
+    }
+    if ref_equals(vm, this_loc, that_loc)? {
+        return Ok(true);
+    }
+    let this_protocol = url_call_string(vm, this_loc, "getProtocol")?.unwrap_or_default();
+    let that_protocol = url_call_string(vm, that_loc, "getProtocol")?.unwrap_or_default();
+    if !this_protocol.eq_ignore_ascii_case(&that_protocol) {
+        return Ok(false);
+    }
+    let this_port = url_call_int(vm, this_loc, "getPort")?;
+    if this_port != -1 {
+        let that_port = url_call_int(vm, that_loc, "getPort")?;
+        let port = if that_port != -1 {
+            that_port
+        } else {
+            url_call_int(vm, that_loc, "getDefaultPort")?
+        };
+        if this_port != port {
+            return Ok(false);
+        }
+    }
+    let this_file = url_call_string(vm, this_loc, "getFile")?.unwrap_or_default();
+    let that_file = url_call_string(vm, that_loc, "getFile")?.unwrap_or_default();
+    if let Some(prefix) = this_file.strip_suffix("/-") {
+        let this_path = alloc::format!("{prefix}/");
+        if !that_file.starts_with(&this_path) {
+            return Ok(false);
+        }
+    } else if let Some(prefix) = this_file.strip_suffix("/*") {
+        let this_path = alloc::format!("{prefix}/");
+        let Some(last) = that_file.rfind('/') else {
+            return Ok(false);
+        };
+        if that_file[..last + 1] != this_path {
+            return Ok(false);
+        }
+    } else if that_file != this_file && that_file != alloc::format!("{this_file}/") {
+        return Ok(false);
+    }
+    if let Some(this_ref) = url_call_string(vm, this_loc, "getRef")? {
+        let that_ref = url_call_string(vm, that_loc, "getRef")?;
+        if that_ref.as_deref() != Some(this_ref.as_str()) {
+            return Ok(false);
+        }
+    }
+    if let Some(this_host) = url_call_string(vm, this_loc, "getHost")? {
+        let that_host = url_call_string(vm, that_loc, "getHost")?;
+        let this_local = this_host.is_empty() || this_host == "localhost";
+        let that_local = that_host
+            .as_deref()
+            .is_some_and(|host| host.is_empty() || host == "localhost");
+        if this_local && that_local {
+            // ok
+        } else {
+            let Some(that_host) = that_host else {
+                return Ok(false);
+            };
+            if this_host != that_host && !code_source_host_implies(vm, &this_host, &that_host)? {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// Host implication for `CodeSource`: a wildcard `*.suffix` covers any host (or
+/// deeper wildcard) ending in `.suffix`; a non-wildcard never implies a wildcard;
+/// otherwise resolve both names and compare addresses.
+fn code_source_host_implies(
+    vm: &mut Vm<'_>,
+    this_host: &str,
+    that_host: &str,
+) -> Result<bool, VmError> {
+    let this_lower = this_host.to_ascii_lowercase();
+    let that_lower = that_host.to_ascii_lowercase();
+    if let Some(suffix) = this_lower.strip_prefix("*.") {
+        return Ok(that_lower.ends_with(&alloc::format!(".{suffix}")));
+    }
+    if that_lower.starts_with("*.") {
+        return Ok(false);
+    }
+    if this_lower == that_lower {
+        return Ok(true);
+    }
+    let this_ip = resolve_host_ip(vm, this_host)?;
+    let that_ip = resolve_host_ip(vm, that_host)?;
+    Ok(match (this_ip, that_ip) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    })
+}
+
+/// Resolve a host to its address string, or `None` when the name is unknown.
+fn resolve_host_ip(vm: &mut Vm<'_>, host: &str) -> Result<Option<String>, VmError> {
+    let address = match crate::net::resolve_address(vm, "java/net/Inet4Address", host) {
+        Ok(value) => value.as_ref(),
+        Err(VmError::Thrown(exc)) => {
+            let unknown = vm.resolve_class("java/net/UnknownHostException")?;
+            if vm.is_instance(exc, unknown) {
+                return Ok(None);
+            }
+            return Err(VmError::Thrown(exc));
+        }
+        Err(error) => return Err(error),
+    };
+    if address.is_null() {
+        return Ok(None);
+    }
+    let (class, method) =
+        vm.resolve_virtual_method(address, "getHostAddress", "()Ljava/lang/String;")?;
+    let value = vm.invoke_method(class, method, vec![Value::Ref(address)])?;
+    Ok(vm.string_value(value.as_ref()))
+}
+
+fn url_call_string(vm: &mut Vm<'_>, url: ObjectRef, name: &str) -> Result<Option<String>, VmError> {
+    let (class, method) = vm.resolve_virtual_method(url, name, "()Ljava/lang/String;")?;
+    let value = vm.invoke_method(class, method, vec![Value::Ref(url)])?;
+    let reference = value.as_ref();
+    if reference.is_null() {
+        return Ok(None);
+    }
+    Ok(vm.string_value(reference))
+}
+
+fn url_call_int(vm: &mut Vm<'_>, url: ObjectRef, name: &str) -> Result<i32, VmError> {
+    let (class, method) = vm.resolve_virtual_method(url, name, "()I")?;
+    let value = vm.invoke_method(class, method, vec![Value::Ref(url)])?;
+    Ok(value.as_int())
 }
 
 pub(crate) const CODE_SOURCE: oxjvm_vm::NativeClass = class(
