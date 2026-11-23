@@ -1,5 +1,6 @@
-//! `java.net.InetAddress` / `Inet4Address`: literal IPv4 addresses and
-//! `localhost` only (no real name resolution or sockets).
+//! `java.net.InetAddress` / `Inet4Address` / `Inet6Address`: literal IPv4
+//! and IPv6 addresses and `localhost` only (no real name resolution or
+//! sockets).
 
 use alloc::string::String;
 use alloc::vec;
@@ -89,7 +90,149 @@ fn parse_ipv4(text: &str) -> Option<[u8; 4]> {
     Some(res)
 }
 
-fn dotted(bytes: &[u8; 4]) -> String {
+/// Parse the dotted-quad tail of an IPv6 literal: exactly four decimal
+/// parts, each 0..=255. Leading zeros are allowed ("0001" -> 1) but signs,
+/// hex digits and empty parts are not.
+fn parse_embedded_v4(text: &str) -> Option<[u8; 4]> {
+    let mut bytes = [0u8; 4];
+    let mut parts = text.split('.');
+    for slot in &mut bytes {
+        let part = parts.next()?;
+        if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let value: u32 = part.parse().ok()?;
+        if value > 255 {
+            return None;
+        }
+        *slot = value as u8;
+    }
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(bytes)
+}
+
+/// Parse an IPv6 literal the way the JDK's `textToNumericFormatV6` does:
+/// up to eight 16-bit hex groups, at most one `::` compression that must
+/// stand for at least one zero group, an optional trailing dotted-quad
+/// IPv4 part (counting as two groups) and an optional numeric `%scope`
+/// suffix. Named scopes need a real network interface, so they fail.
+fn parse_ipv6(text: &str) -> Option<([u8; 16], Option<u32>)> {
+    if !text.contains(':') {
+        return None;
+    }
+    let (addr, scope) = match text.split_once('%') {
+        Some((addr, scope)) => {
+            if scope.is_empty() || !scope.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            (addr, Some(scope.parse::<u32>().ok()?))
+        }
+        None => (text, None),
+    };
+    if !addr.contains(':') {
+        return None;
+    }
+    let (left, right, compressed) = match addr.split_once("::") {
+        Some((left, right)) => {
+            if right.contains("::") || right.starts_with(':') {
+                return None;
+            }
+            (left, right, true)
+        }
+        None => (addr, "", false),
+    };
+    let mut left_groups: Vec<u16> = Vec::new();
+    let mut right_groups: Vec<u16> = Vec::new();
+    let mut tail: Option<[u8; 4]> = None;
+    parse_v6_side(left, &mut left_groups, &mut tail, !compressed)?;
+    parse_v6_side(right, &mut right_groups, &mut tail, compressed)?;
+    let tail_groups = usize::from(tail.is_some()) * 2;
+    let total = left_groups.len() + right_groups.len() + tail_groups;
+    if compressed {
+        if total >= 8 {
+            return None;
+        }
+    } else if total != 8 {
+        return None;
+    }
+    let mut bytes = [0u8; 16];
+    let mut index = 0;
+    for group in &left_groups {
+        bytes[index..index + 2].copy_from_slice(&group.to_be_bytes());
+        index += 2;
+    }
+    // The right-hand groups (and any IPv4 tail) sit at the end of the
+    // address; `::` fills everything in between with zeros. The tail is
+    // four bytes, not two.
+    let mut index = 16 - (right_groups.len() * 2 + usize::from(tail.is_some()) * 4);
+    for group in &right_groups {
+        bytes[index..index + 2].copy_from_slice(&group.to_be_bytes());
+        index += 2;
+    }
+    if let Some(v4) = tail {
+        bytes[12..16].copy_from_slice(&v4);
+    }
+    Some((bytes, scope))
+}
+
+/// Parse one side of an IPv6 literal into 16-bit hex groups. A dotted-quad
+/// IPv4 part is only accepted as the very last piece of the whole address.
+fn parse_v6_side(
+    side: &str,
+    groups: &mut Vec<u16>,
+    tail: &mut Option<[u8; 4]>,
+    allow_tail: bool,
+) -> Option<()> {
+    if side.is_empty() {
+        return Some(());
+    }
+    let parts: Vec<&str> = side.split(':').collect();
+    for (index, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            return None;
+        }
+        if part.contains('.') {
+            if index != parts.len() - 1 || !allow_tail || tail.is_some() {
+                return None;
+            }
+            *tail = Some(parse_embedded_v4(part)?);
+        } else {
+            if part.len() > 4 || !part.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return None;
+            }
+            groups.push(u16::from_str_radix(part, 16).ok()?);
+        }
+    }
+    Some(())
+}
+
+/// The JDK renders IPv6 addresses as eight lowercase hex groups without
+/// `::` compression (`numericToTextFormat`).
+fn v6_text(bytes: &[u8]) -> String {
+    let mut text = String::new();
+    for index in 0..8 {
+        if index > 0 {
+            text.push(':');
+        }
+        let group = u16::from_be_bytes([bytes[2 * index], bytes[2 * index + 1]]);
+        text.push_str(&alloc::format!("{group:x}"));
+    }
+    text
+}
+
+/// IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`) are served as plain
+/// `Inet4Address` instances by the JDK.
+fn mapped_v4(bytes: &[u8; 16]) -> Option<[u8; 4]> {
+    if bytes[..10].iter().all(|&b| b == 0) && bytes[10] == 0xff && bytes[11] == 0xff {
+        Some([bytes[12], bytes[13], bytes[14], bytes[15]])
+    } else {
+        None
+    }
+}
+
+fn dotted(bytes: &[u8]) -> String {
     alloc::format!("{}.{}.{}.{}", bytes[0], bytes[1], bytes[2], bytes[3])
 }
 
@@ -101,14 +244,18 @@ fn bytes_array(vm: &mut Vm<'_>, bytes: &[u8]) -> Result<ObjectRef, VmError> {
     Ok(array)
 }
 
-fn address_bytes(vm: &mut Vm<'_>, this: ObjectRef) -> [u8; 4] {
+fn address_bytes(vm: &mut Vm<'_>, this: ObjectRef) -> Vec<u8> {
     let array = vm
         .read_ref_field(this, vm.class_of(this), "address", "[B")
         .unwrap_or(ObjectRef::NULL);
-    let mut bytes = [0u8; 4];
-    for (index, slot) in bytes.iter_mut().enumerate() {
+    if array.is_null() {
+        return Vec::new();
+    }
+    let length = vm.array_length(array).unwrap_or(0);
+    let mut bytes = Vec::with_capacity(length);
+    for index in 0..length {
         if let Ok(Value::Int(value)) = vm.array_get(array, index as i32) {
-            *slot = value as u8;
+            bytes.push(value as u8);
         }
     }
     bytes
@@ -117,15 +264,19 @@ fn address_bytes(vm: &mut Vm<'_>, this: ObjectRef) -> [u8; 4] {
 fn new_address(
     vm: &mut Vm<'_>,
     class_name: &str,
-    bytes: [u8; 4],
+    bytes: &[u8],
     host: Option<&str>,
 ) -> Result<Value, VmError> {
     let class = vm.resolve_class(class_name)?;
     let instance = vm.new_instance(class)?;
-    let array = bytes_array(vm, &bytes)?;
+    let array = bytes_array(vm, bytes)?;
     let (declaring, field) = vm.find_field(class, "address", "[B")?;
     vm.set_instance_ref(instance, declaring, field, array);
-    let text = dotted(&bytes);
+    let text = if bytes.len() == 16 {
+        v6_text(bytes)
+    } else {
+        dotted(bytes)
+    };
     let (declaring, field) = vm.find_field(class, "hostAddress", "Ljava/lang/String;")?;
     let value = vm.make_string(&text)?;
     vm.set_instance_ref(instance, declaring, field, value);
@@ -137,14 +288,50 @@ fn new_address(
     object(instance)
 }
 
-/// Resolve a literal IPv4 address, `localhost` or the empty string. The JDK
-/// does not trim whitespace, so a padded host is not a valid literal.
+/// Create an `Inet6Address`, recording a numeric scope id (if any) both in
+/// the `scope_id` field and as a `%N` suffix on the numeric host address.
+fn new_inet6(
+    vm: &mut Vm<'_>,
+    bytes: &[u8; 16],
+    scope: Option<u32>,
+    host: Option<&str>,
+) -> Result<Value, VmError> {
+    let value = new_address(vm, "java/net/Inet6Address", bytes, host)?;
+    if let Some(scope) = scope {
+        let this = value.as_ref();
+        let class = vm.class_of(this);
+        let text = alloc::format!("{}%{}", v6_text(bytes), scope);
+        let (declaring, field) = vm.find_field(class, "hostAddress", "Ljava/lang/String;")?;
+        let string = vm.make_string(&text)?;
+        vm.set_instance_ref(this, declaring, field, string);
+        crate::lang::write_int_field(vm, this, "scope_id", scope as i32);
+    }
+    Ok(value)
+}
+
+/// Resolve a literal IPv4 or IPv6 address, `localhost` or the empty string.
+/// The JDK does not trim whitespace, so a padded host is not a valid literal.
 fn resolve_address(vm: &mut Vm<'_>, class_name: &str, text: &str) -> Result<Value, VmError> {
-    if text.is_empty() || text.eq_ignore_ascii_case("localhost") {
-        return new_address(vm, class_name, [127, 0, 0, 1], Some(text));
+    if text.is_empty() {
+        // The JDK answers an empty host with the cached loopback instance,
+        // whose host name is "localhost".
+        return inet_loopback(vm);
+    }
+    if text.eq_ignore_ascii_case("localhost") {
+        return new_address(vm, class_name, &[127, 0, 0, 1], Some(text));
     }
     if let Some(bytes) = parse_ipv4(text) {
-        return new_address(vm, class_name, bytes, None);
+        return new_address(vm, class_name, &bytes, None);
+    }
+    if let Some((bytes, scope)) = parse_ipv6(text) {
+        if let Some(v4) = mapped_v4(&bytes) {
+            // A scoped mapped address is rejected by the JDK.
+            if scope.is_none() {
+                return new_address(vm, "java/net/Inet4Address", &v4, None);
+            }
+        } else {
+            return new_inet6(vm, &bytes, scope, None);
+        }
     }
     Err(vm.throw_new(
         "java/net/UnknownHostException",
@@ -163,7 +350,7 @@ fn inet_loopback(vm: &mut Vm<'_>) -> Result<Value, VmError> {
     let address = new_address(
         vm,
         "java/net/Inet4Address",
-        [127, 0, 0, 1],
+        &[127, 0, 0, 1],
         Some("localhost"),
     )?;
     vm.set_static_value(class, "loopback", "Ljava/net/InetAddress;", address);
@@ -176,57 +363,76 @@ fn address_from_args(
     host: Option<ObjectRef>,
     array: ObjectRef,
 ) -> Result<Value, VmError> {
-    let length = vm.array_length(array)?;
-    if length != 4 {
+    let length = if array.is_null() {
+        0
+    } else {
+        vm.array_length(array)?
+    };
+    if length != 4 && length != 16 {
         return Err(vm.throw_new(
             "java/net/UnknownHostException",
-            Some("Only IPv4 literals are supported"),
+            Some("addr is of illegal length"),
         ));
     }
-    let mut bytes = [0u8; 4];
+    let mut bytes = vec![0u8; length];
     for (index, slot) in bytes.iter_mut().enumerate() {
         *slot = vm.array_get(array, index as i32)?.as_int() as u8;
     }
     let host = host.and_then(|reference| vm.string_value(reference));
-    new_address(vm, class_name, bytes, host.as_deref())
+    if length == 16 {
+        let mut sixteen = [0u8; 16];
+        sixteen.copy_from_slice(&bytes);
+        if let Some(v4) = mapped_v4(&sixteen) {
+            return new_address(vm, "java/net/Inet4Address", &v4, host.as_deref());
+        }
+        return new_inet6(vm, &sixteen, None, host.as_deref());
+    }
+    new_address(vm, class_name, &bytes, host.as_deref())
 }
 
 fn address_predicate(
     vm: &mut Vm<'_>,
     this: ObjectRef,
-    predicate: fn(&[u8; 4]) -> bool,
+    predicate: fn(&[u8]) -> bool,
 ) -> Result<Value, VmError> {
     boolean(predicate(&address_bytes(vm, this)))
 }
 
-fn address_equals(vm: &mut Vm<'_>, args: &[Value], class_name: &str) -> Result<Value, VmError> {
+/// The JDK compares the raw address bytes only: an `Inet4Address` never
+/// equals an `Inet6Address` (even IPv4-compatible ones), and the scope id
+/// of an `Inet6Address` is ignored.
+fn address_equals(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
     let other = ref_arg(args, 1);
     if other.is_null() {
         return boolean(false);
     }
-    if vm.class_name(vm.class_of(other)) != class_name {
-        // Allow Inet4Address/InetAddress comparisons via the address bytes.
-        if !vm.class_name(vm.class_of(other)).ends_with("InetAddress")
-            && !vm.class_name(vm.class_of(other)).ends_with("Inet4Address")
-        {
-            return boolean(false);
-        }
-    }
-    boolean(address_bytes(vm, receiver(args)) == address_bytes(vm, other))
+    let this = address_bytes(vm, receiver(args));
+    let other = address_bytes(vm, other);
+    boolean(!this.is_empty() && this == other)
 }
 
+/// `Inet4Address.hashCode` is the big-endian integer of the four address
+/// bytes; `Inet6Address.hashCode` sums each (signed) byte shifted by its
+/// position within a 32-bit word, matching the JDK exactly.
 fn address_hash(vm: &mut Vm<'_>, this: ObjectRef) -> i32 {
     let bytes = address_bytes(vm, this);
-    let mut hash = 0i32;
-    for byte in bytes {
-        hash = hash.wrapping_mul(31).wrapping_add(i32::from(byte));
+    if bytes.len() == 16 {
+        let mut hash = 0i32;
+        for (index, byte) in bytes.iter().enumerate() {
+            let signed = i32::from(*byte as i8);
+            hash = hash.wrapping_add(signed.wrapping_shl(24 - 8 * (index % 4) as u32));
+        }
+        hash
+    } else if bytes.len() == 4 {
+        i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+    } else {
+        0
     }
-    hash
 }
 
 macro_rules! address_methods {
     ($constant:ident, $class_name:literal) => {
-        const $constant: [oxjvm_vm::NativeMethodDef; 24] = [
+        const $constant: [oxjvm_vm::NativeMethodDef; 25] = [
             method("getAddress", "()[B", ACC_PUBLIC, |vm, _, args| {
                 let bytes = address_bytes(vm, receiver(args));
                 object(bytes_array(vm, &bytes)?)
@@ -289,36 +495,76 @@ macro_rules! address_methods {
                 },
             ),
             method("isAnyLocalAddress", "()Z", ACC_PUBLIC, |vm, _, args| {
-                address_predicate(vm, receiver(args), |bytes| *bytes == [0, 0, 0, 0])
+                address_predicate(vm, receiver(args), |bytes| {
+                    !bytes.is_empty() && bytes.iter().all(|&b| b == 0)
+                })
             }),
             method("isLoopbackAddress", "()Z", ACC_PUBLIC, |vm, _, args| {
-                address_predicate(vm, receiver(args), |bytes| bytes[0] == 127)
+                address_predicate(vm, receiver(args), |bytes| match bytes.len() {
+                    16 => bytes[..15].iter().all(|&b| b == 0) && bytes[15] == 1,
+                    _ => bytes.len() == 4 && bytes[0] == 127,
+                })
             }),
             method("isLinkLocalAddress", "()Z", ACC_PUBLIC, |vm, _, args| {
-                address_predicate(vm, receiver(args), |bytes| {
-                    bytes[0] == 169 && bytes[1] == 254
+                address_predicate(vm, receiver(args), |bytes| match bytes.len() {
+                    16 => bytes[0] == 0xfe && (bytes[1] & 0xc0) == 0x80,
+                    _ => bytes.len() == 4 && bytes[0] == 169 && bytes[1] == 254,
                 })
             }),
             method("isSiteLocalAddress", "()Z", ACC_PUBLIC, |vm, _, args| {
-                address_predicate(vm, receiver(args), |bytes| {
-                    bytes[0] == 10 || (bytes[0] == 192 && bytes[1] == 168)
+                address_predicate(vm, receiver(args), |bytes| match bytes.len() {
+                    16 => bytes[0] == 0xfe && (bytes[1] & 0xc0) == 0xc0,
+                    _ => {
+                        bytes.len() == 4
+                            && (bytes[0] == 10
+                                || (bytes[0] == 192 && bytes[1] == 168)
+                                || (bytes[0] == 172 && (bytes[1] & 0xf0) == 16))
+                    }
                 })
             }),
             method("isMulticastAddress", "()Z", ACC_PUBLIC, |vm, _, args| {
-                address_predicate(vm, receiver(args), |bytes| (224..=239).contains(&bytes[0]))
+                address_predicate(vm, receiver(args), |bytes| match bytes.len() {
+                    16 => bytes[0] == 0xff,
+                    _ => bytes.len() == 4 && (224..=239).contains(&bytes[0]),
+                })
             }),
-            method("isMCGlobal", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
-            method("isMCLinkLocal", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
-            method("isMCSiteLocal", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
-            method("isMCOrgLocal", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
+            method("isMCGlobal", "()Z", ACC_PUBLIC, |vm, _, args| {
+                address_predicate(vm, receiver(args), |bytes| {
+                    bytes.len() == 16 && bytes[0] == 0xff && (bytes[1] & 0x0f) == 0x0e
+                })
+            }),
+            method("isMCNodeLocal", "()Z", ACC_PUBLIC, |vm, _, args| {
+                address_predicate(vm, receiver(args), |bytes| {
+                    bytes.len() == 16 && bytes[0] == 0xff && (bytes[1] & 0x0f) == 0x01
+                })
+            }),
+            method("isMCLinkLocal", "()Z", ACC_PUBLIC, |vm, _, args| {
+                address_predicate(vm, receiver(args), |bytes| {
+                    bytes.len() == 16 && bytes[0] == 0xff && (bytes[1] & 0x0f) == 0x02
+                })
+            }),
+            method("isMCSiteLocal", "()Z", ACC_PUBLIC, |vm, _, args| {
+                address_predicate(vm, receiver(args), |bytes| {
+                    bytes.len() == 16 && bytes[0] == 0xff && (bytes[1] & 0x0f) == 0x05
+                })
+            }),
+            method("isMCOrgLocal", "()Z", ACC_PUBLIC, |vm, _, args| {
+                address_predicate(vm, receiver(args), |bytes| {
+                    bytes.len() == 16 && bytes[0] == 0xff && (bytes[1] & 0x0f) == 0x08
+                })
+            }),
             method("isReachable", "(I)Z", ACC_PUBLIC, |vm, _, args| {
-                boolean(address_bytes(vm, receiver(args))[0] == 127)
+                let bytes = address_bytes(vm, receiver(args));
+                boolean(match bytes.len() {
+                    16 => bytes[..15].iter().all(|&b| b == 0) && bytes[15] == 1,
+                    _ => bytes.len() == 4 && bytes[0] == 127,
+                })
             }),
             method(
                 "equals",
                 "(Ljava/lang/Object;)Z",
                 ACC_PUBLIC,
-                |vm, _, args| address_equals(vm, args, $class_name),
+                |vm, _, args| address_equals(vm, args),
             ),
             method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
                 int(address_hash(vm, receiver(args)))
@@ -332,12 +578,10 @@ macro_rules! address_methods {
                     let host = vm
                         .read_string_field(this, vm.class_of(this), "hostName")
                         .unwrap_or_default();
-                    let address = dotted(&address_bytes(vm, this));
-                    let text = if host.is_empty() {
-                        address
-                    } else {
-                        alloc::format!("{host}/{address}")
-                    };
+                    let address = vm
+                        .read_string_field(this, vm.class_of(this), "hostAddress")
+                        .unwrap_or_default();
+                    let text = alloc::format!("{host}/{address}");
                     object(vm.make_string(&text)?)
                 },
             ),
@@ -361,7 +605,7 @@ macro_rules! address_methods {
                     new_address(
                         vm,
                         "java/net/Inet4Address",
-                        [127, 0, 0, 1],
+                        &[127, 0, 0, 1],
                         Some("localhost"),
                     )
                 },
@@ -486,7 +730,7 @@ const INET4_ADDRESS_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
             new_address(
                 vm,
                 "java/net/Inet4Address",
-                [127, 0, 0, 1],
+                &[127, 0, 0, 1],
                 Some("localhost"),
             )
         },
@@ -499,7 +743,7 @@ const INET4_ADDRESS_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
             new_address(
                 vm,
                 "java/net/Inet4Address",
-                [127, 0, 0, 1],
+                &[127, 0, 0, 1],
                 Some("localhost"),
             )
         },
@@ -2765,7 +3009,7 @@ fn init_inet_socket_address(
 }
 
 fn wildcard_address(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
-    Ok(new_address(vm, "java/net/InetAddress", [0, 0, 0, 0], None)?.as_ref())
+    Ok(new_address(vm, "java/net/InetAddress", &[0, 0, 0, 0], None)?.as_ref())
 }
 
 fn inet_socket_address_host(vm: &Vm<'_>, this: ObjectRef) -> String {
@@ -4046,12 +4290,93 @@ pub(crate) const PROXY: oxjvm_vm::NativeClass = class(
     Some(proxy_clinit),
 );
 
+const INET6_ADDRESS_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method("getScopeId", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "scope_id"))
+    }),
+    method(
+        "isIPv4CompatibleAddress",
+        "()Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            address_predicate(vm, receiver(args), |bytes| {
+                bytes.len() == 16 && bytes[..12].iter().all(|&b| b == 0)
+            })
+        },
+    ),
+    method(
+        "getScopedInterface",
+        "()Ljava/net/NetworkInterface;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+    method(
+        "getByAddress",
+        "(Ljava/lang/String;[BI)Ljava/net/Inet6Address;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let scope = int_arg(args, 2);
+            if scope < 0 {
+                return Err(vm.throw_new("java/net/UnknownHostException", Some("scope_id < 0")));
+            }
+            inet6_by_address(vm, ref_arg(args, 0), ref_arg(args, 1), Some(scope as u32))
+        },
+    ),
+    method(
+        "getByAddress",
+        "(Ljava/lang/String;[BLjava/net/NetworkInterface;)Ljava/net/Inet6Address;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if !ref_arg(args, 2).is_null() {
+                // No host network interfaces are exposed, so a scoped
+                // interface cannot be resolved.
+                return Err(vm.throw_new(
+                    "java/net/UnknownHostException",
+                    Some("no such network interface"),
+                ));
+            }
+            inet6_by_address(vm, ref_arg(args, 0), ref_arg(args, 1), None)
+        },
+    ),
+];
+
+/// `Inet6Address.getByAddress` requires exactly 16 bytes and, unlike
+/// `InetAddress.getByAddress`, keeps IPv4-mapped addresses as `Inet6Address`.
+fn inet6_by_address(
+    vm: &mut Vm<'_>,
+    host: ObjectRef,
+    array: ObjectRef,
+    scope: Option<u32>,
+) -> Result<Value, VmError> {
+    let length = if array.is_null() {
+        0
+    } else {
+        vm.array_length(array)?
+    };
+    if length != 16 {
+        return Err(vm.throw_new(
+            "java/net/UnknownHostException",
+            Some("addr is of illegal length"),
+        ));
+    }
+    let mut bytes = [0u8; 16];
+    for (index, slot) in bytes.iter_mut().enumerate() {
+        *slot = vm.array_get(array, index as i32)?.as_int() as u8;
+    }
+    let host = if host.is_null() {
+        None
+    } else {
+        vm.string_value(host)
+    };
+    new_inet6(vm, &bytes, scope, host.as_deref())
+}
+
 pub(crate) const INET6_ADDRESS: oxjvm_vm::NativeClass = class(
     "java/net/Inet6Address",
     Some("java/net/InetAddress"),
     &[],
-    ACC_PUBLIC,
-    &[],
-    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[field("scope_id", "I", ACC_PRIVATE, None)],
+    &INET6_ADDRESS_METHODS,
     None,
 );
