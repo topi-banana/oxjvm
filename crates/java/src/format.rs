@@ -3881,6 +3881,56 @@ fn clone_string_array(vm: &mut Vm<'_>, array: ObjectRef) -> Result<ObjectRef, Vm
     make_string_array(vm, &refs)
 }
 
+/// `Arrays.hashCode` of a `String[]`.
+fn string_array_hash(vm: &mut Vm<'_>, array: ObjectRef) -> i32 {
+    let mut hash = 1i32;
+    for element in object_array_elements(vm, array) {
+        let element_hash = vm
+            .string_utf16(element)
+            .map_or(0, crate::lang::java_string_hash);
+        hash = hash.wrapping_mul(31).wrapping_add(element_hash);
+    }
+    hash
+}
+
+/// `Arrays.equals` of two `String[]`s, distinguishing null elements from "".
+fn string_arrays_equal(vm: &mut Vm<'_>, left: ObjectRef, right: ObjectRef) -> bool {
+    if left == right {
+        return true;
+    }
+    if left.is_null() != right.is_null() {
+        return false;
+    }
+    let left_elements = object_array_elements(vm, left);
+    let right_elements = object_array_elements(vm, right);
+    if left_elements.len() != right_elements.len() {
+        return false;
+    }
+    left_elements
+        .iter()
+        .zip(right_elements.iter())
+        .all(|(left, right)| vm.string_value(*left) == vm.string_value(*right))
+}
+
+/// `Arrays.deepEquals` of two `String[][]`s, as zone strings need.
+fn zone_strings_equal(vm: &mut Vm<'_>, left: ObjectRef, right: ObjectRef) -> bool {
+    if left == right {
+        return true;
+    }
+    if left.is_null() != right.is_null() {
+        return false;
+    }
+    let left_rows = object_array_elements(vm, left);
+    let right_rows = object_array_elements(vm, right);
+    if left_rows.len() != right_rows.len() {
+        return false;
+    }
+    left_rows
+        .iter()
+        .zip(right_rows.iter())
+        .all(|(left, right)| string_arrays_equal(vm, *left, *right))
+}
+
 /// Fill a fresh `DateFormatSymbols` with the English defaults.
 fn date_format_symbols_init(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
     let class = vm.class_of(this);
@@ -4202,15 +4252,40 @@ const DATE_FORMAT_SYMBOLS_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
     ),
     method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let array = vm
-            .read_ref_field(this, vm.class_of(this), "months", "[Ljava/lang/String;")
-            .unwrap_or(ObjectRef::NULL);
-        let mut hash = 0i32;
-        for text in read_string_array(vm, array) {
-            for ch in text.chars() {
-                hash = hash.wrapping_mul(31).wrapping_add(ch as i32);
-            }
+        let class = vm.class_of(this);
+        let mut hash = 5i32;
+        for name in [
+            "eras",
+            "months",
+            "shortMonths",
+            "weekdays",
+            "shortWeekdays",
+            "ampms",
+        ] {
+            let array = vm
+                .read_ref_field(this, class, name, "[Ljava/lang/String;")
+                .unwrap_or(ObjectRef::NULL);
+            hash = hash
+                .wrapping_mul(11)
+                .wrapping_add(string_array_hash(vm, array));
         }
+        let zones = vm
+            .read_ref_field(this, class, "zoneStrings", "[[Ljava/lang/String;")
+            .unwrap_or(ObjectRef::NULL);
+        let mut zone_hash = 1i32;
+        for row in object_array_elements(vm, zones) {
+            zone_hash = zone_hash
+                .wrapping_mul(31)
+                .wrapping_add(string_array_hash(vm, row));
+        }
+        hash = hash.wrapping_mul(11).wrapping_add(zone_hash);
+        let chars = vm
+            .read_ref_field(this, class, "localPatternChars", "Ljava/lang/String;")
+            .unwrap_or(ObjectRef::NULL);
+        let chars_hash = vm
+            .string_utf16(chars)
+            .map_or(0, crate::lang::java_string_hash);
+        hash = hash.wrapping_mul(11).wrapping_add(chars_hash);
         int(hash)
     }),
     method(
@@ -4244,6 +4319,24 @@ const DATE_FORMAT_SYMBOLS_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
                 if read_string_array(vm, left) != read_string_array(vm, right) {
                     return crate::boolean(false);
                 }
+            }
+            let left_zones = vm
+                .read_ref_field(this, class, "zoneStrings", "[[Ljava/lang/String;")
+                .unwrap_or(ObjectRef::NULL);
+            let right_zones = vm
+                .read_ref_field(other, class, "zoneStrings", "[[Ljava/lang/String;")
+                .unwrap_or(ObjectRef::NULL);
+            if !zone_strings_equal(vm, left_zones, right_zones) {
+                return crate::boolean(false);
+            }
+            let left_chars = vm
+                .read_ref_field(this, class, "localPatternChars", "Ljava/lang/String;")
+                .unwrap_or(ObjectRef::NULL);
+            let right_chars = vm
+                .read_ref_field(other, class, "localPatternChars", "Ljava/lang/String;")
+                .unwrap_or(ObjectRef::NULL);
+            if vm.string_value(left_chars) != vm.string_value(right_chars) {
+                return crate::boolean(false);
             }
             crate::boolean(true)
         },
@@ -4744,7 +4837,7 @@ pub(crate) fn millis_from_civil(
     ((days * 24 + hour) * 60 + minute) * 60_000 + second * 1000
 }
 
-const MESSAGE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
+const MESSAGE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -5061,6 +5154,65 @@ const MESSAGE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
             void()
         },
     ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if this == other {
+                return crate::boolean(true);
+            }
+            if other.is_null() || vm.class_of(this) != vm.class_of(other) {
+                return crate::boolean(false);
+            }
+            let class = vm.class_of(this);
+            // The offsets and max offset are derived from the pattern, so equal
+            // patterns already agree on them.
+            let left_pattern = vm
+                .read_ref_field(this, class, "pattern", "Ljava/lang/String;")
+                .unwrap_or(ObjectRef::NULL);
+            let right_pattern = vm
+                .read_ref_field(other, class, "pattern", "Ljava/lang/String;")
+                .unwrap_or(ObjectRef::NULL);
+            if vm.string_value(left_pattern) != vm.string_value(right_pattern) {
+                return crate::boolean(false);
+            }
+            let left_locale = vm
+                .read_ref_field(this, class, "locale", "Ljava/util/Locale;")
+                .unwrap_or(ObjectRef::NULL);
+            let right_locale = vm
+                .read_ref_field(other, class, "locale", "Ljava/util/Locale;")
+                .unwrap_or(ObjectRef::NULL);
+            if !crate::util::objects_equals(vm, left_locale, right_locale)? {
+                return crate::boolean(false);
+            }
+            if message_argument_numbers(vm, this) != message_argument_numbers(vm, other) {
+                return crate::boolean(false);
+            }
+            let left_formats = message_formats(vm, this);
+            let right_formats = message_formats(vm, other);
+            if left_formats.len() != right_formats.len() {
+                return crate::boolean(false);
+            }
+            for (left, right) in left_formats.iter().zip(right_formats.iter()) {
+                if !crate::util::objects_equals(vm, *left, *right)? {
+                    return crate::boolean(false);
+                }
+            }
+            crate::boolean(true)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let pattern = vm
+            .read_ref_field(this, vm.class_of(this), "pattern", "Ljava/lang/String;")
+            .unwrap_or(ObjectRef::NULL);
+        int(vm
+            .string_utf16(pattern)
+            .map_or(0, crate::lang::java_string_hash))
+    }),
 ];
 
 /// Format a message with the pattern of a format.

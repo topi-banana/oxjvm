@@ -241,20 +241,25 @@ const LOCALE_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
             let same_language = vm.string_value(a.as_ref()) == vm.string_value(b.as_ref());
             let a = locale_string_field(vm, receiver(args), "country")?;
             let b = locale_string_field(vm, other, "country")?;
-            boolean(same_language && vm.string_value(a.as_ref()) == vm.string_value(b.as_ref()))
+            let same_country = vm.string_value(a.as_ref()) == vm.string_value(b.as_ref());
+            let a = locale_string_field(vm, receiver(args), "variant")?;
+            let b = locale_string_field(vm, other, "variant")?;
+            boolean(
+                same_language
+                    && same_country
+                    && vm.string_value(a.as_ref()) == vm.string_value(b.as_ref()),
+            )
         },
     ),
     method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let language = vm
-            .read_string_field(this, vm.class_of(this), "language")
-            .unwrap_or_default();
-        let country = vm
-            .read_string_field(this, vm.class_of(this), "country")
-            .unwrap_or_default();
+        let class = vm.class_of(this);
         let mut hash = 0i32;
-        for ch in language.encode_utf16().chain(country.encode_utf16()) {
-            hash = hash.wrapping_mul(31).wrapping_add(i32::from(ch));
+        for name in ["language", "country", "variant"] {
+            let text = vm.read_string_field(this, class, name).unwrap_or_default();
+            let field_hash =
+                crate::lang::java_string_hash(&text.encode_utf16().collect::<Vec<u16>>());
+            hash = hash.wrapping_mul(31).wrapping_add(field_hash);
         }
         int(hash)
     }),

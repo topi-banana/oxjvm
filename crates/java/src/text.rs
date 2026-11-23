@@ -831,7 +831,7 @@ fn simple_date_format_millis(vm: &mut Vm<'_>, date: ObjectRef) -> Result<i64, Vm
     }
 }
 
-const SIMPLE_DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const SIMPLE_DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let (declaring, field) =
@@ -1029,6 +1029,50 @@ const SIMPLE_DATE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         ACC_PUBLIC,
         |vm, _, args| object(vm.make_string(&simple_date_format_pattern(vm, receiver(args)))?),
     ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if this == other {
+                return crate::boolean(true);
+            }
+            if other.is_null() || vm.class_of(this) != vm.class_of(other) {
+                return crate::boolean(false);
+            }
+            let class = vm.class_of(this);
+            let left_pattern = vm
+                .read_ref_field(this, class, "pattern", "Ljava/lang/String;")
+                .unwrap_or(ObjectRef::NULL);
+            let right_pattern = vm
+                .read_ref_field(other, class, "pattern", "Ljava/lang/String;")
+                .unwrap_or(ObjectRef::NULL);
+            if vm.string_value(left_pattern) != vm.string_value(right_pattern) {
+                return crate::boolean(false);
+            }
+            let left_zone = vm
+                .read_ref_field(this, class, "timeZone", "Ljava/util/TimeZone;")
+                .unwrap_or(ObjectRef::NULL);
+            let right_zone = vm
+                .read_ref_field(other, class, "timeZone", "Ljava/util/TimeZone;")
+                .unwrap_or(ObjectRef::NULL);
+            if !crate::util::objects_equals(vm, left_zone, right_zone)? {
+                return crate::boolean(false);
+            }
+            crate::boolean(sdf_non_lenient(vm, this) == sdf_non_lenient(vm, other))
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let pattern = vm
+            .read_ref_field(this, vm.class_of(this), "pattern", "Ljava/lang/String;")
+            .unwrap_or(ObjectRef::NULL);
+        int(vm
+            .string_utf16(pattern)
+            .map_or(0, crate::lang::java_string_hash))
+    }),
 ];
 
 fn date_of_millis(vm: &mut Vm<'_>, millis: i64) -> Result<ObjectRef, VmError> {

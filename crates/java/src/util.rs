@@ -2835,7 +2835,7 @@ pub(crate) fn objects_deep_hash_code(
     Ok(result)
 }
 
-fn objects_equals(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmError> {
+pub(crate) fn objects_equals(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmError> {
     if a == b {
         return Ok(true);
     }
