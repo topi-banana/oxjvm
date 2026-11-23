@@ -735,6 +735,34 @@ fn resource_bundle_get(
             vm.set_instance_ref(instance, declaring, field, base_ref);
             return object(instance);
         }
+        // A .properties resource on the classpath backs a PropertyResourceBundle.
+        let resource = format!("{internal}.properties");
+        let stream = crate::lang::resource_as_stream(vm, &resource)?;
+        if !stream.as_ref().is_null() {
+            let props_class = vm.resolve_class("java/util/Properties")?;
+            let props = vm.new_instance(props_class)?;
+            if let Some((declaring, ctor)) = vm.find_method(props_class, "<init>", "()V") {
+                vm.invoke_method(declaring, ctor, vec![Value::Ref(props)])?;
+            }
+            let (load_class, load_method) =
+                vm.resolve_virtual_method(props, "load", "(Ljava/io/InputStream;)V")?;
+            vm.invoke_method(load_class, load_method, vec![Value::Ref(props), stream])?;
+            let prb_class = vm.resolve_class("java/util/PropertyResourceBundle")?;
+            let instance = vm.new_instance(prb_class)?;
+            let (declaring, ctor) = vm
+                .find_method(prb_class, "<init>", "(Ljava/util/Properties;)V")
+                .ok_or_else(|| VmError::internal("PropertyResourceBundle(Properties) missing"))?;
+            vm.invoke_method(
+                declaring,
+                ctor,
+                vec![Value::Ref(instance), Value::Ref(props)],
+            )?;
+            let base_ref = vm.make_string(&base)?;
+            let (declaring, field) =
+                vm.find_field(prb_class, "baseBundleName", "Ljava/lang/String;")?;
+            vm.set_instance_ref(instance, declaring, field, base_ref);
+            return object(instance);
+        }
     }
     let locale_str = if locale.is_null() {
         String::new()
@@ -840,6 +868,55 @@ pub(crate) const LIST_RESOURCE_BUNDLE: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC | ACC_ABSTRACT,
     &[],
     &LIST_RESOURCE_BUNDLE_METHODS,
+    None,
+);
+
+const PROPERTY_RESOURCE_BUNDLE_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "<init>",
+        "(Ljava/util/Properties;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            record_set_ref(
+                vm,
+                receiver(args),
+                "properties",
+                "Ljava/util/Properties;",
+                ref_arg(args, 1),
+            );
+            void()
+        },
+    ),
+    method(
+        "handleGetObject",
+        "(Ljava/lang/String;)Ljava/lang/Object;",
+        ACC_PROTECTED,
+        |vm, _, args| {
+            let this = receiver(args);
+            let props = record_get_ref(vm, this, "properties", "Ljava/util/Properties;");
+            let key = vm.make_string(&vm.string_or_empty(ref_arg(args, 1)))?;
+            let (class, method) = vm.resolve_virtual_method(
+                props,
+                "getProperty",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+            )?;
+            vm.invoke_method(class, method, vec![Value::Ref(props), Value::Ref(key)])
+        },
+    ),
+];
+
+pub(crate) const PROPERTY_RESOURCE_BUNDLE: oxjvm_vm::NativeClass = class(
+    "java/util/PropertyResourceBundle",
+    Some("java/util/ResourceBundle"),
+    &[],
+    ACC_PUBLIC,
+    &[field(
+        "properties",
+        "Ljava/util/Properties;",
+        ACC_PRIVATE,
+        None,
+    )],
+    &PROPERTY_RESOURCE_BUNDLE_METHODS,
     None,
 );
 
@@ -1361,33 +1438,107 @@ fn hlist_get(vm: &mut Vm<'_>, list: ObjectRef, index: i32) -> Result<ObjectRef, 
         .as_ref())
 }
 
+/// Attach the effective resource bundle to a record, mirroring the JDK
+/// `Logger.getEffectiveLoggerBundle`: this logger's overridable
+/// `getResourceBundle()`/`getResourceBundleName()`, or the nearest ancestor's
+/// stored bundle (or a bundle looked up by the ancestor's overridable name).
+fn attach_effective_bundle(
+    vm: &mut Vm<'_>,
+    logger: ObjectRef,
+    record: ObjectRef,
+) -> Result<(), VmError> {
+    let (bundle_class, bundle_method) =
+        vm.resolve_virtual_method(logger, "getResourceBundle", "()Ljava/util/ResourceBundle;")?;
+    let bundle = vm
+        .invoke_method(bundle_class, bundle_method, vec![Value::Ref(logger)])?
+        .as_ref();
+    if !bundle.is_null() {
+        let stored = record_get_ref(vm, logger, "resourceBundle", "Ljava/util/ResourceBundle;");
+        let name = if bundle == stored {
+            // The stored bundle is returned unchanged: keep the stored name.
+            record_get_ref(vm, logger, "resourceBundleName", "Ljava/lang/String;")
+        } else {
+            // getResourceBundle() is overridden (or no bundle is stored): pair
+            // it with the overridable getResourceBundleName().
+            let (name_class, name_method) =
+                vm.resolve_virtual_method(logger, "getResourceBundleName", "()Ljava/lang/String;")?;
+            vm.invoke_method(name_class, name_method, vec![Value::Ref(logger)])?
+                .as_ref()
+        };
+        record_set_ref(vm, record, "resourceBundleName", "Ljava/lang/String;", name);
+        record_set_ref(
+            vm,
+            record,
+            "resourceBundle",
+            "Ljava/util/ResourceBundle;",
+            bundle,
+        );
+        return Ok(());
+    }
+    // No bundle on this logger: walk the parent stack.
+    let mut current = record_get_ref(vm, logger, "parent", "Ljava/util/logging/Logger;");
+    while !current.is_null() {
+        let parent_bundle =
+            record_get_ref(vm, current, "resourceBundle", "Ljava/util/ResourceBundle;");
+        if !parent_bundle.is_null() {
+            let parent_name =
+                record_get_ref(vm, current, "resourceBundleName", "Ljava/lang/String;");
+            record_set_ref(
+                vm,
+                record,
+                "resourceBundleName",
+                "Ljava/lang/String;",
+                parent_name,
+            );
+            record_set_ref(
+                vm,
+                record,
+                "resourceBundle",
+                "Ljava/util/ResourceBundle;",
+                parent_bundle,
+            );
+            return Ok(());
+        }
+        // A name without a stored bundle means the bundle is looked up by the
+        // ancestor's overridable getResourceBundleName().
+        let (name_class, name_method) =
+            vm.resolve_virtual_method(current, "getResourceBundleName", "()Ljava/lang/String;")?;
+        let name_value = vm.invoke_method(name_class, name_method, vec![Value::Ref(current)])?;
+        let name = vm.string_or_empty(name_value.as_ref());
+        if !name.is_empty() {
+            let name_ref = vm.make_string(&name)?;
+            let found = resource_bundle_get(vm, name_ref, ObjectRef::NULL)?;
+            record_set_ref(
+                vm,
+                record,
+                "resourceBundleName",
+                "Ljava/lang/String;",
+                name_ref,
+            );
+            record_set_ref(
+                vm,
+                record,
+                "resourceBundle",
+                "Ljava/util/ResourceBundle;",
+                found.as_ref(),
+            );
+            return Ok(());
+        }
+        current = record_get_ref(vm, current, "parent", "Ljava/util/logging/Logger;");
+    }
+    Ok(())
+}
+
 fn publish_from_logger(
     vm: &mut Vm<'_>,
     logger: ObjectRef,
     record: ObjectRef,
 ) -> Result<(), VmError> {
     // Attach the effective resource bundle once, mirroring Logger.doLog /
-    // getEffectiveLoggerBundle: this logger's bundle, or the nearest ancestor's.
+    // getEffectiveLoggerBundle.
     let attached = record_get_ref(vm, record, "resourceBundle", "Ljava/util/ResourceBundle;");
     if attached.is_null() {
-        let mut current = logger;
-        while !current.is_null() {
-            let bundle =
-                record_get_ref(vm, current, "resourceBundle", "Ljava/util/ResourceBundle;");
-            if !bundle.is_null() {
-                let name = record_get_ref(vm, current, "resourceBundleName", "Ljava/lang/String;");
-                record_set_ref(vm, record, "resourceBundleName", "Ljava/lang/String;", name);
-                record_set_ref(
-                    vm,
-                    record,
-                    "resourceBundle",
-                    "Ljava/util/ResourceBundle;",
-                    bundle,
-                );
-                break;
-            }
-            current = record_get_ref(vm, current, "parent", "Ljava/util/logging/Logger;");
-        }
+        attach_effective_bundle(vm, logger, record)?;
     }
     let handlers = logger_handlers(vm, logger);
     let count = hlist_len(vm, handlers)?;
