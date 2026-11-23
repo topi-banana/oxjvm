@@ -3526,7 +3526,7 @@ fn ieee_remainder_one(value: f64) -> f64 {
     value - crate::math::floor(value + 0.5)
 }
 
-const CHOICE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+const CHOICE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -3723,6 +3723,28 @@ const CHOICE_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
             let choice = Choice::parse(&pattern);
             choice_set_pattern(vm, this, &choice.pattern())?;
             void()
+        },
+    ),
+    method(
+        "setRoundingMode",
+        "(Ljava/math/RoundingMode;)V",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            Err(vm.throw_new(
+                "java/lang/UnsupportedOperationException",
+                Some("ChoiceFormat does not support rounding"),
+            ))
+        },
+    ),
+    method(
+        "getRoundingMode",
+        "()Ljava/math/RoundingMode;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            Err(vm.throw_new(
+                "java/lang/UnsupportedOperationException",
+                Some("ChoiceFormat does not support rounding"),
+            ))
         },
     ),
 ];
