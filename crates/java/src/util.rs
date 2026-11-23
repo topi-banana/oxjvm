@@ -26714,7 +26714,7 @@ fn enum_set_copy(vm: &mut Vm<'_>, source: ObjectRef) -> Result<ObjectRef, VmErro
     Ok(set)
 }
 
-const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
+const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
     method(
         "copyOf",
         "(Ljava/util/EnumSet;)Ljava/util/EnumSet;",
@@ -26752,8 +26752,34 @@ const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
         "(Ljava/lang/Class;)Ljava/util/EnumSet;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            let set = new_enum_set(vm)?;
-            enum_set_set_type(vm, set, ref_arg(args, 0));
+            let element_type = ref_arg(args, 0);
+            // The JDK picks RegularEnumSet for universes of <= 64 constants and
+            // JumboEnumSet for larger ones; the concrete class name is observable.
+            let mut count = 0;
+            if !element_type.is_null() {
+                let (class, method) = vm.resolve_virtual_method(
+                    element_type,
+                    "getEnumConstants",
+                    "()[Ljava/lang/Object;",
+                )?;
+                let constants = vm
+                    .invoke_method(class, method, vec![Value::Ref(element_type)])?
+                    .as_ref();
+                if !constants.is_null() {
+                    count = vm.array_length(constants)?;
+                }
+            }
+            let class_name = if count > 64 {
+                "java/util/JumboEnumSet"
+            } else {
+                "java/util/RegularEnumSet"
+            };
+            let class = vm.resolve_class(class_name)?;
+            let set = vm.new_instance(class)?;
+            let map = new_hash_map(vm)?;
+            let (declaring, field) = vm.find_field(class, "map", "Ljava/util/HashMap;")?;
+            vm.set_instance_ref(set, declaring, field, map);
+            enum_set_set_type(vm, set, element_type);
             object(set)
         },
     ),
@@ -27018,6 +27044,41 @@ const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
         },
     ),
     method(
+        "retainAll",
+        "(Ljava/util/Collection;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let collection = ref_arg(args, 1);
+            let map = enum_set_map(vm, this);
+            let (contains_class, contains) =
+                vm.resolve_virtual_method(collection, "contains", "(Ljava/lang/Object;)Z")?;
+            let keys: Vec<ObjectRef> = hash_map_pairs(vm, map)
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect();
+            let mut changed = false;
+            for key in keys {
+                let kept = vm.invoke_method(
+                    contains_class,
+                    contains,
+                    vec![Value::Ref(collection), Value::Ref(key)],
+                )?;
+                if kept.as_int() == 0 {
+                    hash_map_call(
+                        vm,
+                        map,
+                        "remove",
+                        "(Ljava/lang/Object;)Ljava/lang/Object;",
+                        &[Value::Ref(key)],
+                    )?;
+                    changed = true;
+                }
+            }
+            boolean(changed)
+        },
+    ),
+    method(
         "toString",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
@@ -27092,6 +27153,28 @@ pub(crate) const ENUM_SET: oxjvm_vm::NativeClass = class(
         field("elementType", "Ljava/lang/Class;", ACC_PRIVATE, None),
     ],
     &ENUM_SET_METHODS,
+    None,
+);
+
+/// The JDK's two concrete `EnumSet` implementations; they differ only in their
+/// backing storage, which the name reveals to callers of `getClass()`.
+pub(crate) const REGULAR_ENUM_SET: oxjvm_vm::NativeClass = class(
+    "java/util/RegularEnumSet",
+    Some("java/util/EnumSet"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const JUMBO_ENUM_SET: oxjvm_vm::NativeClass = class(
+    "java/util/JumboEnumSet",
+    Some("java/util/EnumSet"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &[],
     None,
 );
 
