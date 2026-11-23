@@ -309,6 +309,22 @@ fn new_inet6(
     Ok(value)
 }
 
+/// Serve a parsed IPv6 literal: IPv4-mapped addresses become `Inet4Address`
+/// (unless scoped, which the JDK rejects); everything else is `Inet6Address`.
+fn v6_address(
+    vm: &mut Vm<'_>,
+    bytes: [u8; 16],
+    scope: Option<u32>,
+) -> Option<Result<Value, VmError>> {
+    if let Some(v4) = mapped_v4(&bytes) {
+        if scope.is_none() {
+            return Some(new_address(vm, "java/net/Inet4Address", &v4, None));
+        }
+        return None;
+    }
+    Some(new_inet6(vm, &bytes, scope, None))
+}
+
 /// Resolve a literal IPv4 or IPv6 address, `localhost` or the empty string.
 /// The JDK does not trim whitespace, so a padded host is not a valid literal.
 fn resolve_address(vm: &mut Vm<'_>, class_name: &str, text: &str) -> Result<Value, VmError> {
@@ -317,6 +333,21 @@ fn resolve_address(vm: &mut Vm<'_>, class_name: &str, text: &str) -> Result<Valu
         // whose host name is "localhost".
         return inet_loopback(vm);
     }
+    if text.starts_with('[') {
+        // A bracketed literal is IPv6 only; there is no name-resolution
+        // fallback for it.
+        if let Some(inner) = text.strip_prefix('[').and_then(|t| t.strip_suffix(']')) {
+            if let Some((bytes, scope)) = parse_ipv6(inner) {
+                if let Some(result) = v6_address(vm, bytes, scope) {
+                    return result;
+                }
+            }
+        }
+        return Err(vm.throw_new(
+            "java/net/UnknownHostException",
+            Some(&alloc::format!("{text}: Name or service not known")),
+        ));
+    }
     if text.eq_ignore_ascii_case("localhost") {
         return new_address(vm, class_name, &[127, 0, 0, 1], Some(text));
     }
@@ -324,13 +355,8 @@ fn resolve_address(vm: &mut Vm<'_>, class_name: &str, text: &str) -> Result<Valu
         return new_address(vm, class_name, &bytes, None);
     }
     if let Some((bytes, scope)) = parse_ipv6(text) {
-        if let Some(v4) = mapped_v4(&bytes) {
-            // A scoped mapped address is rejected by the JDK.
-            if scope.is_none() {
-                return new_address(vm, "java/net/Inet4Address", &v4, None);
-            }
-        } else {
-            return new_inet6(vm, &bytes, scope, None);
+        if let Some(result) = v6_address(vm, bytes, scope) {
+            return result;
         }
     }
     Err(vm.throw_new(
@@ -1128,6 +1154,14 @@ fn url_set_parts(
     file: &str,
 ) -> Result<(), VmError> {
     let protocol = protocol.to_ascii_lowercase();
+    // A bare IPv6 literal host is stored bracketed, like the JDK does.
+    let bracketed;
+    let host = if host.contains(':') && !host.starts_with('[') {
+        bracketed = alloc::format!("[{host}]");
+        &bracketed
+    } else {
+        host
+    };
     let class = vm.class_of(this);
     let spec = url_from_parts(&protocol, host, port, file);
     vm.set_string_field(this, class, "spec", &spec)?;
@@ -3936,6 +3970,133 @@ pub(crate) const HTTP_URL_CONNECTION: oxjvm_vm::NativeClass = class(
     None,
 );
 
+/// Split a SocketPermission name into host and inclusive port range. A
+/// bracketed IPv6 host keeps its brackets; otherwise the last colon separates
+/// the port. An absent port means the whole range.
+fn socket_permission_parts(name: &str) -> (String, i32, i32) {
+    let (host, port) = if let Some(rest) = name.strip_prefix('[') {
+        match rest.find(']') {
+            Some(index) => (String::from(&name[..index + 2]), &rest[index + 1..]),
+            None => (String::from(name), ""),
+        }
+    } else {
+        match name.rfind(':') {
+            Some(index) => (String::from(&name[..index]), &name[index..]),
+            None => (String::from(name), ""),
+        }
+    };
+    let port = port.strip_prefix(':').unwrap_or("");
+    let (low, high) = if port.is_empty() {
+        (0, 65535)
+    } else if let Some((from, to)) = port.split_once('-') {
+        (
+            if from.is_empty() {
+                0
+            } else {
+                from.parse().unwrap_or(0)
+            },
+            if to.is_empty() {
+                65535
+            } else {
+                to.parse().unwrap_or(65535)
+            },
+        )
+    } else {
+        let value = port.parse().unwrap_or(0);
+        (value, value)
+    };
+    (host, low, high)
+}
+
+/// The address bytes of an IP literal (brackets stripped, IPv4-mapped IPv6
+/// folded to IPv4), or `None` for a hostname.
+fn socket_ip_bytes(text: &str) -> Option<Vec<u8>> {
+    let text = if text.starts_with('[') && text.ends_with(']') {
+        &text[1..text.len() - 1]
+    } else {
+        text
+    };
+    if let Some(bytes) = parse_ipv4(text) {
+        return Some(bytes.to_vec());
+    }
+    if let Some((bytes, _)) = parse_ipv6(text) {
+        if let Some(v4) = mapped_v4(&bytes) {
+            return Some(v4.to_vec());
+        }
+        return Some(bytes.to_vec());
+    }
+    None
+}
+
+fn socket_host_matches(pattern: &str, host: &str) -> bool {
+    match (socket_ip_bytes(pattern), socket_ip_bytes(host)) {
+        (Some(a), Some(b)) => a == b,
+        (None, None) => {
+            let pattern = pattern.to_ascii_lowercase();
+            let host = host.to_ascii_lowercase();
+            if pattern == "*" {
+                return true;
+            }
+            if let Some(suffix) = pattern.strip_prefix("*.") {
+                // "*.example.com" covers subdomains only, not the apex itself.
+                return host.ends_with(&alloc::format!(".{suffix}"));
+            }
+            pattern == host
+        }
+        // Without name resolution an IP literal never matches a hostname.
+        _ => false,
+    }
+}
+
+fn socket_actions_mask(actions: &str) -> u32 {
+    let mut mask = 0;
+    for action in actions.split(',') {
+        match action.trim() {
+            "accept" => mask |= 1,
+            "connect" => mask |= 2,
+            "listen" => mask |= 4,
+            "resolve" => mask |= 8,
+            _ => {}
+        }
+    }
+    // accept/connect/listen implicitly grant resolve, like the JDK.
+    if mask & 0b111 != 0 {
+        mask |= 8;
+    }
+    mask
+}
+
+fn socket_permission_implies(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+    let other = ref_arg(args, 1);
+    if other.is_null() || vm.class_name(vm.class_of(other)) != "java/net/SocketPermission" {
+        return boolean(false);
+    }
+    let this = receiver(args);
+    let this_name = vm.read_string_field_any(this, "name").unwrap_or_default();
+    let other_name = vm.read_string_field_any(other, "name").unwrap_or_default();
+    let this_actions = vm
+        .read_string_field_any(this, "actions")
+        .unwrap_or_default();
+    let other_actions = vm
+        .read_string_field_any(other, "actions")
+        .unwrap_or_default();
+    let this_mask = socket_actions_mask(&this_actions);
+    let other_mask = socket_actions_mask(&other_actions);
+    if (this_mask & other_mask) != other_mask {
+        return boolean(false);
+    }
+    let (this_host, this_low, this_high) = socket_permission_parts(&this_name);
+    let (other_host, other_low, other_high) = socket_permission_parts(&other_name);
+    if !socket_host_matches(&this_host, &other_host) {
+        return boolean(false);
+    }
+    // A resolve-only permission is granted for any port.
+    if (other_mask & !8) == 0 {
+        return boolean(true);
+    }
+    boolean(other_low >= this_low && other_high <= this_high)
+}
+
 pub(crate) const SOCKET_PERMISSION: oxjvm_vm::NativeClass = class(
     "java/net/SocketPermission",
     Some("java/security/Permission"),
@@ -3986,7 +4147,7 @@ pub(crate) const SOCKET_PERMISSION: oxjvm_vm::NativeClass = class(
             "implies",
             "(Ljava/security/Permission;)Z",
             ACC_PUBLIC,
-            |_, _, _| boolean(false),
+            |vm, _, args| socket_permission_implies(vm, args),
         ),
     ],
     None,
