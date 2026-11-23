@@ -343,14 +343,22 @@ fn uri_init_parts(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let scheme = string_arg(vm, args[1])?;
-    let user_info = string_arg(vm, args[2])?;
-    let host = string_arg(vm, args[3])?;
+    let scheme = vm.string_or_empty(ref_arg(args, 1));
+    let user_info = vm.string_or_empty(ref_arg(args, 2));
+    let host = vm.string_or_empty(ref_arg(args, 3));
     let port = args[4].as_int();
-    let path = string_arg(vm, args[5])?;
-    let query = string_arg(vm, args[6])?;
-    let fragment = string_arg(vm, args[7])?;
-    let text = uri_parts_text(&scheme, &user_info, &host, port, &path, &query, &fragment);
+    let path = vm.string_or_empty(ref_arg(args, 5));
+    let query = vm.string_or_empty(ref_arg(args, 6));
+    let fragment = vm.string_or_empty(ref_arg(args, 7));
+    let text = uri_parts_text(
+        &scheme,
+        &uri_quote(&user_info),
+        &host,
+        port,
+        &uri_quote_path(&path),
+        &uri_quote(&query),
+        &uri_quote(&fragment),
+    );
     let this = receiver(args);
     vm.set_string_field(this, vm.class_of(this), "string", &text)?;
     void()
@@ -395,12 +403,25 @@ fn uri_parts_text(
     text
 }
 
-/// Percent-encode characters outside the URI path/query/fragment allowed set,
-/// matching the JDK's component quoting (spaces become `%20`, etc.).
+/// Percent-encode characters outside the URI uric allowed set (used for the
+/// scheme-specific part, query, fragment, and user info), matching the JDK's
+/// component quoting (spaces become `%20`, etc.). The question mark is legal
+/// in these components.
 fn uri_quote(text: &str) -> String {
+    uri_quote_impl(text, true)
+}
+
+/// Like [`uri_quote`], but for a path component, where `?` must be escaped
+/// because it delimits the query.
+fn uri_quote_path(text: &str) -> String {
+    uri_quote_impl(text, false)
+}
+
+fn uri_quote_impl(text: &str, allow_question: bool) -> String {
     let mut out = String::new();
     for byte in text.bytes() {
         let allowed = byte.is_ascii_alphanumeric()
+            || (allow_question && byte == b'?')
             || matches!(
                 byte,
                 b'-' | b'_'
@@ -431,7 +452,7 @@ fn uri_quote(text: &str) -> String {
     out
 }
 
-const URI_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
+const URI_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
     method("<init>", "(Ljava/lang/String;)V", ACC_PUBLIC, uri_init),
     method(
         "<init>",
@@ -470,7 +491,7 @@ const URI_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
                 "",
                 &host,
                 -1,
-                &uri_quote(&path),
+                &uri_quote_path(&path),
                 "",
                 &uri_quote(&fragment),
             );
@@ -494,7 +515,7 @@ const URI_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
                 "",
                 &authority,
                 -1,
-                &uri_quote(&path),
+                &uri_quote_path(&path),
                 &uri_quote(&query),
                 &uri_quote(&fragment),
             );
@@ -653,7 +674,31 @@ const URI_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
         },
     ),
     method(
+        "getRawUserInfo",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = uri_text(vm, receiver(args));
+            match uri_authority(&text).and_then(|authority| authority.split_once('@')) {
+                Some((user, _)) => object(vm.intern(user)?),
+                None => object(ObjectRef::NULL),
+            }
+        },
+    ),
+    method(
         "getAuthority",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = uri_text(vm, receiver(args));
+            match uri_authority(&text) {
+                Some(authority) if !authority.is_empty() => object(vm.intern(authority)?),
+                _ => object(ObjectRef::NULL),
+            }
+        },
+    ),
+    method(
+        "getRawAuthority",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
@@ -677,6 +722,18 @@ const URI_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
         },
     ),
     method(
+        "getRawQuery",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = uri_text(vm, receiver(args));
+            match uri_part(&text, '?', '#') {
+                Some(query) => object(vm.intern(&query)?),
+                None => object(ObjectRef::NULL),
+            }
+        },
+    ),
+    method(
         "getFragment",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
@@ -684,6 +741,18 @@ const URI_METHODS: [oxjvm_vm::NativeMethodDef; 30] = [
             let text = uri_text(vm, receiver(args));
             match uri_part(&text, '#', '\0') {
                 Some(fragment) => object(vm.intern(&percent_decode(&fragment))?),
+                None => object(ObjectRef::NULL),
+            }
+        },
+    ),
+    method(
+        "getRawFragment",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = uri_text(vm, receiver(args));
+            match uri_part(&text, '#', '\0') {
+                Some(fragment) => object(vm.intern(&fragment)?),
                 None => object(ObjectRef::NULL),
             }
         },
