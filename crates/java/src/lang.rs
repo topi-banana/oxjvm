@@ -4090,11 +4090,32 @@ pub(crate) fn format_string(
 ) -> Result<String, VmError> {
     let mut out = String::new();
     let mut argument = 0usize;
+    let mut previous: Option<usize> = None;
     let mut chars = format.chars().peekable();
     while let Some(ch) = chars.next() {
         if ch != '%' {
             out.push(ch);
             continue;
+        }
+        // Capture the full specifier text so a missing argument can report it.
+        let mut spec_text = String::from("%");
+        // Optional argument index `N$` (JDK printf). A run of digits not followed
+        // by `$` is the field width instead.
+        let mut index_digits = String::new();
+        while let Some(digit) = chars.peek().copied().filter(|c| c.is_ascii_digit()) {
+            index_digits.push(digit);
+            chars.next();
+        }
+        let mut explicit_index: Option<usize> = None;
+        let mut width = 0usize;
+        if !index_digits.is_empty() && chars.peek() == Some(&'$') {
+            chars.next();
+            spec_text.push_str(&index_digits);
+            spec_text.push('$');
+            explicit_index = Some(index_digits.parse::<usize>().unwrap_or(0));
+        } else if !index_digits.is_empty() {
+            width = index_digits.parse::<usize>().unwrap_or(0);
+            spec_text.push_str(&index_digits);
         }
         let mut left_align = false;
         let mut zero_pad = false;
@@ -4102,35 +4123,47 @@ pub(crate) fn format_string(
         let mut plus_sign = false;
         let mut space_sign = false;
         let mut grouping = false;
-        let mut width = 0usize;
+        let mut relative = false;
         loop {
             match chars.peek() {
                 Some('-') => {
                     left_align = true;
+                    spec_text.push('-');
                     chars.next();
                 }
                 Some('0') => {
                     zero_pad = true;
+                    spec_text.push('0');
                     chars.next();
                 }
                 Some('#') => {
                     alternate = true;
+                    spec_text.push('#');
                     chars.next();
                 }
                 Some('+') => {
                     plus_sign = true;
+                    spec_text.push('+');
                     chars.next();
                 }
                 Some(' ') => {
                     space_sign = true;
+                    spec_text.push(' ');
                     chars.next();
                 }
                 Some(',') => {
                     grouping = true;
+                    spec_text.push(',');
+                    chars.next();
+                }
+                Some('<') => {
+                    relative = true;
+                    spec_text.push('<');
                     chars.next();
                 }
                 Some(digit) if digit.is_ascii_digit() => {
                     width = width * 10 + digit.to_digit(10).unwrap() as usize;
+                    spec_text.push(*digit);
                     chars.next();
                 }
                 _ => break,
@@ -4139,26 +4172,67 @@ pub(crate) fn format_string(
         let mut precision: Option<usize> = None;
         if chars.peek() == Some(&'.') {
             chars.next();
+            spec_text.push('.');
             let mut value = 0usize;
             while let Some(digit) = chars.peek().and_then(|digit| digit.to_digit(10)) {
                 value = value * 10 + digit as usize;
+                spec_text.push(char::from_digit(digit, 10).unwrap());
                 chars.next();
             }
             precision = Some(value);
         }
         let Some(spec) = chars.next() else { break };
+        spec_text.push(spec);
+        // A date/time conversion carries a suffix character that is part of the
+        // specifier; peek it for the report without consuming it here.
+        if matches!(spec, 't' | 'T') {
+            if let Some(suffix) = chars.peek() {
+                spec_text.push(*suffix);
+            }
+        }
         let mut prefix_len = 0usize;
         let numeric = matches!(spec, 'd' | 'x' | 'X' | 'o' | 'f' | 'e' | 'E');
+        // Resolve which argument this conversion reads. Ordinary conversions use a
+        // running counter; `N$` selects an explicit index; `<` reuses the previous
+        // one. A conversion that needs an argument the caller did not supply throws
+        // MissingFormatArgumentException, the way java.util.Formatter does.
+        let requires_arg = !matches!(spec, '%' | 'n');
+        let mut resolved = ObjectRef::NULL;
+        if requires_arg {
+            let index = if let Some(n) = explicit_index {
+                if n == 0 {
+                    return Err(
+                        vm.throw_new("java/util/MissingFormatArgumentException", Some(&spec_text))
+                    );
+                }
+                n - 1
+            } else if relative {
+                match previous {
+                    Some(p) => p,
+                    None => {
+                        return Err(vm.throw_new(
+                            "java/util/MissingFormatArgumentException",
+                            Some(&spec_text),
+                        ));
+                    }
+                }
+            } else {
+                argument
+            };
+            if index >= arguments.len() {
+                return Err(
+                    vm.throw_new("java/util/MissingFormatArgumentException", Some(&spec_text))
+                );
+            }
+            resolved = arguments[index];
+            if explicit_index.is_none() && !relative {
+                argument += 1;
+            }
+            previous = Some(index);
+        }
         // A null argument renders as "null" ("false" for %b), uppercased for an
         // uppercase conversion, whatever the conversion type.
-        if !matches!(spec, '%' | 'n')
-            && arguments
-                .get(argument)
-                .copied()
-                .unwrap_or(ObjectRef::NULL)
-                .is_null()
-        {
-            argument += 1;
+        if requires_arg && resolved.is_null() {
             if matches!(spec, 't' | 'T') {
                 chars.next();
             }
@@ -4179,8 +4253,7 @@ pub(crate) fn format_string(
             '%' => "%".to_string(),
             'n' => "\n".to_string(),
             'b' | 'B' => {
-                let value = arguments.get(argument).copied().unwrap_or(ObjectRef::NULL);
-                argument += 1;
+                let value = resolved;
                 let text = if value.is_null() {
                     "false"
                 } else if let Some(text) = vm.string_value(value) {
@@ -4199,8 +4272,7 @@ pub(crate) fn format_string(
                 }
             }
             'd' => {
-                let value = arguments.get(argument).copied().unwrap_or(ObjectRef::NULL);
-                argument += 1;
+                let value = resolved;
                 let number = object_to_long(vm, value);
                 let mut text = oxjvm_vm::format::long_to_string(number);
                 if grouping {
@@ -4227,8 +4299,7 @@ pub(crate) fn format_string(
                 text
             }
             'x' | 'X' | 'o' => {
-                let value = arguments.get(argument).copied().unwrap_or(ObjectRef::NULL);
-                argument += 1;
+                let value = resolved;
                 let number = object_to_long(vm, value);
                 let magnitude = format_unsigned_magnitude(vm, value, number);
                 let (radix, upper) = match spec {
@@ -4250,14 +4321,12 @@ pub(crate) fn format_string(
                 alloc::format!("{prefix}{digits}")
             }
             'c' => {
-                let value = arguments.get(argument).copied().unwrap_or(ObjectRef::NULL);
-                argument += 1;
+                let value = resolved;
                 let unit = object_to_long(vm, value) as u32;
                 char::from_u32(unit).map_or_else(String::new, |ch| ch.to_string())
             }
             's' | 'S' => {
-                let value = arguments.get(argument).copied().unwrap_or(ObjectRef::NULL);
-                argument += 1;
+                let value = resolved;
                 let mut text = vm.display_value(
                     &oxjvm_classfile::FieldType::Object("java/lang/Object".into()),
                     Value::Ref(value),
@@ -4271,15 +4340,13 @@ pub(crate) fn format_string(
                 text
             }
             'f' => {
-                let value = arguments.get(argument).copied().unwrap_or(ObjectRef::NULL);
-                argument += 1;
+                let value = resolved;
                 let number = object_to_double(vm, value);
                 let digits = precision.unwrap_or(6);
                 format_fixed(number, digits)
             }
             'e' | 'E' => {
-                let value = arguments.get(argument).copied().unwrap_or(ObjectRef::NULL);
-                argument += 1;
+                let value = resolved;
                 let number = object_to_double(vm, value);
                 crate::format::format_scientific_jdk(number, precision.unwrap_or(6), spec == 'E')
             }

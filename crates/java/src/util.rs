@@ -226,12 +226,50 @@ pub(crate) const ILLEGAL_FORMAT_FLAGS_EXCEPTION: oxjvm_vm::NativeClass = {
 };
 
 pub(crate) const MISSING_FORMAT_ARGUMENT_EXCEPTION: oxjvm_vm::NativeClass = {
-    const METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
-        "<init>",
-        "(Ljava/lang/String;)V",
-        ACC_PUBLIC,
-        format_string_ctor,
-    )];
+    const METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+        method(
+            "<init>",
+            "(Ljava/lang/String;)V",
+            ACC_PUBLIC,
+            format_string_ctor,
+        ),
+        method(
+            "getFormatSpecifier",
+            "()Ljava/lang/String;",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let this = receiver(args);
+                let class = vm.class_of(this);
+                let (declaring, field) =
+                    vm.find_field(class, "detailMessage", "Ljava/lang/String;")?;
+                let slot = vm.classes.get(declaring).fields[field as usize].slot as usize;
+                let value = match vm.heap.get(this).map(|object| &object.data) {
+                    Some(ObjectData::Instance(fields)) => fields[slot],
+                    _ => Value::Ref(ObjectRef::NULL),
+                };
+                object(value.as_ref())
+            },
+        ),
+        method(
+            "getMessage",
+            "()Ljava/lang/String;",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let this = receiver(args);
+                let class = vm.class_of(this);
+                let (declaring, field) =
+                    vm.find_field(class, "detailMessage", "Ljava/lang/String;")?;
+                let slot = vm.classes.get(declaring).fields[field as usize].slot as usize;
+                let value = match vm.heap.get(this).map(|object| &object.data) {
+                    Some(ObjectData::Instance(fields)) => fields[slot],
+                    _ => Value::Ref(ObjectRef::NULL),
+                };
+                let specifier = vm.string_or_empty(value.as_ref());
+                let text = alloc::format!("Format specifier '{specifier}'");
+                object(vm.make_string(&text)?)
+            },
+        ),
+    ];
     class(
         "java/util/MissingFormatArgumentException",
         Some("java/util/IllegalFormatException"),
