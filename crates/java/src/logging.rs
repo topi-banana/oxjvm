@@ -288,6 +288,7 @@ const LOG_RECORD_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
             record_set_ref(vm, this, "message", "Ljava/lang/String;", ref_arg(args, 2));
             let millis = vm.host_time_millis();
             crate::lang::write_long_field(vm, this, "millis", millis);
+            stamp_record(vm, this);
             void()
         },
     ),
@@ -530,10 +531,15 @@ const LOG_RECORD_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         void()
     }),
     method("getThreadID", "()I", ACC_PUBLIC, |vm, _, args| {
-        int(crate::lang::read_int_field(vm, receiver(args), "threadID"))
+        int(crate::lang::read_long_field(vm, receiver(args), "threadID") as i32)
     }),
     method("setThreadID", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        crate::lang::write_int_field(vm, receiver(args), "threadID", crate::int_arg(args, 1));
+        crate::lang::write_long_field(
+            vm,
+            receiver(args),
+            "threadID",
+            i64::from(crate::int_arg(args, 1)),
+        );
         void()
     }),
     method("getLongThreadID", "()J", ACC_PUBLIC, |vm, _, args| {
@@ -1784,10 +1790,19 @@ fn publish_from_logger(
     if attached.is_null() {
         attach_effective_bundle(vm, logger, record)?;
     }
-    let handlers = logger_handlers(vm, logger);
-    let count = hlist_len(vm, handlers)?;
+    // getHandlers() is overridable, so call it virtually rather than reading
+    // the handler list field directly.
+    let (handlers_class, handlers_method) =
+        vm.resolve_virtual_method(logger, "getHandlers", "()[Ljava/util/logging/Handler;")?;
+    let handlers = vm
+        .invoke_method(handlers_class, handlers_method, vec![Value::Ref(logger)])?
+        .as_ref();
+    let count = vm.array_length(handlers)?;
     for index in 0..count {
-        let handler = hlist_get(vm, handlers, index)?;
+        let handler = vm.array_get(handlers, index as i32)?.as_ref();
+        if handler.is_null() {
+            continue;
+        }
         let (class, method) =
             vm.resolve_virtual_method(handler, "publish", "(Ljava/util/logging/LogRecord;)V")?;
         vm.invoke_method(class, method, vec![Value::Ref(handler), Value::Ref(record)])?;
@@ -1890,6 +1905,37 @@ fn logger_from_registry(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmErro
     Ok(logger)
 }
 
+/// Global monotonically increasing sequence counter for log records, as the
+/// JDK's LogRecord assigns from a static AtomicLong.
+fn next_sequence_number() -> i64 {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    SEQUENCE.fetch_add(1, Ordering::Relaxed) as i64
+}
+
+/// Give a freshly created record its sequence number and the current thread id.
+fn stamp_record(vm: &mut Vm<'_>, record: ObjectRef) {
+    crate::lang::write_long_field(vm, record, "sequence", next_sequence_number());
+    let thread = vm.current_thread_object();
+    crate::lang::write_long_field(vm, record, "threadID", vm.thread_id(thread));
+}
+
+/// Infer the calling class and method by skipping the logging framework's own
+/// frames, mirroring LogRecord.inferCaller.
+fn infer_caller_source(vm: &mut Vm<'_>) -> Result<(ObjectRef, ObjectRef), VmError> {
+    let frames = vm.capture_frames();
+    for frame in &frames {
+        let dotted = frame.class_name.replace('/', ".");
+        if dotted.starts_with("java.util.logging") {
+            continue;
+        }
+        let class_ref = vm.make_string(&dotted)?;
+        let method_ref = vm.make_string(&frame.method_name)?;
+        return Ok((class_ref, method_ref));
+    }
+    Ok((ObjectRef::NULL, ObjectRef::NULL))
+}
+
 fn logger_log_message(
     vm: &mut Vm<'_>,
     logger: ObjectRef,
@@ -1911,6 +1957,22 @@ fn logger_log_message(
     let name = logger_name(vm, logger);
     let name_ref = vm.make_string(&name)?;
     record_set_ref(vm, record, "loggerName", "Ljava/lang/String;", name_ref);
+    stamp_record(vm, record);
+    let (source_class, source_method) = infer_caller_source(vm)?;
+    record_set_ref(
+        vm,
+        record,
+        "sourceClassName",
+        "Ljava/lang/String;",
+        source_class,
+    );
+    record_set_ref(
+        vm,
+        record,
+        "sourceMethodName",
+        "Ljava/lang/String;",
+        source_method,
+    );
     publish_from_logger(vm, logger, record)
 }
 
@@ -1954,6 +2016,7 @@ fn logger_logp(
     );
     let millis = vm.host_time_millis();
     crate::lang::write_long_field(vm, record, "millis", millis);
+    stamp_record(vm, record);
     let name = logger_name(vm, logger);
     let name_ref = vm.make_string(&name)?;
     record_set_ref(vm, record, "loggerName", "Ljava/lang/String;", name_ref);
