@@ -42,8 +42,13 @@ const CHARSETS: &[(&str, &[&str])] = &[
             "csisolatin1",
         ],
     ),
-    ("UTF-16", &["utf16", "unicode", "unicodebig"]),
-    ("UTF-16BE", &["utf16be", "unicodebigunmarked", "xutf16be"]),
+    ("UTF-16", &["utf16", "unicode"]),
+    ("UnicodeBig", &["unicodebig"]),
+    ("UnicodeLittle", &["unicodelittle"]),
+    (
+        "UTF-16BE",
+        &["utf16be", "unicodebigunmarked", "xutf16be", "iso10646ucs2"],
+    ),
     (
         "UTF-16LE",
         &["utf16le", "unicodelittleunmarked", "xutf16le"],
@@ -88,6 +93,20 @@ pub(crate) fn encode(text: &str, canonical: &str) -> Vec<u8> {
             }
             bytes
         }
+        "UnicodeBig" => {
+            let mut bytes = alloc::vec![0xFE, 0xFF];
+            for unit in text.encode_utf16() {
+                bytes.extend_from_slice(&unit.to_be_bytes());
+            }
+            bytes
+        }
+        "UnicodeLittle" => {
+            let mut bytes = alloc::vec![0xFF, 0xFE];
+            for unit in text.encode_utf16() {
+                bytes.extend_from_slice(&unit.to_le_bytes());
+            }
+            bytes
+        }
         "UTF-16BE" => text.encode_utf16().flat_map(u16::to_be_bytes).collect(),
         "UTF-16LE" => text.encode_utf16().flat_map(u16::to_le_bytes).collect(),
         // UTF-8 and anything unknown.
@@ -103,6 +122,20 @@ pub(crate) fn encode_units(units: &[u16], canonical: &str) -> Vec<u8> {
             let mut bytes = alloc::vec![0xFE, 0xFF];
             for unit in units {
                 bytes.extend_from_slice(&unit.to_be_bytes());
+            }
+            bytes
+        }
+        "UnicodeBig" => {
+            let mut bytes = alloc::vec![0xFE, 0xFF];
+            for unit in units {
+                bytes.extend_from_slice(&unit.to_be_bytes());
+            }
+            bytes
+        }
+        "UnicodeLittle" => {
+            let mut bytes = alloc::vec![0xFF, 0xFE];
+            for unit in units {
+                bytes.extend_from_slice(&unit.to_le_bytes());
             }
             bytes
         }
@@ -157,6 +190,22 @@ pub(crate) fn decode(bytes: &[u8], canonical: &str) -> Vec<u16> {
         }
         "UTF-16BE" => utf16_units(bytes, u16::from_be_bytes),
         "UTF-16LE" => utf16_units(bytes, u16::from_le_bytes),
+        "UnicodeBig" => {
+            let body = if bytes.starts_with(&[0xFE, 0xFF]) {
+                &bytes[2..]
+            } else {
+                bytes
+            };
+            utf16_units(body, u16::from_be_bytes)
+        }
+        "UnicodeLittle" => {
+            let body = if bytes.starts_with(&[0xFF, 0xFE]) {
+                &bytes[2..]
+            } else {
+                bytes
+            };
+            utf16_units(body, u16::from_le_bytes)
+        }
         _ => String::from_utf8_lossy(bytes).encode_utf16().collect(),
     }
 }
