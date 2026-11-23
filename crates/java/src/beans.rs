@@ -754,54 +754,81 @@ fn property_editor_for(vm: &mut Vm<'_>, type_object: ObjectRef) -> Result<Value,
     object(editor)
 }
 
+/// Parse editor text into a boxed value of the editor's type, as the JDK
+/// built-in editors do; invalid text raises `IllegalArgumentException`.
+fn property_editor_parse(vm: &mut Vm<'_>, type_name: &str, text: &str) -> Result<Value, VmError> {
+    match type_name {
+        "boolean" | "java/lang/Boolean" => crate::boxed::box_value(
+            vm,
+            Value::Int(i32::from(text.eq_ignore_ascii_case("true"))),
+            "Z",
+        ),
+        "byte" | "java/lang/Byte" => match text.parse::<i8>() {
+            Ok(value) => crate::boxed::box_value(vm, Value::Int(i32::from(value)), "B"),
+            Err(_) => Err(vm.throw_new("java/lang/IllegalArgumentException", None)),
+        },
+        "short" | "java/lang/Short" => match text.parse::<i16>() {
+            Ok(value) => crate::boxed::box_value(vm, Value::Int(i32::from(value)), "S"),
+            Err(_) => Err(vm.throw_new("java/lang/IllegalArgumentException", None)),
+        },
+        "int" | "java/lang/Integer" => match text.parse::<i32>() {
+            Ok(value) => crate::boxed::box_value(vm, Value::Int(value), "I"),
+            Err(_) => Err(vm.throw_new("java/lang/IllegalArgumentException", None)),
+        },
+        "long" | "java/lang/Long" => match text.parse::<i64>() {
+            Ok(value) => crate::boxed::box_value(vm, Value::Long(value), "J"),
+            Err(_) => Err(vm.throw_new("java/lang/IllegalArgumentException", None)),
+        },
+        "float" | "java/lang/Float" => match text.parse::<f32>() {
+            Ok(value) => crate::boxed::box_value(vm, Value::Int(value.to_bits() as i32), "F"),
+            Err(_) => Err(vm.throw_new("java/lang/IllegalArgumentException", None)),
+        },
+        "double" | "java/lang/Double" => match text.parse::<f64>() {
+            Ok(value) => crate::boxed::box_value(vm, Value::Long(value.to_bits() as i64), "D"),
+            Err(_) => Err(vm.throw_new("java/lang/IllegalArgumentException", None)),
+        },
+        "char" | "java/lang/Character" => {
+            let mut chars = text.chars();
+            match (chars.next(), chars.next()) {
+                (Some(c), None) => crate::boxed::box_value(vm, Value::Int(c as i32), "C"),
+                _ => Err(vm.throw_new("java/lang/IllegalArgumentException", None)),
+            }
+        }
+        _ => Err(vm.throw_new("java/lang/IllegalArgumentException", None)),
+    }
+}
+
 const OJVM_PROPERTY_EDITOR_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
     method(
         "setAsText",
         "(Ljava/lang/String;)V",
         ACC_PUBLIC,
         |vm, _, args| {
-            let text = vm.string_or_empty(ref_arg(args, 1));
-            let type_object = vm
-                .read_ref_field(
-                    receiver(args),
-                    vm.class_of(receiver(args)),
-                    "type",
-                    "Ljava/lang/Class;",
-                )
-                .unwrap_or(ObjectRef::NULL);
-            let type_name = if type_object.is_null() {
-                String::new()
+            let this = receiver(args);
+            let text_ref = ref_arg(args, 1);
+            let value = if text_ref.is_null() {
+                ObjectRef::NULL
             } else {
-                let class = class_argument(vm, type_object)?;
-                vm.classes.get(class).name.clone()
-            };
-            let value = if type_name == "java/lang/Integer" {
-                match text.parse::<i32>() {
-                    Ok(value) => crate::boxed::box_value(vm, Value::Int(value), "I")?.as_ref(),
-                    Err(_) => ObjectRef::NULL,
+                let type_object = vm
+                    .read_ref_field(this, vm.class_of(this), "type", "Ljava/lang/Class;")
+                    .unwrap_or(ObjectRef::NULL);
+                let type_name = if type_object.is_null() {
+                    String::new()
+                } else {
+                    let class = class_argument(vm, type_object)?;
+                    vm.classes.get(class).name.clone()
+                };
+                if type_name == "java/lang/String" {
+                    text_ref
+                } else {
+                    let text = vm.string_or_empty(text_ref);
+                    property_editor_parse(vm, &type_name, &text)?.as_ref()
                 }
-            } else if type_name == "java/lang/Long" {
-                match text.parse::<i64>() {
-                    Ok(value) => crate::boxed::box_value(vm, Value::Long(value), "J")?.as_ref(),
-                    Err(_) => ObjectRef::NULL,
-                }
-            } else if type_name == "java/lang/Double" {
-                match text.parse::<f64>() {
-                    Ok(value) => {
-                        crate::boxed::box_value(vm, Value::Long(value.to_bits() as i64), "D")?
-                            .as_ref()
-                    }
-                    Err(_) => ObjectRef::NULL,
-                }
-            } else if type_name == "java/lang/Boolean" {
-                crate::boxed::box_value(vm, Value::Int(i32::from(text == "true")), "Z")?.as_ref()
-            } else {
-                ref_arg(args, 1)
             };
             if let Some((declaring, field)) =
-                vm.find_field_opt(vm.class_of(receiver(args)), "value", "Ljava/lang/Object;")
+                vm.find_field_opt(vm.class_of(this), "value", "Ljava/lang/Object;")
             {
-                vm.set_instance_ref(receiver(args), declaring, field, value);
+                vm.set_instance_ref(this, declaring, field, value);
             }
             void()
         },
@@ -811,20 +838,28 @@ const OJVM_PROPERTY_EDITOR_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
+            let this = receiver(args);
             let value = vm
-                .read_ref_field(
-                    receiver(args),
-                    vm.class_of(receiver(args)),
-                    "value",
-                    "Ljava/lang/Object;",
-                )
+                .read_ref_field(this, vm.class_of(this), "value", "Ljava/lang/Object;")
                 .unwrap_or(ObjectRef::NULL);
             if value.is_null() {
-                return object(vm.make_string("")?);
+                return object(ObjectRef::NULL);
             }
             let (class, method) =
                 vm.resolve_virtual_method(value, "toString", "()Ljava/lang/String;")?;
-            vm.invoke_method(class, method, vec![Value::Ref(value)])
+            let text = vm
+                .invoke_method(class, method, vec![Value::Ref(value)])?
+                .as_ref();
+            if vm.class_name(vm.class_of(value)) == "java/lang/Boolean" {
+                let text = vm.string_or_empty(text);
+                let mut chars = text.chars();
+                let capitalized = match chars.next() {
+                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                    None => String::new(),
+                };
+                return object(vm.make_string(&capitalized)?);
+            }
+            object(text)
         },
     ),
 ];
