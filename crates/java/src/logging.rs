@@ -943,14 +943,14 @@ fn load_bundle_candidate(
     Ok(None)
 }
 
-fn resource_bundle_get(
+/// Build the fallback candidate list for a locale: the locale's own suffixes
+/// (variant, country, language) followed by the unsuffixed base. Each entry
+/// carries the locale parts it represents so the match can record its locale.
+fn bundle_candidates(
     vm: &mut Vm<'_>,
-    base_object: ObjectRef,
+    base: &str,
     locale: ObjectRef,
-) -> Result<Value, VmError> {
-    let base = vm.string_or_empty(base_object);
-    // Each candidate carries the locale suffix it represents, so the matched
-    // bundle can record its own locale (the base candidate is Locale.ROOT).
+) -> Result<Vec<(String, String, String, String)>, VmError> {
     let mut candidates: Vec<(String, String, String, String)> = Vec::new();
     if !locale.is_null() {
         let language = vm
@@ -987,15 +987,74 @@ fn resource_bundle_get(
             ));
         }
     }
-    candidates.push((base.clone(), String::new(), String::new(), String::new()));
-    // Load every candidate that exists, in fallback order, then link them into
-    // a parent chain so keySet/getKeys aggregate the base bundle's keys.
+    candidates.push((
+        String::from(base),
+        String::new(),
+        String::new(),
+        String::new(),
+    ));
+    Ok(candidates)
+}
+
+/// Load every candidate that exists, in fallback order.
+fn load_bundle_candidates(
+    vm: &mut Vm<'_>,
+    base: &str,
+    candidates: Vec<(String, String, String, String)>,
+) -> Result<Vec<ObjectRef>, VmError> {
     let mut loaded: Vec<ObjectRef> = Vec::new();
     for (candidate, language, country, variant) in candidates {
         let internal = candidate.replace('.', "/");
         let matched_locale = locale_from_parts(vm, &language, &country, &variant)?;
-        if let Some(instance) = load_bundle_candidate(vm, &internal, &base, matched_locale)? {
+        if let Some(instance) = load_bundle_candidate(vm, &internal, base, matched_locale)? {
             loaded.push(instance);
+        }
+    }
+    Ok(loaded)
+}
+
+/// Whether a bundle's recorded locale is `Locale.ROOT` (the unsuffixed base
+/// candidate), used to decide when to try the default-locale search path.
+fn bundle_locale_is_root(vm: &mut Vm<'_>, bundle: ObjectRef) -> bool {
+    let locale = record_get_ref(vm, bundle, "locale", "Ljava/util/Locale;");
+    if locale.is_null() {
+        return true;
+    }
+    let class = vm.class_of(locale);
+    let language = vm
+        .read_string_field(locale, class, "language")
+        .unwrap_or_default();
+    let country = vm
+        .read_string_field(locale, class, "country")
+        .unwrap_or_default();
+    let variant = vm
+        .read_string_field(locale, class, "variant")
+        .unwrap_or_default();
+    language.is_empty() && country.is_empty() && variant.is_empty()
+}
+
+fn resource_bundle_get(
+    vm: &mut Vm<'_>,
+    base_object: ObjectRef,
+    locale: ObjectRef,
+) -> Result<Value, VmError> {
+    let base = vm.string_or_empty(base_object);
+    // Load every candidate that exists, in fallback order, then link them into
+    // a parent chain so keySet/getKeys aggregate the base bundle's keys.
+    let candidates = bundle_candidates(vm, &base, locale)?;
+    let mut loaded = load_bundle_candidates(vm, &base, candidates)?;
+    // The JDK falls back to the default locale's search path when the requested
+    // locale yields no bundle, or only the unsuffixed base bundle (a more
+    // specific default-locale bundle then becomes the parent of the base).
+    let only_base = !loaded.is_empty() && bundle_locale_is_root(vm, loaded[0]);
+    if loaded.is_empty() || only_base {
+        let default = crate::format::default_locale(vm);
+        if !default.is_null() {
+            let default_candidates = bundle_candidates(vm, &base, default)?;
+            let fallback = load_bundle_candidates(vm, &base, default_candidates)?;
+            if !fallback.is_empty() {
+                loaded = fallback;
+            }
         }
     }
     if !loaded.is_empty() {
