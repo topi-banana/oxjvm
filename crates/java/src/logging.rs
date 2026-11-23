@@ -616,12 +616,15 @@ pub(crate) const LOG_RECORD: oxjvm_vm::NativeClass = class(
 // ResourceBundle (minimal)
 // -------------------------------------------------------------------------------------------
 
-const RESOURCE_BUNDLE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const RESOURCE_BUNDLE_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     method(
         "getBundle",
         "(Ljava/lang/String;)Ljava/util/ResourceBundle;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| resource_bundle_get(vm, ref_arg(args, 0), ObjectRef::NULL),
+        |vm, _, args| {
+            let locale = crate::format::default_locale(vm);
+            resource_bundle_get(vm, ref_arg(args, 0), locale)
+        },
     ),
     method(
         "getBundle",
@@ -683,6 +686,107 @@ const RESOURCE_BUNDLE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
             void()
         },
     ),
+    method(
+        "getLocale",
+        "()Ljava/util/Locale;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(record_get_ref(
+                vm,
+                receiver(args),
+                "locale",
+                "Ljava/util/Locale;",
+            ))
+        },
+    ),
+    method(
+        "getKeys",
+        "()Ljava/util/Enumeration;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        abstract_method_pub,
+    ),
+    method(
+        "handleKeySet",
+        "()Ljava/util/Set;",
+        ACC_PROTECTED,
+        |vm, _, args| {
+            // Default implementation: the keys from getKeys() for which the
+            // local handleGetObject returns a non-null value.
+            let this = receiver(args);
+            let (keys_class, keys_method) =
+                vm.resolve_virtual_method(this, "getKeys", "()Ljava/util/Enumeration;")?;
+            let enumeration = vm
+                .invoke_method(keys_class, keys_method, vec![Value::Ref(this)])?
+                .as_ref();
+            let candidates = enumeration_elements(vm, enumeration)?;
+            let mut keys = Vec::new();
+            for key in candidates {
+                let (obj_class, obj_method) = vm.resolve_virtual_method(
+                    this,
+                    "handleGetObject",
+                    "(Ljava/lang/String;)Ljava/lang/Object;",
+                )?;
+                let value = vm
+                    .invoke_method(
+                        obj_class,
+                        obj_method,
+                        vec![Value::Ref(this), Value::Ref(key)],
+                    )?
+                    .as_ref();
+                if !value.is_null() {
+                    keys.push(key);
+                }
+            }
+            object(crate::util::hash_set_from(vm, &keys)?)
+        },
+    ),
+    method("keySet", "()Ljava/util/Set;", ACC_PUBLIC, |vm, _, args| {
+        let mut current = receiver(args);
+        let mut keys = Vec::new();
+        while !current.is_null() {
+            let (class, method) =
+                vm.resolve_virtual_method(current, "handleKeySet", "()Ljava/util/Set;")?;
+            let local = vm
+                .invoke_method(class, method, vec![Value::Ref(current)])?
+                .as_ref();
+            keys.extend(crate::util::collection_elements(vm, local)?);
+            current = record_get_ref(vm, current, "parent", "Ljava/util/ResourceBundle;");
+        }
+        object(crate::util::hash_set_from(vm, &keys)?)
+    }),
+    method(
+        "containsKey",
+        "(Ljava/lang/String;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let key = ref_arg(args, 1);
+            if key.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let mut current = receiver(args);
+            while !current.is_null() {
+                let (class, method) =
+                    vm.resolve_virtual_method(current, "handleKeySet", "()Ljava/util/Set;")?;
+                let local = vm
+                    .invoke_method(class, method, vec![Value::Ref(current)])?
+                    .as_ref();
+                let (contains_class, contains_method) =
+                    vm.resolve_virtual_method(local, "contains", "(Ljava/lang/Object;)Z")?;
+                let found = vm
+                    .invoke_method(
+                        contains_class,
+                        contains_method,
+                        vec![Value::Ref(local), Value::Ref(key)],
+                    )?
+                    .as_int();
+                if found != 0 {
+                    return boolean(true);
+                }
+                current = record_get_ref(vm, current, "parent", "Ljava/util/ResourceBundle;");
+            }
+            boolean(false)
+        },
+    ),
 ];
 
 pub(crate) const RESOURCE_BUNDLE: oxjvm_vm::NativeClass = class(
@@ -693,10 +797,151 @@ pub(crate) const RESOURCE_BUNDLE: oxjvm_vm::NativeClass = class(
     &[
         field("parent", "Ljava/util/ResourceBundle;", ACC_PRIVATE, None),
         field("baseBundleName", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("locale", "Ljava/util/Locale;", ACC_PRIVATE, None),
     ],
     &RESOURCE_BUNDLE_METHODS,
     None,
 );
+
+/// Construct the `Locale` matching a bundle candidate's suffix parts; the
+/// empty suffix is `Locale.ROOT`.
+fn locale_from_parts(
+    vm: &mut Vm<'_>,
+    language: &str,
+    country: &str,
+    variant: &str,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/Locale")?;
+    vm.ensure_initialized(class)?;
+    if language.is_empty() && country.is_empty() && variant.is_empty() {
+        if let Some(root) = vm.read_static_ref_if_set(class, "ROOT", "Ljava/util/Locale;") {
+            return Ok(root);
+        }
+    }
+    let language_ref = vm.make_string(language)?;
+    let country_ref = vm.make_string(country)?;
+    let variant_ref = vm.make_string(variant)?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, ctor) = vm
+        .find_method(
+            class,
+            "<init>",
+            "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
+        )
+        .ok_or_else(|| VmError::internal("Locale(String,String,String) missing"))?;
+    vm.invoke_method(
+        declaring,
+        ctor,
+        vec![
+            Value::Ref(instance),
+            Value::Ref(language_ref),
+            Value::Ref(country_ref),
+            Value::Ref(variant_ref),
+        ],
+    )?;
+    Ok(instance)
+}
+
+/// Drain an `Enumeration` into a vector of its elements.
+fn enumeration_elements(
+    vm: &mut Vm<'_>,
+    enumeration: ObjectRef,
+) -> Result<Vec<ObjectRef>, VmError> {
+    let mut elements = Vec::new();
+    if enumeration.is_null() {
+        return Ok(elements);
+    }
+    loop {
+        let (has_class, has_method) =
+            vm.resolve_virtual_method(enumeration, "hasMoreElements", "()Z")?;
+        let more = vm
+            .invoke_method(has_class, has_method, vec![Value::Ref(enumeration)])?
+            .as_int();
+        if more == 0 {
+            break;
+        }
+        let (next_class, next_method) =
+            vm.resolve_virtual_method(enumeration, "nextElement", "()Ljava/lang/Object;")?;
+        let element = vm
+            .invoke_method(next_class, next_method, vec![Value::Ref(enumeration)])?
+            .as_ref();
+        elements.push(element);
+    }
+    Ok(elements)
+}
+
+/// Append the keys enumerated by a bundle's parent chain, as `getKeys` does.
+fn append_parent_keys(
+    vm: &mut Vm<'_>,
+    bundle: ObjectRef,
+    keys: &mut Vec<ObjectRef>,
+) -> Result<(), VmError> {
+    let parent = record_get_ref(vm, bundle, "parent", "Ljava/util/ResourceBundle;");
+    if parent.is_null() {
+        return Ok(());
+    }
+    let (class, method) =
+        vm.resolve_virtual_method(parent, "getKeys", "()Ljava/util/Enumeration;")?;
+    let enumeration = vm
+        .invoke_method(class, method, vec![Value::Ref(parent)])?
+        .as_ref();
+    keys.extend(enumeration_elements(vm, enumeration)?);
+    Ok(())
+}
+
+/// Instantiate a single bundle candidate: a class on the classpath, or a
+/// `.properties` resource backing a PropertyResourceBundle. Returns `None`
+/// when neither exists. The matched locale and base name are recorded.
+fn load_bundle_candidate(
+    vm: &mut Vm<'_>,
+    internal: &str,
+    base: &str,
+    matched_locale: ObjectRef,
+) -> Result<Option<ObjectRef>, VmError> {
+    if let Some(class) = vm.resolve_class_lenient(internal) {
+        let instance = vm.new_instance(class)?;
+        if let Some((declaring, ctor)) = vm.find_method(class, "<init>", "()V") {
+            vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
+        }
+        // getBundle records the base name; a directly instantiated bundle
+        // (e.g. `new ListBundle()`) keeps a null base name, as in the JDK.
+        let base_ref = vm.make_string(base)?;
+        let (declaring, field) = vm.find_field(class, "baseBundleName", "Ljava/lang/String;")?;
+        vm.set_instance_ref(instance, declaring, field, base_ref);
+        record_set_ref(vm, instance, "locale", "Ljava/util/Locale;", matched_locale);
+        return Ok(Some(instance));
+    }
+    // A .properties resource on the classpath backs a PropertyResourceBundle.
+    let resource = format!("{internal}.properties");
+    let stream = crate::lang::resource_as_stream(vm, &resource)?;
+    if !stream.as_ref().is_null() {
+        let props_class = vm.resolve_class("java/util/Properties")?;
+        let props = vm.new_instance(props_class)?;
+        if let Some((declaring, ctor)) = vm.find_method(props_class, "<init>", "()V") {
+            vm.invoke_method(declaring, ctor, vec![Value::Ref(props)])?;
+        }
+        let (load_class, load_method) =
+            vm.resolve_virtual_method(props, "load", "(Ljava/io/InputStream;)V")?;
+        vm.invoke_method(load_class, load_method, vec![Value::Ref(props), stream])?;
+        let prb_class = vm.resolve_class("java/util/PropertyResourceBundle")?;
+        let instance = vm.new_instance(prb_class)?;
+        let (declaring, ctor) = vm
+            .find_method(prb_class, "<init>", "(Ljava/util/Properties;)V")
+            .ok_or_else(|| VmError::internal("PropertyResourceBundle(Properties) missing"))?;
+        vm.invoke_method(
+            declaring,
+            ctor,
+            vec![Value::Ref(instance), Value::Ref(props)],
+        )?;
+        let base_ref = vm.make_string(base)?;
+        let (declaring, field) =
+            vm.find_field(prb_class, "baseBundleName", "Ljava/lang/String;")?;
+        vm.set_instance_ref(instance, declaring, field, base_ref);
+        record_set_ref(vm, instance, "locale", "Ljava/util/Locale;", matched_locale);
+        return Ok(Some(instance));
+    }
+    Ok(None)
+}
 
 fn resource_bundle_get(
     vm: &mut Vm<'_>,
@@ -704,7 +949,9 @@ fn resource_bundle_get(
     locale: ObjectRef,
 ) -> Result<Value, VmError> {
     let base = vm.string_or_empty(base_object);
-    let mut candidates = Vec::new();
+    // Each candidate carries the locale suffix it represents, so the matched
+    // bundle can record its own locale (the base candidate is Locale.ROOT).
+    let mut candidates: Vec<(String, String, String, String)> = Vec::new();
     if !locale.is_null() {
         let language = vm
             .read_string_field(locale, vm.class_of(locale), "language")
@@ -716,59 +963,52 @@ fn resource_bundle_get(
             .read_string_field(locale, vm.class_of(locale), "variant")
             .unwrap_or_default();
         if !variant.is_empty() {
-            candidates.push(format!("{base}_{language}_{country}_{variant}"));
+            candidates.push((
+                format!("{base}_{language}_{country}_{variant}"),
+                language.clone(),
+                country.clone(),
+                variant.clone(),
+            ));
         }
         if !country.is_empty() {
-            candidates.push(format!("{base}_{language}_{country}"));
+            candidates.push((
+                format!("{base}_{language}_{country}"),
+                language.clone(),
+                country.clone(),
+                String::new(),
+            ));
         }
         if !language.is_empty() {
-            candidates.push(format!("{base}_{language}"));
+            candidates.push((
+                format!("{base}_{language}"),
+                language.clone(),
+                String::new(),
+                String::new(),
+            ));
         }
     }
-    candidates.push(base.clone());
-    for candidate in candidates {
+    candidates.push((base.clone(), String::new(), String::new(), String::new()));
+    // Load every candidate that exists, in fallback order, then link them into
+    // a parent chain so keySet/getKeys aggregate the base bundle's keys.
+    let mut loaded: Vec<ObjectRef> = Vec::new();
+    for (candidate, language, country, variant) in candidates {
         let internal = candidate.replace('.', "/");
-        if let Some(class) = vm.resolve_class_lenient(&internal) {
-            let instance = vm.new_instance(class)?;
-            if let Some((declaring, ctor)) = vm.find_method(class, "<init>", "()V") {
-                vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
-            }
-            // getBundle records the base name; a directly instantiated bundle
-            // (e.g. `new ListBundle()`) keeps a null base name, as in the JDK.
-            let base_ref = vm.make_string(&base)?;
-            let (declaring, field) =
-                vm.find_field(class, "baseBundleName", "Ljava/lang/String;")?;
-            vm.set_instance_ref(instance, declaring, field, base_ref);
-            return object(instance);
+        let matched_locale = locale_from_parts(vm, &language, &country, &variant)?;
+        if let Some(instance) = load_bundle_candidate(vm, &internal, &base, matched_locale)? {
+            loaded.push(instance);
         }
-        // A .properties resource on the classpath backs a PropertyResourceBundle.
-        let resource = format!("{internal}.properties");
-        let stream = crate::lang::resource_as_stream(vm, &resource)?;
-        if !stream.as_ref().is_null() {
-            let props_class = vm.resolve_class("java/util/Properties")?;
-            let props = vm.new_instance(props_class)?;
-            if let Some((declaring, ctor)) = vm.find_method(props_class, "<init>", "()V") {
-                vm.invoke_method(declaring, ctor, vec![Value::Ref(props)])?;
-            }
-            let (load_class, load_method) =
-                vm.resolve_virtual_method(props, "load", "(Ljava/io/InputStream;)V")?;
-            vm.invoke_method(load_class, load_method, vec![Value::Ref(props), stream])?;
-            let prb_class = vm.resolve_class("java/util/PropertyResourceBundle")?;
-            let instance = vm.new_instance(prb_class)?;
-            let (declaring, ctor) = vm
-                .find_method(prb_class, "<init>", "(Ljava/util/Properties;)V")
-                .ok_or_else(|| VmError::internal("PropertyResourceBundle(Properties) missing"))?;
-            vm.invoke_method(
-                declaring,
-                ctor,
-                vec![Value::Ref(instance), Value::Ref(props)],
-            )?;
-            let base_ref = vm.make_string(&base)?;
-            let (declaring, field) =
-                vm.find_field(prb_class, "baseBundleName", "Ljava/lang/String;")?;
-            vm.set_instance_ref(instance, declaring, field, base_ref);
-            return object(instance);
+    }
+    if !loaded.is_empty() {
+        for index in 0..loaded.len() - 1 {
+            record_set_ref(
+                vm,
+                loaded[index],
+                "parent",
+                "Ljava/util/ResourceBundle;",
+                loaded[index + 1],
+            );
         }
+        return object(loaded[0]);
     }
     let locale_str = if locale.is_null() {
         String::new()
@@ -816,7 +1056,7 @@ fn resource_bundle_object(
 // ListResourceBundle
 // -------------------------------------------------------------------------------------------
 
-const LIST_RESOURCE_BUNDLE_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+const LIST_RESOURCE_BUNDLE_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
     method(
         "getContents",
         "()[[Ljava/lang/Object;",
@@ -826,7 +1066,7 @@ const LIST_RESOURCE_BUNDLE_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
     method(
         "handleGetObject",
         "(Ljava/lang/String;)Ljava/lang/Object;",
-        ACC_PROTECTED,
+        ACC_PUBLIC,
         |vm, _, args| {
             let contents = resource_bundle_contents(vm, receiver(args))?;
             let key = vm.string_or_empty(ref_arg(args, 1));
@@ -844,18 +1084,42 @@ const LIST_RESOURCE_BUNDLE_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
             object(ObjectRef::NULL)
         },
     ),
-    method("keySet", "()Ljava/util/Set;", ACC_PUBLIC, |vm, _, args| {
-        let contents = resource_bundle_contents(vm, receiver(args))?;
-        let rows = vm.array_length(contents)?;
-        let mut keys = Vec::new();
-        for index in 0..rows {
-            let row = vm.array_get(contents, index as i32)?.as_ref();
-            if !row.is_null() {
-                keys.push(vm.array_get(row, 0)?.as_ref());
+    method(
+        "handleKeySet",
+        "()Ljava/util/Set;",
+        ACC_PROTECTED,
+        |vm, _, args| {
+            let contents = resource_bundle_contents(vm, receiver(args))?;
+            let rows = vm.array_length(contents)?;
+            let mut keys = Vec::new();
+            for index in 0..rows {
+                let row = vm.array_get(contents, index as i32)?.as_ref();
+                if !row.is_null() {
+                    keys.push(vm.array_get(row, 0)?.as_ref());
+                }
             }
-        }
-        object(crate::util::hash_set_from(vm, &keys)?)
-    }),
+            object(crate::util::hash_set_from(vm, &keys)?)
+        },
+    ),
+    method(
+        "getKeys",
+        "()Ljava/util/Enumeration;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let contents = resource_bundle_contents(vm, this)?;
+            let rows = vm.array_length(contents)?;
+            let mut keys = Vec::new();
+            for index in 0..rows {
+                let row = vm.array_get(contents, index as i32)?.as_ref();
+                if !row.is_null() {
+                    keys.push(vm.array_get(row, 0)?.as_ref());
+                }
+            }
+            append_parent_keys(vm, this, &mut keys)?;
+            object(crate::util::new_enumeration(vm, &keys)?)
+        },
+    ),
 ];
 
 fn resource_bundle_contents(vm: &mut Vm<'_>, bundle: ObjectRef) -> Result<ObjectRef, VmError> {
@@ -877,7 +1141,7 @@ pub(crate) const LIST_RESOURCE_BUNDLE: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PROPERTY_RESOURCE_BUNDLE_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+const PROPERTY_RESOURCE_BUNDLE_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     method(
         "<init>",
         "(Ljava/util/Properties;)V",
@@ -896,7 +1160,7 @@ const PROPERTY_RESOURCE_BUNDLE_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
     method(
         "handleGetObject",
         "(Ljava/lang/String;)Ljava/lang/Object;",
-        ACC_PROTECTED,
+        ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
             let props = record_get_ref(vm, this, "properties", "Ljava/util/Properties;");
@@ -907,6 +1171,60 @@ const PROPERTY_RESOURCE_BUNDLE_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
                 "(Ljava/lang/String;)Ljava/lang/String;",
             )?;
             vm.invoke_method(class, method, vec![Value::Ref(props), Value::Ref(key)])
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/InputStream;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let stream = ref_arg(args, 1);
+            if stream.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let props_class = vm.resolve_class("java/util/Properties")?;
+            let props = vm.new_instance(props_class)?;
+            if let Some((declaring, ctor)) = vm.find_method(props_class, "<init>", "()V") {
+                vm.invoke_method(declaring, ctor, vec![Value::Ref(props)])?;
+            }
+            let (load_class, load_method) =
+                vm.resolve_virtual_method(props, "load", "(Ljava/io/InputStream;)V")?;
+            vm.invoke_method(
+                load_class,
+                load_method,
+                vec![Value::Ref(props), Value::Ref(stream)],
+            )?;
+            record_set_ref(vm, this, "properties", "Ljava/util/Properties;", props);
+            void()
+        },
+    ),
+    method(
+        "handleKeySet",
+        "()Ljava/util/Set;",
+        ACC_PROTECTED,
+        |vm, _, args| {
+            let props = record_get_ref(vm, receiver(args), "properties", "Ljava/util/Properties;");
+            let (class, method) =
+                vm.resolve_virtual_method(props, "stringPropertyNames", "()Ljava/util/Set;")?;
+            vm.invoke_method(class, method, vec![Value::Ref(props)])
+        },
+    ),
+    method(
+        "getKeys",
+        "()Ljava/util/Enumeration;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let props = record_get_ref(vm, this, "properties", "Ljava/util/Properties;");
+            let (class, method) =
+                vm.resolve_virtual_method(props, "stringPropertyNames", "()Ljava/util/Set;")?;
+            let names = vm
+                .invoke_method(class, method, vec![Value::Ref(props)])?
+                .as_ref();
+            let mut keys = crate::util::collection_elements(vm, names)?;
+            append_parent_keys(vm, this, &mut keys)?;
+            object(crate::util::new_enumeration(vm, &keys)?)
         },
     ),
 ];
