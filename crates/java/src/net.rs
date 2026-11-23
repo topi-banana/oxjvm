@@ -5664,6 +5664,8 @@ fn cookie_new(vm: &mut Vm<'_>, name: &str, value: Option<&str>) -> Result<Object
     cookie_set_string_opt(vm, cookie, "value", value)?;
     crate::lang::write_long_field(vm, cookie, "maxAge", -1);
     crate::lang::write_int_field(vm, cookie, "version", 1);
+    let now = vm.host_time_millis();
+    crate::lang::write_long_field(vm, cookie, "whenCreated", now);
     Ok(cookie)
 }
 
@@ -5722,6 +5724,91 @@ fn cookie_assign_attribute(
     Ok(())
 }
 
+/// English month abbreviations used by the cookie date formats. The JDK parses
+/// them with `Locale.US` regardless of the default locale (JDK-6791927).
+fn cookie_month_index(s: &str) -> Option<i64> {
+    const MONTHS: [&str; 12] = [
+        "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+    ];
+    let lower = s.to_lowercase();
+    MONTHS
+        .iter()
+        .position(|m| lower.starts_with(m))
+        .map(|i| i as i64 + 1)
+}
+
+/// Days since 1970-01-01 for a proleptic Gregorian date (month is 1-based).
+fn cookie_days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+/// Parse the cookie `Expires` date formats (Netscape / RFC 6265) using fixed
+/// English month names, mirroring the JDK's `Locale.US` `SimpleDateFormat`
+/// attempts. Returns the delta in seconds from `when_created`, or 0 when no
+/// format matches.
+fn cookie_expiry_delta(date_string: &str, when_created: i64) -> i64 {
+    let words: Vec<&str> = date_string.split_whitespace().collect();
+    let Some(ti) = words.iter().position(|w| w.matches(':').count() == 2) else {
+        return 0;
+    };
+    let time_parts: Vec<&str> = words[ti].split(':').collect();
+    if time_parts.len() != 3 {
+        return 0;
+    }
+    let (Ok(hour), Ok(min), Ok(sec)) = (
+        time_parts[0].parse::<i64>(),
+        time_parts[1].parse::<i64>(),
+        time_parts[2].parse::<i64>(),
+    ) else {
+        return 0;
+    };
+    // Date part: a weekday token followed by day/month/year in some order.
+    let normalized = words[..ti].join(" ").replace([',', '-'], " ");
+    let tokens: Vec<&str> = normalized.split_whitespace().collect();
+    if tokens.len() < 4 {
+        return 0;
+    }
+    let t = &tokens[1..];
+    let (day, month, year) = if let Some(m) = cookie_month_index(t[0]) {
+        (t[1].parse::<i64>().ok(), Some(m), t[2].parse::<i64>().ok())
+    } else {
+        (
+            t[0].parse::<i64>().ok(),
+            cookie_month_index(t[1]),
+            t[2].parse::<i64>().ok(),
+        )
+    };
+    let (Some(day), Some(month), Some(mut year)) = (day, month, year) else {
+        return 0;
+    };
+    if year < 100 {
+        // RFC 6265 two-digit year rule.
+        year = if year < 70 { year + 2000 } else { year + 1900 };
+    }
+    // Timezone: GMT optionally followed by an RFC 822 offset such as -0100.
+    let tz = words[ti + 1..].join("");
+    let mut offset_seconds = 0i64;
+    if let Some(pos) = tz.find(['+', '-']) {
+        let sign = if tz.as_bytes()[pos] == b'-' { -1 } else { 1 };
+        let digits = &tz[pos + 1..];
+        if digits.len() >= 4 {
+            if let (Ok(h), Ok(m)) = (digits[..2].parse::<i64>(), digits[2..4].parse::<i64>()) {
+                offset_seconds = sign * (h * 3600 + m * 60);
+            }
+        }
+    }
+    let epoch_millis = cookie_days_from_civil(year, month, day) * 86_400_000
+        + (hour * 3600 + min * 60 + sec) * 1000
+        - offset_seconds * 1000;
+    (epoch_millis - when_created) / 1000
+}
+
 fn cookie_assign_max_age(
     vm: &mut Vm<'_>,
     cookie: ObjectRef,
@@ -5741,10 +5828,11 @@ fn cookie_assign_max_age(
             return Ok(());
         }
     }
-    if expires.is_some() {
-        // Expires date parsing needs the CLDR calendar; the tests assert only
-        // Max-Age, so an unparseable/elapsed date is approximated as 0.
-        crate::lang::write_long_field(vm, cookie, "maxAge", 0);
+    if let Some(ex) = expires {
+        let ex = cookie_strip_quote(ex);
+        let when_created = crate::lang::read_long_field(vm, cookie, "whenCreated");
+        let delta = cookie_expiry_delta(&ex, when_created);
+        crate::lang::write_long_field(vm, cookie, "maxAge", if delta > 0 { delta } else { 0 });
     }
     Ok(())
 }
@@ -5895,6 +5983,8 @@ const HTTP_COOKIE_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
             cookie_set_string_opt(vm, cookie, "value", value.as_deref())?;
             crate::lang::write_long_field(vm, cookie, "maxAge", -1);
             crate::lang::write_int_field(vm, cookie, "version", 1);
+            let now = vm.host_time_millis();
+            crate::lang::write_long_field(vm, cookie, "whenCreated", now);
             void()
         },
     ),
