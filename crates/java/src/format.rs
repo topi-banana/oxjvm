@@ -453,38 +453,50 @@ impl NumberPattern {
     fn format_scientific(&self, magnitude: f64, negative: bool, mode: Rounding) -> Option<String> {
         let max_int = self.max_integer.max(1);
         let significant = max_int + self.max_fraction;
-        let (decimal_at, rounded) = if magnitude == 0.0 {
-            (0i32, 0u128)
-        } else if significant <= 38 {
-            let mut decimal_at = decimal_exponent(magnitude) + 1;
-            let scale = significant as i32 - decimal_at;
-            let mut rounded = match round_exact_scale(magnitude, scale, mode) {
-                ExactRound::Digits(value) => value,
-                ExactRound::Unnecessary => return None,
-                ExactRound::Unsupported => {
-                    let mantissa = magnitude / signed_power_of_ten(decimal_at - 1);
-                    let factor = power_of_ten(significant - 1);
-                    let value = round_scaled(mantissa * factor, mode)?;
-                    crate::math::floor(value) as u128
-                }
-            };
-            if rounded >= power_of_ten_u128(significant) {
-                rounded /= 10;
-                decimal_at += 1;
-            }
-            (decimal_at, rounded)
+        let (decimal_at, rounded, width) = if magnitude == 0.0 {
+            (0i32, 0u128, significant.min(38))
         } else {
-            let decimal_at = decimal_exponent(magnitude) + 1;
-            let mantissa = magnitude / signed_power_of_ten(decimal_at - 1);
-            let factor = power_of_ten(37);
-            let value = round_scaled(mantissa * factor, mode)?;
-            let mut rounded = crate::math::floor(value) as u128;
-            let mut decimal_at = decimal_at;
-            if rounded >= power_of_ten_u128(38) {
-                rounded /= 10;
-                decimal_at += 1;
+            // The JDK formats from the shortest round-trip digits; when they all fit
+            // within the requested significant digits no rounding touches them.
+            let (shortest, short_at) = shortest_digits(magnitude);
+            if shortest.len() <= significant {
+                // Pad with trailing zeros to the requested width so the fraction can
+                // show its minimum digits; the value itself needs no rounding.
+                let width = significant.min(38);
+                let rounded = shortest.parse::<u128>().unwrap_or(0)
+                    * power_of_ten_u128(width - shortest.len());
+                (short_at, rounded, width)
+            } else if significant <= 38 {
+                let mut decimal_at = decimal_exponent(magnitude) + 1;
+                let scale = significant as i32 - decimal_at;
+                let mut rounded = match round_exact_scale(magnitude, scale, mode) {
+                    ExactRound::Digits(value) => value,
+                    ExactRound::Unnecessary => return None,
+                    ExactRound::Unsupported => {
+                        let mantissa = magnitude / signed_power_of_ten(decimal_at - 1);
+                        let factor = power_of_ten(significant - 1);
+                        let value = round_scaled(mantissa * factor, mode)?;
+                        crate::math::floor(value) as u128
+                    }
+                };
+                if rounded >= power_of_ten_u128(significant) {
+                    rounded /= 10;
+                    decimal_at += 1;
+                }
+                (decimal_at, rounded, significant)
+            } else {
+                let decimal_at = decimal_exponent(magnitude) + 1;
+                let mantissa = magnitude / signed_power_of_ten(decimal_at - 1);
+                let factor = power_of_ten(37);
+                let value = round_scaled(mantissa * factor, mode)?;
+                let mut rounded = crate::math::floor(value) as u128;
+                let mut decimal_at = decimal_at;
+                if rounded >= power_of_ten_u128(38) {
+                    rounded /= 10;
+                    decimal_at += 1;
+                }
+                (decimal_at, rounded, 38)
             }
-            (decimal_at, rounded)
         };
         let repeat = max_int as i32;
         let min_int = self.min_integer as i32;
@@ -505,7 +517,6 @@ impl NumberPattern {
                 }
             }
         } else {
-            let width = if significant <= 38 { significant } else { 38 };
             let text = alloc::format!("{rounded:0width$}");
             let split = (integer_digits as usize).min(text.len());
             out.push_str(&text[..split]);
@@ -860,8 +871,58 @@ fn last_digit_odd(integer: &str, fraction: &str) -> bool {
 
 /// Format the exact decimal digits of a `BigInteger` or `BigDecimal` under a format's
 /// settings, without going through a double (which would lose digits).
+/// Multiply exact decimal text by the format's multiplier, keeping its scale: the
+/// BigDecimal/BigInteger format path applies the multiplier to the digits themselves.
+fn multiply_decimal_text(text: &str, multiplier: i32) -> String {
+    if multiplier == 1 {
+        return String::from(text);
+    }
+    if multiplier == 0 || text.chars().all(|ch| !ch.is_ascii_digit() || ch == '0') {
+        return String::from("0");
+    }
+    let negative = text.starts_with('-') ^ (multiplier < 0);
+    let scale = text
+        .split_once('.')
+        .map_or(0, |(_, fraction)| fraction.chars().count());
+    let digits: Vec<u32> = text.chars().filter_map(|ch| ch.to_digit(10)).collect();
+    let factor = u64::from(multiplier.unsigned_abs());
+    let mut carry = 0u64;
+    let mut out = Vec::with_capacity(digits.len() + 10);
+    for digit in digits.iter().rev() {
+        let product = u64::from(*digit) * factor + carry;
+        out.push(u8::try_from(product % 10).unwrap_or(0) + b'0');
+        carry = product / 10;
+    }
+    while carry > 0 {
+        out.push(u8::try_from(carry % 10).unwrap_or(0) + b'0');
+        carry /= 10;
+    }
+    let mut result: String = out.iter().rev().map(|byte| char::from(*byte)).collect();
+    let trimmed = result.trim_start_matches('0');
+    result = if trimmed.is_empty() {
+        String::from("0")
+    } else {
+        trimmed.to_string()
+    };
+    if scale > 0 {
+        while result.len() <= scale {
+            result.insert(0, '0');
+        }
+        result.insert(result.len() - scale, '.');
+    }
+    if negative && result != "0" {
+        result.insert(0, '-');
+    }
+    result
+}
+
 fn format_exact_decimal(vm: &mut Vm<'_>, format: ObjectRef, text: &str) -> Result<String, VmError> {
     let (pattern, mode) = number_format_state(vm, format);
+    let multiplied = multiply_decimal_text(
+        &crate::math::plain_text(text),
+        read_number_multiplier(vm, format),
+    );
+    let text = multiplied.as_str();
     let negative = text.starts_with('-');
     let digits = text.trim_start_matches(['-', '+']);
     let (integer, fraction) = match digits.split_once('.') {
@@ -2018,7 +2079,7 @@ const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let text = vm.string_or_empty(ref_arg(args, 1));
-            number_parse_boxed(vm, &text)
+            number_parse_stateful(vm, receiver(args), &text)
         },
     ),
     method(
@@ -2032,7 +2093,7 @@ const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
             let slice: String = text.chars().skip(start).collect();
             match parse_number_text(&slice) {
                 Some(_) => {
-                    let value = number_parse_boxed(vm, &slice)?;
+                    let value = number_parse_stateful(vm, receiver(args), &slice)?;
                     write_int_field(vm, position, "index", text.chars().count() as i32);
                     Ok(value)
                 }
@@ -2049,7 +2110,7 @@ const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let text = vm.string_or_empty(ref_arg(args, 1));
-            number_parse_boxed(vm, &text)
+            number_parse_stateful(vm, receiver(args), &text)
         },
     ),
     method(
@@ -2063,7 +2124,7 @@ const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
             let slice: String = text.chars().skip(start).collect();
             match parse_number_text(&slice) {
                 Some(_) => {
-                    let value = number_parse_boxed(vm, &slice)?;
+                    let value = number_parse_stateful(vm, receiver(args), &slice)?;
                     write_int_field(vm, position, "index", text.chars().count() as i32);
                     Ok(value)
                 }
@@ -2254,9 +2315,12 @@ const NUMBER_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 47] = [
     method("isStrict", "()Z", ACC_PUBLIC, |_, _, _| {
         crate::boolean(false)
     }),
-    method("setParseBigDecimal", "(Z)V", ACC_PUBLIC, |_, _, _| void()),
-    method("isParseBigDecimal", "()Z", ACC_PUBLIC, |_, _, _| {
-        crate::boolean(false)
+    method("setParseBigDecimal", "(Z)V", ACC_PUBLIC, |vm, _, args| {
+        write_number_flag(vm, receiver(args), "parseBigDecimal", args[1].as_int());
+        void()
+    }),
+    method("isParseBigDecimal", "()Z", ACC_PUBLIC, |vm, _, args| {
+        crate::boolean(read_number_flag(vm, receiver(args), "parseBigDecimal", 0) != 0)
     }),
     method(
         "format",
@@ -2317,17 +2381,23 @@ fn read_number_digits(vm: &Vm<'_>, this: ObjectRef, name: &str, default: i32) ->
 
 /// Store a boolean setting as 0/1, with `i32::MIN` meaning "unset".
 fn write_number_flag(vm: &mut Vm<'_>, this: ObjectRef, name: &str, value: i32) {
-    if let Some((declaring, field)) = vm.find_field_opt(vm.class_of(this), name, "I") {
-        vm.set_instance_int(this, declaring, field, i32::from(value != 0));
+    for descriptor in ["I", "Z"] {
+        if let Some((declaring, field)) = vm.find_field_opt(vm.class_of(this), name, descriptor) {
+            vm.set_instance_int(this, declaring, field, i32::from(value != 0));
+            return;
+        }
     }
 }
 
 /// Read a boolean setting, falling back to the JDK default when unset.
 fn read_number_flag(vm: &Vm<'_>, this: ObjectRef, name: &str, default: i32) -> i32 {
-    match vm.read_instance_int_named(this, vm.class_of(this), name, "I") {
-        Some(value) if value == 0 || value == 1 => value,
-        _ => default,
+    for descriptor in ["I", "Z"] {
+        match vm.read_instance_int_named(this, vm.class_of(this), name, descriptor) {
+            Some(value) if value == 0 || value == 1 => return value,
+            _ => {}
+        }
     }
+    default
 }
 
 /// Store an explicit multiplier; `i32::MIN` means "use the pattern default".
@@ -2553,6 +2623,7 @@ pub(crate) const DECIMAL_FORMAT: oxjvm_vm::NativeClass = class(
         field("negativePrefix", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("negativeSuffix", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("multiplier", "I", ACC_PRIVATE, None),
+        field("parseBigDecimal", "Z", ACC_PRIVATE, None),
     ],
     &DECIMAL_FORMAT_METHODS,
     None,
@@ -2646,9 +2717,12 @@ const DECIMAL_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
     method("isStrict", "()Z", ACC_PUBLIC, |_, _, _| {
         crate::boolean(false)
     }),
-    method("setParseBigDecimal", "(Z)V", ACC_PUBLIC, |_, _, _| void()),
-    method("isParseBigDecimal", "()Z", ACC_PUBLIC, |_, _, _| {
-        crate::boolean(false)
+    method("setParseBigDecimal", "(Z)V", ACC_PUBLIC, |vm, _, args| {
+        write_number_flag(vm, receiver(args), "parseBigDecimal", args[1].as_int());
+        void()
+    }),
+    method("isParseBigDecimal", "()Z", ACC_PUBLIC, |vm, _, args| {
+        crate::boolean(read_number_flag(vm, receiver(args), "parseBigDecimal", 0) != 0)
     }),
     method(
         "setDecimalSeparatorAlwaysShown",
@@ -2800,7 +2874,7 @@ fn set_decimal_pattern(
 fn decimal_parse(vm: &mut Vm<'_>, format: ObjectRef, text: &str) -> Result<Value, VmError> {
     let (pattern, _) = number_format_state(vm, format);
     let (Some(neg_prefix), Some(neg_suffix)) = (&pattern.neg_prefix, &pattern.neg_suffix) else {
-        return number_parse_boxed(vm, text);
+        return number_parse_stateful(vm, format, text);
     };
     let number_chars = |text: &str| {
         text.chars()
@@ -2812,11 +2886,11 @@ fn decimal_parse(vm: &mut Vm<'_>, format: ObjectRef, text: &str) -> Result<Value
     {
         let middle = &text[neg_prefix.len()..text.len() - neg_suffix.len()];
         if !middle.is_empty() && number_chars(middle) {
-            return number_parse_boxed(vm, &alloc::format!("-{middle}"));
+            return number_parse_stateful(vm, format, &alloc::format!("-{middle}"));
         }
     }
     if text.starts_with('-') {
-        return number_parse_boxed(vm, text);
+        return number_parse_stateful(vm, format, text);
     }
     if text.starts_with(pattern.prefix.as_str())
         && text.ends_with(pattern.suffix.as_str())
@@ -2824,7 +2898,7 @@ fn decimal_parse(vm: &mut Vm<'_>, format: ObjectRef, text: &str) -> Result<Value
     {
         let middle = &text[pattern.prefix.len()..text.len() - pattern.suffix.len()];
         if !middle.is_empty() && number_chars(middle) {
-            return number_parse_boxed(vm, middle);
+            return number_parse_stateful(vm, format, middle);
         }
     }
     Err(vm.throw_new("java/text/ParseException", Some("Unparsable number")))
@@ -5011,7 +5085,7 @@ fn parse_argument(
 fn parse_number_text(text: &str) -> Option<f64> {
     let mut digits = String::new();
     for ch in text.chars() {
-        if ch.is_ascii_digit() || ch == '.' || ch == '-' || ch == '+' {
+        if ch.is_ascii_digit() || matches!(ch, '.' | '-' | '+' | 'e' | 'E') {
             digits.push(ch);
         }
     }
@@ -5023,32 +5097,141 @@ fn parse_number_text(text: &str) -> Option<f64> {
 
 /// `NumberFormat.parse`: box the parsed value as a `Long` when it is integral (no fractional
 /// part written) and fits, otherwise as a `Double`, matching the JDK's return-type contract.
-fn number_parse_boxed(vm: &mut Vm<'_>, text: &str) -> Result<Value, VmError> {
+/// Parse number text under a format's multiplier and parse settings, the way
+/// `DecimalFormat.parse` does: divide by the multiplier, truncate under
+/// `parseIntegerOnly`, and return a `BigDecimal` when `parseBigDecimal` is set.
+fn number_parse_stateful(vm: &mut Vm<'_>, format: ObjectRef, text: &str) -> Result<Value, VmError> {
+    let (pattern, _) = number_format_state(vm, format);
+    let multiplier = pattern.multiplier.unwrap_or(if pattern.percent {
+        100
+    } else if pattern.per_mille {
+        1000
+    } else {
+        1
+    });
+    let integer_only = read_number_flag(vm, format, "parseIntegerOnly", 0) != 0;
+    let big_decimal = read_number_flag(vm, format, "parseBigDecimal", 0) != 0;
     let mut digits = String::new();
     for ch in text.chars() {
-        if ch.is_ascii_digit() || ch == '.' || ch == '-' || ch == '+' {
+        if ch.is_ascii_digit() || matches!(ch, '.' | '-' | '+' | 'e' | 'E') {
             digits.push(ch);
         }
     }
-    let value = parse_number_text(text)
-        .ok_or_else(|| vm.throw_new("java/text/ParseException", Some("Unparsable number")))?;
+    let Some(value) = parse_number_text(text) else {
+        return Err(vm.throw_new("java/text/ParseException", Some("Unparsable number")));
+    };
+    if multiplier == 0 {
+        let zero = digits.chars().all(|ch| !ch.is_ascii_digit() || ch == '0');
+        let value = if zero {
+            f64::NAN
+        } else if digits.starts_with('-') {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        };
+        return crate::boxed::boxed_double(vm, value);
+    }
+    if big_decimal {
+        // parseIntegerOnly drops the fraction before the digits become a BigDecimal.
+        let digits = if integer_only {
+            digits.split('.').next().unwrap_or("").to_string()
+        } else {
+            digits
+        };
+        let dividend = crate::math::create_big_number(vm, "java/math/BigDecimal", &digits)?;
+        if multiplier == 1 {
+            return Ok(dividend);
+        }
+        let divisor = crate::math::create_big_number(
+            vm,
+            "java/math/BigDecimal",
+            &alloc::format!("{multiplier}"),
+        )?;
+        let args = [dividend, divisor];
+        return match crate::math::big_decimal_divide_exact(vm, &args) {
+            Ok(result) => Ok(result),
+            Err(VmError::Thrown(_)) => {
+                // A non-terminating expansion divides at the dividend's scale under the
+                // format's rounding mode, the JDK's fallback.
+                let class = vm.class_of(format);
+                let mode = vm
+                    .read_ref_field(format, class, "roundingMode", "Ljava/math/RoundingMode;")
+                    .filter(|mode| !mode.is_null());
+                let mode = match mode {
+                    Some(mode) => mode,
+                    None => {
+                        let class = vm.resolve_class("java/math/RoundingMode")?;
+                        vm.ensure_initialized(class)?;
+                        vm.read_static_ref_if_set(class, "HALF_EVEN", "Ljava/math/RoundingMode;")
+                            .ok_or_else(|| {
+                                VmError::internal("RoundingMode constants not initialized")
+                            })?
+                    }
+                };
+                let scale = crate::math::decimal_scale(&digits);
+                crate::math::big_decimal_divide_scaled(
+                    vm,
+                    &[dividend, divisor, Value::Int(scale), object(mode)?],
+                )
+            }
+            Err(error) => Err(error),
+        };
+    }
     // The JDK returns a Long when the parsed value is a whole number that fits in a long,
     // even when a zero fraction such as ".00" is written; negative zero stays a Double.
     // The range test uses the exact integer text, since an f64 cannot tell Long.MIN_VALUE-1
-    // from Long.MIN_VALUE.
-    let (integer, fraction) = match digits.split_once('.') {
-        Some((integer, fraction)) => (integer, fraction),
-        None => (digits.as_str(), ""),
+    // from Long.MIN_VALUE. parseIntegerOnly stops at the decimal separator, dropping any
+    // exponent with it; scientific notation otherwise expands to plain digits first.
+    let digits = if integer_only {
+        digits.split('.').next().unwrap_or("").to_string()
+    } else {
+        digits
     };
+    let plain = crate::math::plain_text(&digits);
+    let (integer, fraction) = match plain.split_once('.') {
+        Some((integer, fraction)) => (integer, fraction),
+        None => (plain.as_str(), ""),
+    };
+    let mut got_double = true;
+    let mut long_result = 0i64;
+    let mut double_result = value;
     if fraction.bytes().all(|byte| byte == b'0') {
         if let Ok(exact) = integer.parse::<i128>() {
             let negative_zero = exact == 0 && integer.starts_with('-');
             if !negative_zero && (i64::MIN as i128..=i64::MAX as i128).contains(&exact) {
-                return crate::boxed::boxed_long(vm, exact as i64);
+                got_double = false;
+                long_result = exact as i64;
             }
         }
     }
-    crate::boxed::boxed_double(vm, value)
+    if multiplier != 1 {
+        // Divide without converting to double when the long divides evenly.
+        if got_double {
+            double_result /= f64::from(multiplier);
+        } else if long_result % i64::from(multiplier) == 0 {
+            long_result /= i64::from(multiplier);
+        } else {
+            double_result = (long_result as f64) / f64::from(multiplier);
+            got_double = true;
+        }
+        if got_double {
+            // After dividing, the result may fit into a long again; keep a double for
+            // negative zero and for values outside the long range.
+            let as_long = double_result as i64;
+            let negative_zero = double_result == 0.0 && double_result.is_sign_negative();
+            got_double = (double_result >= i64::MAX as f64
+                || double_result <= i64::MIN as f64
+                || double_result != as_long as f64
+                || negative_zero)
+                && !integer_only;
+            long_result = as_long;
+        }
+    }
+    if got_double {
+        crate::boxed::boxed_double(vm, double_result)
+    } else {
+        crate::boxed::boxed_long(vm, long_result)
+    }
 }
 
 /// The milliseconds a date text holds, read with the patterns the runtime writes.

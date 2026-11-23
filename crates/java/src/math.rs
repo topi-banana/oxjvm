@@ -3253,7 +3253,7 @@ fn expand_decimal(text: &str) -> Option<String> {
 
 /// Scale of a canonical BigDecimal string, including the `E` notation that
 /// `stripTrailingZeros` produces.
-fn decimal_scale(text: &str) -> i32 {
+pub(crate) fn decimal_scale(text: &str) -> i32 {
     let (mantissa, exponent) = match text.split_once(['e', 'E']) {
         Some((mantissa, exponent)) => (mantissa, exponent.parse::<i32>().unwrap_or(0)),
         None => (text, 0),
@@ -3297,7 +3297,7 @@ fn big_decimal_move_point(text: &str, shift: i32) -> String {
 /// otherwise ArithmeticException like the JDK. The result scale is the
 /// natural terminating scale reduced by trailing zeros down to the
 /// preferred scale (dividend scale minus divisor scale).
-fn big_decimal_divide_exact(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+pub(crate) fn big_decimal_divide_exact(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
     let a_text = big_text(vm, receiver(args));
     let b_text = big_text(vm, ref_arg(args, 1));
     let (neg_a, int_a, frac_a) = decimal_parts(&a_text);
@@ -3380,7 +3380,7 @@ fn gcd_u128(mut a: u128, mut b: u128) -> u128 {
     a
 }
 
-fn big_decimal_divide_scaled(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
+pub(crate) fn big_decimal_divide_scaled(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
     let a_text = big_text(vm, receiver(args));
     let b_text = big_text(vm, ref_arg(args, 1));
     let new_scale = int_arg(args, 2);
@@ -5189,7 +5189,7 @@ fn big_decimal_exact_integer(vm: &mut Vm<'_>, this: ObjectRef, msg: &str) -> Res
 
 /// Plain (non-scientific) decimal form of a value text, expanding the `E`
 /// notation that negative-scale BigDecimal values carry.
-fn plain_text(text: &str) -> String {
+pub(crate) fn plain_text(text: &str) -> String {
     if text.contains(['e', 'E']) {
         expand_decimal(text).unwrap_or_else(|| String::from(text))
     } else {
@@ -5209,6 +5209,35 @@ fn decimal_parts(text: &str) -> (bool, String, String) {
         None => (digits, ""),
     };
     (negative, int_part.to_string(), frac_part.to_string())
+}
+
+/// The unscaled value and scale a BigDecimal text denotes, the pair its equality and
+/// hash code are defined over.
+fn decimal_key(text: &str) -> (String, i32) {
+    let (mantissa, exponent) = match text.split_once(['e', 'E']) {
+        Some((mantissa, exponent)) => (mantissa, exponent.parse::<i32>().unwrap_or(0)),
+        None => (text, 0),
+    };
+    let (negative, digits) = if let Some(stripped) = mantissa.strip_prefix('-') {
+        (true, stripped)
+    } else {
+        (false, mantissa.strip_prefix('+').unwrap_or(mantissa))
+    };
+    let (int_part, frac_part) = match digits.split_once('.') {
+        Some((i, f)) => (i, f),
+        None => (digits, ""),
+    };
+    let digits = alloc::format!("{int_part}{frac_part}");
+    let trimmed = digits.trim_start_matches('0');
+    let mut unscaled = if trimmed.is_empty() {
+        String::from("0")
+    } else {
+        trimmed.to_string()
+    };
+    if negative && unscaled != "0" {
+        unscaled = alloc::format!("-{unscaled}");
+    }
+    (unscaled, frac_part.len() as i32 - exponent)
 }
 
 /// `BigDecimal.setScale`: rescale the decimal string, rounding dropped digits.
@@ -5408,11 +5437,16 @@ const BIG_DECIMAL_METHODS: [oxjvm_vm::NativeMethodDef; 62] = [
             if other.is_null() || vm.class_of(other) != vm.class_of(receiver(args)) {
                 return boolean(false);
             }
-            boolean(big_text(vm, other) == big_text(vm, receiver(args)))
+            // BigDecimal equality is numeric at a fixed scale: same unscaled value and
+            // same scale, regardless of how the text was written (`1E1` versus `10`).
+            let a = big_text(vm, receiver(args));
+            let b = big_text(vm, other);
+            boolean(decimal_key(&a) == decimal_key(&b))
         },
     ),
     method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
-        int(java_hash(&big_text(vm, receiver(args))))
+        let (unscaled, scale) = decimal_key(&big_text(vm, receiver(args)));
+        int(java_hash(&unscaled).wrapping_mul(31).wrapping_add(scale))
     }),
     method(
         "compareTo",
