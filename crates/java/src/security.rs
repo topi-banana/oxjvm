@@ -110,6 +110,52 @@ fn ref_field(vm: &Vm<'_>, this: ObjectRef, name: &str, descriptor: &str) -> Obje
         .unwrap_or(ObjectRef::NULL)
 }
 
+fn opt_string_field(vm: &Vm<'_>, this: ObjectRef, name: &str) -> Option<String> {
+    let reference = vm.read_ref_field(this, vm.class_of(this), name, "Ljava/lang/String;")?;
+    if reference.is_null() {
+        None
+    } else {
+        vm.string_value(reference)
+    }
+}
+
+fn list_set(
+    vm: &mut Vm<'_>,
+    list: ObjectRef,
+    index: usize,
+    value: ObjectRef,
+) -> Result<(), VmError> {
+    let (class, method) =
+        vm.resolve_virtual_method(list, "set", "(ILjava/lang/Object;)Ljava/lang/Object;")?;
+    vm.invoke_method(
+        class,
+        method,
+        vec![
+            Value::Ref(list),
+            Value::Int(index as i32),
+            Value::Ref(value),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Render a permission for an exception message the way string concatenation
+/// would: null becomes "null", anything else uses its virtual toString().
+fn permission_display(vm: &mut Vm<'_>, permission: ObjectRef) -> Result<String, VmError> {
+    if permission.is_null() {
+        return Ok(String::from("null"));
+    }
+    let (declaring, to_string) =
+        vm.resolve_virtual_method(permission, "toString", "()Ljava/lang/String;")?;
+    let value = vm.invoke_method(declaring, to_string, vec![Value::Ref(permission)])?;
+    Ok(match value {
+        Value::Ref(reference) if !reference.is_null() => {
+            vm.string_value(reference).unwrap_or_default()
+        }
+        _ => String::from("null"),
+    })
+}
+
 // -------------------------------------------------------------------------------------------
 // java.security.Security
 // -------------------------------------------------------------------------------------------
@@ -2431,13 +2477,15 @@ const PERMISSION_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         "(Ljava/lang/String;)V",
         ACC_PUBLIC,
         |vm, _, args| {
-            let name = ref_arg(args, 1);
-            if name.is_null() {
-                return Err(
-                    vm.throw_new("java/lang/NullPointerException", Some("name can't be null"))
-                );
-            }
-            set_ref_field(vm, receiver(args), "name", "Ljava/lang/String;", name)?;
+            // The JDK constructor stores the name without a null check; each
+            // concrete subclass validates its own arguments.
+            set_ref_field(
+                vm,
+                receiver(args),
+                "name",
+                "Ljava/lang/String;",
+                ref_arg(args, 1),
+            )?;
             void()
         },
     ),
@@ -2488,6 +2536,891 @@ const PERMISSION_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
                 alloc::format!("(\"{class_name}\" \"{name}\" \"{actions}\")")
             };
             object(vm.make_string(&text)?)
+        },
+    ),
+];
+
+// -------------------------------------------------------------------------------------------
+// java.io.FilePermission
+// -------------------------------------------------------------------------------------------
+
+/// Parse FilePermission actions into a mask (EXECUTE=1, WRITE=2, READ=4,
+/// DELETE=8, READLINK=16) using the JDK's backwards comma scan. Unlike
+/// PropertyPermission, a leading comma is rejected here.
+fn file_actions_mask(vm: &mut Vm<'_>, actions: ObjectRef) -> Result<i32, VmError> {
+    if actions.is_null() {
+        return Ok(0);
+    }
+    let text = vm.string_value(actions).unwrap_or_default();
+    let invalid = alloc::format!("invalid permission: {text}");
+    let chars: Vec<char> = text.chars().collect();
+    let is_ws = |c: char| c == ' ' || c == '\r' || c == '\n' || c == '\u{000C}' || c == '\t';
+    let mut i = chars.len() as isize - 1;
+    if i < 0 {
+        return Ok(0);
+    }
+    let mut mask = 0i32;
+    while i != -1 {
+        while i != -1 && is_ws(chars[i as usize]) {
+            i -= 1;
+        }
+        let u = i as usize;
+        let (matchlen, bit): (isize, i32) = if i >= 3
+            && chars[u - 3].eq_ignore_ascii_case(&'r')
+            && chars[u - 2].eq_ignore_ascii_case(&'e')
+            && chars[u - 1].eq_ignore_ascii_case(&'a')
+            && chars[u].eq_ignore_ascii_case(&'d')
+        {
+            (4, 4)
+        } else if i >= 4
+            && chars[u - 4].eq_ignore_ascii_case(&'w')
+            && chars[u - 3].eq_ignore_ascii_case(&'r')
+            && chars[u - 2].eq_ignore_ascii_case(&'i')
+            && chars[u - 1].eq_ignore_ascii_case(&'t')
+            && chars[u].eq_ignore_ascii_case(&'e')
+        {
+            (5, 2)
+        } else if i >= 6
+            && chars[u - 6].eq_ignore_ascii_case(&'e')
+            && chars[u - 5].eq_ignore_ascii_case(&'x')
+            && chars[u - 4].eq_ignore_ascii_case(&'e')
+            && chars[u - 3].eq_ignore_ascii_case(&'c')
+            && chars[u - 2].eq_ignore_ascii_case(&'u')
+            && chars[u - 1].eq_ignore_ascii_case(&'t')
+            && chars[u].eq_ignore_ascii_case(&'e')
+        {
+            (7, 1)
+        } else if i >= 5
+            && chars[u - 5].eq_ignore_ascii_case(&'d')
+            && chars[u - 4].eq_ignore_ascii_case(&'e')
+            && chars[u - 3].eq_ignore_ascii_case(&'l')
+            && chars[u - 2].eq_ignore_ascii_case(&'e')
+            && chars[u - 1].eq_ignore_ascii_case(&'t')
+            && chars[u].eq_ignore_ascii_case(&'e')
+        {
+            (6, 8)
+        } else if i >= 7
+            && chars[u - 7].eq_ignore_ascii_case(&'r')
+            && chars[u - 6].eq_ignore_ascii_case(&'e')
+            && chars[u - 5].eq_ignore_ascii_case(&'a')
+            && chars[u - 4].eq_ignore_ascii_case(&'d')
+            && chars[u - 3].eq_ignore_ascii_case(&'l')
+            && chars[u - 2].eq_ignore_ascii_case(&'i')
+            && chars[u - 1].eq_ignore_ascii_case(&'n')
+            && chars[u].eq_ignore_ascii_case(&'k')
+        {
+            (8, 16)
+        } else {
+            return Err(vm.throw_new("java/lang/IllegalArgumentException", Some(&invalid)));
+        };
+        mask |= bit;
+        let mut seen_comma = false;
+        while i >= matchlen && !seen_comma {
+            let c = chars[(i - matchlen) as usize];
+            if is_ws(c) {
+                // keep scanning towards the comma
+            } else if c == ',' && i > matchlen {
+                seen_comma = true;
+            } else {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", Some(&invalid)));
+            }
+            i -= 1;
+        }
+        i -= matchlen;
+    }
+    Ok(mask)
+}
+
+/// Normalize a path the way `new File(name).getPath()` followed by
+/// `Path.normalize()` does on Unix: collapse duplicate separators, drop
+/// trailing separators (except the root), then resolve "." and ".."
+/// lexically. Returns None for paths the file system rejects (NUL bytes).
+fn normalize_file_path(name: &str) -> Option<(bool, Vec<String>)> {
+    if name.contains('\0') {
+        return None;
+    }
+    let mut collapsed = String::new();
+    let mut prev_slash = false;
+    for c in name.chars() {
+        if c == '/' {
+            if prev_slash {
+                continue;
+            }
+            prev_slash = true;
+        } else {
+            prev_slash = false;
+        }
+        collapsed.push(c);
+    }
+    while collapsed.len() > 1 && collapsed.ends_with('/') {
+        collapsed.pop();
+    }
+    let absolute = collapsed.starts_with('/');
+    let mut elements: Vec<String> = Vec::new();
+    for part in collapsed.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." {
+            if let Some(last) = elements.last() {
+                if last != ".." {
+                    elements.pop();
+                    continue;
+                }
+            }
+            if absolute {
+                continue;
+            }
+            elements.push(String::from(".."));
+        } else {
+            elements.push(String::from(part));
+        }
+    }
+    Some((absolute, elements))
+}
+
+fn render_file_path(absolute: bool, elements: &[String]) -> String {
+    if absolute {
+        if elements.is_empty() {
+            String::from("/")
+        } else {
+            alloc::format!("/{}", elements.join("/"))
+        }
+    } else {
+        elements.join("/")
+    }
+}
+
+fn file_path_parts(npath: &str) -> (bool, Vec<&str>) {
+    if let Some(rest) = npath.strip_prefix('/') {
+        (
+            true,
+            if rest.is_empty() {
+                Vec::new()
+            } else {
+                rest.split('/').collect()
+            },
+        )
+    } else {
+        (
+            false,
+            if npath.is_empty() {
+                Vec::new()
+            } else {
+                npath.split('/').collect()
+            },
+        )
+    }
+}
+
+/// Depth between an outer normalized path and an inner one, mirroring
+/// FilePermission.containsPath: -1 when there is no containment relation.
+fn file_contains_path(p1: &str, p2: &str) -> i32 {
+    let (abs1, e1) = file_path_parts(p1);
+    let (abs2, e2) = file_path_parts(p2);
+    if abs1 != abs2 {
+        return -1;
+    }
+    let empty1 = !abs1 && e1.is_empty();
+    let empty2 = !abs2 && e2.is_empty();
+    if empty1 {
+        if empty2 {
+            return 0;
+        }
+        if e2[0] == ".." {
+            return -1;
+        }
+        return e2.len() as i32;
+    }
+    if empty2 {
+        if e1.last() == Some(&"..") {
+            return e1.len() as i32;
+        }
+        return -1;
+    }
+    let c1 = e1.len();
+    let c2 = e2.len();
+    let n = c1.min(c2);
+    let mut i = 0;
+    while i < n && e1[i] == e2[i] {
+        i += 1;
+    }
+    if i < c1 && e1[c1 - 1] != ".." {
+        return -1;
+    }
+    if i < c2 && e2[i] == ".." {
+        return -1;
+    }
+    (c1 - i + c2 - i) as i32
+}
+
+fn file_flag(vm: &Vm<'_>, permission: ObjectRef, name: &str) -> bool {
+    crate::lang::read_int_field(vm, permission, name) != 0
+}
+
+/// FilePermission.impliesIgnoreMask: path containment ignoring the action
+/// mask, including the wildcard-level and invalid-permission rules.
+fn file_implies_ignore_mask(vm: &Vm<'_>, this: ObjectRef, that: ObjectRef) -> bool {
+    if this == that {
+        return true;
+    }
+    if file_flag(vm, this, "allFiles") {
+        return true;
+    }
+    if file_flag(vm, this, "invalid") || file_flag(vm, that, "invalid") {
+        return false;
+    }
+    if file_flag(vm, that, "allFiles") {
+        return false;
+    }
+    let this_recursive = file_flag(vm, this, "recursive");
+    let that_recursive = file_flag(vm, that, "recursive");
+    let this_directory = file_flag(vm, this, "directory");
+    let that_directory = file_flag(vm, that, "directory");
+    if (this_recursive && that_recursive) != that_recursive
+        || (this_directory && that_directory) != that_directory
+    {
+        return false;
+    }
+    let this_npath = string_field(vm, this, "npath");
+    let that_npath = string_field(vm, that, "npath");
+    if this_npath == that_npath && this_directory == that_directory {
+        return true;
+    }
+    let diff = file_contains_path(&this_npath, &that_npath);
+    if diff >= 1 && this_recursive {
+        return true;
+    }
+    if diff == 1 && this_directory && !that_directory {
+        return true;
+    }
+    false
+}
+
+/// Clone a FilePermission with a different action mask, as the collection's
+/// merge does via the private withNewActions constructor.
+fn file_permission_with_mask(
+    vm: &mut Vm<'_>,
+    input: ObjectRef,
+    mask: i32,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/io/FilePermission")?;
+    let instance = vm.new_instance(class)?;
+    let name = ref_field(vm, input, "name", "Ljava/lang/String;");
+    set_ref_field(vm, instance, "name", "Ljava/lang/String;", name)?;
+    for flag in ["allFiles", "directory", "recursive", "invalid"] {
+        crate::lang::write_int_field(
+            vm,
+            instance,
+            flag,
+            crate::lang::read_int_field(vm, input, flag),
+        );
+    }
+    let npath = string_field(vm, input, "npath");
+    set_string_field(vm, instance, "npath", &npath)?;
+    crate::lang::write_int_field(vm, instance, "mask", mask);
+    Ok(instance)
+}
+
+pub(crate) const FILE_PERMISSION: oxjvm_vm::NativeClass = class(
+    "java/io/FilePermission",
+    Some("java/security/Permission"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("mask", "I", ACC_PRIVATE, None),
+        field("allFiles", "I", ACC_PRIVATE, None),
+        field("directory", "I", ACC_PRIVATE, None),
+        field("recursive", "I", ACC_PRIVATE, None),
+        field("invalid", "I", ACC_PRIVATE, None),
+        field("npath", "Ljava/lang/String;", ACC_PRIVATE, None),
+    ],
+    &FILE_PERMISSION_METHODS,
+    None,
+);
+
+const FILE_PERMISSION_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let parent = vm.resolve_class("java/security/Permission")?;
+            let (declaring, ctor) = vm
+                .find_method(parent, "<init>", "(Ljava/lang/String;)V")
+                .ok_or_else(|| VmError::internal("Permission lacks <init>"))?;
+            vm.invoke_method(declaring, ctor, vec![args[0], args[1]])?;
+            let mask = file_actions_mask(vm, ref_arg(args, 2))?;
+            if mask == 0 || (mask & 31) != mask {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("invalid actions mask"),
+                ));
+            }
+            let name_ref = ref_arg(args, 1);
+            if name_ref.is_null() {
+                return Err(
+                    vm.throw_new("java/lang/NullPointerException", Some("name can't be null"))
+                );
+            }
+            let name = vm.string_value(name_ref).unwrap_or_default();
+            crate::lang::write_int_field(vm, this, "mask", mask);
+            if name == "<<ALL FILES>>" {
+                crate::lang::write_int_field(vm, this, "allFiles", 1);
+                set_string_field(vm, this, "npath", "")?;
+                return void();
+            }
+            let remember_star = name.ends_with('*');
+            let work = if remember_star {
+                alloc::format!("{}-", &name[..name.len() - 1])
+            } else {
+                name.clone()
+            };
+            match normalize_file_path(&work) {
+                None => {
+                    crate::lang::write_int_field(vm, this, "invalid", 1);
+                    set_string_field(vm, this, "npath", "-u-s-e-l-e-s-s-")?;
+                }
+                Some((absolute, mut elements)) => {
+                    if elements.last().is_some_and(|last| last == "-") {
+                        crate::lang::write_int_field(vm, this, "directory", 1);
+                        crate::lang::write_int_field(
+                            vm,
+                            this,
+                            "recursive",
+                            i32::from(!remember_star),
+                        );
+                        elements.pop();
+                    }
+                    set_string_field(vm, this, "npath", &render_file_path(absolute, &elements))?;
+                }
+            }
+            void()
+        },
+    ),
+    method(
+        "getActions",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let mask = crate::lang::read_int_field(vm, receiver(args), "mask");
+            let mut parts: Vec<&str> = Vec::new();
+            if mask & 4 != 0 {
+                parts.push("read");
+            }
+            if mask & 2 != 0 {
+                parts.push("write");
+            }
+            if mask & 1 != 0 {
+                parts.push("execute");
+            }
+            if mask & 8 != 0 {
+                parts.push("delete");
+            }
+            if mask & 16 != 0 {
+                parts.push("readlink");
+            }
+            object(vm.make_string(&parts.join(","))?)
+        },
+    ),
+    method(
+        "implies",
+        "(Ljava/security/Permission;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let file_permission = vm.resolve_class("java/io/FilePermission")?;
+            if other.is_null() || !vm.is_instance(other, file_permission) {
+                return boolean(false);
+            }
+            let this_mask = crate::lang::read_int_field(vm, this, "mask");
+            let other_mask = crate::lang::read_int_field(vm, other, "mask");
+            if (this_mask & other_mask) != other_mask {
+                return boolean(false);
+            }
+            boolean(file_implies_ignore_mask(vm, this, other))
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if this == other {
+                return boolean(true);
+            }
+            let file_permission = vm.resolve_class("java/io/FilePermission")?;
+            if other.is_null() || !vm.is_instance(other, file_permission) {
+                return boolean(false);
+            }
+            if file_flag(vm, this, "invalid") || file_flag(vm, other, "invalid") {
+                return boolean(false);
+            }
+            boolean(
+                crate::lang::read_int_field(vm, this, "mask")
+                    == crate::lang::read_int_field(vm, other, "mask")
+                    && file_flag(vm, this, "allFiles") == file_flag(vm, other, "allFiles")
+                    && string_field(vm, this, "npath") == string_field(vm, other, "npath")
+                    && file_flag(vm, this, "directory") == file_flag(vm, other, "directory")
+                    && file_flag(vm, this, "recursive") == file_flag(vm, other, "recursive"),
+            )
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let bool_hash = |flag: bool| if flag { 1231 } else { 1237 };
+        let npath = string_field(vm, this, "npath");
+        let units: Vec<u16> = npath.encode_utf16().collect();
+        let elements = [
+            crate::lang::read_int_field(vm, this, "mask"),
+            bool_hash(file_flag(vm, this, "allFiles")),
+            bool_hash(file_flag(vm, this, "directory")),
+            bool_hash(file_flag(vm, this, "recursive")),
+            crate::lang::java_string_hash(&units),
+            0, // npath2 is only set during deserialization
+            bool_hash(file_flag(vm, this, "invalid")),
+        ];
+        let mut result = 1i32;
+        for element in elements {
+            result = result.wrapping_mul(31).wrapping_add(element);
+        }
+        int(result)
+    }),
+    method(
+        "newPermissionCollection",
+        "()Ljava/security/PermissionCollection;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/io/FilePermissionCollection")?;
+            let instance = vm.new_instance(class)?;
+            let (declaring, ctor) = vm
+                .find_method(class, "<init>", "()V")
+                .ok_or_else(|| VmError::internal("FilePermissionCollection lacks <init>"))?;
+            vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
+            object(instance)
+        },
+    ),
+];
+
+pub(crate) const FILE_PERMISSION_COLLECTION: oxjvm_vm::NativeClass = class(
+    "java/io/FilePermissionCollection",
+    Some("java/security/PermissionCollection"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[field("perms", "Ljava/util/ArrayList;", ACC_PRIVATE, None)],
+    &FILE_PERMISSION_COLLECTION_METHODS,
+    None,
+);
+
+const FILE_PERMISSION_COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let list = new_array_list(vm)?;
+        set_ref_field(vm, this, "perms", "Ljava/util/ArrayList;", list)?;
+        void()
+    }),
+    method(
+        "add",
+        "(Ljava/security/Permission;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let permission = ref_arg(args, 1);
+            let file_permission = vm.resolve_class("java/io/FilePermission")?;
+            if permission.is_null() || !vm.is_instance(permission, file_permission) {
+                let display = permission_display(vm, permission)?;
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some(&alloc::format!("invalid permission: {display}")),
+                ));
+            }
+            let list = ref_field(vm, this, "perms", "Ljava/util/ArrayList;");
+            let name = string_field(vm, permission, "name");
+            let elements = crate::util::array_list_elements(vm, list);
+            let mut found = false;
+            for (index, existing) in elements.iter().enumerate() {
+                if string_field(vm, *existing, "name") != name {
+                    continue;
+                }
+                found = true;
+                let old_mask = crate::lang::read_int_field(vm, *existing, "mask");
+                let new_mask = crate::lang::read_int_field(vm, permission, "mask");
+                if old_mask != new_mask {
+                    let effective = old_mask | new_mask;
+                    if effective == new_mask {
+                        list_set(vm, list, index, permission)?;
+                    } else if effective != old_mask {
+                        let merged = file_permission_with_mask(vm, permission, effective)?;
+                        list_set(vm, list, index, merged)?;
+                    }
+                }
+                break;
+            }
+            if !found {
+                list_add(vm, list, permission)?;
+            }
+            void()
+        },
+    ),
+    method(
+        "implies",
+        "(Ljava/security/Permission;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let permission = ref_arg(args, 1);
+            let file_permission = vm.resolve_class("java/io/FilePermission")?;
+            if permission.is_null() || !vm.is_instance(permission, file_permission) {
+                return boolean(false);
+            }
+            let desired = crate::lang::read_int_field(vm, permission, "mask");
+            let mut effective = 0;
+            let mut needed = desired;
+            let list = ref_field(vm, this, "perms", "Ljava/util/ArrayList;");
+            for existing in crate::util::array_list_elements(vm, list) {
+                let mask = crate::lang::read_int_field(vm, existing, "mask");
+                if (needed & mask) != 0 && file_implies_ignore_mask(vm, existing, permission) {
+                    effective |= mask;
+                    if (effective & desired) == desired {
+                        return boolean(true);
+                    }
+                    needed = desired & !effective;
+                }
+            }
+            boolean(false)
+        },
+    ),
+    method(
+        "elements",
+        "()Ljava/util/Enumeration;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let list = ref_field(vm, receiver(args), "perms", "Ljava/util/ArrayList;");
+            let perms = if list.is_null() {
+                Vec::new()
+            } else {
+                crate::util::array_list_elements(vm, list)
+            };
+            object(crate::util::new_enumeration(vm, &perms)?)
+        },
+    ),
+];
+
+// -------------------------------------------------------------------------------------------
+// java.security.UnresolvedPermission
+// -------------------------------------------------------------------------------------------
+
+fn clone_cert_array(vm: &mut Vm<'_>, certs: ObjectRef) -> Result<ObjectRef, VmError> {
+    let length = vm.array_length(certs)?;
+    let cert_class = vm.resolve_class("java/security/cert/Certificate")?;
+    let copy = vm.allocate_object_array(cert_class, length)?;
+    for index in 0..length {
+        let value = vm.array_get(certs, index as i32)?;
+        vm.array_set_ref(copy, index, value.as_ref())?;
+    }
+    Ok(copy)
+}
+
+fn ref_equals(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmError> {
+    if a == b {
+        return Ok(true);
+    }
+    if a.is_null() || b.is_null() {
+        return Ok(false);
+    }
+    let (declaring, equals) = vm.resolve_virtual_method(a, "equals", "(Ljava/lang/Object;)Z")?;
+    let value = vm.invoke_method(declaring, equals, vec![Value::Ref(a), Value::Ref(b)])?;
+    Ok(value.as_boolean())
+}
+
+/// Certificate arrays compare as sets: every cert on each side must equal
+/// some cert on the other side.
+fn cert_arrays_equal(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<bool, VmError> {
+    if a.is_null() && b.is_null() {
+        return Ok(true);
+    }
+    if a.is_null() || b.is_null() {
+        return Ok(false);
+    }
+    let len_a = vm.array_length(a)?;
+    let len_b = vm.array_length(b)?;
+    if len_a != len_b {
+        return Ok(false);
+    }
+    for i in 0..len_a {
+        let ca = vm.array_get(a, i as i32)?.as_ref();
+        let mut found = false;
+        for j in 0..len_b {
+            let cb = vm.array_get(b, j as i32)?.as_ref();
+            if ref_equals(vm, ca, cb)? {
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return Ok(false);
+        }
+    }
+    for j in 0..len_b {
+        let cb = vm.array_get(b, j as i32)?.as_ref();
+        let mut found = false;
+        for i in 0..len_a {
+            let ca = vm.array_get(a, i as i32)?.as_ref();
+            if ref_equals(vm, cb, ca)? {
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+pub(crate) const UNRESOLVED_PERMISSION: oxjvm_vm::NativeClass = class(
+    "java/security/UnresolvedPermission",
+    Some("java/security/Permission"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("type", "Ljava/lang/String;", ACC_PRIVATE, None),
+        // The JDK field is called "name" too, but it must not shadow the
+        // Permission.name field that holds the type; getName() inherits it.
+        field("uname", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("actions", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field(
+            "certs",
+            "[Ljava/security/cert/Certificate;",
+            ACC_PRIVATE,
+            None,
+        ),
+    ],
+    &UNRESOLVED_PERMISSION_METHODS,
+    None,
+);
+
+const UNRESOLVED_PERMISSION_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/security/cert/Certificate;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let parent = vm.resolve_class("java/security/Permission")?;
+            let (declaring, ctor) = vm
+                .find_method(parent, "<init>", "(Ljava/lang/String;)V")
+                .ok_or_else(|| VmError::internal("Permission lacks <init>"))?;
+            vm.invoke_method(declaring, ctor, vec![args[0], args[1]])?;
+            let type_ref = ref_arg(args, 1);
+            if type_ref.is_null() {
+                return Err(
+                    vm.throw_new("java/lang/NullPointerException", Some("type can't be null"))
+                );
+            }
+            set_ref_field(vm, this, "type", "Ljava/lang/String;", type_ref)?;
+            set_ref_field(vm, this, "uname", "Ljava/lang/String;", ref_arg(args, 2))?;
+            set_ref_field(vm, this, "actions", "Ljava/lang/String;", ref_arg(args, 3))?;
+            let certs = ref_arg(args, 4);
+            if !certs.is_null() {
+                let copy = clone_cert_array(vm, certs)?;
+                set_ref_field(vm, this, "certs", "[Ljava/security/cert/Certificate;", copy)?;
+            }
+            void()
+        },
+    ),
+    method(
+        "getActions",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| object(vm.make_string("")?),
+    ),
+    method(
+        "getUnresolvedType",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| object(ref_field(vm, receiver(args), "type", "Ljava/lang/String;")),
+    ),
+    method(
+        "getUnresolvedName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| object(ref_field(vm, receiver(args), "uname", "Ljava/lang/String;")),
+    ),
+    method(
+        "getUnresolvedActions",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "actions",
+                "Ljava/lang/String;",
+            ))
+        },
+    ),
+    method(
+        "getUnresolvedCerts",
+        "()[Ljava/security/cert/Certificate;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let certs = ref_field(
+                vm,
+                receiver(args),
+                "certs",
+                "[Ljava/security/cert/Certificate;",
+            );
+            if certs.is_null() {
+                return object(ObjectRef::NULL);
+            }
+            object(clone_cert_array(vm, certs)?)
+        },
+    ),
+    method(
+        "implies",
+        "(Ljava/security/Permission;)Z",
+        ACC_PUBLIC,
+        |_, _, _| boolean(false),
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if this == other {
+                return boolean(true);
+            }
+            let unresolved = vm.resolve_class("java/security/UnresolvedPermission")?;
+            if other.is_null() || !vm.is_instance(other, unresolved) {
+                return boolean(false);
+            }
+            if string_field(vm, this, "type") != string_field(vm, other, "type") {
+                return boolean(false);
+            }
+            if opt_string_field(vm, this, "uname") != opt_string_field(vm, other, "uname") {
+                return boolean(false);
+            }
+            if opt_string_field(vm, this, "actions") != opt_string_field(vm, other, "actions") {
+                return boolean(false);
+            }
+            let these_certs = ref_field(vm, this, "certs", "[Ljava/security/cert/Certificate;");
+            let other_certs = ref_field(vm, other, "certs", "[Ljava/security/cert/Certificate;");
+            boolean(cert_arrays_equal(vm, these_certs, other_certs)?)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let hash_text = |text: &str| {
+            let units: Vec<u16> = text.encode_utf16().collect();
+            crate::lang::java_string_hash(&units)
+        };
+        let type_hash = hash_text(&string_field(vm, this, "type"));
+        let name_hash = opt_string_field(vm, this, "uname")
+            .map(|text| hash_text(&text))
+            .unwrap_or(0);
+        let actions_hash = opt_string_field(vm, this, "actions")
+            .map(|text| hash_text(&text))
+            .unwrap_or(0);
+        let mut result = 1i32;
+        for element in [type_hash, name_hash, actions_hash] {
+            result = result.wrapping_mul(31).wrapping_add(element);
+        }
+        int(result)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let type_text = string_field(vm, this, "type");
+            let name_text =
+                opt_string_field(vm, this, "uname").unwrap_or_else(|| String::from("null"));
+            let actions_text =
+                opt_string_field(vm, this, "actions").unwrap_or_else(|| String::from("null"));
+            object(vm.make_string(&alloc::format!(
+                "(unresolved {type_text} {name_text} {actions_text})"
+            ))?)
+        },
+    ),
+    method(
+        "newPermissionCollection",
+        "()Ljava/security/PermissionCollection;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("java/security/UnresolvedPermissionCollection")?;
+            let instance = vm.new_instance(class)?;
+            let (declaring, ctor) = vm
+                .find_method(class, "<init>", "()V")
+                .ok_or_else(|| VmError::internal("UnresolvedPermissionCollection lacks <init>"))?;
+            vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
+            object(instance)
+        },
+    ),
+];
+
+pub(crate) const UNRESOLVED_PERMISSION_COLLECTION: oxjvm_vm::NativeClass = class(
+    "java/security/UnresolvedPermissionCollection",
+    Some("java/security/PermissionCollection"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[field("perms", "Ljava/util/ArrayList;", ACC_PRIVATE, None)],
+    &UNRESOLVED_PERMISSION_COLLECTION_METHODS,
+    None,
+);
+
+const UNRESOLVED_PERMISSION_COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let list = new_array_list(vm)?;
+        set_ref_field(vm, this, "perms", "Ljava/util/ArrayList;", list)?;
+        void()
+    }),
+    method(
+        "add",
+        "(Ljava/security/Permission;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let permission = ref_arg(args, 1);
+            let unresolved = vm.resolve_class("java/security/UnresolvedPermission")?;
+            if permission.is_null() || !vm.is_instance(permission, unresolved) {
+                let display = permission_display(vm, permission)?;
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some(&alloc::format!("invalid permission: {display}")),
+                ));
+            }
+            let list = ref_field(vm, this, "perms", "Ljava/util/ArrayList;");
+            list_add(vm, list, permission)?;
+            void()
+        },
+    ),
+    method(
+        "implies",
+        "(Ljava/security/Permission;)Z",
+        ACC_PUBLIC,
+        |_, _, _| boolean(false),
+    ),
+    method(
+        "elements",
+        "()Ljava/util/Enumeration;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let list = ref_field(vm, receiver(args), "perms", "Ljava/util/ArrayList;");
+            let perms = if list.is_null() {
+                Vec::new()
+            } else {
+                crate::util::array_list_elements(vm, list)
+            };
+            object(crate::util::new_enumeration(vm, &perms)?)
         },
     ),
 ];
