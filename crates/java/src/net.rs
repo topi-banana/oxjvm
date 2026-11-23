@@ -1326,11 +1326,22 @@ fn url_validate_authority(vm: &mut Vm<'_>, spec: &str) -> Result<(), VmError> {
             ));
         };
         let inner = &rest[..close];
-        if !inner.contains(':')
-            || !inner
-                .chars()
-                .all(|ch| ch.is_ascii_hexdigit() || matches!(ch, ':' | '.'))
-        {
+        // An IPv6 literal may carry an RFC 6874 zone identifier ("%scope");
+        // validate the address and the zone separately.
+        let (addr, zone) = match inner.find('%') {
+            Some(index) => (&inner[..index], Some(&inner[index + 1..])),
+            None => (inner, None),
+        };
+        let addr_ok = parse_ipv6(addr).is_some();
+        let zone_ok = match zone {
+            None => true,
+            Some(z) => {
+                !z.is_empty()
+                    && z.chars()
+                        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | ':'))
+            }
+        };
+        if !addr_ok || !zone_ok {
             return Err(vm.throw_new(
                 "java/net/MalformedURLException",
                 Some(&alloc::format!("Invalid host: {host}")),
@@ -1344,7 +1355,10 @@ fn url_validate_authority(vm: &mut Vm<'_>, spec: &str) -> Result<(), VmError> {
                     Some(&alloc::format!("Invalid authority field: {authority}")),
                 ));
             };
-            url_validate_port(vm, port_text)?;
+            // A trailing colon with no digits means "no port", as in the JDK.
+            if !port_text.is_empty() {
+                url_validate_port(vm, port_text)?;
+            }
         }
     } else if let Some(index) = host.rfind(':') {
         let port_text = &host[index + 1..];
