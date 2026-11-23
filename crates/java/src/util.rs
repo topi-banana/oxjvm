@@ -13076,6 +13076,9 @@ fn properties_load_xml(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError
             }
             bytes.push((value & 0xFF) as u8);
         }
+        // The JDK closes the stream in a finally block once loading finishes.
+        let (class, method) = vm.resolve_virtual_method(stream, "close", "()V")?;
+        vm.invoke_method(class, method, vec![Value::Ref(stream)])?;
     }
     let text = String::from_utf8_lossy(&bytes).into_owned();
     let mut rest = text.as_str();
