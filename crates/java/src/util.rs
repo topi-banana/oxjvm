@@ -27032,15 +27032,26 @@ const ENUM_SET_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
         "()Ljava/util/Iterator;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let map = enum_set_map(vm, receiver(args));
-            let mut keys = Vec::new();
-            for (key, _) in hash_map_pairs(vm, map) {
-                keys.push(key);
+            let this = receiver(args);
+            let map = enum_set_map(vm, this);
+            let keys: Vec<ObjectRef> = hash_map_pairs(vm, map)
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect();
+            let iter_class = vm.resolve_class("java/util/EnumSet$EnumSetIterator")?;
+            let iterator = vm.new_instance(iter_class)?;
+            let object_class = vm.resolve_class("java/lang/Object")?;
+            let elements = vm.allocate_object_array(object_class, keys.len())?;
+            for (index, key) in keys.iter().enumerate() {
+                vm.array_set_ref(elements, index, *key)?;
             }
-            let list = array_list_from(vm, &keys)?;
-            let (class, method) =
-                vm.resolve_virtual_method(list, "iterator", "()Ljava/util/Iterator;")?;
-            vm.invoke_method(class, method, vec![Value::Ref(list)])
+            let (declaring, field) = vm.find_field(iter_class, "set", "Ljava/util/EnumSet;")?;
+            vm.set_instance_ref(iterator, declaring, field, this);
+            let (declaring, field) =
+                vm.find_field(iter_class, "elements", "[Ljava/lang/Object;")?;
+            vm.set_instance_ref(iterator, declaring, field, elements);
+            crate::lang::write_int_field(vm, iterator, "cursor", 0);
+            object(iterator)
         },
     ),
     method(
@@ -27175,6 +27186,85 @@ pub(crate) const JUMBO_ENUM_SET: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC,
     &[],
     &[],
+    None,
+);
+
+/// `EnumSet`'s iterator: a cursor over a snapshot of the constants, whose
+/// `remove` drops the last returned constant from the backing set. Removing a
+/// constant that is already gone is a no-op, the resilient behaviour the JDK
+/// guarantees for `EnumSet` iterators.
+const ENUM_SET_ITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method("hasNext", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let elements = vm
+            .read_ref_field(this, vm.class_of(this), "elements", "[Ljava/lang/Object;")
+            .unwrap_or(ObjectRef::NULL);
+        let cursor = crate::lang::read_int_field(vm, this, "cursor");
+        let length = if elements.is_null() {
+            0
+        } else {
+            vm.array_length(elements)? as i32
+        };
+        boolean(cursor < length)
+    }),
+    method("next", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let elements = vm
+            .read_ref_field(this, vm.class_of(this), "elements", "[Ljava/lang/Object;")
+            .unwrap_or(ObjectRef::NULL);
+        let cursor = crate::lang::read_int_field(vm, this, "cursor");
+        let length = if elements.is_null() {
+            0
+        } else {
+            vm.array_length(elements)? as i32
+        };
+        if cursor < 0 || cursor >= length {
+            return Err(vm.throw_new("java/util/NoSuchElementException", None));
+        }
+        let element = vm.array_get(elements, cursor)?.as_ref();
+        crate::lang::write_int_field(vm, this, "cursor", cursor + 1);
+        let (declaring, field) = vm.find_field(vm.class_of(this), "last", "Ljava/lang/Object;")?;
+        vm.set_instance_ref(this, declaring, field, element);
+        object(element)
+    }),
+    method("remove", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let last = vm
+            .read_ref_field(this, vm.class_of(this), "last", "Ljava/lang/Object;")
+            .unwrap_or(ObjectRef::NULL);
+        if last.is_null() {
+            return Err(vm.throw_new("java/lang/IllegalStateException", None));
+        }
+        let set = vm
+            .read_ref_field(this, vm.class_of(this), "set", "Ljava/util/EnumSet;")
+            .unwrap_or(ObjectRef::NULL);
+        let map = enum_set_map(vm, set);
+        // Resilient: removing an already-removed constant leaves the set unchanged.
+        hash_map_call(
+            vm,
+            map,
+            "remove",
+            "(Ljava/lang/Object;)Ljava/lang/Object;",
+            &[Value::Ref(last)],
+        )?;
+        let (declaring, field) = vm.find_field(vm.class_of(this), "last", "Ljava/lang/Object;")?;
+        vm.set_instance_ref(this, declaring, field, ObjectRef::NULL);
+        void()
+    }),
+];
+
+pub(crate) const ENUM_SET_ITERATOR: oxjvm_vm::NativeClass = class(
+    "java/util/EnumSet$EnumSetIterator",
+    Some("java/lang/Object"),
+    &["java/util/Iterator"],
+    ACC_PUBLIC | ACC_SYNTHETIC,
+    &[
+        field("set", "Ljava/util/EnumSet;", ACC_PRIVATE, None),
+        field("elements", "[Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("cursor", "I", ACC_PRIVATE, None),
+        field("last", "Ljava/lang/Object;", ACC_PRIVATE, None),
+    ],
+    &ENUM_SET_ITERATOR_METHODS,
     None,
 );
 
