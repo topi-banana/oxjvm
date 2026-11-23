@@ -344,12 +344,9 @@ const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 72] = [
             let mut members: Vec<ClassId> = Vec::new();
             let mut current = Some(class);
             while let Some(candidate) = current {
-                let name = vm.classes.get(candidate).name.clone();
-                for entry in vm.classes.all() {
-                    if entry.declaring_class_name.as_deref() == Some(&name)
-                        && entry.access_flags & ACC_PUBLIC != 0
-                    {
-                        members.push(entry.id);
+                for (member_name, flags) in vm.classes.get(candidate).member_classes.clone() {
+                    if flags & ACC_PUBLIC != 0 {
+                        members.push(vm.resolve_class(&member_name)?);
                     }
                 }
                 current = vm.classes.get(candidate).super_class;
@@ -369,18 +366,12 @@ const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 72] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let class = class_argument(vm, receiver(args))?;
-            let name = vm.classes.get(class).name.clone();
-            let members: Vec<ClassId> = vm
-                .classes
-                .all()
-                .iter()
-                .filter(|candidate| candidate.declaring_class_name.as_deref() == Some(&name))
-                .map(|candidate| candidate.id)
-                .collect();
+            let members = vm.classes.get(class).member_classes.clone();
             let class_class = vm.resolve_class("java/lang/Class")?;
             let array = vm.allocate_object_array(class_class, members.len())?;
-            for (index, member) in members.iter().enumerate() {
-                let class_object = vm.class_object(*member)?;
+            for (index, (member_name, _)) in members.iter().enumerate() {
+                let member = vm.resolve_class(member_name)?;
+                let class_object = vm.class_object(member)?;
                 vm.array_set_ref(array, index, class_object)?;
             }
             object(array)

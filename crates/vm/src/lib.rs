@@ -387,6 +387,7 @@ impl<'a> Vm<'a> {
                 enclosing_class_name: None,
                 declaring_class_name: None,
                 inner_class_access_flags: None,
+                member_classes: Vec::new(),
                 permitted_subclasses: Vec::new(),
                 is_enum: false,
                 annotations: Vec::new(),
