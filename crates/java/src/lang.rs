@@ -380,16 +380,19 @@ const CLASS_METHODS: [oxjvm_vm::NativeMethodDef; 72] = [
     method("isLocalClass", "()Z", ACC_PUBLIC, |vm, _, args| {
         let class = class_argument(vm, receiver(args))?;
         let definition = vm.classes.get(class);
+        let is_array = definition.kind == oxjvm_vm::ClassKind::Array;
         boolean(
-            definition.declaring_class_name.is_none() && definition.enclosing_class_name.is_some(),
+            definition.has_enclosing_method && (is_array || definition.inner_simple_name.is_some()),
         )
     }),
     method("isAnonymousClass", "()Z", ACC_PUBLIC, |vm, _, args| {
         let class = class_argument(vm, receiver(args))?;
-        // Distinguishing anonymous from local classes needs `InnerClasses.inner_name_index`,
-        // which the loader does not retain; anonymous classes never contain declarations that
-        // discovery selects, so reporting `false` is safe.
-        boolean(vm.classes.get(class).name.contains("$$Lambda$"))
+        let definition = vm.classes.get(class);
+        boolean(
+            definition.kind != oxjvm_vm::ClassKind::Array
+                && definition.has_enclosing_method
+                && definition.inner_simple_name.is_none(),
+        )
     }),
     method("isAnnotation", "()Z", ACC_PUBLIC, |vm, _, args| {
         let class = class_argument(vm, receiver(args))?;

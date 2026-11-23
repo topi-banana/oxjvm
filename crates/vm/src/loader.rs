@@ -535,9 +535,12 @@ impl<'a> Vm<'a> {
         let mut declaring_class_name = None;
         let mut inner_class_access_flags = None;
         let mut member_classes = Vec::new();
+        let mut has_enclosing_method = false;
+        let mut inner_simple_name = None;
         for attribute in &parsed.attributes {
             match &attribute.data {
                 AttributeData::EnclosingMethod(enclosing) => {
+                    has_enclosing_method = true;
                     if let Ok(inner) = parsed.constant_pool.class_name(enclosing.class_index) {
                         enclosing_class_name = Some(inner.to_string());
                     }
@@ -550,6 +553,11 @@ impl<'a> Vm<'a> {
                         else {
                             continue;
                         };
+                        if inner == name && entry.inner_name_index != 0 {
+                            if let Ok(simple) = parsed.constant_pool.utf8(entry.inner_name_index) {
+                                inner_simple_name = Some(simple.to_string());
+                            }
+                        }
                         if entry.outer_class_info_index == 0 {
                             continue;
                         }
@@ -600,6 +608,8 @@ impl<'a> Vm<'a> {
             enclosing_class_name,
             declaring_class_name,
             inner_class_access_flags,
+            has_enclosing_method,
+            inner_simple_name,
             member_classes,
             permitted_subclasses,
             is_enum: parsed.access_flags & ACC_ENUM != 0,
@@ -846,6 +856,8 @@ impl<'a> Vm<'a> {
             enclosing_class_name: None,
             declaring_class_name: None,
             inner_class_access_flags: None,
+            has_enclosing_method: false,
+            inner_simple_name: None,
             member_classes: Vec::new(),
             permitted_subclasses: Vec::new(),
             is_enum: definition.access_flags & ACC_ENUM != 0,
@@ -961,6 +973,8 @@ impl<'a> Vm<'a> {
             enclosing_class_name: None,
             declaring_class_name: None,
             inner_class_access_flags: None,
+            has_enclosing_method: false,
+            inner_simple_name: None,
             member_classes: Vec::new(),
             permitted_subclasses: Vec::new(),
             is_enum: false,
@@ -2073,6 +2087,8 @@ impl<'a> Vm<'a> {
             enclosing_class_name: None,
             declaring_class_name: None,
             inner_class_access_flags: None,
+            has_enclosing_method: false,
+            inner_simple_name: None,
             member_classes: Vec::new(),
             permitted_subclasses: Vec::new(),
             is_enum: false,

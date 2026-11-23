@@ -388,6 +388,11 @@ pub struct Class {
     pub declaring_class_name: Option<String>,
     /// The member access flags from the `InnerClasses` entry, for nested classes.
     pub inner_class_access_flags: Option<u16>,
+    /// Whether the class has an `EnclosingMethod` attribute (local or anonymous class).
+    pub has_enclosing_method: bool,
+    /// The simple name from the class's own `InnerClasses` entry, when present;
+    /// `None` for anonymous classes (whose `inner_name_index` is zero).
+    pub inner_simple_name: Option<String>,
     /// Member classes declared in this class, from `InnerClasses` entries whose
     /// outer class is this class: (inner class name, member access flags).
     pub member_classes: Vec<(String, u16)>,
