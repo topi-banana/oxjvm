@@ -6652,6 +6652,12 @@ const SYSTEM_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let key = string_arg(vm, args[0])?;
+            if key.is_empty() {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("key can't be empty"),
+                ));
+            }
             match vm.clear_property(&key) {
                 Some(text) => object(vm.make_string(&text)?),
                 None => object(ObjectRef::NULL),
@@ -6933,6 +6939,12 @@ fn system_get_property(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let key = string_arg(vm, args[0])?;
+    if key.is_empty() {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("key can't be empty"),
+        ));
+    }
     match system_property(vm, &key) {
         Some(text) => object(vm.make_string(&text)?),
         None => object(ObjectRef::NULL),
@@ -6946,6 +6958,12 @@ fn system_get_property_or_default(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let key = string_arg(vm, args[0])?;
+    if key.is_empty() {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("key can't be empty"),
+        ));
+    }
     match system_property(vm, &key) {
         Some(text) => object(vm.make_string(&text)?),
         None => object(ref_arg(args, 1)),
@@ -6955,6 +6973,12 @@ fn system_get_property_or_default(
 /// `System.setProperty(String, String)`: stores the value and returns the previous one.
 fn system_set_property(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
     let key = string_arg(vm, args[0])?;
+    if key.is_empty() {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("key can't be empty"),
+        ));
+    }
     let value = string_arg(vm, args[1])?;
     let previous = vm.get_property(&key);
     vm.set_property(&key, value);

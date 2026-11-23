@@ -2607,6 +2607,236 @@ const NET_PERMISSION_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
     ),
 ];
 
+/// Parse PropertyPermission actions into a READ(1)/WRITE(2) mask, mirroring the
+/// JDK's backwards scan: words are matched from the end, separated by commas
+/// with optional surrounding whitespace. null/empty yield mask 0 (rejected by
+/// the constructor); anything else invalid throws IllegalArgumentException.
+fn property_actions_mask(vm: &mut Vm<'_>, actions: ObjectRef) -> Result<i32, VmError> {
+    if actions.is_null() {
+        return Ok(0);
+    }
+    let text = vm.string_value(actions).unwrap_or_default();
+    let invalid = alloc::format!("invalid permission: {text}");
+    let chars: Vec<char> = text.chars().collect();
+    let is_ws = |c: char| c == ' ' || c == '\r' || c == '\n' || c == '\u{000C}' || c == '\t';
+    let mut i = chars.len() as isize - 1;
+    if i < 0 {
+        return Ok(0);
+    }
+    let mut mask = 0i32;
+    while i != -1 {
+        while i != -1 && is_ws(chars[i as usize]) {
+            i -= 1;
+        }
+        let u = i as usize;
+        let matchlen: isize;
+        if i >= 3
+            && chars[u - 3].eq_ignore_ascii_case(&'r')
+            && chars[u - 2].eq_ignore_ascii_case(&'e')
+            && chars[u - 1].eq_ignore_ascii_case(&'a')
+            && chars[u].eq_ignore_ascii_case(&'d')
+        {
+            matchlen = 4;
+            mask |= 1;
+        } else if i >= 4
+            && chars[u - 4].eq_ignore_ascii_case(&'w')
+            && chars[u - 3].eq_ignore_ascii_case(&'r')
+            && chars[u - 2].eq_ignore_ascii_case(&'i')
+            && chars[u - 1].eq_ignore_ascii_case(&'t')
+            && chars[u].eq_ignore_ascii_case(&'e')
+        {
+            matchlen = 5;
+            mask |= 2;
+        } else {
+            return Err(vm.throw_new("java/lang/IllegalArgumentException", Some(&invalid)));
+        }
+        let mut seen_comma = false;
+        while i >= matchlen && !seen_comma {
+            let c = chars[(i - matchlen) as usize];
+            if c == ',' {
+                seen_comma = true;
+            } else if !is_ws(c) {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", Some(&invalid)));
+            }
+            i -= 1;
+        }
+        i -= matchlen;
+    }
+    Ok(mask)
+}
+
+pub(crate) const PROPERTY_PERMISSION: oxjvm_vm::NativeClass = class(
+    "java/util/PropertyPermission",
+    Some("java/security/BasicPermission"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[field("mask", "I", ACC_PRIVATE, None)],
+    &PROPERTY_PERMISSION_METHODS,
+    None,
+);
+
+const PROPERTY_PERMISSION_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let parent = vm.resolve_class("java/security/BasicPermission")?;
+            let (declaring, ctor) = vm
+                .find_method(parent, "<init>", "(Ljava/lang/String;Ljava/lang/String;)V")
+                .ok_or_else(|| VmError::internal("BasicPermission lacks <init>"))?;
+            vm.invoke_method(declaring, ctor, args.to_vec())?;
+            let mask = property_actions_mask(vm, ref_arg(args, 2))?;
+            if mask == 0 {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("invalid actions mask"),
+                ));
+            }
+            crate::lang::write_int_field(vm, this, "mask", mask);
+            void()
+        },
+    ),
+    method(
+        "getActions",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let mask = crate::lang::read_int_field(vm, receiver(args), "mask");
+            let text = match mask & 3 {
+                1 => "read",
+                2 => "write",
+                3 => "read,write",
+                _ => "",
+            };
+            object(vm.make_string(text)?)
+        },
+    ),
+    method(
+        "implies",
+        "(Ljava/security/Permission;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let prop = vm.resolve_class("java/util/PropertyPermission")?;
+            if other.is_null() || !vm.is_instance(other, prop) {
+                return boolean(false);
+            }
+            let this_mask = crate::lang::read_int_field(vm, this, "mask");
+            let other_mask = crate::lang::read_int_field(vm, other, "mask");
+            if (this_mask & other_mask) != other_mask {
+                return boolean(false);
+            }
+            boolean(basic_name_implies(
+                &string_field(vm, this, "name"),
+                &string_field(vm, other, "name"),
+            ))
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if this == other {
+                return boolean(true);
+            }
+            let prop = vm.resolve_class("java/util/PropertyPermission")?;
+            if other.is_null() || !vm.is_instance(other, prop) {
+                return boolean(false);
+            }
+            let this_mask = crate::lang::read_int_field(vm, this, "mask");
+            let other_mask = crate::lang::read_int_field(vm, other, "mask");
+            boolean(
+                this_mask == other_mask
+                    && string_field(vm, this, "name") == string_field(vm, other, "name"),
+            )
+        },
+    ),
+];
+
+pub(crate) const SSL_PERMISSION: oxjvm_vm::NativeClass = class(
+    "javax/net/ssl/SSLPermission",
+    Some("java/security/BasicPermission"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[],
+    &SSL_PERMISSION_METHODS,
+    None,
+);
+
+const SSL_PERMISSION_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let parent = vm.resolve_class("java/security/BasicPermission")?;
+            let (declaring, ctor) = vm
+                .find_method(parent, "<init>", "(Ljava/lang/String;)V")
+                .ok_or_else(|| VmError::internal("BasicPermission lacks <init>"))?;
+            vm.invoke_method(declaring, ctor, args.to_vec())?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let parent = vm.resolve_class("java/security/BasicPermission")?;
+            let (declaring, ctor) = vm
+                .find_method(parent, "<init>", "(Ljava/lang/String;Ljava/lang/String;)V")
+                .ok_or_else(|| VmError::internal("BasicPermission lacks <init>"))?;
+            vm.invoke_method(declaring, ctor, args.to_vec())?;
+            void()
+        },
+    ),
+];
+
+pub(crate) const SQL_PERMISSION: oxjvm_vm::NativeClass = class(
+    "java/sql/SQLPermission",
+    Some("java/security/BasicPermission"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[],
+    &SQL_PERMISSION_METHODS,
+    None,
+);
+
+const SQL_PERMISSION_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let parent = vm.resolve_class("java/security/BasicPermission")?;
+            let (declaring, ctor) = vm
+                .find_method(parent, "<init>", "(Ljava/lang/String;)V")
+                .ok_or_else(|| VmError::internal("BasicPermission lacks <init>"))?;
+            vm.invoke_method(declaring, ctor, args.to_vec())?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let parent = vm.resolve_class("java/security/BasicPermission")?;
+            let (declaring, ctor) = vm
+                .find_method(parent, "<init>", "(Ljava/lang/String;Ljava/lang/String;)V")
+                .ok_or_else(|| VmError::internal("BasicPermission lacks <init>"))?;
+            vm.invoke_method(declaring, ctor, args.to_vec())?;
+            void()
+        },
+    ),
+];
+
 /// Compute the wildcard flag and match path for a BasicPermission name,
 /// mirroring the JDK's private init(): a trailing "*" (alone or after ".")
 /// makes a wildcard whose path drops the "*"; the legacy bare "exitVM"
@@ -2659,7 +2889,9 @@ const BASIC_PERMISSION_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         |vm, _, args| {
             let name = ref_arg(args, 1);
             if name.is_null() {
-                return Err(vm.throw_new("java/lang/NullPointerException", None));
+                return Err(
+                    vm.throw_new("java/lang/NullPointerException", Some("name can't be null"))
+                );
             }
             if vm.string_utf16(name).is_none_or(|units| units.is_empty()) {
                 return Err(vm.throw_new(
@@ -2683,7 +2915,9 @@ const BASIC_PERMISSION_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
             let this = receiver(args);
             let name = ref_arg(args, 1);
             if name.is_null() {
-                return Err(vm.throw_new("java/lang/NullPointerException", None));
+                return Err(
+                    vm.throw_new("java/lang/NullPointerException", Some("name can't be null"))
+                );
             }
             if vm.string_utf16(name).is_none_or(|units| units.is_empty()) {
                 return Err(vm.throw_new(
