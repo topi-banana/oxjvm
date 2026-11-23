@@ -13294,7 +13294,13 @@ const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 70] = [
         "(Ljava/util/Map;)Ljava/util/Map;",
         ACC_PUBLIC | ACC_STATIC,
         // As with synchronizedList, the map itself is returned.
-        |_, _, args| object(ref_arg(args, 0)),
+        |vm, _, args| {
+            let backing = ref_arg(args, 0);
+            if backing.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(backing)
+        },
     ),
     method(
         "emptyList",
@@ -13528,37 +13534,73 @@ const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 70] = [
         "synchronizedSet",
         "(Ljava/util/Set;)Ljava/util/Set;",
         ACC_PUBLIC | ACC_STATIC,
-        |_, _, args| object(ref_arg(args, 0)),
+        |vm, _, args| {
+            let backing = ref_arg(args, 0);
+            if backing.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(backing)
+        },
     ),
     method(
         "synchronizedCollection",
         "(Ljava/util/Collection;)Ljava/util/Collection;",
         ACC_PUBLIC | ACC_STATIC,
-        |_, _, args| object(ref_arg(args, 0)),
+        |vm, _, args| {
+            let backing = ref_arg(args, 0);
+            if backing.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(backing)
+        },
     ),
     method(
         "synchronizedSortedSet",
         "(Ljava/util/SortedSet;)Ljava/util/SortedSet;",
         ACC_PUBLIC | ACC_STATIC,
-        |_, _, args| object(ref_arg(args, 0)),
+        |vm, _, args| {
+            let backing = ref_arg(args, 0);
+            if backing.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(backing)
+        },
     ),
     method(
         "synchronizedNavigableSet",
         "(Ljava/util/NavigableSet;)Ljava/util/NavigableSet;",
         ACC_PUBLIC | ACC_STATIC,
-        |_, _, args| object(ref_arg(args, 0)),
+        |vm, _, args| {
+            let backing = ref_arg(args, 0);
+            if backing.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(backing)
+        },
     ),
     method(
         "synchronizedSortedMap",
         "(Ljava/util/SortedMap;)Ljava/util/SortedMap;",
         ACC_PUBLIC | ACC_STATIC,
-        |_, _, args| object(ref_arg(args, 0)),
+        |vm, _, args| {
+            let backing = ref_arg(args, 0);
+            if backing.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(backing)
+        },
     ),
     method(
         "synchronizedNavigableMap",
         "(Ljava/util/NavigableMap;)Ljava/util/NavigableMap;",
         ACC_PUBLIC | ACC_STATIC,
-        |_, _, args| object(ref_arg(args, 0)),
+        |vm, _, args| {
+            let backing = ref_arg(args, 0);
+            if backing.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(backing)
+        },
     ),
     method(
         "unmodifiableSortedSet",
@@ -15000,10 +15042,42 @@ pub(crate) const COLLECTIONS: oxjvm_vm::NativeClass = class(
             ACC_PRIVATE | ACC_STATIC,
             None,
         ),
+        field(
+            "EMPTY_SET",
+            "Ljava/util/Set;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "EMPTY_LIST",
+            "Ljava/util/List;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "EMPTY_MAP",
+            "Ljava/util/Map;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
     ],
     &COLLECTIONS_METHODS,
-    None,
+    Some(collections_clinit),
 );
+
+/// Initialize the public `EMPTY_SET`/`EMPTY_LIST`/`EMPTY_MAP` constants to the
+/// same singletons returned by `emptySet()`/`emptyList()`/`emptyMap()`, matching
+/// the JDK where the raw constants and the generic factories share instances.
+fn collections_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/util/Collections")?;
+    let set = empty_set(vm)?;
+    vm.set_static_value(class, "EMPTY_SET", "Ljava/util/Set;", Value::Ref(set));
+    let list = empty_list(vm)?;
+    vm.set_static_value(class, "EMPTY_LIST", "Ljava/util/List;", Value::Ref(list));
+    let map = empty_map(vm)?;
+    vm.set_static_value(class, "EMPTY_MAP", "Ljava/util/Map;", Value::Ref(map));
+    Ok(())
+}
 
 /// Read a lazily-created singleton from a `Collections` static field, creating
 /// the first instance on demand. The static slot is a GC root, so the singleton
@@ -24651,6 +24725,9 @@ fn synch_list_delegate(
 
 /// Create a synchronized wrapper, preserving RandomAccess of the backing list.
 pub(crate) fn synch_list_new(vm: &mut Vm<'_>, backing: ObjectRef) -> Result<ObjectRef, VmError> {
+    if backing.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
     let random_access = vm.resolve_class("java/util/RandomAccess")?;
     let name = if vm.is_instance(backing, random_access) {
         "java/util/OxjvmSynchronizedList$Rand"
@@ -25188,6 +25265,9 @@ fn unmod_list_delegate(
 }
 
 fn unmod_list_new(vm: &mut Vm<'_>, backing: ObjectRef) -> Result<ObjectRef, VmError> {
+    if backing.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
     let class = vm.resolve_class("java/util/OxjvmUnmodList")?;
     let instance = vm.new_instance(class)?;
     let (declaring, field) = vm.find_field(class, "backing", "Ljava/util/List;")?;
@@ -25620,6 +25700,9 @@ pub(crate) const OXJVM_UNMOD_LIST_ITERATOR: oxjvm_vm::NativeClass = class(
 
 /// Wrap a collection in an unmodifiable view.
 fn unmodifiable_collection_new(vm: &mut Vm<'_>, backing: ObjectRef) -> Result<ObjectRef, VmError> {
+    if backing.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
     let class = vm.resolve_class("java/util/OxjvmUnmodCollection")?;
     let instance = vm.new_instance(class)?;
     let (declaring, field) = vm.find_field(class, "backing", "Ljava/util/Collection;")?;
@@ -26159,6 +26242,9 @@ fn unmod_map_delegate(
 
 /// Wrap a map in an unmodifiable sequenced view.
 fn unmodifiable_seq_map_new(vm: &mut Vm<'_>, backing: ObjectRef) -> Result<ObjectRef, VmError> {
+    if backing.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
     let class = vm.resolve_class("java/util/OxjvmUnmodSeqMap")?;
     let instance = vm.new_instance(class)?;
     let (declaring, field) = vm.find_field(class, "backing", "Ljava/util/SequencedMap;")?;
