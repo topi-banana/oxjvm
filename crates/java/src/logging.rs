@@ -1200,7 +1200,7 @@ pub(crate) const LIST_RESOURCE_BUNDLE: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const PROPERTY_RESOURCE_BUNDLE_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+const PROPERTY_RESOURCE_BUNDLE_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     method(
         "<init>",
         "(Ljava/util/Properties;)V",
@@ -1253,6 +1253,32 @@ const PROPERTY_RESOURCE_BUNDLE_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
                 load_class,
                 load_method,
                 vec![Value::Ref(props), Value::Ref(stream)],
+            )?;
+            record_set_ref(vm, this, "properties", "Ljava/util/Properties;", props);
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/Reader;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let reader = ref_arg(args, 1);
+            if reader.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let props_class = vm.resolve_class("java/util/Properties")?;
+            let props = vm.new_instance(props_class)?;
+            if let Some((declaring, ctor)) = vm.find_method(props_class, "<init>", "()V") {
+                vm.invoke_method(declaring, ctor, vec![Value::Ref(props)])?;
+            }
+            let (load_class, load_method) =
+                vm.resolve_virtual_method(props, "load", "(Ljava/io/Reader;)V")?;
+            vm.invoke_method(
+                load_class,
+                load_method,
+                vec![Value::Ref(props), Value::Ref(reader)],
             )?;
             record_set_ref(vm, this, "properties", "Ljava/util/Properties;", props);
             void()
