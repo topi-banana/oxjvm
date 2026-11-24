@@ -1936,16 +1936,12 @@ const STRING_METHODS: [oxjvm_vm::NativeMethodDef; 73] = [
             .string_utf16(receiver(args))
             .map(<[u16]>::to_vec)
             .unwrap_or_default();
-        let ch = int_arg(args, 1) as u16;
-        let from = (int_arg(args, 2) as isize).min(units.len() as isize);
+        let ch = int_arg(args, 1);
+        let from = int_arg(args, 2);
         if from < 0 {
             return int(-1);
         }
-        let found = units[..=from as usize]
-            .iter()
-            .rposition(|unit| *unit == ch)
-            .map_or(-1, |index| index as i32);
-        int(found)
+        int(last_index_of_code_point(&units, ch, from as usize))
     }),
     method(
         "lastIndexOf",
@@ -3016,10 +3012,18 @@ fn string_concat(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let mut text = vm.string_or_empty(receiver(args));
-    let other = string_arg(vm, args[1])?;
-    text.push_str(&other);
-    object(vm.make_string(&text)?)
+    let other = ref_arg(args, 1);
+    if other.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let mut units = vm
+        .string_utf16(receiver(args))
+        .map(<[u16]>::to_vec)
+        .unwrap_or_default();
+    if let Some(other_units) = vm.string_utf16(other) {
+        units.extend_from_slice(other_units);
+    }
+    object(vm.make_string_utf16(units)?)
 }
 
 fn string_substring(
@@ -3078,6 +3082,70 @@ fn string_index_of_char(
     string_index_of_char_from(vm, _c, args)
 }
 
+/// UTF-16 units a code point searches for: one unit for BMP, a surrogate pair for supplementary,
+/// or `None` for an invalid code point (which never matches).
+fn code_point_search_units(ch: i32) -> Option<Vec<u16>> {
+    if (0..=0xFFFF).contains(&ch) {
+        Some(vec![ch as u16])
+    } else if (0x10000..=0x10FFFF).contains(&ch) {
+        let value = (ch - 0x10000) as u32;
+        Some(vec![
+            (0xD800 + (value >> 10)) as u16,
+            (0xDC00 + (value & 0x3FF)) as u16,
+        ])
+    } else {
+        None
+    }
+}
+
+/// First index `>= from` where the code point's units occur, or -1.
+fn index_of_code_point(units: &[u16], ch: i32, from: usize) -> i32 {
+    let Some(needle) = code_point_search_units(ch) else {
+        return -1;
+    };
+    if needle.len() == 1 {
+        units
+            .iter()
+            .enumerate()
+            .skip(from)
+            .find(|(_, unit)| **unit == needle[0])
+            .map_or(-1, |(index, _)| index as i32)
+    } else {
+        units
+            .windows(2)
+            .enumerate()
+            .skip(from)
+            .find(|(_, pair)| pair[0] == needle[0] && pair[1] == needle[1])
+            .map_or(-1, |(index, _)| index as i32)
+    }
+}
+
+/// Last index `<= from` where the code point's units occur, or -1.
+fn last_index_of_code_point(units: &[u16], ch: i32, from: usize) -> i32 {
+    let Some(needle) = code_point_search_units(ch) else {
+        return -1;
+    };
+    if units.is_empty() {
+        return -1;
+    }
+    if needle.len() == 1 {
+        let end = from.min(units.len() - 1);
+        units[..=end]
+            .iter()
+            .rposition(|unit| *unit == needle[0])
+            .map_or(-1, |index| index as i32)
+    } else {
+        if units.len() < 2 {
+            return -1;
+        }
+        let end = from.min(units.len() - 2);
+        (0..=end)
+            .rev()
+            .find(|&index| units[index] == needle[0] && units[index + 1] == needle[1])
+            .map_or(-1, |index| index as i32)
+    }
+}
+
 fn string_index_of_char_from(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
@@ -3087,19 +3155,13 @@ fn string_index_of_char_from(
         .string_utf16(receiver(args))
         .map(<[u16]>::to_vec)
         .unwrap_or_default();
-    let ch = int_arg(args, 1) as u16;
+    let ch = int_arg(args, 1);
     let from = if args.len() > 2 {
         int_arg(args, 2).max(0) as usize
     } else {
         0
     };
-    let found = units
-        .iter()
-        .enumerate()
-        .skip(from)
-        .find(|(_, unit)| **unit == ch)
-        .map_or(-1, |(index, _)| index as i32);
-    int(found)
+    int(index_of_code_point(&units, ch, from))
 }
 
 fn find_units(haystack: &[u16], needle: &[u16], from: usize) -> i32 {
@@ -3311,12 +3373,8 @@ fn string_last_index_of_char(
         .string_utf16(receiver(args))
         .map(<[u16]>::to_vec)
         .unwrap_or_default();
-    let ch = int_arg(args, 1) as u16;
-    let found = units
-        .iter()
-        .rposition(|unit| *unit == ch)
-        .map_or(-1, |index| index as i32);
-    int(found)
+    let ch = int_arg(args, 1);
+    int(last_index_of_code_point(&units, ch, usize::MAX))
 }
 
 fn string_starts_with(

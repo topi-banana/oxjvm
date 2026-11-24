@@ -517,7 +517,7 @@ fn hex_format_text(delimiter: &str, bytes: &[u8], uppercase: bool) -> String {
     out
 }
 
-const HEX_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+const HEX_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method(
         "of",
         "()Ljava/util/HexFormat;",
@@ -613,6 +613,21 @@ const HEX_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
                 alloc::format!("{:016X}", value)
             } else {
                 alloc::format!("{:016x}", value)
+            };
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "toHexDigits",
+        "(C)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let uppercase = read_int_field(vm, receiver(args), "upperCase") != 0;
+            let value = crate::int_arg(args, 1) as u32 & 0xFFFF;
+            let text = if uppercase {
+                alloc::format!("{:04X}", value)
+            } else {
+                alloc::format!("{:04x}", value)
             };
             object(vm.make_string(&text)?)
         },
