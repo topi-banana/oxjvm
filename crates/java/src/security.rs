@@ -10995,3 +10995,306 @@ pub(crate) const DELEGATION_PERMISSION_COLLECTION: oxjvm_vm::NativeClass = class
     &DELEGATION_PERMISSION_COLLECTION_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// javax.security.auth.kerberos.ServicePermission (+ collection)
+// -------------------------------------------------------------------------------------------
+
+const SP_INITIATE: i32 = 0x1;
+const SP_ACCEPT: i32 = 0x2;
+
+fn sp_get_mask(vm: &mut Vm<'_>, action: &str) -> Result<i32, VmError> {
+    let trimmed = action.trim();
+    if trimmed == "-" || trimmed.is_empty() {
+        return Ok(0);
+    }
+    let mut mask = 0;
+    for part in trimmed.split(',') {
+        let token = part.trim();
+        if token.is_empty() {
+            continue;
+        }
+        if token.eq_ignore_ascii_case("initiate") {
+            mask |= SP_INITIATE;
+        } else if token.eq_ignore_ascii_case("accept") {
+            mask |= SP_ACCEPT;
+        } else {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some(&alloc::format!("invalid permission: {action}")),
+            ));
+        }
+    }
+    Ok(mask)
+}
+
+fn sp_actions(mask: i32) -> &'static str {
+    match mask & (SP_INITIATE | SP_ACCEPT) {
+        SP_INITIATE => "initiate",
+        SP_ACCEPT => "accept",
+        _ => "initiate,accept",
+    }
+}
+
+fn sp_implies_ignore_mask(vm: &Vm<'_>, this: ObjectRef, other: ObjectRef) -> bool {
+    let this_name = string_field(vm, this, "name");
+    let other_name = string_field(vm, other, "name");
+    this_name == "*"
+        || this_name == other_name
+        || (other_name.starts_with('@') && this_name.ends_with(&other_name))
+}
+
+fn sp_with_mask(vm: &mut Vm<'_>, name: &str, mask: i32) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("javax/security/auth/kerberos/ServicePermission")?;
+    let instance = vm.new_instance(class)?;
+    let parent = vm.resolve_class("java/security/Permission")?;
+    let (declaring, ctor) = vm
+        .find_method(parent, "<init>", "(Ljava/lang/String;)V")
+        .ok_or_else(|| VmError::internal("Permission lacks <init>"))?;
+    let name_value = vm.make_string(name)?;
+    vm.invoke_method(
+        declaring,
+        ctor,
+        vec![Value::Ref(instance), Value::Ref(name_value)],
+    )?;
+    crate::lang::write_int_field(vm, instance, "mask", mask);
+    Ok(instance)
+}
+
+const SERVICE_PERMISSION_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let name_ref = ref_arg(args, 1);
+            let action_ref = ref_arg(args, 2);
+            let parent = vm.resolve_class("java/security/Permission")?;
+            let (declaring, ctor) = vm
+                .find_method(parent, "<init>", "(Ljava/lang/String;)V")
+                .ok_or_else(|| VmError::internal("Permission lacks <init>"))?;
+            vm.invoke_method(
+                declaring,
+                ctor,
+                vec![Value::Ref(this), Value::Ref(name_ref)],
+            )?;
+            if name_ref.is_null() {
+                return Err(vm.throw_new(
+                    "java/lang/NullPointerException",
+                    Some("service principal can't be null"),
+                ));
+            }
+            let action = vm.string_or_empty(action_ref);
+            let mask = sp_get_mask(vm, &action)?;
+            crate::lang::write_int_field(vm, this, "mask", mask);
+            void()
+        },
+    ),
+    method(
+        "implies",
+        "(Ljava/security/Permission;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let class = vm.resolve_class("javax/security/auth/kerberos/ServicePermission")?;
+            if other.is_null() || !vm.is_instance(other, class) {
+                return boolean(false);
+            }
+            let this_mask = crate::lang::read_int_field(vm, this, "mask");
+            let other_mask = crate::lang::read_int_field(vm, other, "mask");
+            let covers = (this_mask & other_mask) == other_mask;
+            boolean(covers && sp_implies_ignore_mask(vm, this, other))
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if this == other {
+                return boolean(true);
+            }
+            let class = vm.resolve_class("javax/security/auth/kerberos/ServicePermission")?;
+            if other.is_null() || !vm.is_instance(other, class) {
+                return boolean(false);
+            }
+            let same_mask = crate::lang::read_int_field(vm, this, "mask")
+                == crate::lang::read_int_field(vm, other, "mask");
+            let same_name = string_field(vm, this, "name") == string_field(vm, other, "name");
+            boolean(same_mask && same_name)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let name = string_field(vm, this, "name");
+        let name_hash = crate::lang::java_string_hash(&name.encode_utf16().collect::<Vec<u16>>());
+        let mask = crate::lang::read_int_field(vm, this, "mask");
+        int(name_hash ^ mask)
+    }),
+    method(
+        "getActions",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let mask = crate::lang::read_int_field(vm, receiver(args), "mask");
+            object(vm.make_string(sp_actions(mask))?)
+        },
+    ),
+    method("getMask", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "mask"))
+    }),
+    method(
+        "newPermissionCollection",
+        "()Ljava/security/PermissionCollection;",
+        ACC_PUBLIC,
+        |vm, _, _| {
+            let class =
+                vm.resolve_class("javax/security/auth/kerberos/KrbServicePermissionCollection")?;
+            let instance = vm.new_instance(class)?;
+            let (declaring, ctor) = vm
+                .find_method(class, "<init>", "()V")
+                .ok_or_else(|| VmError::internal("KrbServicePermissionCollection lacks <init>"))?;
+            vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
+            object(instance)
+        },
+    ),
+];
+
+pub(crate) const SERVICE_PERMISSION: oxjvm_vm::NativeClass = class(
+    "javax/security/auth/kerberos/ServicePermission",
+    Some("java/security/Permission"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[field("mask", "I", ACC_PRIVATE, None)],
+    &SERVICE_PERMISSION_METHODS,
+    None,
+);
+
+fn sp_collection_find(vm: &Vm<'_>, list: ObjectRef, name: &str) -> Option<ObjectRef> {
+    crate::util::array_list_elements(vm, list)
+        .into_iter()
+        .find(|&existing| string_field(vm, existing, "name") == name)
+}
+
+const SERVICE_PERMISSION_COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let perms = new_array_list(vm)?;
+        set_ref_field(vm, this, "perms", "Ljava/util/ArrayList;", perms)?;
+        void()
+    }),
+    method(
+        "add",
+        "(Ljava/security/Permission;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let permission = ref_arg(args, 1);
+            let sp = vm.resolve_class("javax/security/auth/kerberos/ServicePermission")?;
+            if permission.is_null() || !vm.is_instance(permission, sp) {
+                let display = permission_display(vm, permission)?;
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some(&alloc::format!("invalid permission: {display}")),
+                ));
+            }
+            ensure_collection_writable(vm, this)?;
+            let perms = ref_field(vm, this, "perms", "Ljava/util/ArrayList;");
+            let name = string_field(vm, permission, "name");
+            let new_mask = crate::lang::read_int_field(vm, permission, "mask");
+            if let Some(existing) = sp_collection_find(vm, perms, &name) {
+                let old_mask = crate::lang::read_int_field(vm, existing, "mask");
+                if old_mask != new_mask {
+                    let effective = old_mask | new_mask;
+                    if effective == new_mask {
+                        // Replace existing with the new permission.
+                        let elements = crate::util::array_list_elements(vm, perms);
+                        let fresh = new_array_list(vm)?;
+                        for element in elements {
+                            if element == existing {
+                                list_add(vm, fresh, permission)?;
+                            } else {
+                                list_add(vm, fresh, element)?;
+                            }
+                        }
+                        set_ref_field(vm, this, "perms", "Ljava/util/ArrayList;", fresh)?;
+                    } else if effective != old_mask {
+                        let merged = sp_with_mask(vm, &name, effective)?;
+                        let elements = crate::util::array_list_elements(vm, perms);
+                        let fresh = new_array_list(vm)?;
+                        for element in elements {
+                            if element == existing {
+                                list_add(vm, fresh, merged)?;
+                            } else {
+                                list_add(vm, fresh, element)?;
+                            }
+                        }
+                        set_ref_field(vm, this, "perms", "Ljava/util/ArrayList;", fresh)?;
+                    }
+                }
+            } else {
+                list_add(vm, perms, permission)?;
+            }
+            void()
+        },
+    ),
+    method(
+        "implies",
+        "(Ljava/security/Permission;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let permission = ref_arg(args, 1);
+            let sp = vm.resolve_class("javax/security/auth/kerberos/ServicePermission")?;
+            if permission.is_null() || !vm.is_instance(permission, sp) {
+                return boolean(false);
+            }
+            let perms = ref_field(vm, this, "perms", "Ljava/util/ArrayList;");
+            let desired = crate::lang::read_int_field(vm, permission, "mask");
+            if desired == 0 {
+                for existing in crate::util::array_list_elements(vm, perms) {
+                    if sp_implies_ignore_mask(vm, existing, permission) {
+                        return boolean(true);
+                    }
+                }
+                return boolean(false);
+            }
+            if let Some(star) = sp_collection_find(vm, perms, "*") {
+                let mask = crate::lang::read_int_field(vm, star, "mask");
+                if (mask & desired) == desired {
+                    return boolean(true);
+                }
+            }
+            let name = string_field(vm, permission, "name");
+            if let Some(existing) = sp_collection_find(vm, perms, &name) {
+                let mask = crate::lang::read_int_field(vm, existing, "mask");
+                return boolean((mask & desired) == desired);
+            }
+            boolean(false)
+        },
+    ),
+    method(
+        "elements",
+        "()Ljava/util/Enumeration;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let perms = ref_field(vm, receiver(args), "perms", "Ljava/util/ArrayList;");
+            let elements = crate::util::array_list_elements(vm, perms);
+            object(crate::util::new_enumeration(vm, &elements)?)
+        },
+    ),
+];
+
+pub(crate) const SERVICE_PERMISSION_COLLECTION: oxjvm_vm::NativeClass = class(
+    "javax/security/auth/kerberos/KrbServicePermissionCollection",
+    Some("java/security/PermissionCollection"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[field("perms", "Ljava/util/ArrayList;", ACC_PRIVATE, None)],
+    &SERVICE_PERMISSION_COLLECTION_METHODS,
+    None,
+);
