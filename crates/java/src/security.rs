@@ -9978,7 +9978,7 @@ fn cert_store_instance(
     Ok(store)
 }
 
-const CERT_STORE_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+const CERT_STORE_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
     method(
         "getInstance",
         "(Ljava/lang/String;Ljava/security/cert/CertStoreParameters;)Ljava/security/cert/CertStore;",
@@ -9987,6 +9987,36 @@ const CERT_STORE_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
             let name = ref_arg(args, 0);
             if name.is_null() {
                 return Err(vm.throw_new("java/lang/NullPointerException", Some("null type name")));
+            }
+            let cert_type = vm.string_or_empty(name);
+            object(cert_store_instance(vm, &cert_type, ref_arg(args, 1))?)
+        },
+    ),
+    method(
+        "getInstance",
+        "(Ljava/lang/String;Ljava/security/cert/CertStoreParameters;Ljava/lang/String;)Ljava/security/cert/CertStore;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = ref_arg(args, 0);
+            if name.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", Some("null type name")));
+            }
+            let provider_arg = ref_arg(args, 2);
+            if provider_arg.is_null() {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("null provider name"),
+                ));
+            }
+            let provider = vm.string_or_empty(provider_arg);
+            if provider.is_empty() {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("empty provider name"),
+                ));
+            }
+            if !known_provider(&provider) {
+                return Err(vm.throw_new("java/security/NoSuchProviderException", Some(&provider)));
             }
             let cert_type = vm.string_or_empty(name);
             object(cert_store_instance(vm, &cert_type, ref_arg(args, 1))?)
