@@ -43,6 +43,7 @@ pub(crate) mod logging;
 pub(crate) mod management;
 pub(crate) mod math;
 pub(crate) mod module;
+pub(crate) mod naming;
 pub(crate) mod net;
 pub(crate) mod nio;
 pub(crate) mod optional;
@@ -168,7 +169,7 @@ pub fn is_non_writable_property(key: &str) -> bool {
 }
 
 /// The registry itself, ordered so that `java/lang/Object` is first.
-static REGISTRY: [NativeClass; 1208] = [
+static REGISTRY: [NativeClass; 1212] = [
     lang::OBJECT,
     lang::CLASS,
     lang::PACKAGE,
@@ -660,6 +661,10 @@ static REGISTRY: [NativeClass; 1208] = [
     net::PROXY_TYPE,
     net::PROXY,
     net::INET6_ADDRESS,
+    naming::REF_ADDR,
+    naming::STRING_REF_ADDR,
+    naming::BINARY_REF_ADDR,
+    naming::REFERENCE,
     prefs::BACKING_STORE_EXCEPTION,
     prefs::INVALID_PREFERENCES_FORMAT_EXCEPTION,
     prefs::NODE_CHANGE_LISTENER,
