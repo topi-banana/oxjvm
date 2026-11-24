@@ -1518,8 +1518,56 @@ fn xml_escape(text: &str) -> String {
     out
 }
 
+/// Render an epoch millisecond timestamp as an ISO-8601 date-time in UTC.
+/// With `use_instant` the result is the `ISO_INSTANT` form (trailing `Z` and a
+/// nanosecond fraction); otherwise it is the old zone-less `YYYY-MM-DDTHH:MM:SS`.
+fn xml_iso_date(millis: i64, nano_of_second: i32, use_instant: bool) -> String {
+    let days = millis.div_euclid(86_400_000);
+    let secs_of_day = millis.rem_euclid(86_400_000) / 1000;
+    let hour = secs_of_day / 3600;
+    let minute = (secs_of_day % 3600) / 60;
+    let second = secs_of_day % 60;
+    // Civil-from-days (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { year + 1 } else { year };
+    let mut text = format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}");
+    if use_instant {
+        if nano_of_second != 0 {
+            let fraction = format!("{nano_of_second:09}");
+            let width = if nano_of_second % 1_000_000 == 0 {
+                3
+            } else if nano_of_second % 1_000 == 0 {
+                6
+            } else {
+                9
+            };
+            text.push('.');
+            text.push_str(&fraction[..width]);
+        }
+        text.push('Z');
+    }
+    text
+}
+
 const XML_FORMATTER_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
-    method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let use_instant =
+            match log_manager_get_property(vm, "java.util.logging.XMLFormatter.useInstant")? {
+                Some(value) => value != "false",
+                None => true,
+            };
+        crate::lang::write_int_field(vm, this, "useInstant", i32::from(use_instant));
+        void()
+    }),
     method(
         "format",
         "(Ljava/util/logging/LogRecord;)Ljava/lang/String;",
@@ -1532,10 +1580,17 @@ const XML_FORMATTER_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
             let level = record_get_ref(vm, record, "level", "Ljava/util/logging/Level;");
             let name = level_name(vm, level);
             let millis = crate::lang::read_long_field(vm, record, "millis");
+            let nano_adjustment = crate::lang::read_int_field(vm, record, "nanoAdjustment");
             let sequence = crate::lang::read_long_field(vm, record, "sequence");
+            let use_instant = crate::lang::read_int_field(vm, receiver(args), "useInstant") != 0;
+            let nano_of_second = ((millis.rem_euclid(1000)) * 1_000_000) as i32 + nano_adjustment;
+            let date = xml_iso_date(millis, nano_of_second, use_instant);
             let mut text = String::from("<record>\n");
-            text.push_str(&format!("  <date>{millis}</date>\n"));
+            text.push_str(&format!("  <date>{date}</date>\n"));
             text.push_str(&format!("  <millis>{millis}</millis>\n"));
+            if use_instant && nano_adjustment != 0 {
+                text.push_str(&format!("  <nanos>{nano_adjustment}</nanos>\n"));
+            }
             text.push_str(&format!("  <sequence>{sequence}</sequence>\n"));
             text.push_str(&format!("  <level>{}</level>\n", xml_escape(&name)));
             text.push_str(&format!("  <message>{}</message>\n", xml_escape(&message)));
@@ -1579,7 +1634,7 @@ pub(crate) const XML_FORMATTER: oxjvm_vm::NativeClass = class(
     Some("java/util/logging/Formatter"),
     &[],
     ACC_PUBLIC,
-    &[],
+    &[field("useInstant", "I", ACC_PRIVATE, None)],
     &XML_FORMATTER_METHODS,
     None,
 );
@@ -2426,6 +2481,26 @@ fn registry_map(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
     vm.ensure_initialized(class)?;
     vm.read_static_ref_if_set(class, "loggers", "Ljava/util/HashMap;")
         .ok_or_else(|| VmError::internal("LogManager.loggers missing"))
+}
+
+fn log_manager_properties(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class(LOG_MANAGER_CLASS)?;
+    if let Some(map) = vm.read_static_ref_if_set(class, "properties", "Ljava/util/HashMap;") {
+        return Ok(map);
+    }
+    vm.ensure_initialized(class)?;
+    vm.read_static_ref_if_set(class, "properties", "Ljava/util/HashMap;")
+        .ok_or_else(|| VmError::internal("LogManager.properties missing"))
+}
+
+fn log_manager_get_property(vm: &mut Vm<'_>, name: &str) -> Result<Option<String>, VmError> {
+    let map = log_manager_properties(vm)?;
+    let key = vm.make_string(name)?;
+    let value = crate::util::hash_map_lookup(vm, map, key)?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    Ok(Some(vm.string_or_empty(value)))
 }
 
 fn logger_from_registry(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
@@ -3647,6 +3722,13 @@ fn log_manager_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     let class = vm.resolve_class(LOG_MANAGER_CLASS)?;
     let map = crate::util::hash_map_new(vm)?;
     vm.set_static_value(class, "loggers", "Ljava/util/HashMap;", Value::Ref(map));
+    let properties = crate::util::hash_map_new(vm)?;
+    vm.set_static_value(
+        class,
+        "properties",
+        "Ljava/util/HashMap;",
+        Value::Ref(properties),
+    );
     let manager = vm.new_instance(class)?;
     vm.set_static_value(
         class,
@@ -3718,7 +3800,7 @@ fn logger_from_registry_initializing(vm: &mut Vm<'_>) -> Result<ObjectRef, VmErr
     Ok(logger)
 }
 
-const LOG_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+const LOG_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method("<init>", "()V", ACC_PROTECTED, |_, _, _| void()),
     method(
         "getLogManager",
@@ -3759,13 +3841,96 @@ const LOG_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         "getProperty",
         "(Ljava/lang/String;)Ljava/lang/String;",
         ACC_PUBLIC,
-        |_, _, _| object(ObjectRef::NULL),
+        |vm, _, args| {
+            let name = vm.string_or_empty(ref_arg(args, 1));
+            match log_manager_get_property(vm, &name)? {
+                Some(value) => object(vm.make_string(&value)?),
+                None => object(ObjectRef::NULL),
+            }
+        },
     ),
     method(
         "getProperty",
         "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
         ACC_PUBLIC,
-        |_, _, args| object(ref_arg(args, 2)),
+        |vm, _, args| {
+            let name = vm.string_or_empty(ref_arg(args, 1));
+            match log_manager_get_property(vm, &name)? {
+                Some(value) => object(vm.make_string(&value)?),
+                None => object(ref_arg(args, 2)),
+            }
+        },
+    ),
+    method(
+        "updateConfiguration",
+        "(Ljava/io/InputStream;Ljava/util/function/Function;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let ins = ref_arg(args, 1);
+            let mapper = ref_arg(args, 2);
+            if ins.is_null() || mapper.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let props_class = vm.resolve_class("java/util/Properties")?;
+            let props = vm.new_instance(props_class)?;
+            let (props_ctor_class, props_ctor) = vm
+                .find_method(props_class, "<init>", "()V")
+                .ok_or_else(|| VmError::internal("Properties() missing"))?;
+            vm.invoke_method(props_ctor_class, props_ctor, vec![Value::Ref(props)])?;
+            let (load_class, load) = vm
+                .find_method(props_class, "load", "(Ljava/io/InputStream;)V")
+                .ok_or_else(|| VmError::internal("Properties.load missing"))?;
+            vm.invoke_method(load_class, load, vec![Value::Ref(props), Value::Ref(ins)])?;
+            let (names_class, names_method) =
+                vm.resolve_virtual_method(props, "stringPropertyNames", "()Ljava/util/Set;")?;
+            let names = vm
+                .invoke_method(names_class, names_method, vec![Value::Ref(props)])?
+                .as_ref();
+            let store = log_manager_properties(vm)?;
+            for key in crate::util::collection_elements(vm, names)? {
+                let (apply_class, apply) = vm.resolve_virtual_method(
+                    mapper,
+                    "apply",
+                    "(Ljava/lang/Object;)Ljava/lang/Object;",
+                )?;
+                let merger = vm
+                    .invoke_method(
+                        apply_class,
+                        apply,
+                        vec![Value::Ref(mapper), Value::Ref(key)],
+                    )?
+                    .as_ref();
+                let name = vm.string_or_empty(key);
+                let old = match log_manager_get_property(vm, &name)? {
+                    Some(value) => vm.make_string(&value)?,
+                    None => ObjectRef::NULL,
+                };
+                let (get_class, get) = vm.resolve_virtual_method(
+                    props,
+                    "getProperty",
+                    "(Ljava/lang/String;)Ljava/lang/String;",
+                )?;
+                let new = vm
+                    .invoke_method(get_class, get, vec![Value::Ref(props), Value::Ref(key)])?
+                    .as_ref();
+                let (merge_class, merge) = vm.resolve_virtual_method(
+                    merger,
+                    "apply",
+                    "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                )?;
+                let merged = vm
+                    .invoke_method(
+                        merge_class,
+                        merge,
+                        vec![Value::Ref(merger), Value::Ref(old), Value::Ref(new)],
+                    )?
+                    .as_ref();
+                if !merged.is_null() {
+                    crate::util::hash_map_insert(vm, store, key, merged)?;
+                }
+            }
+            void()
+        },
     ),
     method("readConfiguration", "()V", ACC_PUBLIC, |_, _, _| void()),
     method("reset", "()V", ACC_PUBLIC, |_, _, _| void()),
@@ -3847,6 +4012,12 @@ pub(crate) const LOG_MANAGER: oxjvm_vm::NativeClass = class(
     &[
         field(
             "loggers",
+            "Ljava/util/HashMap;",
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
+        field(
+            "properties",
             "Ljava/util/HashMap;",
             ACC_PRIVATE | ACC_STATIC,
             None,
