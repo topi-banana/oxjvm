@@ -1879,12 +1879,18 @@ const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 68] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let path = path_string(vm, ref_arg(args, 0));
-            let removed = fs_metadata(vm, &path)
-                .map(|metadata| match metadata.kind {
-                    FileKind::Directory => fs_remove_dir(vm, &path),
-                    _ => fs_remove_file(vm, &path),
-                })
-                .unwrap_or(false);
+            let removed = if fs_is_symlink(vm, &path) {
+                // A symbolic link (even a dangling one) is removed itself,
+                // never followed.
+                fs_remove_file(vm, &path)
+            } else {
+                fs_metadata(vm, &path)
+                    .map(|metadata| match metadata.kind {
+                        FileKind::Directory => fs_remove_dir(vm, &path),
+                        _ => fs_remove_file(vm, &path),
+                    })
+                    .unwrap_or(false)
+            };
             if !removed {
                 return Err(vm.throw_new("java/io/IOException", Some(&path)));
             }
@@ -1897,6 +1903,9 @@ const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 68] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let path = path_string(vm, ref_arg(args, 0));
+            if fs_is_symlink(vm, &path) {
+                return boolean(fs_remove_file(vm, &path));
+            }
             let Some(metadata) = fs_metadata(vm, &path) else {
                 return boolean(false);
             };
@@ -2987,6 +2996,15 @@ fn bytes_array(vm: &mut Vm<'_>, bytes: &[u8]) -> Result<Value, VmError> {
 
 fn fs_metadata(vm: &mut Vm<'_>, path: &str) -> Option<oxjvm_platform::FileMetadata> {
     vm.host.filesystem()?.metadata(path)
+}
+
+/// Whether `path` is a symbolic link, checked without following it (so a
+/// dangling link still reports true).
+fn fs_is_symlink(vm: &mut Vm<'_>, path: &str) -> bool {
+    vm.host
+        .filesystem()
+        .and_then(|fs| fs.read_link(path))
+        .is_some()
 }
 
 /// A CharSequence as text (via `toString` for non-Strings).
