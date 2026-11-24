@@ -226,7 +226,12 @@ pub(crate) fn exception_ctor(
             cause
         };
         vm.set_instance_ref(this, declaring, field, cause);
-        vm.capture_backtrace(this);
+        // The JDK constructor calls the overridable fillInStackTrace() so a
+        // subclass can suppress stack capture; dispatch virtually rather than
+        // capturing unconditionally.
+        let (fill_class, fill_method) =
+            vm.resolve_virtual_method(this, "fillInStackTrace", "()Ljava/lang/Throwable;")?;
+        vm.invoke_method(fill_class, fill_method, vec![Value::Ref(this)])?;
         return void();
     }
     let super_class = vm
