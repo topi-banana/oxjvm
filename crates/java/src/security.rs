@@ -8136,11 +8136,17 @@ const MESSAGE_DIGEST_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         let offset = int_arg(args, 2);
         let length = int_arg(args, 3);
         if array.is_null() {
-            return Err(vm.throw_new("java/lang/NullPointerException", None));
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("No input buffer given"),
+            ));
         }
         let capacity = vm.array_length(array)? as i32;
-        if offset < 0 || length < 0 || offset + length > capacity {
-            return Err(vm.throw_new("java/lang/ArrayIndexOutOfBoundsException", None));
+        if offset < 0 || length < 0 || offset > capacity - length {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("Input buffer too short"),
+            ));
         }
         let mut bytes = Vec::with_capacity(length as usize);
         for index in 0..length {
@@ -8229,9 +8235,23 @@ const MESSAGE_DIGEST_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
         let this = receiver(args);
         let buf = ref_arg(args, 1);
         let offset = int_arg(args, 2);
+        let length = int_arg(args, 3);
+        if buf.is_null() {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("No output buffer given"),
+            ));
+        }
+        let capacity = vm.array_length(buf)? as i32;
+        if offset < 0 || length < 0 || offset > capacity - length {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("Output buffer too small for specified offset and length"),
+            ));
+        }
         let digest = message_digest_compute(vm, this)?;
         let len = digest.len() as i32;
-        if vm.array_length(buf)? as i32 - offset < len {
+        if length < len {
             return Err(vm.throw_new("java/security/DigestException", Some("buffer too small")));
         }
         for (index, byte) in digest.iter().enumerate() {
