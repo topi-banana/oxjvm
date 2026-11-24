@@ -4629,6 +4629,12 @@ pub(crate) fn class_methods(
     vm: &mut Vm<'_>,
     class: ClassId,
 ) -> Result<Vec<(ClassId, u32)>, VmError> {
+    // Interfaces do not inherit Object's public methods in getMethods(); they
+    // expose their own and superinterface methods, keeping only the most
+    // specific declaration of each signature.
+    if vm.classes.get(class).access_flags & ACC_INTERFACE != 0 {
+        return interface_public_methods(vm, class);
+    }
     let mut found = Vec::new();
     let mut seen: Vec<(String, String)> = Vec::new();
     let mut interface_roots = Vec::new();
@@ -4673,6 +4679,86 @@ pub(crate) fn class_methods(
         }
     }
     Ok(found)
+}
+
+/// Whether `super_iface` is a (transitive) superinterface of `sub`, excluding
+/// the trivial case where they are the same class.
+fn is_strict_subinterface(vm: &Vm<'_>, sub: ClassId, super_iface: ClassId) -> bool {
+    if sub == super_iface {
+        return false;
+    }
+    let mut stack = vec![sub];
+    let mut visited: Vec<ClassId> = Vec::new();
+    while let Some(id) = stack.pop() {
+        if visited.contains(&id) {
+            continue;
+        }
+        visited.push(id);
+        for interface in &vm.classes.get(id).interfaces {
+            if *interface == super_iface {
+                return true;
+            }
+            stack.push(*interface);
+        }
+    }
+    false
+}
+
+/// `Class.getMethods()` for an interface: public methods declared by the
+/// interface and its superinterfaces, dropping any declaration that is
+/// overridden by a more specific subinterface declaration of the same
+/// signature. Sibling interfaces that independently declare the same
+/// signature both survive (the JDK's star-inheritance behaviour).
+fn interface_public_methods(
+    vm: &mut Vm<'_>,
+    class: ClassId,
+) -> Result<Vec<(ClassId, u32)>, VmError> {
+    let mut candidates: Vec<(ClassId, u32)> = Vec::new();
+    let mut seen: Vec<(ClassId, String, String)> = Vec::new();
+    let mut stack = vec![class];
+    let mut visited: Vec<ClassId> = Vec::new();
+    while let Some(id) = stack.pop() {
+        if visited.contains(&id) {
+            continue;
+        }
+        visited.push(id);
+        for entry in declared_methods(vm, id)? {
+            let (name, descriptor, flags) = method_entry(vm, entry.0, entry.1);
+            if flags & ACC_PUBLIC == 0 {
+                continue;
+            }
+            let key = (entry.0, name, descriptor);
+            if !seen.contains(&key) {
+                seen.push(key);
+                candidates.push(entry);
+            }
+        }
+        for interface in &vm.classes.get(id).interfaces {
+            stack.push(*interface);
+        }
+    }
+    let mut result = Vec::new();
+    for &(declaring, slot) in &candidates {
+        let (name, descriptor, _) = method_entry(vm, declaring, slot);
+        let mut overridden = false;
+        for &(other_declaring, other_slot) in &candidates {
+            if other_declaring == declaring {
+                continue;
+            }
+            let (other_name, other_desc, _) = method_entry(vm, other_declaring, other_slot);
+            if other_name == name
+                && other_desc == descriptor
+                && is_strict_subinterface(vm, other_declaring, declaring)
+            {
+                overridden = true;
+                break;
+            }
+        }
+        if !overridden {
+            result.push((declaring, slot));
+        }
+    }
+    Ok(result)
 }
 
 /// Fields declared directly by `class` (`Class.getDeclaredFields`): inherited fields are not
