@@ -1082,10 +1082,9 @@ fn load_bundle_candidates(
     Ok(loaded)
 }
 
-/// Whether a bundle's recorded locale is `Locale.ROOT` (the unsuffixed base
-/// candidate), used to decide when to try the default-locale search path.
-fn bundle_locale_is_root(vm: &mut Vm<'_>, bundle: ObjectRef) -> bool {
-    let locale = record_get_ref(vm, bundle, "locale", "Ljava/util/Locale;");
+/// Whether a `Locale` reference is `Locale.ROOT` (all of language, country and
+/// variant empty).  A null locale is treated as root.
+fn locale_is_root(vm: &mut Vm<'_>, locale: ObjectRef) -> bool {
     if locale.is_null() {
         return true;
     }
@@ -1102,6 +1101,13 @@ fn bundle_locale_is_root(vm: &mut Vm<'_>, bundle: ObjectRef) -> bool {
     language.is_empty() && country.is_empty() && variant.is_empty()
 }
 
+/// Whether a bundle's recorded locale is `Locale.ROOT` (the unsuffixed base
+/// candidate), used to decide when to try the default-locale search path.
+fn bundle_locale_is_root(vm: &mut Vm<'_>, bundle: ObjectRef) -> bool {
+    let locale = record_get_ref(vm, bundle, "locale", "Ljava/util/Locale;");
+    locale_is_root(vm, locale)
+}
+
 fn resource_bundle_get(
     vm: &mut Vm<'_>,
     base_object: ObjectRef,
@@ -1115,8 +1121,12 @@ fn resource_bundle_get(
     // The JDK falls back to the default locale's search path when the requested
     // locale yields no bundle, or only the unsuffixed base bundle (a more
     // specific default-locale bundle then becomes the parent of the base).
+    // Exception: when the requested locale is itself Locale.ROOT, the base
+    // bundle is the exact match and must be returned without any fallback
+    // (ResourceBundle.getBundleImpl breaks on `bundle.locale.equals(locale)`).
     let only_base = !loaded.is_empty() && bundle_locale_is_root(vm, loaded[0]);
-    if loaded.is_empty() || only_base {
+    let requested_is_root = locale_is_root(vm, locale);
+    if loaded.is_empty() || (only_base && !requested_is_root) {
         let default = crate::format::default_locale(vm);
         if !default.is_null() {
             let default_candidates = bundle_candidates(vm, &base, default)?;
