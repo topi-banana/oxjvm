@@ -4866,7 +4866,112 @@ fn file_channel_write(
     Ok(bytes.len() as i32)
 }
 
-const FILE_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+fn file_channel_read_buffers(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    array: ObjectRef,
+    offset: i32,
+    length: i32,
+) -> Result<i64, VmError> {
+    if crate::lang::read_int_field(vm, this, "readable") == 0 {
+        return Err(vm.throw_new("java/nio/channels/NonReadableChannelException", None));
+    }
+    let array_len = vm.array_length(array)? as i32;
+    if offset < 0 || length < 0 || offset > array_len - length {
+        return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+    }
+    let path = vm
+        .read_string_field(this, vm.class_of(this), "path")
+        .unwrap_or_default();
+    let bytes = vm
+        .host
+        .filesystem()
+        .and_then(|fs| fs.read(&path))
+        .unwrap_or_default();
+    let mut position = vm
+        .read_instance_long_named(this, vm.class_of(this), "position", "J")
+        .unwrap_or(0)
+        .max(0);
+    let mut total = 0i64;
+    for index in offset..offset + length {
+        let buffer = vm.array_get(array, index)?.as_ref();
+        let remaining = crate::buffer::byte_buffer_remaining_count(vm, buffer);
+        if remaining == 0 {
+            continue;
+        }
+        if position >= bytes.len() as i64 {
+            if total == 0 {
+                return Ok(-1);
+            }
+            break;
+        }
+        let available = &bytes[position as usize..];
+        let count = crate::buffer::byte_buffer_put_slice(vm, buffer, available)? as i64;
+        total += count;
+        position += count;
+        if count < i64::from(remaining) {
+            break;
+        }
+    }
+    let (declaring, field) = vm.find_field(vm.class_of(this), "position", "J")?;
+    vm.set_instance_long(this, declaring, field, position);
+    Ok(total)
+}
+
+fn file_channel_write_buffers(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    array: ObjectRef,
+    offset: i32,
+    length: i32,
+) -> Result<i64, VmError> {
+    if crate::lang::read_int_field(vm, this, "writable") == 0 {
+        return Err(vm.throw_new("java/nio/channels/NonWritableChannelException", None));
+    }
+    let array_len = vm.array_length(array)? as i32;
+    if offset < 0 || length < 0 || offset > array_len - length {
+        return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+    }
+    let path = vm
+        .read_string_field(this, vm.class_of(this), "path")
+        .unwrap_or_default();
+    let mut existing = vm
+        .host
+        .filesystem()
+        .and_then(|fs| fs.read(&path))
+        .unwrap_or_default();
+    let mut position = vm
+        .read_instance_long_named(this, vm.class_of(this), "position", "J")
+        .unwrap_or(0)
+        .max(0) as usize;
+    let mut total = 0i64;
+    for index in offset..offset + length {
+        let buffer = vm.array_get(array, index)?.as_ref();
+        let bytes = crate::buffer::byte_buffer_consume_remaining(vm, buffer)?;
+        if bytes.is_empty() {
+            continue;
+        }
+        if existing.len() < position + bytes.len() {
+            existing.resize(position + bytes.len(), 0);
+        }
+        existing[position..position + bytes.len()].copy_from_slice(&bytes);
+        position += bytes.len();
+        total += bytes.len() as i64;
+    }
+    if !vm
+        .host
+        .filesystem()
+        .map(|fs| fs.write(&path, &existing, false))
+        .unwrap_or(false)
+    {
+        return Err(vm.throw_new("java/io/IOException", Some(&path)));
+    }
+    let (declaring, field) = vm.find_field(vm.class_of(this), "position", "J")?;
+    vm.set_instance_long(this, declaring, field, position as i64);
+    Ok(total)
+}
+
+const FILE_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
     method(
         "open",
         "(Ljava/nio/file/Path;[Ljava/nio/file/OpenOption;)Ljava/nio/channels/FileChannel;",
@@ -4934,6 +5039,66 @@ const FILE_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
                 receiver(args),
                 ref_arg(args, 1),
                 Some(crate::long_arg(args, 2)),
+            )?)
+        },
+    ),
+    method(
+        "read",
+        "([Ljava/nio/ByteBuffer;)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 1);
+            let length = vm.array_length(array)? as i32;
+            long(file_channel_read_buffers(
+                vm,
+                receiver(args),
+                array,
+                0,
+                length,
+            )?)
+        },
+    ),
+    method(
+        "read",
+        "([Ljava/nio/ByteBuffer;II)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            long(file_channel_read_buffers(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                crate::int_arg(args, 2),
+                crate::int_arg(args, 3),
+            )?)
+        },
+    ),
+    method(
+        "write",
+        "([Ljava/nio/ByteBuffer;)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 1);
+            let length = vm.array_length(array)? as i32;
+            long(file_channel_write_buffers(
+                vm,
+                receiver(args),
+                array,
+                0,
+                length,
+            )?)
+        },
+    ),
+    method(
+        "write",
+        "([Ljava/nio/ByteBuffer;II)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            long(file_channel_write_buffers(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                crate::int_arg(args, 2),
+                crate::int_arg(args, 3),
             )?)
         },
     ),

@@ -5215,6 +5215,11 @@ pub(crate) const OJVM_FLOAT_BUFFER: oxjvm_vm::NativeClass = class(
 );
 
 /// Remaining bytes of a `ByteBuffer`, without changing its position.
+/// Number of bytes between a buffer's position and its limit.
+pub(crate) fn byte_buffer_remaining_count(vm: &Vm<'_>, this: ObjectRef) -> i32 {
+    buffer_remaining(vm, this)
+}
+
 pub(crate) fn byte_buffer_remaining_bytes(
     vm: &mut Vm<'_>,
     this: ObjectRef,
