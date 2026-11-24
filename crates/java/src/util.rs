@@ -15838,11 +15838,6 @@ fn tokenizer_text(vm: &Vm<'_>, this: ObjectRef) -> String {
         .unwrap_or_default()
 }
 
-fn tokenizer_delimiters(vm: &Vm<'_>, this: ObjectRef) -> String {
-    vm.read_string_field(this, vm.class_of(this), "delimiters")
-        .unwrap_or_default()
-}
-
 fn tokenizer_init(
     vm: &mut Vm<'_>,
     context: oxjvm_vm::NativeContext,
@@ -15852,63 +15847,136 @@ fn tokenizer_init(
     let descriptor = vm.classes.get(context.class).methods[context.method as usize]
         .descriptor
         .clone();
-    let text = string_arg(vm, args[1])?;
-    let (delimiters, return_delims) = match descriptor.as_str() {
-        "(Ljava/lang/String;Ljava/lang/String;Z)V" => {
-            (string_arg(vm, args[2])?, int_arg(args, 3) != 0)
-        }
-        "(Ljava/lang/String;Ljava/lang/String;)V" => (string_arg(vm, args[2])?, false),
-        _ => (String::from(" \t\n\r\u{000C}"), false),
-    };
     let class = vm.class_of(this);
-    vm.set_string_field(this, class, "text", &text)?;
-    vm.set_string_field(this, class, "delimiters", &delimiters)?;
+    // Preserve the raw UTF-16 of the text and delimiters so lone surrogates and
+    // supplementary code points survive (a Rust String would replace them).
+    let text_units: Vec<u16> = vm
+        .string_utf16(ref_arg(args, 1))
+        .map(|units| units.to_vec())
+        .unwrap_or_default();
+    let text_ref = vm.make_string_utf16(text_units)?;
+    let (declaring, field) = vm.find_field(class, "text", "Ljava/lang/String;")?;
+    vm.set_instance_ref(this, declaring, field, text_ref);
+    let (delim_ref, return_delims) = match descriptor.as_str() {
+        "(Ljava/lang/String;Ljava/lang/String;Z)V" => {
+            let units: Vec<u16> = vm
+                .string_utf16(ref_arg(args, 2))
+                .map(|units| units.to_vec())
+                .unwrap_or_default();
+            (vm.make_string_utf16(units)?, int_arg(args, 3) != 0)
+        }
+        "(Ljava/lang/String;Ljava/lang/String;)V" => {
+            let units: Vec<u16> = vm
+                .string_utf16(ref_arg(args, 2))
+                .map(|units| units.to_vec())
+                .unwrap_or_default();
+            (vm.make_string_utf16(units)?, false)
+        }
+        _ => (vm.make_string(" \t\n\r\u{000C}")?, false),
+    };
+    let (declaring, field) = vm.find_field(class, "delimiters", "Ljava/lang/String;")?;
+    vm.set_instance_ref(this, declaring, field, delim_ref);
     crate::lang::write_int_field(vm, this, "position", 0);
     crate::lang::write_int_field(vm, this, "returnDelims", i32::from(return_delims));
     void()
 }
 
+/// The code point at `index` in UTF-16 `units` and its width in code units.
+/// A lone surrogate is reported as its own code point, matching `codePointAt`.
+fn tokenizer_code_point_at(units: &[u16], index: usize) -> (u32, usize) {
+    let hi = u32::from(units[index]);
+    if (0xD800..=0xDBFF).contains(&hi) && index + 1 < units.len() {
+        let lo = u32::from(units[index + 1]);
+        if (0xDC00..=0xDFFF).contains(&lo) {
+            return (0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00), 2);
+        }
+    }
+    (hi, 1)
+}
+
+/// The raw UTF-16 units of a String field (preserving lone surrogates).
+fn tokenizer_units(vm: &Vm<'_>, this: ObjectRef, name: &str) -> Vec<u16> {
+    let class = vm.class_of(this);
+    let reference = vm
+        .read_ref_field(this, class, name, "Ljava/lang/String;")
+        .unwrap_or(ObjectRef::NULL);
+    vm.string_utf16(reference)
+        .map(|units| units.to_vec())
+        .unwrap_or_default()
+}
+
+/// The delimiter code points, decoded from the stored delimiter string's UTF-16
+/// so that supplementary delimiters and lone surrogates are matched correctly.
+fn tokenizer_delim_codepoints(vm: &Vm<'_>, this: ObjectRef) -> Vec<u32> {
+    tokenizer_codepoints(&tokenizer_units(vm, this, "delimiters"))
+}
+
+fn tokenizer_codepoints(units: &[u16]) -> Vec<u32> {
+    let mut codepoints = Vec::new();
+    let mut index = 0;
+    while index < units.len() {
+        let (codepoint, width) = tokenizer_code_point_at(units, index);
+        codepoints.push(codepoint);
+        index += width;
+    }
+    codepoints
+}
+
 /// Take the next token at the current position, optionally advancing it.
+/// Scanning is code-point based over UTF-16 units so supplementary characters
+/// and lone surrogates survive intact.
 fn tokenizer_token(
     vm: &mut Vm<'_>,
     this: ObjectRef,
-    delimiters: &str,
+    delim_cps: &[u32],
     advance: bool,
-) -> Result<Option<String>, VmError> {
-    let text = tokenizer_text(vm, this);
-    let chars: Vec<char> = text.chars().collect();
+) -> Result<Option<Vec<u16>>, VmError> {
+    let units = tokenizer_units(vm, this, "text");
     let return_delims = crate::lang::read_int_field(vm, this, "returnDelims") != 0;
     let mut position = crate::lang::read_int_field(vm, this, "position").max(0) as usize;
-    while position < chars.len() && !return_delims && delimiters.contains(chars[position]) {
-        position += 1;
+    while position < units.len() && !return_delims {
+        let (codepoint, width) = tokenizer_code_point_at(&units, position);
+        if !delim_cps.contains(&codepoint) {
+            break;
+        }
+        position += width;
     }
-    if position >= chars.len() {
+    if position >= units.len() {
         if advance {
             crate::lang::write_int_field(vm, this, "position", position as i32);
         }
         return Ok(None);
     }
     let start = position;
-    if return_delims && delimiters.contains(chars[position]) {
-        position += 1;
+    let (codepoint, width) = tokenizer_code_point_at(&units, position);
+    if return_delims && delim_cps.contains(&codepoint) {
+        position += width;
     } else {
-        while position < chars.len() && !delimiters.contains(chars[position]) {
-            position += 1;
+        while position < units.len() {
+            let (codepoint, width) = tokenizer_code_point_at(&units, position);
+            if delim_cps.contains(&codepoint) {
+                break;
+            }
+            position += width;
         }
     }
     if advance {
         crate::lang::write_int_field(vm, this, "position", position as i32);
     }
-    Ok(Some(chars[start..position].iter().collect()))
+    Ok(Some(units[start..position].to_vec()))
 }
 
-fn tokenizer_has_more(vm: &mut Vm<'_>, this: ObjectRef, delimiters: &str) -> Result<bool, VmError> {
-    Ok(tokenizer_token(vm, this, delimiters, false)?.is_some())
+fn tokenizer_has_more(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    delim_cps: &[u32],
+) -> Result<bool, VmError> {
+    Ok(tokenizer_token(vm, this, delim_cps, false)?.is_some())
 }
 
-fn tokenizer_next(vm: &mut Vm<'_>, this: ObjectRef, delimiters: &str) -> Result<Value, VmError> {
-    match tokenizer_token(vm, this, delimiters, true)? {
-        Some(token) => object(vm.make_string(&token)?),
+fn tokenizer_next(vm: &mut Vm<'_>, this: ObjectRef, delim_cps: &[u32]) -> Result<Value, VmError> {
+    match tokenizer_token(vm, this, delim_cps, true)? {
+        Some(token) => object(vm.make_string_utf16(token)?),
         None => Err(vm.throw_new("java/util/NoSuchElementException", None)),
     }
 }
@@ -15933,16 +16001,18 @@ const STRING_TOKENIZER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         tokenizer_init,
     ),
     method("hasMoreTokens", "()Z", ACC_PUBLIC, |vm, _, args| {
-        let delimiters = tokenizer_delimiters(vm, receiver(args));
-        boolean(tokenizer_has_more(vm, receiver(args), &delimiters)?)
+        let this = receiver(args);
+        let delim_cps = tokenizer_delim_codepoints(vm, this);
+        boolean(tokenizer_has_more(vm, this, &delim_cps)?)
     }),
     method(
         "nextToken",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let delimiters = tokenizer_delimiters(vm, receiver(args));
-            tokenizer_next(vm, receiver(args), &delimiters)
+            let this = receiver(args);
+            let delim_cps = tokenizer_delim_codepoints(vm, this);
+            tokenizer_next(vm, this, &delim_cps)
         },
     ),
     method(
@@ -15950,32 +16020,39 @@ const STRING_TOKENIZER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         "(Ljava/lang/String;)Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let delimiters = string_arg(vm, args[1])?;
-            tokenizer_next(vm, receiver(args), &delimiters)
+            let this = receiver(args);
+            let units = vm
+                .string_utf16(ref_arg(args, 1))
+                .map(|units| units.to_vec())
+                .unwrap_or_default();
+            let delim_cps = tokenizer_codepoints(&units);
+            tokenizer_next(vm, this, &delim_cps)
         },
     ),
     method("countTokens", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let delimiters = tokenizer_delimiters(vm, this);
+        let delim_cps = tokenizer_delim_codepoints(vm, this);
         let saved = crate::lang::read_int_field(vm, this, "position");
         let mut count = 0;
-        while tokenizer_token(vm, this, &delimiters, true)?.is_some() {
+        while tokenizer_token(vm, this, &delim_cps, true)?.is_some() {
             count += 1;
         }
         crate::lang::write_int_field(vm, this, "position", saved);
         int(count)
     }),
     method("hasMoreElements", "()Z", ACC_PUBLIC, |vm, _, args| {
-        let delimiters = tokenizer_delimiters(vm, receiver(args));
-        boolean(tokenizer_has_more(vm, receiver(args), &delimiters)?)
+        let this = receiver(args);
+        let delim_cps = tokenizer_delim_codepoints(vm, this);
+        boolean(tokenizer_has_more(vm, this, &delim_cps)?)
     }),
     method(
         "nextElement",
         "()Ljava/lang/Object;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let delimiters = tokenizer_delimiters(vm, receiver(args));
-            tokenizer_next(vm, receiver(args), &delimiters)
+            let this = receiver(args);
+            let delim_cps = tokenizer_delim_codepoints(vm, this);
+            tokenizer_next(vm, this, &delim_cps)
         },
     ),
     method(
