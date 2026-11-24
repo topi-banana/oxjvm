@@ -3008,6 +3008,14 @@ fn certificate_factory_instance(vm: &mut Vm<'_>, cert_type: &str) -> Result<Obje
 }
 
 fn new_certificate(vm: &mut Vm<'_>, cert_type: &str, encoded: &[u8]) -> Result<ObjectRef, VmError> {
+    // An X.509 certificate is a DER SEQUENCE; data that does not begin with the
+    // SEQUENCE tag is not a parseable certificate (CertificateParsingException).
+    if encoded.first() != Some(&0x30) {
+        return Err(vm.throw_new(
+            "java/security/cert/CertificateParsingException",
+            Some("Unable to parse certificate data"),
+        ));
+    }
     let class = vm.resolve_class("java/security/cert/X509Certificate")?;
     let certificate = vm.new_instance(class)?;
     set_string_field(vm, certificate, "type", cert_type)?;
