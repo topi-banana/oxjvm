@@ -2553,6 +2553,14 @@ fn registry_map(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
         .ok_or_else(|| VmError::internal("LogManager.loggers missing"))
 }
 
+/// The receiver LogManager instance's private logger namespace.
+fn log_manager_local_map(vm: &mut Vm<'_>, manager: ObjectRef) -> Result<ObjectRef, VmError> {
+    let class = vm.class_of(manager);
+    vm.read_ref_field(manager, class, "localLoggers", "Ljava/util/HashMap;")
+        .filter(|map| !map.is_null())
+        .ok_or_else(|| VmError::internal("LogManager.localLoggers missing"))
+}
+
 fn log_manager_properties(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class(LOG_MANAGER_CLASS)?;
     if let Some(map) = vm.read_static_ref_if_set(class, "properties", "Ljava/util/HashMap;") {
@@ -2766,6 +2774,16 @@ fn read_logging_config_file(vm: &mut Vm<'_>) -> Result<(), VmError> {
 
 fn logger_from_registry(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
     let map = registry_map(vm)?;
+    logger_from_registry_in(vm, map, name)
+}
+
+/// Like `logger_from_registry` but operating on an explicit namespace map, so a
+/// non-singleton LogManager instance can keep its own logger context.
+fn logger_from_registry_in(
+    vm: &mut Vm<'_>,
+    map: ObjectRef,
+    name: &str,
+) -> Result<ObjectRef, VmError> {
     let key = vm.make_string(name)?;
     let existing = crate::util::hash_map_lookup(vm, map, key)?;
     if !existing.is_null() {
@@ -2813,7 +2831,7 @@ fn logger_from_registry(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmErro
     // Link to the nearest extant ancestor in the namespace (the JDK's
     // getParent), falling back to the root logger (name "").
     if !name.is_empty() {
-        let mut parent = logger_from_registry(vm, "")?;
+        let mut parent = logger_from_registry_in(vm, map, "")?;
         let mut candidate = name;
         while let Some(dot) = candidate.rfind('.') {
             candidate = &candidate[..dot];
@@ -4026,6 +4044,9 @@ fn log_manager_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
         Value::Ref(properties),
     );
     let manager = vm.new_instance(class)?;
+    // The singleton shares the static registry as its logger namespace.
+    let (declaring, field) = vm.find_field(class, "localLoggers", "Ljava/util/HashMap;")?;
+    vm.set_instance_ref(manager, declaring, field, map);
     vm.set_static_value(
         class,
         "manager",
@@ -4097,7 +4118,16 @@ fn logger_from_registry_initializing(vm: &mut Vm<'_>) -> Result<ObjectRef, VmErr
 }
 
 const LOG_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
-    method("<init>", "()V", ACC_PROTECTED, |_, _, _| void()),
+    method("<init>", "()V", ACC_PROTECTED, |vm, _, args| {
+        // Each LogManager instance owns a private logger namespace; the
+        // singleton's is later pointed at the shared static registry.
+        let this = receiver(args);
+        let map = crate::util::hash_map_new(vm)?;
+        let class = vm.class_of(this);
+        let (declaring, field) = vm.find_field(class, "localLoggers", "Ljava/util/HashMap;")?;
+        vm.set_instance_ref(this, declaring, field, map);
+        void()
+    }),
     method(
         "getLogManager",
         "()Ljava/util/logging/LogManager;",
@@ -4116,8 +4146,13 @@ const LOG_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
         "(Ljava/lang/String;)Ljava/util/logging/Logger;",
         ACC_PUBLIC,
         |vm, _, args| {
+            // LogManager.getLogger only looks up an existing logger in this
+            // instance's namespace; it does not create one (Logger.getLogger
+            // does the lazy creation against the singleton).
             let name = crate::string_arg(vm, args[1])?;
-            object(logger_from_registry(vm, &name)?)
+            let map = log_manager_local_map(vm, receiver(args))?;
+            let key = vm.make_string(&name)?;
+            object(crate::util::hash_map_lookup(vm, map, key)?)
         },
     ),
     method(
@@ -4127,8 +4162,12 @@ const LOG_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
         |vm, _, args| {
             let logger = ref_arg(args, 1);
             let name = logger_name(vm, logger);
-            let map = registry_map(vm)?;
+            let map = log_manager_local_map(vm, receiver(args))?;
             let key = vm.make_string(&name)?;
+            let existing = crate::util::hash_map_lookup(vm, map, key)?;
+            if !existing.is_null() {
+                return boolean(false);
+            }
             crate::util::hash_map_insert(vm, map, key, logger)?;
             boolean(true)
         },
@@ -4333,6 +4372,7 @@ pub(crate) const LOG_MANAGER: oxjvm_vm::NativeClass = class(
             ACC_PRIVATE | ACC_STATIC,
             None,
         ),
+        field("localLoggers", "Ljava/util/HashMap;", ACC_PRIVATE, None),
     ],
     &LOG_MANAGER_METHODS,
     Some(log_manager_clinit),
