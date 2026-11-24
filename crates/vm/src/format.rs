@@ -481,8 +481,19 @@ fn parse_hex_float(text: &str) -> Option<f64> {
         scale /= 16.0;
     }
     if let Some(exponent) = exponent {
-        let exponent: i32 = exponent.parse().ok()?;
-        value *= pow2(exponent);
+        // A trailing float/double suffix (f/F/d/D) is allowed after the binary
+        // exponent, e.g. "0x.003p12f"; strip it before parsing the exponent.
+        let exponent = exponent
+            .strip_suffix(['f', 'F', 'd', 'D'])
+            .unwrap_or(exponent);
+        let exponent: i64 = exponent.parse().ok()?;
+        // A zero significand stays zero for any exponent (0 * 2^huge would
+        // otherwise become NaN once pow2 saturates to infinity).  The exponent
+        // can exceed i32 (the JDK accepts up to long range); pow2 saturates well
+        // before then, so clamping preserves the over/underflow behaviour.
+        if value != 0.0 {
+            value *= pow2(exponent.clamp(-2000, 2000) as i32);
+        }
     }
     Some(if negative { -value } else { value })
 }
@@ -496,15 +507,19 @@ fn split_hex_exponent(text: &str) -> (&str, Option<&str>) {
 }
 
 fn pow2(exponent: i32) -> f64 {
-    let mut value = 1.0f64;
-    if exponent >= 0 {
-        for _ in 0..exponent {
-            value *= 2.0;
-        }
-    } else {
-        for _ in 0..-exponent {
-            value *= 0.5;
-        }
+    // Construct 2^exponent directly from the IEEE-754 bit layout instead of
+    // looping (a literal exponent can be as large as 2^31, which would spin for
+    // billions of iterations).  Saturate to infinity / zero outside the
+    // representable range so the caller's multiply over/underflows correctly.
+    if exponent >= 1024 {
+        return f64::INFINITY;
     }
-    value
+    if exponent <= -1075 {
+        return 0.0;
+    }
+    if exponent >= -1022 {
+        f64::from_bits(((exponent + 1023) as u64) << 52)
+    } else {
+        f64::from_bits(1u64 << (exponent + 1074))
+    }
 }
