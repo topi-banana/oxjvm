@@ -4841,7 +4841,7 @@ fn file_channel_write(
     Ok(bytes.len() as i32)
 }
 
-const FILE_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
+const FILE_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
     method(
         "open",
         "(Ljava/nio/file/Path;[Ljava/nio/file/OpenOption;)Ljava/nio/channels/FileChannel;",
@@ -4972,6 +4972,128 @@ const FILE_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
             object(this)
         },
     ),
+    method(
+        "transferTo",
+        "(JJLjava/nio/channels/WritableByteChannel;)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let position = crate::long_arg(args, 1);
+            let count = crate::long_arg(args, 2);
+            let target = ref_arg(args, 3);
+            if position < 0 || count < 0 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            let path = vm
+                .read_string_field(this, vm.class_of(this), "path")
+                .unwrap_or_default();
+            let bytes = vm
+                .host
+                .filesystem()
+                .and_then(|fs| fs.read(&path))
+                .unwrap_or_default();
+            let start = (position as usize).min(bytes.len());
+            let end = (position.saturating_add(count) as usize).min(bytes.len());
+            let buffer = crate::buffer::byte_buffer_from_bytes(vm, &bytes[start..end])?;
+            let (class, method) =
+                vm.resolve_virtual_method(target, "write", "(Ljava/nio/ByteBuffer;)I")?;
+            let written = vm
+                .invoke_method(class, method, vec![Value::Ref(target), Value::Ref(buffer)])?
+                .as_int();
+            long(i64::from(written.max(0)))
+        },
+    ),
+    method(
+        "transferFrom",
+        "(Ljava/nio/channels/ReadableByteChannel;JJ)J",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let source = ref_arg(args, 1);
+            let position = crate::long_arg(args, 2);
+            let count = crate::long_arg(args, 3);
+            if position < 0 || count < 0 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            let capacity = count.min(i64::from(i32::MAX)) as usize;
+            let buffer = crate::buffer::byte_buffer_from_bytes(vm, &vec![0u8; capacity])?;
+            let (class, method) =
+                vm.resolve_virtual_method(source, "read", "(Ljava/nio/ByteBuffer;)I")?;
+            let read = vm
+                .invoke_method(class, method, vec![Value::Ref(source), Value::Ref(buffer)])?
+                .as_int();
+            if read <= 0 {
+                return long(0);
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(buffer, "flip", "()Ljava/nio/Buffer;")?;
+            vm.invoke_method(class, method, vec![Value::Ref(buffer)])?;
+            let bytes = crate::buffer::byte_buffer_consume_remaining(vm, buffer)?;
+            let path = vm
+                .read_string_field(this, vm.class_of(this), "path")
+                .unwrap_or_default();
+            let mut existing = vm
+                .host
+                .filesystem()
+                .and_then(|fs| fs.read(&path))
+                .unwrap_or_default();
+            let start = position as usize;
+            if existing.len() < start + bytes.len() {
+                existing.resize(start + bytes.len(), 0);
+            }
+            existing[start..start + bytes.len()].copy_from_slice(&bytes);
+            if !vm
+                .host
+                .filesystem()
+                .map(|fs| fs.write(&path, &existing, false))
+                .unwrap_or(false)
+            {
+                return Err(vm.throw_new("java/io/IOException", Some(&path)));
+            }
+            long(bytes.len() as i64)
+        },
+    ),
+    method(
+        "map",
+        "(Ljava/nio/channels/FileChannel$MapMode;JJ)Ljava/nio/MappedByteBuffer;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let position = crate::long_arg(args, 2);
+            let size = crate::long_arg(args, 3);
+            if position < 0 {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("Negative position"),
+                ));
+            }
+            if size < 0 {
+                return Err(
+                    vm.throw_new("java/lang/IllegalArgumentException", Some("Negative size"))
+                );
+            }
+            if size > i64::from(i32::MAX) {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("Size exceeds Integer.MAX_VALUE"),
+                ));
+            }
+            let path = vm
+                .read_string_field(this, vm.class_of(this), "path")
+                .unwrap_or_default();
+            let bytes = vm
+                .host
+                .filesystem()
+                .and_then(|fs| fs.read(&path))
+                .unwrap_or_default();
+            let start = (position as usize).min(bytes.len());
+            let end = (position.saturating_add(size) as usize).min(bytes.len());
+            object(crate::buffer::byte_buffer_from_bytes(
+                vm,
+                &bytes[start..end],
+            )?)
+        },
+    ),
     method("force", "(Z)V", ACC_PUBLIC, |_, _, _| void()),
     method("isOpen", "()Z", ACC_PUBLIC, |vm, _, args| {
         boolean(crate::lang::read_int_field(vm, receiver(args), "open") != 0)
@@ -5007,6 +5129,63 @@ pub(crate) const OJVM_FILE_CHANNEL: oxjvm_vm::NativeClass = class(
     ],
     &[],
     None,
+);
+
+const MAP_MODE_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "toString",
+    "()Ljava/lang/String;",
+    ACC_PUBLIC,
+    |vm, _, args| {
+        let name = vm
+            .read_string_field(receiver(args), vm.class_of(receiver(args)), "name")
+            .unwrap_or_default();
+        object(vm.make_string(&name)?)
+    },
+)];
+
+fn map_mode_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/nio/channels/FileChannel$MapMode")?;
+    for name in ["READ_ONLY", "READ_WRITE", "PRIVATE"] {
+        let instance = vm.new_instance(class)?;
+        vm.set_string_field(instance, class, "name", name)?;
+        vm.set_static_value(
+            class,
+            name,
+            "Ljava/nio/channels/FileChannel$MapMode;",
+            Value::Ref(instance),
+        );
+    }
+    Ok(())
+}
+
+pub(crate) const MAP_MODE: oxjvm_vm::NativeClass = class(
+    "java/nio/channels/FileChannel$MapMode",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field(
+            "READ_ONLY",
+            "Ljava/nio/channels/FileChannel$MapMode;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "READ_WRITE",
+            "Ljava/nio/channels/FileChannel$MapMode;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "PRIVATE",
+            "Ljava/nio/channels/FileChannel$MapMode;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+    ],
+    &MAP_MODE_METHODS,
+    Some(map_mode_clinit),
 );
 
 /// Link a stream-derived channel back to its owning stream so that seeking the
