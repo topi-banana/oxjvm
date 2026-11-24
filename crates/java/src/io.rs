@@ -9325,7 +9325,7 @@ pub(crate) const DATA_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
 // CharArrayReader / CharArrayWriter
 // -------------------------------------------------------------------------------------------
 
-const CHAR_ARRAY_READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+const CHAR_ARRAY_READER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method("<init>", "([C)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let array = ref_arg(args, 1);
@@ -9367,6 +9367,9 @@ const CHAR_ARRAY_READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     }),
     method("read", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        if read_int_field(vm, this, "closed") != 0 {
+            return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+        }
         let class = vm.class_of(this);
         let pos = read_int_field(vm, this, "pos");
         let count = read_int_field(vm, this, "count");
@@ -9382,6 +9385,9 @@ const CHAR_ARRAY_READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     }),
     method("read", "([CII)I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        if read_int_field(vm, this, "closed") != 0 {
+            return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+        }
         let class = vm.class_of(this);
         let target = ref_arg(args, 1);
         let offset = int_arg(args, 2);
@@ -9409,6 +9415,9 @@ const CHAR_ARRAY_READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     }),
     method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        if read_int_field(vm, this, "closed") != 0 {
+            return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+        }
         let pos = read_int_field(vm, this, "pos");
         let count = read_int_field(vm, this, "count");
         let available = i64::from((count - pos).max(0));
@@ -9419,6 +9428,9 @@ const CHAR_ARRAY_READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     }),
     method("ready", "()Z", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        if read_int_field(vm, this, "closed") != 0 {
+            return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+        }
         let pos = read_int_field(vm, this, "pos");
         let count = read_int_field(vm, this, "count");
         boolean(pos < count)
@@ -9426,14 +9438,24 @@ const CHAR_ARRAY_READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method("markSupported", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
     method("mark", "(I)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        if read_int_field(vm, this, "closed") != 0 {
+            return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+        }
         let pos = read_int_field(vm, this, "pos");
         write_int_field(vm, this, "markedPos", pos);
         void()
     }),
     method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        if read_int_field(vm, this, "closed") != 0 {
+            return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+        }
         let marked = read_int_field(vm, this, "markedPos");
         write_int_field(vm, this, "pos", marked);
+        void()
+    }),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        write_int_field(vm, receiver(args), "closed", 1);
         void()
     }),
 ];
@@ -9448,6 +9470,7 @@ pub(crate) const CHAR_ARRAY_READER: oxjvm_vm::NativeClass = class(
         field("pos", "I", ACC_PROTECTED, None),
         field("markedPos", "I", ACC_PROTECTED, None),
         field("count", "I", ACC_PROTECTED, None),
+        field("closed", "I", ACC_PRIVATE, None),
     ],
     &CHAR_ARRAY_READER_METHODS,
     None,
