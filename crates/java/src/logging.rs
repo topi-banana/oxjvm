@@ -1504,6 +1504,86 @@ pub(crate) const SIMPLE_FORMATTER: oxjvm_vm::NativeClass = class(
     None,
 );
 
+fn xml_escape(text: &str) -> String {
+    let mut out = String::new();
+    for ch in text.chars() {
+        match ch {
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '&' => out.push_str("&amp;"),
+            '"' => out.push_str("&quot;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+const XML_FORMATTER_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "format",
+        "(Ljava/util/logging/LogRecord;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let record = ref_arg(args, 1);
+            let message = record_message(vm, record);
+            let parameters = record_get_ref(vm, record, "parameters", "[Ljava/lang/Object;");
+            let message = crate::format::format_log_message(vm, &message, parameters)?;
+            let level = record_get_ref(vm, record, "level", "Ljava/util/logging/Level;");
+            let name = level_name(vm, level);
+            let millis = crate::lang::read_long_field(vm, record, "millis");
+            let sequence = crate::lang::read_long_field(vm, record, "sequence");
+            let mut text = String::from("<record>\n");
+            text.push_str(&format!("  <date>{millis}</date>\n"));
+            text.push_str(&format!("  <millis>{millis}</millis>\n"));
+            text.push_str(&format!("  <sequence>{sequence}</sequence>\n"));
+            text.push_str(&format!("  <level>{}</level>\n", xml_escape(&name)));
+            text.push_str(&format!("  <message>{}</message>\n", xml_escape(&message)));
+            text.push_str("</record>\n");
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "getHead",
+        "(Ljava/util/logging/Handler;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let handler = ref_arg(args, 1);
+            let mut encoding = String::from("UTF-8");
+            if !handler.is_null() {
+                let (class, method) =
+                    vm.resolve_virtual_method(handler, "getEncoding", "()Ljava/lang/String;")?;
+                let value = vm
+                    .invoke_method(class, method, vec![Value::Ref(handler)])?
+                    .as_ref();
+                if !value.is_null() {
+                    encoding = vm.string_or_empty(value);
+                }
+            }
+            let text = format!(
+                "<?xml version=\"1.0\" encoding=\"{encoding}\" standalone=\"no\"?>\n<!DOCTYPE log SYSTEM \"logger.dtd\">\n<log>\n"
+            );
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "getTail",
+        "(Ljava/util/logging/Handler;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| object(vm.make_string("</log>\n")?),
+    ),
+];
+
+pub(crate) const XML_FORMATTER: oxjvm_vm::NativeClass = class(
+    "java/util/logging/XMLFormatter",
+    Some("java/util/logging/Formatter"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &XML_FORMATTER_METHODS,
+    None,
+);
+
 fn format_throwable(vm: &Vm<'_>, thrown: ObjectRef) -> String {
     let class = vm.class_of(thrown);
     let name = vm.class_name(class).replace('/', ".");
@@ -1548,7 +1628,7 @@ fn handler_formatter(vm: &Vm<'_>, handler: ObjectRef) -> ObjectRef {
     record_get_ref(vm, handler, "formatter", "Ljava/util/logging/Formatter;")
 }
 
-const HANDLER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const HANDLER_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method("<init>", "()V", ACC_PROTECTED, |vm, _, args| {
         let this = receiver(args);
         // Default handler level is ALL-equivalent (null means "log everything").
@@ -1703,6 +1783,44 @@ const HANDLER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
             vm.invoke_method(class, method, vec![Value::Ref(filter), Value::Ref(record)])
         },
     ),
+    method(
+        "setEncoding",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let encoding = ref_arg(args, 1);
+            if !encoding.is_null() {
+                let charset_class = vm.resolve_class("java/nio/charset/Charset")?;
+                let (declaring, is_supported) = vm
+                    .find_method(charset_class, "isSupported", "(Ljava/lang/String;)Z")
+                    .ok_or_else(|| VmError::internal("Charset.isSupported missing"))?;
+                let supported = vm
+                    .invoke_method(declaring, is_supported, vec![Value::Ref(encoding)])?
+                    .as_int()
+                    != 0;
+                if !supported {
+                    let name = vm.string_or_empty(encoding);
+                    return Err(vm.throw_new("java/io/UnsupportedEncodingException", Some(&name)));
+                }
+            }
+            record_set_ref(vm, this, "encoding", "Ljava/lang/String;", encoding);
+            void()
+        },
+    ),
+    method(
+        "getEncoding",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(record_get_ref(
+                vm,
+                receiver(args),
+                "encoding",
+                "Ljava/lang/String;",
+            ))
+        },
+    ),
 ];
 
 fn binder_level(vm: &Vm<'_>, handler: ObjectRef) -> i32 {
@@ -1728,6 +1846,7 @@ pub(crate) const HANDLER: oxjvm_vm::NativeClass = class(
             None,
         ),
         field("filter", "Ljava/util/logging/Filter;", ACC_PRIVATE, None),
+        field("encoding", "Ljava/lang/String;", ACC_PRIVATE, None),
         field(
             "errorManager",
             "Ljava/util/logging/ErrorManager;",
@@ -1784,7 +1903,7 @@ fn publish_to_output(
     Ok(())
 }
 
-const STREAM_HANDLER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+const STREAM_HANDLER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     method(
         "<init>",
         "(Ljava/io/OutputStream;Ljava/util/logging/Formatter;)V",
@@ -1849,6 +1968,26 @@ const STREAM_HANDLER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
                 "Ljava/lang/Object;",
                 ref_arg(args, 1),
             );
+            void()
+        },
+    ),
+    method(
+        "setEncoding",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let handler_class = vm.resolve_class(HANDLER_CLASS)?;
+            let (declaring, set_encoding) = vm
+                .find_method(handler_class, "setEncoding", "(Ljava/lang/String;)V")
+                .ok_or_else(|| VmError::internal("Handler.setEncoding missing"))?;
+            vm.invoke_method(
+                declaring,
+                set_encoding,
+                vec![Value::Ref(this), Value::Ref(ref_arg(args, 1))],
+            )?;
+            let (flush_class, flush) = vm.resolve_virtual_method(this, "flush", "()V")?;
+            vm.invoke_method(flush_class, flush, vec![Value::Ref(this)])?;
             void()
         },
     ),
