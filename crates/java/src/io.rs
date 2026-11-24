@@ -4689,10 +4689,10 @@ fn output_stream_writer_out(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
         .unwrap_or(ObjectRef::NULL)
 }
 
-fn output_stream_writer_write_text(
+fn output_stream_writer_write_units(
     vm: &mut Vm<'_>,
     this: ObjectRef,
-    text: &str,
+    units: &[u16],
 ) -> Result<Value, VmError> {
     if read_int_field(vm, this, "closed") != 0 {
         return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
@@ -4704,15 +4704,54 @@ fn output_stream_writer_write_text(
     let canonical = vm
         .read_string_field(this, vm.class_of(this), "charset")
         .unwrap_or_default();
-    let bytes = if canonical.is_empty() {
-        text.as_bytes().to_vec()
-    } else {
-        crate::charset::encode(text, &canonical)
-    };
+    // The UTF-16 family writes every unit verbatim, so it needs no carry-over.
+    let utf16 = matches!(
+        canonical.as_str(),
+        "UTF-16" | "UnicodeBig" | "UnicodeLittle" | "UTF-16BE" | "UTF-16LE"
+    );
+    let pending = read_int_field(vm, this, "pending") as u16;
+    let mut effective: Vec<u16> = Vec::with_capacity(units.len() + 1);
+    if !utf16 && pending != 0 {
+        effective.push(pending);
+    }
+    effective.extend_from_slice(units);
+    // A trailing high surrogate is held back until the next write supplies its
+    // low half (or flush/close emits the replacement for it).
+    let mut new_pending = 0u16;
+    if !utf16
+        && effective
+            .last()
+            .is_some_and(|&u| (0xD800..0xDC00).contains(&u))
+    {
+        new_pending = effective.pop().unwrap_or(0);
+    }
+    write_int_field(vm, this, "pending", i32::from(new_pending));
+    let bytes = crate::charset::encode_units(&effective, &canonical);
     let array = io_bytes_array(vm, &bytes)?;
     let (class, method) = vm.resolve_virtual_method(out, "write", "([B)V")?;
     vm.invoke_method(class, method, vec![Value::Ref(out), Value::Ref(array)])?;
     void()
+}
+
+/// Emit the replacement for a leftover high surrogate held back by a write.
+fn output_stream_writer_flush_pending(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    let pending = read_int_field(vm, this, "pending") as u16;
+    if pending == 0 {
+        return Ok(());
+    }
+    write_int_field(vm, this, "pending", 0);
+    let out = output_stream_writer_out(vm, this);
+    if out.is_null() {
+        return Ok(());
+    }
+    let canonical = vm
+        .read_string_field(this, vm.class_of(this), "charset")
+        .unwrap_or_default();
+    let bytes = crate::charset::encode_units(&[pending], &canonical);
+    let array = io_bytes_array(vm, &bytes)?;
+    let (class, method) = vm.resolve_virtual_method(out, "write", "([B)V")?;
+    vm.invoke_method(class, method, vec![Value::Ref(out), Value::Ref(array)])?;
+    Ok(())
 }
 
 fn output_stream_writer_init(
@@ -4795,19 +4834,19 @@ const OUTPUT_STREAM_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         },
     ),
     method("write", "(I)V", ACC_PUBLIC, |vm, _, args| {
-        let unit = int_arg(args, 1) as u32 & 0xFFFF;
-        let ch = char::from_u32(unit).unwrap_or('\u{FFFD}');
-        let mut text = String::new();
-        text.push(ch);
-        output_stream_writer_write_text(vm, receiver(args), &text)
+        let unit = int_arg(args, 1) as u16;
+        output_stream_writer_write_units(vm, receiver(args), &[unit])
     }),
     method(
         "write",
         "(Ljava/lang/String;)V",
         ACC_PUBLIC,
         |vm, _, args| {
-            let text = vm.string_or_empty(ref_arg(args, 1));
-            output_stream_writer_write_text(vm, receiver(args), &text)
+            let units = vm
+                .string_utf16(ref_arg(args, 1))
+                .unwrap_or_default()
+                .to_vec();
+            output_stream_writer_write_units(vm, receiver(args), &units)
         },
     ),
     method("write", "([CII)V", ACC_PUBLIC, |vm, _, args| {
@@ -4819,8 +4858,7 @@ const OUTPUT_STREAM_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         for index in 0..length {
             units.push(vm.array_get(array, offset + index)?.as_int() as u16);
         }
-        let text = String::from_utf16_lossy(&units);
-        output_stream_writer_write_text(vm, receiver(args), &text)
+        output_stream_writer_write_units(vm, receiver(args), &units)
     }),
     method(
         "write",
@@ -4839,9 +4877,8 @@ const OUTPUT_STREAM_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
             {
                 return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
             }
-            let text =
-                String::from_utf16_lossy(&units[offset as usize..(offset + length) as usize]);
-            output_stream_writer_write_text(vm, receiver(args), &text)
+            let slice = units[offset as usize..(offset + length) as usize].to_vec();
+            output_stream_writer_write_units(vm, receiver(args), &slice)
         },
     ),
     method("flush", "()V", ACC_PUBLIC, |vm, _, args| {
@@ -4849,6 +4886,7 @@ const OUTPUT_STREAM_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         if read_int_field(vm, this, "closed") != 0 {
             return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
         }
+        output_stream_writer_flush_pending(vm, this)?;
         let out = output_stream_writer_out(vm, this);
         if !out.is_null() {
             let (class, method) = vm.resolve_virtual_method(out, "flush", "()V")?;
@@ -4861,6 +4899,7 @@ const OUTPUT_STREAM_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         if read_int_field(vm, this, "closed") != 0 {
             return void();
         }
+        output_stream_writer_flush_pending(vm, this)?;
         write_int_field(vm, this, "closed", 1);
         let out = output_stream_writer_out(vm, this);
         if !out.is_null() {
@@ -4881,6 +4920,7 @@ pub(crate) const OUTPUT_STREAM_WRITER: oxjvm_vm::NativeClass = class(
         field("charset", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("encoding", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("closed", "I", ACC_PRIVATE, None),
+        field("pending", "I", ACC_PRIVATE, None),
     ],
     &OUTPUT_STREAM_WRITER_METHODS,
     None,
