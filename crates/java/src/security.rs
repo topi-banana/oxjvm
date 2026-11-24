@@ -10876,7 +10876,16 @@ const DELEGATION_PERMISSION_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         "newPermissionCollection",
         "()Ljava/security/PermissionCollection;",
         ACC_PUBLIC,
-        |_, _, _| object(ObjectRef::NULL),
+        |vm, _, _| {
+            let class =
+                vm.resolve_class("javax/security/auth/kerberos/KrbDelegationPermissionCollection")?;
+            let instance = vm.new_instance(class)?;
+            let (declaring, ctor) = vm.find_method(class, "<init>", "()V").ok_or_else(|| {
+                VmError::internal("KrbDelegationPermissionCollection lacks <init>")
+            })?;
+            vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
+            object(instance)
+        },
     ),
 ];
 
@@ -10890,5 +10899,99 @@ pub(crate) const DELEGATION_PERMISSION: oxjvm_vm::NativeClass = class(
         field("service", "Ljava/lang/String;", ACC_PRIVATE, None),
     ],
     &DELEGATION_PERMISSION_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// javax.security.auth.kerberos DelegationPermission collection
+// -------------------------------------------------------------------------------------------
+
+fn dp_collection_contains(
+    vm: &mut Vm<'_>,
+    list: ObjectRef,
+    permission: ObjectRef,
+) -> Result<bool, VmError> {
+    for existing in crate::util::array_list_elements(vm, list) {
+        let (class, equals) =
+            vm.resolve_virtual_method(existing, "equals", "(Ljava/lang/Object;)Z")?;
+        let same = vm
+            .invoke_method(
+                class,
+                equals,
+                vec![Value::Ref(existing), Value::Ref(permission)],
+            )?
+            .as_int()
+            != 0;
+        if same {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+const DELEGATION_PERMISSION_COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let perms = new_array_list(vm)?;
+        set_ref_field(vm, this, "perms", "Ljava/util/ArrayList;", perms)?;
+        void()
+    }),
+    method(
+        "add",
+        "(Ljava/security/Permission;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let permission = ref_arg(args, 1);
+            let dp = vm.resolve_class("javax/security/auth/kerberos/DelegationPermission")?;
+            if permission.is_null() || !vm.is_instance(permission, dp) {
+                let display = permission_display(vm, permission)?;
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some(&alloc::format!("invalid permission: {display}")),
+                ));
+            }
+            ensure_collection_writable(vm, this)?;
+            let perms = ref_field(vm, this, "perms", "Ljava/util/ArrayList;");
+            if !dp_collection_contains(vm, perms, permission)? {
+                list_add(vm, perms, permission)?;
+            }
+            void()
+        },
+    ),
+    method(
+        "implies",
+        "(Ljava/security/Permission;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let permission = ref_arg(args, 1);
+            let dp = vm.resolve_class("javax/security/auth/kerberos/DelegationPermission")?;
+            if permission.is_null() || !vm.is_instance(permission, dp) {
+                return boolean(false);
+            }
+            let perms = ref_field(vm, this, "perms", "Ljava/util/ArrayList;");
+            boolean(dp_collection_contains(vm, perms, permission)?)
+        },
+    ),
+    method(
+        "elements",
+        "()Ljava/util/Enumeration;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let perms = ref_field(vm, receiver(args), "perms", "Ljava/util/ArrayList;");
+            let elements = crate::util::array_list_elements(vm, perms);
+            object(crate::util::new_enumeration(vm, &elements)?)
+        },
+    ),
+];
+
+pub(crate) const DELEGATION_PERMISSION_COLLECTION: oxjvm_vm::NativeClass = class(
+    "javax/security/auth/kerberos/KrbDelegationPermissionCollection",
+    Some("java/security/PermissionCollection"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[field("perms", "Ljava/util/ArrayList;", ACC_PRIVATE, None)],
+    &DELEGATION_PERMISSION_COLLECTION_METHODS,
     None,
 );
