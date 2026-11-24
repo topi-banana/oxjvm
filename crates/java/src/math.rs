@@ -313,7 +313,7 @@ pub(crate) fn log10(x: f64) -> f64 {
     if x.is_infinite() {
         return x;
     }
-    let approx = ln(x) / core::f64::consts::LN_10;
+    let approx = ln(x) / ln(10.0);
     let k = round(approx) as f64;
     if k.abs() <= 308.0 {
         let mut power = 1.0f64;
