@@ -2149,7 +2149,42 @@ const URL_CONNECTION_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
         "getContentType",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
-        |_, _, _| object(ObjectRef::NULL),
+        |vm, _, args| {
+            let this = receiver(args);
+            let protocol = url_connection_protocol(vm, this)?;
+            if protocol == "jar" {
+                let url = vm
+                    .read_ref_field(this, vm.class_of(this), "url", "Ljava/net/URL;")
+                    .unwrap_or(ObjectRef::NULL);
+                if url.is_null() {
+                    return object(ObjectRef::NULL);
+                }
+                let (file_class, file_method) =
+                    vm.resolve_virtual_method(url, "getFile", "()Ljava/lang/String;")?;
+                let file = vm
+                    .invoke_method(file_class, file_method, vec![Value::Ref(url)])?
+                    .as_ref();
+                let file = vm.string_or_empty(file);
+                // A jar URL's file is "<inner-url>!/<entry>"; an empty entry
+                // names the archive itself, whose type is x-java/jar.
+                if let Some(index) = file.find("!/") {
+                    let entry = &file[index + 2..];
+                    if !entry.is_empty() {
+                        let entry_ref = vm.make_string(entry)?;
+                        let (declaring, guess) = vm
+                            .find_method(
+                                vm.class_of(this),
+                                "guessContentTypeFromName",
+                                "(Ljava/lang/String;)Ljava/lang/String;",
+                            )
+                            .ok_or_else(|| VmError::internal("guessContentTypeFromName missing"))?;
+                        return vm.invoke_method(declaring, guess, vec![Value::Ref(entry_ref)]);
+                    }
+                }
+                return object(vm.make_string("x-java/jar")?);
+            }
+            object(ObjectRef::NULL)
+        },
     ),
     method(
         "getHeaderFields",
