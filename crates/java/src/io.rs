@@ -9,7 +9,10 @@ use oxjvm_classfile::flags::*;
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError, format};
 
 use crate::lang::{read_int_field, write_int_field};
-use crate::{boolean, class, field, int, int_arg, long, method, object, receiver, ref_arg, void};
+use crate::{
+    boolean, class, field, int, int_arg, long, method, method_throws, object, receiver, ref_arg,
+    void,
+};
 
 // -------------------------------------------------------------------------------------------
 // Exceptions
@@ -2550,7 +2553,7 @@ const WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     ),
     method("flush", "()V", ACC_PUBLIC, |_, _, _| void()),
     method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
-    method(
+    method_throws(
         "append",
         "(Ljava/lang/CharSequence;)Ljava/io/Writer;",
         ACC_PUBLIC,
@@ -2568,8 +2571,9 @@ const WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
             vm.invoke_method(wc, wm, vec![Value::Ref(this), Value::Ref(text)])?;
             object(this)
         },
+        &["java/io/IOException"],
     ),
-    method(
+    method_throws(
         "append",
         "(Ljava/lang/CharSequence;II)Ljava/io/Writer;",
         ACC_PUBLIC,
@@ -2598,8 +2602,9 @@ const WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
             vm.invoke_method(wc, wm, vec![Value::Ref(this), Value::Ref(text)])?;
             object(this)
         },
+        &["java/io/IOException"],
     ),
-    method(
+    method_throws(
         "append",
         "(C)Ljava/io/Writer;",
         ACC_PUBLIC,
@@ -2609,6 +2614,7 @@ const WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
             vm.invoke_method(wc, wm, vec![Value::Ref(this), Value::Int(int_arg(args, 1))])?;
             object(this)
         },
+        &["java/io/IOException"],
     ),
     method(
         "nullWriter",
@@ -4749,7 +4755,7 @@ const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
         write_int_field(vm, receiver(args), "closed", 1);
         void()
     }),
-    method(
+    method_throws(
         "append",
         "(Ljava/lang/CharSequence;)Ljava/io/Writer;",
         ACC_PUBLIC,
@@ -4764,8 +4770,9 @@ const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
             file_writer_write_text(vm, this, &text)?;
             object(this)
         },
+        &["java/io/IOException"],
     ),
-    method(
+    method_throws(
         "append",
         "(Ljava/lang/CharSequence;II)Ljava/io/Writer;",
         ACC_PUBLIC,
@@ -4792,8 +4799,9 @@ const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
             file_writer_write_text(vm, this, &vm.string_or_empty(text.as_ref()))?;
             object(this)
         },
+        &["java/io/IOException"],
     ),
-    method(
+    method_throws(
         "append",
         "(C)Ljava/io/Writer;",
         ACC_PUBLIC,
@@ -4805,6 +4813,7 @@ const FILE_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
             file_writer_write_text(vm, this, &text)?;
             object(this)
         },
+        &["java/io/IOException"],
     ),
 ];
 
@@ -6489,7 +6498,7 @@ fn buffered_writer_call(
     vm.invoke_method(class, method, full)
 }
 
-const BUFFERED_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const BUFFERED_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method(
         "<init>",
         "(Ljava/io/Writer;)V",
@@ -6593,85 +6602,6 @@ const BUFFERED_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         result?;
         void()
     }),
-    method(
-        "append",
-        "(Ljava/lang/CharSequence;)Ljava/io/Writer;",
-        ACC_PUBLIC,
-        |vm, _, args| {
-            let this = receiver(args);
-            let sequence = ref_arg(args, 1);
-            let text = if sequence.is_null() {
-                vm.make_string("null")?
-            } else {
-                let (class, method) =
-                    vm.resolve_virtual_method(sequence, "toString", "()Ljava/lang/String;")?;
-                vm.invoke_method(class, method, vec![Value::Ref(sequence)])?
-                    .as_ref()
-            };
-            buffered_writer_call(
-                vm,
-                this,
-                "write",
-                "(Ljava/lang/String;)V",
-                vec![Value::Ref(text)],
-            )?;
-            object(this)
-        },
-    ),
-    method(
-        "append",
-        "(Ljava/lang/CharSequence;II)Ljava/io/Writer;",
-        ACC_PUBLIC,
-        |vm, _, args| {
-            let this = receiver(args);
-            let mut sequence = ref_arg(args, 1);
-            if sequence.is_null() {
-                sequence = vm.make_string("null")?;
-            }
-            let (class, method) =
-                vm.resolve_virtual_method(sequence, "subSequence", "(II)Ljava/lang/CharSequence;")?;
-            let sub = vm.invoke_method(
-                class,
-                method,
-                vec![
-                    Value::Ref(sequence),
-                    Value::Int(int_arg(args, 2)),
-                    Value::Int(int_arg(args, 3)),
-                ],
-            )?;
-            let (class, method) =
-                vm.resolve_virtual_method(sub.as_ref(), "toString", "()Ljava/lang/String;")?;
-            let text = vm.invoke_method(class, method, vec![sub])?;
-            buffered_writer_call(
-                vm,
-                this,
-                "write",
-                "(Ljava/lang/String;)V",
-                vec![Value::Ref(text.as_ref())],
-            )?;
-            object(this)
-        },
-    ),
-    method(
-        "append",
-        "(C)Ljava/io/Writer;",
-        ACC_PUBLIC,
-        |vm, _, args| {
-            let this = receiver(args);
-            let ch = char::from_u32(int_arg(args, 1) as u32 & 0xFFFF).unwrap_or('\u{FFFD}');
-            let mut text = String::new();
-            text.push(ch);
-            let text = vm.make_string(&text)?;
-            buffered_writer_call(
-                vm,
-                this,
-                "write",
-                "(Ljava/lang/String;)V",
-                vec![Value::Ref(text)],
-            )?;
-            object(this)
-        },
-    ),
 ];
 
 pub(crate) const BUFFERED_WRITER: oxjvm_vm::NativeClass = class(
