@@ -11999,3 +11999,371 @@ pub(crate) const CONFIGURATION: oxjvm_vm::NativeClass = class(
     &CONFIGURATION_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// javax.security.auth.callback callbacks
+// -------------------------------------------------------------------------------------------
+
+fn cb_read_chars(vm: &mut Vm<'_>, array: ObjectRef) -> Result<Option<Vec<u16>>, VmError> {
+    if array.is_null() {
+        return Ok(None);
+    }
+    let len = vm.array_length(array)?;
+    let mut units = Vec::with_capacity(len);
+    for index in 0..len {
+        units.push(vm.array_get(array, index as i32)?.as_int() as u16);
+    }
+    Ok(Some(units))
+}
+
+fn cb_new_chars(vm: &mut Vm<'_>, units: &[u16]) -> Result<ObjectRef, VmError> {
+    let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Char, units.len())?;
+    for (index, unit) in units.iter().enumerate() {
+        vm.array_set(array, index as i32, Value::Int(i32::from(*unit)), false)?;
+    }
+    Ok(array)
+}
+
+fn cb_prompt(vm: &mut Vm<'_>, prompt: ObjectRef) -> Result<String, VmError> {
+    if prompt.is_null() {
+        return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+    }
+    let text = vm.string_or_empty(prompt);
+    if text.is_empty() {
+        return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+    }
+    Ok(text)
+}
+
+pub(crate) const CALLBACK: oxjvm_vm::NativeClass = class(
+    "javax/security/auth/callback/Callback",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const CALLBACK_HANDLER: oxjvm_vm::NativeClass = class(
+    "javax/security/auth/callback/CallbackHandler",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[method(
+        "handle",
+        "([Ljavax/security/auth/callback/Callback;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    )],
+    None,
+);
+
+const PASSWORD_CALLBACK_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;Z)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let prompt = cb_prompt(vm, ref_arg(args, 1))?;
+            set_string_field(vm, this, "prompt", &prompt)?;
+            crate::lang::write_int_field(vm, this, "echoOn", args[2].as_int());
+            void()
+        },
+    ),
+    method(
+        "getPrompt",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "prompt",
+                "Ljava/lang/String;",
+            ))
+        },
+    ),
+    method("isEchoOn", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "echoOn") != 0)
+    }),
+    method("setPassword", "([C)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let units = cb_read_chars(vm, ref_arg(args, 1))?;
+        let copy = match units {
+            Some(units) => cb_new_chars(vm, &units)?,
+            None => ObjectRef::NULL,
+        };
+        set_ref_field(vm, this, "inputPassword", "[C", copy)?;
+        void()
+    }),
+    method("getPassword", "()[C", ACC_PUBLIC, |vm, _, args| {
+        let password = ref_field(vm, receiver(args), "inputPassword", "[C");
+        let units = cb_read_chars(vm, password)?;
+        match units {
+            Some(units) => object(cb_new_chars(vm, &units)?),
+            None => object(ObjectRef::NULL),
+        }
+    }),
+    method("clearPassword", "()V", ACC_PUBLIC, |vm, _, args| {
+        set_ref_field(vm, receiver(args), "inputPassword", "[C", ObjectRef::NULL)?;
+        void()
+    }),
+];
+
+pub(crate) const PASSWORD_CALLBACK: oxjvm_vm::NativeClass = class(
+    "javax/security/auth/callback/PasswordCallback",
+    Some("java/lang/Object"),
+    &["javax/security/auth/callback/Callback"],
+    ACC_PUBLIC,
+    &[
+        field("prompt", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("echoOn", "Z", ACC_PRIVATE, None),
+        field("inputPassword", "[C", ACC_PRIVATE, None),
+    ],
+    &PASSWORD_CALLBACK_METHODS,
+    None,
+);
+
+const NAME_CALLBACK_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let prompt = cb_prompt(vm, ref_arg(args, 1))?;
+            set_string_field(vm, receiver(args), "prompt", &prompt)?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let prompt = cb_prompt(vm, ref_arg(args, 1))?;
+            set_string_field(vm, this, "prompt", &prompt)?;
+            let default = ref_arg(args, 2);
+            if !default.is_null() {
+                let text = vm.string_or_empty(default);
+                if text.is_empty() {
+                    return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+                }
+                set_string_field(vm, this, "defaultName", &text)?;
+            }
+            void()
+        },
+    ),
+    method(
+        "getPrompt",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "prompt",
+                "Ljava/lang/String;",
+            ))
+        },
+    ),
+    method(
+        "getDefaultName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "defaultName",
+                "Ljava/lang/String;",
+            ))
+        },
+    ),
+    method(
+        "setName",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            set_ref_field(
+                vm,
+                receiver(args),
+                "name",
+                "Ljava/lang/String;",
+                ref_arg(args, 1),
+            )?;
+            void()
+        },
+    ),
+    method(
+        "getName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| object(ref_field(vm, receiver(args), "name", "Ljava/lang/String;")),
+    ),
+];
+
+pub(crate) const NAME_CALLBACK: oxjvm_vm::NativeClass = class(
+    "javax/security/auth/callback/NameCallback",
+    Some("java/lang/Object"),
+    &["javax/security/auth/callback/Callback"],
+    ACC_PUBLIC,
+    &[
+        field("prompt", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("defaultName", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
+    ],
+    &NAME_CALLBACK_METHODS,
+    None,
+);
+
+const TEXT_INPUT_CALLBACK_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let prompt = cb_prompt(vm, ref_arg(args, 1))?;
+            set_string_field(vm, receiver(args), "prompt", &prompt)?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let prompt = cb_prompt(vm, ref_arg(args, 1))?;
+            set_string_field(vm, this, "prompt", &prompt)?;
+            let default = ref_arg(args, 2);
+            if !default.is_null() {
+                let text = vm.string_or_empty(default);
+                if text.is_empty() {
+                    return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+                }
+                set_string_field(vm, this, "defaultText", &text)?;
+            }
+            void()
+        },
+    ),
+    method(
+        "getPrompt",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "prompt",
+                "Ljava/lang/String;",
+            ))
+        },
+    ),
+    method(
+        "getDefaultText",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "defaultText",
+                "Ljava/lang/String;",
+            ))
+        },
+    ),
+    method(
+        "setText",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            set_ref_field(
+                vm,
+                receiver(args),
+                "text",
+                "Ljava/lang/String;",
+                ref_arg(args, 1),
+            )?;
+            void()
+        },
+    ),
+    method(
+        "getText",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| object(ref_field(vm, receiver(args), "text", "Ljava/lang/String;")),
+    ),
+];
+
+pub(crate) const TEXT_INPUT_CALLBACK: oxjvm_vm::NativeClass = class(
+    "javax/security/auth/callback/TextInputCallback",
+    Some("java/lang/Object"),
+    &["javax/security/auth/callback/Callback"],
+    ACC_PUBLIC,
+    &[
+        field("prompt", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("defaultText", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("text", "Ljava/lang/String;", ACC_PRIVATE, None),
+    ],
+    &TEXT_INPUT_CALLBACK_METHODS,
+    None,
+);
+
+const TEXT_OUTPUT_CALLBACK_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method(
+        "<init>",
+        "(ILjava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let message_type = args[1].as_int();
+            if !(0..=2).contains(&message_type) {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            let message = ref_arg(args, 2);
+            if message.is_null() {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            crate::lang::write_int_field(vm, this, "messageType", message_type);
+            set_ref_field(vm, this, "message", "Ljava/lang/String;", message)?;
+            void()
+        },
+    ),
+    method("getMessageType", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(
+            vm,
+            receiver(args),
+            "messageType",
+        ))
+    }),
+    method(
+        "getMessage",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "message",
+                "Ljava/lang/String;",
+            ))
+        },
+    ),
+];
+
+pub(crate) const TEXT_OUTPUT_CALLBACK: oxjvm_vm::NativeClass = class(
+    "javax/security/auth/callback/TextOutputCallback",
+    Some("java/lang/Object"),
+    &["javax/security/auth/callback/Callback"],
+    ACC_PUBLIC,
+    &[
+        field("messageType", "I", ACC_PRIVATE, None),
+        field("message", "Ljava/lang/String;", ACC_PRIVATE, None),
+    ],
+    &TEXT_OUTPUT_CALLBACK_METHODS,
+    None,
+);
