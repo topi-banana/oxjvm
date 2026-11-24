@@ -7862,7 +7862,41 @@ pub(crate) const SSLE_ENGINE: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const SSL_PARAMETERS_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+/// Clone a `String[]` of named groups, rejecting null/blank/duplicate
+/// elements with IllegalArgumentException as the JDK does.
+fn ssl_named_groups_clone(vm: &mut Vm<'_>, array: ObjectRef) -> Result<ObjectRef, VmError> {
+    let len = vm.array_length(array)?;
+    let string_class = vm.resolve_class("java/lang/String")?;
+    let copy = vm.allocate_object_array(string_class, len)?;
+    let mut seen: Vec<String> = Vec::new();
+    for i in 0..len {
+        let element = vm.array_get(array, i as i32)?.as_ref();
+        if element.is_null() {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("Named group must not be null or empty"),
+            ));
+        }
+        let text = vm.string_or_empty(element);
+        if text.is_empty() {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("Named group must not be null or empty"),
+            ));
+        }
+        if seen.contains(&text) {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("Duplicate named group"),
+            ));
+        }
+        seen.push(text);
+        vm.array_set_ref(copy, i, element)?;
+    }
+    Ok(copy)
+}
+
+const SSL_PARAMETERS_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
     method("<init>", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "<init>",
@@ -7937,6 +7971,36 @@ const SSL_PARAMETERS_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method("getEnableRetransmissions", "()Z", ACC_PUBLIC, |_, _, _| {
         boolean(true)
     }),
+    method(
+        "getNamedGroups",
+        "()[Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let groups = ref_field(vm, receiver(args), "namedGroups", "[Ljava/lang/String;");
+            if groups.is_null() {
+                return object(ObjectRef::NULL);
+            }
+            object(ssl_named_groups_clone(vm, groups)?)
+        },
+    ),
+    method(
+        "setNamedGroups",
+        "([Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let groups = ref_arg(args, 1);
+            let stored = if groups.is_null() {
+                ObjectRef::NULL
+            } else {
+                ssl_named_groups_clone(vm, groups)?
+            };
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "namedGroups", "[Ljava/lang/String;")?;
+            vm.set_instance_ref(this, declaring, field, stored);
+            void()
+        },
+    ),
 ];
 
 pub(crate) const SSL_PARAMETERS: oxjvm_vm::NativeClass = class(
@@ -7947,6 +8011,7 @@ pub(crate) const SSL_PARAMETERS: oxjvm_vm::NativeClass = class(
     &[
         field("cipherSuites", "[Ljava/lang/String;", ACC_PRIVATE, None),
         field("protocols", "[Ljava/lang/String;", ACC_PRIVATE, None),
+        field("namedGroups", "[Ljava/lang/String;", ACC_PRIVATE, None),
     ],
     &SSL_PARAMETERS_METHODS,
     None,
