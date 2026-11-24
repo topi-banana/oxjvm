@@ -10687,3 +10687,208 @@ pub(crate) const CREDENTIAL_NOT_FOUND_EXCEPTION: oxjvm_vm::NativeClass = class(
     &[],
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// javax.security.auth.kerberos.DelegationPermission
+// -------------------------------------------------------------------------------------------
+
+/// `StringTokenizer(target, "\"", true)`: runs of non-quote characters plus
+/// each individual quote as its own token (empty runs are skipped).
+fn dp_tokenize(target: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for ch in target.chars() {
+        if ch == '"' {
+            if !current.is_empty() {
+                tokens.push(core::mem::take(&mut current));
+            }
+            tokens.push(String::from("\""));
+        } else {
+            current.push(ch);
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+fn dp_init(vm: &mut Vm<'_>, this: ObjectRef, target: &str) -> Result<(), VmError> {
+    let tokens = dp_tokenize(target);
+    let mut illegal = |reason: &str| -> VmError {
+        vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some(&alloc::format!("Illegal input [{target}]: {reason}")),
+        )
+    };
+    let get = |index: usize| -> Option<&String> { tokens.get(index) };
+    if get(0).map(String::as_str) != Some("\"") {
+        return Err(illegal("improperly quoted"));
+    }
+    let subordinate = match get(1) {
+        Some(text) => text,
+        None => return Err(illegal("not enough input")),
+    };
+    if subordinate == "\"" {
+        return Err(illegal("bad subordinate name"));
+    }
+    if get(2).is_none() {
+        return Err(illegal("not enough input"));
+    }
+    match get(3) {
+        Some(sep) if sep.trim().is_empty() => {}
+        Some(_) => return Err(illegal("improperly separated")),
+        None => return Err(illegal("not enough input")),
+    }
+    if get(4).is_none() {
+        return Err(illegal("not enough input"));
+    }
+    let service = match get(5) {
+        Some(text) => text,
+        None => return Err(illegal("not enough input")),
+    };
+    if service == "\"" {
+        return Err(illegal("bad service name"));
+    }
+    if get(6).is_none() {
+        return Err(illegal("not enough input"));
+    }
+    if tokens.len() > 7 {
+        return Err(illegal("extra input"));
+    }
+    set_string_field(vm, this, "subordinate", subordinate)?;
+    set_string_field(vm, this, "service", service)?;
+    Ok(())
+}
+
+fn dp_hash(vm: &Vm<'_>, this: ObjectRef) -> i32 {
+    let subordinate = ref_field(vm, this, "subordinate", "Ljava/lang/String;");
+    let service = ref_field(vm, this, "service", "Ljava/lang/String;");
+    let sub_hash = vm
+        .string_utf16(subordinate)
+        .map(crate::lang::java_string_hash)
+        .unwrap_or(0);
+    let svc_hash = vm
+        .string_utf16(service)
+        .map(crate::lang::java_string_hash)
+        .unwrap_or(0);
+    // Objects.hash(subordinate, service)
+    31i32
+        .wrapping_mul(31i32.wrapping_add(sub_hash))
+        .wrapping_add(svc_hash)
+}
+
+const DELEGATION_PERMISSION_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let name_ref = ref_arg(args, 1);
+            let parent = vm.resolve_class("java/security/Permission")?;
+            let (declaring, ctor) = vm
+                .find_method(parent, "<init>", "(Ljava/lang/String;)V")
+                .ok_or_else(|| VmError::internal("Permission lacks <init>"))?;
+            vm.invoke_method(
+                declaring,
+                ctor,
+                vec![Value::Ref(this), Value::Ref(name_ref)],
+            )?;
+            if name_ref.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let name = vm.string_or_empty(name_ref);
+            dp_init(vm, this, &name)?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let name_ref = ref_arg(args, 1);
+            let parent = vm.resolve_class("java/security/Permission")?;
+            let (declaring, ctor) = vm
+                .find_method(parent, "<init>", "(Ljava/lang/String;)V")
+                .ok_or_else(|| VmError::internal("Permission lacks <init>"))?;
+            vm.invoke_method(
+                declaring,
+                ctor,
+                vec![Value::Ref(this), Value::Ref(name_ref)],
+            )?;
+            if name_ref.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let name = vm.string_or_empty(name_ref);
+            dp_init(vm, this, &name)?;
+            void()
+        },
+    ),
+    method(
+        "implies",
+        "(Ljava/security/Permission;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let class = vm.resolve_class("javax/security/auth/kerberos/DelegationPermission")?;
+            let (declaring, equals) = vm
+                .find_method(class, "equals", "(Ljava/lang/Object;)Z")
+                .ok_or_else(|| VmError::internal("DelegationPermission lacks equals"))?;
+            let result =
+                vm.invoke_method(declaring, equals, vec![Value::Ref(this), Value::Ref(other)])?;
+            Ok(result)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if this == other {
+                return boolean(true);
+            }
+            let class = vm.resolve_class("javax/security/auth/kerberos/DelegationPermission")?;
+            if other.is_null() || !vm.is_instance(other, class) {
+                return boolean(false);
+            }
+            let same_sub =
+                string_field(vm, this, "subordinate") == string_field(vm, other, "subordinate");
+            let same_svc = string_field(vm, this, "service") == string_field(vm, other, "service");
+            boolean(same_sub && same_svc)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(dp_hash(vm, receiver(args)))
+    }),
+    method(
+        "getActions",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| object(vm.make_string("")?),
+    ),
+    method(
+        "newPermissionCollection",
+        "()Ljava/security/PermissionCollection;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+];
+
+pub(crate) const DELEGATION_PERMISSION: oxjvm_vm::NativeClass = class(
+    "javax/security/auth/kerberos/DelegationPermission",
+    Some("java/security/Permission"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("subordinate", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("service", "Ljava/lang/String;", ACC_PRIVATE, None),
+    ],
+    &DELEGATION_PERMISSION_METHODS,
+    None,
+);
