@@ -2330,7 +2330,7 @@ fn char_numeric_value(unit: u32) -> i32 {
 /// Simple (single-character) uppercase mapping used by `Character.toUpperCase`:
 /// full mappings that expand to several characters (ß → SS, ﬁ → FI) have no
 /// simple form, so the character is returned unchanged.
-fn char_simple_upper(c: char) -> char {
+pub(crate) fn char_simple_upper(c: char) -> char {
     // Greek letters with ypogegrammeni: the full uppercase expands to capital + Ι,
     // but the simple mapping is the precomposed capital with prosgegrammeni.
     match c {
@@ -2349,7 +2349,7 @@ fn char_simple_upper(c: char) -> char {
 
 /// Simple lowercase mapping; U+0130 is the one character whose full lowercase
 /// expands (i + combining dot) but whose simple mapping is a single character.
-fn char_simple_lower(c: char) -> char {
+pub(crate) fn char_simple_lower(c: char) -> char {
     if c == '\u{0130}' {
         return 'i';
     }

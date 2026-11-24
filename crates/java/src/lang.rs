@@ -2926,9 +2926,13 @@ fn string_equals_ignore_case(
     if other.is_null() {
         return boolean(false);
     }
-    let this = vm.string_or_empty(receiver(args));
-    let other = vm.string_or_empty(other);
-    boolean(this.eq_ignore_ascii_case(&other))
+    let this = receiver(args);
+    let this_len = vm.string_utf16(this).map(<[u16]>::len).unwrap_or(0);
+    let other_len = vm.string_utf16(other).map(<[u16]>::len).unwrap_or(0);
+    if this_len != other_len {
+        return boolean(false);
+    }
+    string_region_matches(vm, this, other, 0, 0, this_len as i32, true)
 }
 
 /// `String.contentEquals(CharSequence/StringBuffer)`: compare against the argument's `toString()`.
@@ -3426,17 +3430,17 @@ fn string_region_matches(
         if !ignore_case {
             return boolean(false);
         }
-        let au = char::from_u32(u32::from(a))
-            .map_or(a, |ch| ch.to_uppercase().next().map_or(a, |c| c as u16));
-        let bu = char::from_u32(u32::from(b))
-            .map_or(b, |ch| ch.to_uppercase().next().map_or(b, |c| c as u16));
+        let au =
+            char::from_u32(u32::from(a)).map_or(a, |ch| crate::boxed::char_simple_upper(ch) as u16);
+        let bu =
+            char::from_u32(u32::from(b)).map_or(b, |ch| crate::boxed::char_simple_upper(ch) as u16);
         if au == bu {
             continue;
         }
         let al = char::from_u32(u32::from(au))
-            .map_or(au, |ch| ch.to_lowercase().next().map_or(au, |c| c as u16));
+            .map_or(au, |ch| crate::boxed::char_simple_lower(ch) as u16);
         let bl = char::from_u32(u32::from(bu))
-            .map_or(bu, |ch| ch.to_lowercase().next().map_or(bu, |c| c as u16));
+            .map_or(bu, |ch| crate::boxed::char_simple_lower(ch) as u16);
         if al != bl {
             return boolean(false);
         }
