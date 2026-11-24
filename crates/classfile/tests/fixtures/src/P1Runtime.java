@@ -15,7 +15,7 @@ public class P1Runtime {
 
     public static String versionList() {
         java.util.List<Integer> components = Runtime.version().version();
-        return components.size() + ":" + components.get(0) + ":" + components.get(3);
+        return components.size() + ":" + components.get(0);
     }
 
     public static String compare() {

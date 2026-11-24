@@ -7432,9 +7432,11 @@ fn system_class(vm: &mut Vm<'_>) -> Result<ClassId, VmError> {
 }
 
 /// The VM's well-known default system properties.
-pub(crate) const SYSTEM_PROPERTY_DEFAULTS: [(&str, &str); 35] = [
+pub(crate) const SYSTEM_PROPERTY_DEFAULTS: [(&str, &str); 37] = [
     ("java.version", "27"),
     ("java.specification.version", "27"),
+    ("java.runtime.version", "27+35"),
+    ("java.runtime.name", "OpenJDK Runtime Environment"),
     ("java.specification.name", "Java Platform API Specification"),
     ("java.specification.vendor", "Oracle Corporation"),
     ("java.vm.specification.version", "27"),
@@ -7802,88 +7804,95 @@ const RUNTIME_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     ),
 ];
 
-/// `Runtime.version()`: the JDK 27 GA version, as a `Runtime$Version`.
+/// `Runtime.version()`: the emulated JDK release, as a `Runtime$Version`.
 fn runtime_version(vm: &mut Vm<'_>) -> Result<Value, VmError> {
-    let class = vm.resolve_class("java/lang/Runtime$Version")?;
-    let instance = vm.new_instance(class)?;
-    for (name, value) in [("feature", 27), ("interim", 0), ("update", 0), ("patch", 0)] {
-        if let Some((declaring, field)) = vm.find_field_opt(class, name, "I") {
-            vm.set_instance_int(instance, declaring, field, value);
-        }
-    }
+    let instance = rv_parse_str(vm, "27+35")?;
     object(instance)
 }
 
-const RUNTIME_VERSION_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+const RUNTIME_VERSION_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method("feature", "()I", ACC_PUBLIC, |vm, _, args| {
-        int(read_int_field(vm, receiver(args), "feature"))
+        int(rv_element(vm, receiver(args), 0))
     }),
     method("major", "()I", ACC_PUBLIC, |vm, _, args| {
-        int(read_int_field(vm, receiver(args), "feature"))
+        int(rv_element(vm, receiver(args), 0))
     }),
     method("interim", "()I", ACC_PUBLIC, |vm, _, args| {
-        int(read_int_field(vm, receiver(args), "interim"))
+        int(rv_element(vm, receiver(args), 1))
     }),
     method("minor", "()I", ACC_PUBLIC, |vm, _, args| {
-        int(read_int_field(vm, receiver(args), "interim"))
+        int(rv_element(vm, receiver(args), 1))
     }),
     method("update", "()I", ACC_PUBLIC, |vm, _, args| {
-        int(read_int_field(vm, receiver(args), "update"))
+        int(rv_element(vm, receiver(args), 2))
     }),
     method("security", "()I", ACC_PUBLIC, |vm, _, args| {
-        int(read_int_field(vm, receiver(args), "update"))
+        int(rv_element(vm, receiver(args), 2))
     }),
     method("patch", "()I", ACC_PUBLIC, |vm, _, args| {
-        int(read_int_field(vm, receiver(args), "patch"))
+        int(rv_element(vm, receiver(args), 3))
     }),
-    // A GA release has no pre-release or build identifiers.
-    method("pre", "()Ljava/util/Optional;", ACC_PUBLIC, |vm, _, _| {
-        empty_optional(vm)
-    }),
-    method("build", "()Ljava/util/Optional;", ACC_PUBLIC, |vm, _, _| {
-        empty_optional(vm)
-    }),
+    method(
+        "pre",
+        "()Ljava/util/Optional;",
+        ACC_PUBLIC,
+        |vm, _, args| object(rv_opt(vm, receiver(args), "pre")),
+    ),
+    method(
+        "build",
+        "()Ljava/util/Optional;",
+        ACC_PUBLIC,
+        |vm, _, args| object(rv_opt(vm, receiver(args), "build")),
+    ),
     method(
         "optional",
         "()Ljava/util/Optional;",
         ACC_PUBLIC,
-        |vm, _, _| empty_optional(vm),
+        |vm, _, args| object(rv_opt(vm, receiver(args), "optional")),
     ),
     method(
         "version",
         "()Ljava/util/List;",
         ACC_PUBLIC,
-        runtime_version_components,
+        |vm, _, args| object(rv_list(vm, receiver(args))),
     ),
     method(
         "toString",
         "()Ljava/lang/String;",
         ACC_PUBLIC,
-        runtime_version_to_string,
+        |vm, _, args| {
+            let text = rv_to_string(vm, receiver(args))?;
+            object(text)
+        },
     ),
     method(
         "equals",
         "(Ljava/lang/Object;)Z",
         ACC_PUBLIC,
         |vm, _, args| {
+            let this = receiver(args);
             let other = ref_arg(args, 1);
-            if other.is_null() {
+            if !rv_equals_ignore_opt(vm, this, other)? {
                 return boolean(false);
             }
-            if vm.class_of(receiver(args)) != vm.class_of(other) {
-                return boolean(false);
-            }
-            boolean(runtime_version_compare(vm, receiver(args), other) == 0)
+            let a = rv_opt(vm, this, "optional");
+            let b = rv_opt(vm, other, "optional");
+            let (declaring, method) =
+                vm.resolve_virtual_method(a, "equals", "(Ljava/lang/Object;)Z")?;
+            vm.invoke_method(declaring, method, vec![Value::Ref(a), Value::Ref(b)])
+        },
+    ),
+    method(
+        "equalsIgnoreOptional",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let result = rv_equals_ignore_opt(vm, receiver(args), ref_arg(args, 1))?;
+            boolean(result)
         },
     ),
     method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
-        let this = receiver(args);
-        let mut hash = 1i32;
-        for name in ["feature", "interim", "update", "patch"] {
-            hash = hash
-                .wrapping_mul(31)
-                .wrapping_add(read_int_field(vm, this, name));
-        }
+        let hash = rv_hash(vm, receiver(args))?;
         int(hash)
     }),
     method(
@@ -7895,117 +7904,422 @@ const RUNTIME_VERSION_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
             if other.is_null() {
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
-            int(runtime_version_compare(vm, receiver(args), other))
+            let result = rv_compare(vm, receiver(args), other, false)?;
+            int(result)
+        },
+    ),
+    method(
+        "compareToIgnoreOptional",
+        "(Ljava/lang/Runtime$Version;)I",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = ref_arg(args, 1);
+            if other.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let result = rv_compare(vm, receiver(args), other, true)?;
+            int(result)
         },
     ),
     method(
         "parse",
         "(Ljava/lang/String;)Ljava/lang/Runtime$Version;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| runtime_version_parse(vm, args),
+        |vm, _, args| {
+            let text = ref_arg(args, 0);
+            if text.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let text = vm.string_or_empty(text);
+            let instance = rv_parse_str(vm, &text)?;
+            object(instance)
+        },
     ),
 ];
 
-/// An empty `java.util.Optional` (the value field defaults to null).
-fn empty_optional(vm: &mut Vm<'_>) -> Result<Value, VmError> {
-    let class = vm.resolve_class("java/util/Optional")?;
-    let instance = vm.new_instance(class)?;
-    object(instance)
+fn rv_list(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "version", "Ljava/util/List;")
+        .unwrap_or(ObjectRef::NULL)
 }
 
-/// `Runtime$Version.parse`: "27", "27.0.1", "27-ea+5" ...
-fn runtime_version_parse(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
-    let text = string_arg(vm, args[0])?;
-    let (numbers, _) = match text.split_once('-') {
-        Some((numbers, rest)) => (numbers, rest),
-        None => match text.split_once('+') {
-            Some((numbers, rest)) => (numbers, rest),
-            None => (text.as_str(), ""),
-        },
-    };
-    let mut parts = Vec::new();
-    for part in numbers.split('.') {
+fn rv_opt(vm: &Vm<'_>, this: ObjectRef, name: &str) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), name, "Ljava/util/Optional;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn rv_element(vm: &Vm<'_>, this: ObjectRef, index: usize) -> i32 {
+    let elements = crate::util::array_list_elements(vm, rv_list(vm, this));
+    elements
+        .get(index)
+        .map(|&element| crate::boxed::read_value_int(vm, element))
+        .unwrap_or(0)
+}
+
+fn rv_set_ref(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    value: ObjectRef,
+) -> Result<(), VmError> {
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, name, descriptor)?;
+    vm.set_instance_ref(this, declaring, field, value);
+    Ok(())
+}
+
+/// An `Optional` holding `value` (null means empty).
+fn rv_optional(vm: &mut Vm<'_>, value: ObjectRef) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/Optional")?;
+    let instance = vm.new_instance(class)?;
+    rv_set_ref(vm, instance, "value", "Ljava/lang/Object;", value)?;
+    Ok(instance)
+}
+
+fn rv_invalid(vm: &mut Vm<'_>, text: &str) -> VmError {
+    vm.throw_new(
+        "java/lang/IllegalArgumentException",
+        Some(&alloc::format!("Invalid version string: '{text}'")),
+    )
+}
+
+fn rv_number_format(vm: &mut Vm<'_>, text: &str) -> VmError {
+    vm.throw_new(
+        "java/lang/NumberFormatException",
+        Some(&alloc::format!("For input string: \"{text}\"")),
+    )
+}
+
+/// Whether an optional-component body matches `[-a-zA-Z0-9.]+`.
+fn rv_opt_valid(text: &str) -> bool {
+    !text.is_empty()
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
+}
+
+/// `Runtime$Version.parse`: `$VNUM(-$PRE)?(\+($BUILD)?(\-$OPT)?)?` with the
+/// JDK's leading-zero and trailing-zero restrictions on the version number.
+fn rv_parse_str(vm: &mut Vm<'_>, text: &str) -> Result<ObjectRef, VmError> {
+    let vnum_end = text.find(['-', '+']).unwrap_or(text.len());
+    let vnum = &text[..vnum_end];
+    let mut rest = &text[vnum_end..];
+    let parts: Vec<&str> = vnum.split('.').collect();
+    let mut numbers = Vec::new();
+    for (index, part) in parts.iter().enumerate() {
+        let nonzero = part
+            .as_bytes()
+            .first()
+            .is_some_and(|b| (b'1'..=b'9').contains(b))
+            && part.bytes().all(|b| b.is_ascii_digit());
+        let zero = *part == "0" && index > 0 && index + 1 < parts.len();
+        if !nonzero && !zero {
+            return Err(rv_invalid(vm, text));
+        }
         match part.parse::<i32>() {
-            Ok(value) => parts.push(value),
-            Err(_) => {
-                return Err(vm.throw_new(
-                    "java/lang/IllegalArgumentException",
-                    Some(&alloc::format!("Invalid version string: {text}")),
-                ));
-            }
+            Ok(value) => numbers.push(value),
+            Err(_) => return Err(rv_number_format(vm, part)),
         }
     }
-    if parts.is_empty() || parts.len() > 4 {
-        return Err(vm.throw_new(
-            "java/lang/IllegalArgumentException",
-            Some(&alloc::format!("Invalid version string: {text}")),
-        ));
+    let mut pre: Option<&str> = None;
+    let mut build: Option<i32> = None;
+    let mut opt: Option<&str> = None;
+    let mut plus = false;
+    if let Some(after) = rest.strip_prefix('-') {
+        let end = after
+            .find(|c: char| !c.is_ascii_alphanumeric())
+            .unwrap_or(after.len());
+        if end == 0 {
+            return Err(rv_invalid(vm, text));
+        }
+        pre = Some(&after[..end]);
+        rest = &after[end..];
+    }
+    if let Some(after) = rest.strip_prefix('+') {
+        plus = true;
+        let end = after
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(after.len());
+        if end > 0 {
+            let digits = &after[..end];
+            if digits.len() > 1 && digits.starts_with('0') {
+                return Err(rv_invalid(vm, text));
+            }
+            match digits.parse::<i32>() {
+                Ok(value) => build = Some(value),
+                Err(_) => return Err(rv_number_format(vm, digits)),
+            }
+        }
+        rest = &after[end..];
+        if let Some(after) = rest.strip_prefix('-') {
+            if !rv_opt_valid(after) {
+                return Err(rv_invalid(vm, text));
+            }
+            opt = Some(after);
+            rest = "";
+        }
+    } else if let Some(after) = rest.strip_prefix('-') {
+        if !rv_opt_valid(after) {
+            return Err(rv_invalid(vm, text));
+        }
+        opt = Some(after);
+        rest = "";
+    }
+    if !rest.is_empty() {
+        return Err(rv_invalid(vm, text));
+    }
+    if build.is_none() {
+        if plus {
+            if opt.is_some() {
+                if pre.is_some() {
+                    return Err(vm.throw_new(
+                        "java/lang/IllegalArgumentException",
+                        Some(&alloc::format!(
+                            "'+' found with pre-release and optional components: '{text}'"
+                        )),
+                    ));
+                }
+            } else {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some(&alloc::format!(
+                        "'+' found with neither build or optional components: '{text}'"
+                    )),
+                ));
+            }
+        } else if opt.is_some() && pre.is_none() {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some(&alloc::format!(
+                    "optional component must be preceded by a pre-release component or '+': '{text}'"
+                )),
+            ));
+        }
     }
     let class = vm.resolve_class("java/lang/Runtime$Version")?;
     let instance = vm.new_instance(class)?;
-    for (index, name) in ["feature", "interim", "update", "patch"].iter().enumerate() {
-        let value = parts.get(index).copied().unwrap_or(0);
-        if let Some((declaring, field)) = vm.find_field_opt(class, name, "I") {
-            vm.set_instance_int(instance, declaring, field, value);
+    let mut elements = Vec::new();
+    for value in numbers {
+        elements.push(crate::boxed::boxed_int(vm, value)?.as_ref());
+    }
+    let list = crate::util::array_list_from(vm, &elements)?;
+    rv_set_ref(vm, instance, "version", "Ljava/util/List;", list)?;
+    let pre_value = match pre {
+        Some(text) => vm.make_string(text)?,
+        None => ObjectRef::NULL,
+    };
+    let pre_opt = rv_optional(vm, pre_value)?;
+    rv_set_ref(vm, instance, "pre", "Ljava/util/Optional;", pre_opt)?;
+    let build_value = match build {
+        Some(value) => crate::boxed::boxed_int(vm, value)?.as_ref(),
+        None => ObjectRef::NULL,
+    };
+    let build_opt = rv_optional(vm, build_value)?;
+    rv_set_ref(vm, instance, "build", "Ljava/util/Optional;", build_opt)?;
+    let opt_value = match opt {
+        Some(text) => vm.make_string(text)?,
+        None => ObjectRef::NULL,
+    };
+    let optional_opt = rv_optional(vm, opt_value)?;
+    rv_set_ref(
+        vm,
+        instance,
+        "optional",
+        "Ljava/util/Optional;",
+        optional_opt,
+    )?;
+    Ok(instance)
+}
+
+fn rv_order(ordering: core::cmp::Ordering) -> i32 {
+    match ordering {
+        core::cmp::Ordering::Less => -1,
+        core::cmp::Ordering::Equal => 0,
+        core::cmp::Ordering::Greater => 1,
+    }
+}
+
+/// Compare two all-digit strings numerically (no overflow, leading zeros ok).
+fn rv_compare_numeric(a: &str, b: &str) -> i32 {
+    let a = a.trim_start_matches('0');
+    let b = b.trim_start_matches('0');
+    if a.len() != b.len() {
+        return if a.len() < b.len() { -1 } else { 1 };
+    }
+    rv_order(a.cmp(b))
+}
+
+/// The JDK's version ordering: number, pre-release, build, then optional.
+fn rv_compare(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    other: ObjectRef,
+    ignore_opt: bool,
+) -> Result<i32, VmError> {
+    let left = crate::util::array_list_elements(vm, rv_list(vm, this));
+    let right = crate::util::array_list_elements(vm, rv_list(vm, other));
+    for (a, b) in left.iter().zip(right.iter()) {
+        let va = crate::boxed::read_value_int(vm, *a);
+        let vb = crate::boxed::read_value_int(vm, *b);
+        if va != vb {
+            return Ok(va.wrapping_sub(vb));
         }
     }
-    object(instance)
+    let size_cmp = (left.len() as i32).wrapping_sub(right.len() as i32);
+    if size_cmp != 0 {
+        return Ok(size_cmp);
+    }
+    let pa = crate::optional::optional_value(vm, rv_opt(vm, this, "pre"));
+    let pb = crate::optional::optional_value(vm, rv_opt(vm, other, "pre"));
+    let pre_cmp = if pa.is_null() {
+        if pb.is_null() { 0 } else { 1 }
+    } else if pb.is_null() {
+        -1
+    } else {
+        let sa = vm.string_or_empty(pa);
+        let sb = vm.string_or_empty(pb);
+        let na = !sa.is_empty() && sa.bytes().all(|b| b.is_ascii_digit());
+        let nb = !sb.is_empty() && sb.bytes().all(|b| b.is_ascii_digit());
+        if na && nb {
+            rv_compare_numeric(&sa, &sb)
+        } else if na {
+            -1
+        } else if nb {
+            1
+        } else {
+            rv_order(sa.cmp(&sb))
+        }
+    };
+    if pre_cmp != 0 {
+        return Ok(pre_cmp);
+    }
+    let ba = crate::optional::optional_value(vm, rv_opt(vm, this, "build"));
+    let bb = crate::optional::optional_value(vm, rv_opt(vm, other, "build"));
+    let build_cmp = if !bb.is_null() {
+        if ba.is_null() {
+            -1
+        } else {
+            let va = crate::boxed::read_value_int(vm, ba);
+            let vb = crate::boxed::read_value_int(vm, bb);
+            rv_order(va.cmp(&vb))
+        }
+    } else if !ba.is_null() {
+        1
+    } else {
+        0
+    };
+    if build_cmp != 0 {
+        return Ok(build_cmp);
+    }
+    if ignore_opt {
+        return Ok(0);
+    }
+    let oa = crate::optional::optional_value(vm, rv_opt(vm, this, "optional"));
+    let ob = crate::optional::optional_value(vm, rv_opt(vm, other, "optional"));
+    if oa.is_null() {
+        if !ob.is_null() {
+            return Ok(-1);
+        }
+    } else if ob.is_null() {
+        return Ok(1);
+    } else {
+        let sa = vm.string_or_empty(oa);
+        let sb = vm.string_or_empty(ob);
+        return Ok(rv_order(sa.cmp(&sb)));
+    }
+    Ok(0)
 }
 
-fn runtime_version_compare(vm: &Vm<'_>, this: ObjectRef, other: ObjectRef) -> i32 {
-    for name in ["feature", "interim", "update", "patch"] {
-        let left = read_int_field(vm, this, name);
-        let right = read_int_field(vm, other, name);
-        if left != right {
-            return if left < right { -1 } else { 1 };
+/// Equality of the version number, pre-release and build components.
+fn rv_equals_ignore_opt(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    other: ObjectRef,
+) -> Result<bool, VmError> {
+    if this == other {
+        return Ok(true);
+    }
+    let class = vm.resolve_class("java/lang/Runtime$Version")?;
+    if !vm.is_instance(other, class) {
+        return Ok(false);
+    }
+    for (name, descriptor) in [
+        ("version", "Ljava/util/List;"),
+        ("pre", "Ljava/util/Optional;"),
+        ("build", "Ljava/util/Optional;"),
+    ] {
+        let a = vm
+            .read_ref_field(this, vm.class_of(this), name, descriptor)
+            .unwrap_or(ObjectRef::NULL);
+        let b = vm
+            .read_ref_field(other, vm.class_of(other), name, descriptor)
+            .unwrap_or(ObjectRef::NULL);
+        let (declaring, method) =
+            vm.resolve_virtual_method(a, "equals", "(Ljava/lang/Object;)Z")?;
+        if !vm
+            .invoke_method(declaring, method, vec![Value::Ref(a), Value::Ref(b)])?
+            .as_boolean()
+        {
+            return Ok(false);
         }
     }
-    0
+    Ok(true)
 }
 
-fn runtime_version_components(
-    vm: &mut Vm<'_>,
-    _c: oxjvm_vm::NativeContext,
-    args: &[Value],
-) -> Result<Value, VmError> {
-    let list_class = vm.resolve_class("java/util/ArrayList")?;
-    let list = vm.new_instance(list_class)?;
-    let (declaring, method) = vm
-        .find_method(list_class, "<init>", "()V")
-        .ok_or_else(|| VmError::internal("ArrayList() missing"))?;
-    vm.invoke_method(declaring, method, vec![Value::Ref(list)])?;
-    let (declaring, add) = vm
-        .find_method(list_class, "add", "(Ljava/lang/Object;)Z")
-        .ok_or_else(|| VmError::internal("ArrayList.add missing"))?;
-    let this = receiver(args);
-    for name in ["feature", "interim", "update", "patch"] {
-        let value = read_int_field(vm, this, name);
-        let boxed = crate::boxed::boxed_int(vm, value)?;
-        vm.invoke_method(declaring, add, vec![Value::Ref(list), boxed])?;
+fn rv_hash(vm: &mut Vm<'_>, this: ObjectRef) -> Result<i32, VmError> {
+    let mut hash = 1i32;
+    for (name, descriptor) in [
+        ("version", "Ljava/util/List;"),
+        ("pre", "Ljava/util/Optional;"),
+        ("build", "Ljava/util/Optional;"),
+        ("optional", "Ljava/util/Optional;"),
+    ] {
+        let value = vm
+            .read_ref_field(this, vm.class_of(this), name, descriptor)
+            .unwrap_or(ObjectRef::NULL);
+        let (declaring, method) = vm.resolve_virtual_method(value, "hashCode", "()I")?;
+        let part = vm
+            .invoke_method(declaring, method, vec![Value::Ref(value)])?
+            .as_int();
+        hash = hash.wrapping_mul(17).wrapping_add(part);
     }
-    object(list)
+    Ok(hash)
 }
 
-fn runtime_version_to_string(
-    vm: &mut Vm<'_>,
-    _c: oxjvm_vm::NativeContext,
-    args: &[Value],
-) -> Result<Value, VmError> {
-    let this = receiver(args);
-    let feature = read_int_field(vm, this, "feature");
-    let mut text = alloc::format!("{feature}");
-    let mut parts = Vec::new();
-    parts.push(read_int_field(vm, this, "interim"));
-    parts.push(read_int_field(vm, this, "update"));
-    parts.push(read_int_field(vm, this, "patch"));
-    while parts.last() == Some(&0) {
-        parts.pop();
+fn rv_to_string(vm: &mut Vm<'_>, this: ObjectRef) -> Result<ObjectRef, VmError> {
+    let elements = crate::util::array_list_elements(vm, rv_list(vm, this));
+    let mut text = String::new();
+    for (index, element) in elements.iter().enumerate() {
+        if index > 0 {
+            text.push('.');
+        }
+        text.push_str(&alloc::format!(
+            "{}",
+            crate::boxed::read_value_int(vm, *element)
+        ));
     }
-    for part in parts {
-        text.push('.');
-        text.push_str(&alloc::format!("{part}"));
+    let pre = crate::optional::optional_value(vm, rv_opt(vm, this, "pre"));
+    let build = crate::optional::optional_value(vm, rv_opt(vm, this, "build"));
+    let opt = crate::optional::optional_value(vm, rv_opt(vm, this, "optional"));
+    if !pre.is_null() {
+        text.push('-');
+        text.push_str(&vm.string_or_empty(pre));
     }
-    object(vm.make_string(&text)?)
+    if !build.is_null() {
+        text.push('+');
+        text.push_str(&alloc::format!(
+            "{}",
+            crate::boxed::read_value_int(vm, build)
+        ));
+        if !opt.is_null() {
+            text.push('-');
+            text.push_str(&vm.string_or_empty(opt));
+        }
+    } else if !opt.is_null() {
+        text.push_str(if pre.is_null() { "+-" } else { "-" });
+        text.push_str(&vm.string_or_empty(opt));
+    }
+    vm.make_string(&text)
 }
 
 pub(crate) const RUNTIME_VERSION: oxjvm_vm::NativeClass = class(
@@ -8014,10 +8328,20 @@ pub(crate) const RUNTIME_VERSION: oxjvm_vm::NativeClass = class(
     &["java/lang/Comparable"],
     ACC_PUBLIC | ACC_FINAL,
     &[
-        field("feature", "I", ACC_PRIVATE | ACC_FINAL, None),
-        field("interim", "I", ACC_PRIVATE | ACC_FINAL, None),
-        field("update", "I", ACC_PRIVATE | ACC_FINAL, None),
-        field("patch", "I", ACC_PRIVATE | ACC_FINAL, None),
+        field("version", "Ljava/util/List;", ACC_PRIVATE | ACC_FINAL, None),
+        field("pre", "Ljava/util/Optional;", ACC_PRIVATE | ACC_FINAL, None),
+        field(
+            "build",
+            "Ljava/util/Optional;",
+            ACC_PRIVATE | ACC_FINAL,
+            None,
+        ),
+        field(
+            "optional",
+            "Ljava/util/Optional;",
+            ACC_PRIVATE | ACC_FINAL,
+            None,
+        ),
     ],
     &RUNTIME_VERSION_METHODS,
     None,

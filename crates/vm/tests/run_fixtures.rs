@@ -1041,8 +1041,8 @@ fn p1_runtime_batch() {
     let mut vm = Vm::new(&mut host, oxjvm_java::natives());
     let class = vm.resolve_class("demo/P1Runtime").expect("P1Runtime");
     for (method, expected) in [
-        ("versionBits", "27:0:0:0:false:false:27"),
-        ("versionList", "4:27:0"),
+        ("versionBits", "27:0:0:0:false:true:27+35"),
+        ("versionList", "1:27"),
         ("compare", "true:true:true"),
     ] {
         let (declaring, index) = vm

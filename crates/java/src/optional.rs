@@ -5,9 +5,9 @@ use alloc::vec;
 use oxjvm_classfile::flags::*;
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
-use crate::{boolean, class, field, method, object, receiver, ref_arg, void};
+use crate::{boolean, class, field, int, method, object, receiver, ref_arg, void};
 
-const OPTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
+const OPTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
     method(
         "<init>",
         "(Ljava/lang/Object;)V",
@@ -277,6 +277,38 @@ const OPTIONAL_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
             object(vm.make_string(&alloc::format!("Optional[{text}]"))?)
         },
     ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if this == other {
+                return boolean(true);
+            }
+            let optional_class = vm.resolve_class("java/util/Optional")?;
+            if !vm.is_instance(other, optional_class) {
+                return boolean(false);
+            }
+            let a = optional_value(vm, this);
+            let b = optional_value(vm, other);
+            if a.is_null() || b.is_null() {
+                return boolean(a.is_null() && b.is_null());
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(a, "equals", "(Ljava/lang/Object;)Z")?;
+            vm.invoke_method(class, method, vec![Value::Ref(a), Value::Ref(b)])
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let value = optional_value(vm, receiver(args));
+        if value.is_null() {
+            return int(0);
+        }
+        let (class, method) = vm.resolve_virtual_method(value, "hashCode", "()I")?;
+        vm.invoke_method(class, method, vec![Value::Ref(value)])
+    }),
 ];
 
 pub(crate) const OPTIONAL: oxjvm_vm::NativeClass = class(
@@ -305,7 +337,7 @@ fn optional_init(vm: &mut Vm<'_>, args: &[Value], value: ObjectRef) -> Result<Va
     void()
 }
 
-fn optional_value(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+pub(crate) fn optional_value(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
     let class = vm.class_of(this);
     vm.read_ref_field(this, class, "value", "Ljava/lang/Object;")
         .unwrap_or(ObjectRef::NULL)

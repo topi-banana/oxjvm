@@ -228,7 +228,7 @@ struct StdHost {
 impl StdHost {
     fn new(classpath: Vec<PathBuf>, overrides: &[(String, String)]) -> Self {
         let mut properties = BTreeMap::new();
-        properties.insert("java.version".into(), "17".into());
+        properties.insert("java.version".into(), "27".into());
         properties.insert("java.vm.name".into(), "oxjvm".into());
         properties.insert("java.vm.version".into(), env!("CARGO_PKG_VERSION").into());
         properties.insert("os.name".into(), std::env::consts::OS.into());
