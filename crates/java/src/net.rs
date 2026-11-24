@@ -2150,7 +2150,16 @@ const URL_CONNECTION_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
         long(url_connection_length(vm, receiver(args)))
     }),
     method("getLastModified", "()J", ACC_PUBLIC, |vm, _, args| {
-        let path = url_connection_path(vm, receiver(args));
+        let this = receiver(args);
+        let mut path = url_connection_path(vm, this);
+        // A jar URL's path is "<inner-url>!/<entry>"; the archive's timestamp
+        // comes from the inner file URL.
+        if let Some(index) = path.find("!/") {
+            path = String::from(&path[..index]);
+            if let Some((_, rest)) = path.split_once(':') {
+                path = String::from(rest);
+            }
+        }
         long(
             vm.host
                 .filesystem()
