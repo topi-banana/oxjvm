@@ -17483,6 +17483,14 @@ fn hashtable_map(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
     hash_set_map(vm, this)
 }
 
+/// Null-hostile maps (Hashtable, ConcurrentHashMap) reject null keys and values.
+fn map_require_non_null(vm: &mut Vm<'_>, reference: ObjectRef) -> Result<(), VmError> {
+    if reference.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    Ok(())
+}
+
 const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let map = new_hash_map(vm)?;
@@ -17514,6 +17522,8 @@ const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
         ACC_PUBLIC,
         |vm, _, args| {
+            map_require_non_null(vm, ref_arg(args, 1))?;
+            map_require_non_null(vm, ref_arg(args, 2))?;
             let map = hashtable_map(vm, receiver(args));
             hash_map_call(
                 vm,
@@ -17529,6 +17539,8 @@ const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
         ACC_PUBLIC,
         |vm, _, args| {
+            map_require_non_null(vm, ref_arg(args, 1))?;
+            map_require_non_null(vm, ref_arg(args, 2))?;
             map_put_if_absent(
                 vm,
                 hashtable_map(vm, receiver(args)),
@@ -17542,6 +17554,7 @@ const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         "(Ljava/lang/Object;)Ljava/lang/Object;",
         ACC_PUBLIC,
         |vm, _, args| {
+            map_require_non_null(vm, ref_arg(args, 1))?;
             let map = hashtable_map(vm, receiver(args));
             hash_map_call(
                 vm,
@@ -17557,6 +17570,7 @@ const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         "(Ljava/lang/Object;)Ljava/lang/Object;",
         ACC_PUBLIC,
         |vm, _, args| {
+            map_require_non_null(vm, ref_arg(args, 1))?;
             let map = hashtable_map(vm, receiver(args));
             hash_map_call(
                 vm,
@@ -17572,6 +17586,7 @@ const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         "(Ljava/lang/Object;)Z",
         ACC_PUBLIC,
         |vm, _, args| {
+            map_require_non_null(vm, ref_arg(args, 1))?;
             let map = hashtable_map(vm, receiver(args));
             hash_map_call(
                 vm,
@@ -17587,6 +17602,7 @@ const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         "(Ljava/lang/Object;)Z",
         ACC_PUBLIC,
         |vm, _, args| {
+            map_require_non_null(vm, ref_arg(args, 1))?;
             let map = hashtable_map(vm, receiver(args));
             hash_map_call(
                 vm,
@@ -17690,6 +17706,7 @@ const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         "(Ljava/lang/Object;)Z",
         ACC_PUBLIC,
         |vm, _, args| {
+            map_require_non_null(vm, ref_arg(args, 1))?;
             let map = hashtable_map(vm, receiver(args));
             hash_map_call(
                 vm,
@@ -17705,6 +17722,7 @@ const HASHTABLE_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         "(Ljava/lang/Object;)Z",
         ACC_PUBLIC,
         |vm, _, args| {
+            map_require_non_null(vm, ref_arg(args, 1))?;
             let map = hashtable_map(vm, receiver(args));
             hash_map_call(
                 vm,
@@ -18789,6 +18807,8 @@ const CONCURRENT_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
         ACC_PUBLIC,
         |vm, _, args| {
+            map_require_non_null(vm, ref_arg(args, 1))?;
+            map_require_non_null(vm, ref_arg(args, 2))?;
             let map = concurrent_map(vm, receiver(args));
             concurrent_put(vm, map, ref_arg(args, 1), ref_arg(args, 2))
         },
@@ -18798,6 +18818,8 @@ const CONCURRENT_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
         ACC_PUBLIC,
         |vm, _, args| {
+            map_require_non_null(vm, ref_arg(args, 1))?;
+            map_require_non_null(vm, ref_arg(args, 2))?;
             map_put_if_absent(
                 vm,
                 concurrent_map(vm, receiver(args)),
@@ -18811,6 +18833,7 @@ const CONCURRENT_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
         "(Ljava/lang/Object;)Ljava/lang/Object;",
         ACC_PUBLIC,
         |vm, _, args| {
+            map_require_non_null(vm, ref_arg(args, 1))?;
             let map = concurrent_map(vm, receiver(args));
             concurrent_map_call(
                 vm,
@@ -18852,6 +18875,8 @@ const CONCURRENT_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
+            map_require_non_null(vm, ref_arg(args, 1))?;
+            map_require_non_null(vm, ref_arg(args, 2))?;
             let map = concurrent_map(vm, this);
             let key = ref_arg(args, 1);
             let index = hash_map_index_of(vm, map, key)?;
@@ -18867,6 +18892,7 @@ const CONCURRENT_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
         "(Ljava/lang/Object;)Ljava/lang/Object;",
         ACC_PUBLIC,
         |vm, _, args| {
+            map_require_non_null(vm, ref_arg(args, 1))?;
             let map = concurrent_map(vm, receiver(args));
             concurrent_map_call(
                 vm,
@@ -18883,6 +18909,8 @@ const CONCURRENT_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
+            map_require_non_null(vm, ref_arg(args, 1))?;
+            map_require_non_null(vm, ref_arg(args, 2))?;
             let map = concurrent_map(vm, this);
             let key = ref_arg(args, 1);
             let index = hash_map_index_of(vm, map, key)?;
@@ -18909,6 +18937,8 @@ const CONCURRENT_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
+            map_require_non_null(vm, ref_arg(args, 1))?;
+            map_require_non_null(vm, ref_arg(args, 2))?;
             let map = concurrent_map(vm, this);
             let key = ref_arg(args, 1);
             let index = hash_map_index_of(vm, map, key)?;
@@ -18926,6 +18956,9 @@ const CONCURRENT_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
+            map_require_non_null(vm, ref_arg(args, 1))?;
+            map_require_non_null(vm, ref_arg(args, 2))?;
+            map_require_non_null(vm, ref_arg(args, 3))?;
             let map = concurrent_map(vm, this);
             let key = ref_arg(args, 1);
             let index = hash_map_index_of(vm, map, key)?;
@@ -19057,6 +19090,7 @@ const CONCURRENT_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
         "(Ljava/lang/Object;)Z",
         ACC_PUBLIC,
         |vm, _, args| {
+            map_require_non_null(vm, ref_arg(args, 1))?;
             let map = concurrent_map(vm, receiver(args));
             concurrent_map_call(
                 vm,
@@ -19072,6 +19106,7 @@ const CONCURRENT_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
         "(Ljava/lang/Object;)Z",
         ACC_PUBLIC,
         |vm, _, args| {
+            map_require_non_null(vm, ref_arg(args, 1))?;
             let map = concurrent_map(vm, receiver(args));
             concurrent_map_call(
                 vm,
