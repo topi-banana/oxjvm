@@ -7304,6 +7304,13 @@ pub(crate) const PUSHBACK_READER: oxjvm_vm::NativeClass = class(
 // -------------------------------------------------------------------------------------------
 
 /// Read the current contents of a `RandomAccessFile`'s backing byte array.
+fn raf_ensure_open(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    if read_int_field(vm, this, "closed") != 0 {
+        return Err(vm.throw_new("java/io/IOException", Some("Stream Closed")));
+    }
+    Ok(())
+}
+
 fn raf_bytes(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Vec<u8>, VmError> {
     let data = vm
         .read_ref_field(this, vm.class_of(this), "data", "[B")
@@ -7395,6 +7402,7 @@ fn raf_init(vm: &mut Vm<'_>, this: ObjectRef, path: &str, mode: &str) -> Result<
 
 /// Write `bytes` at the current file pointer, extending the file as needed, then flush.
 fn raf_write(vm: &mut Vm<'_>, this: ObjectRef, bytes: &[u8]) -> Result<Value, VmError> {
+    raf_ensure_open(vm, this)?;
     let writable = vm
         .read_instance_int_named(this, vm.class_of(this), "writable", "Z")
         .unwrap_or(0)
@@ -7437,12 +7445,15 @@ const RANDOM_ACCESS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
         },
     ),
     method("length", "()J", ACC_PUBLIC, |vm, _, args| {
+        raf_ensure_open(vm, receiver(args))?;
         long(raf_bytes(vm, receiver(args))?.len() as i64)
     }),
     method("getFilePointer", "()J", ACC_PUBLIC, |vm, _, args| {
+        raf_ensure_open(vm, receiver(args))?;
         long(i64::from(read_int_field(vm, receiver(args), "position")))
     }),
     method("seek", "(J)V", ACC_PUBLIC, |vm, _, args| {
+        raf_ensure_open(vm, receiver(args))?;
         let pos = crate::long_arg(args, 1);
         if pos < 0 {
             return Err(vm.throw_new("java/io/IOException", Some("Negative seek offset")));
@@ -7452,6 +7463,7 @@ const RANDOM_ACCESS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
     }),
     method("read", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        raf_ensure_open(vm, this)?;
         let position = read_int_field(vm, this, "position") as usize;
         let data = raf_bytes(vm, this)?;
         if position >= data.len() {
@@ -7496,6 +7508,7 @@ const RANDOM_ACCESS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
     }),
     method("skipBytes", "(I)I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        raf_ensure_open(vm, this)?;
         let n = int_arg(args, 1).max(0) as usize;
         let position = read_int_field(vm, this, "position") as usize;
         let length = raf_bytes(vm, this)?.len();
@@ -7567,6 +7580,7 @@ const RANDOM_ACCESS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
+            raf_ensure_open(vm, this)?;
             let mut position = read_int_field(vm, this, "position") as usize;
             let data = raf_bytes(vm, this)?;
             if position >= data.len() {
@@ -7593,6 +7607,7 @@ const RANDOM_ACCESS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
     ),
     method("setLength", "(J)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        raf_ensure_open(vm, this)?;
         let new_length = crate::long_arg(args, 1);
         if new_length < 0 {
             return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
@@ -7605,6 +7620,10 @@ const RANDOM_ACCESS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
     }),
     method("close", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        if read_int_field(vm, this, "closed") != 0 {
+            return void();
+        }
+        write_int_field(vm, this, "closed", 1);
         raf_flush(vm, this)?;
         // Closing the file also closes the channel handed out by getChannel.
         let class = vm.class_of(this);
@@ -7776,6 +7795,7 @@ fn raf_read_into(
     offset: i32,
     length: i32,
 ) -> Result<Value, VmError> {
+    raf_ensure_open(vm, this)?;
     if target.is_null() {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
@@ -7820,6 +7840,7 @@ fn raf_read_fully(
 
 /// Read exactly `count` bytes at the file pointer, advancing it; `EOFException` if short.
 fn raf_read_n(vm: &mut Vm<'_>, this: ObjectRef, count: usize) -> Result<Vec<u8>, VmError> {
+    raf_ensure_open(vm, this)?;
     let position = read_int_field(vm, this, "position") as usize;
     let data = raf_bytes(vm, this)?;
     if position + count > data.len() {
@@ -7844,6 +7865,7 @@ pub(crate) const RANDOM_ACCESS_FILE: oxjvm_vm::NativeClass = class(
         field("data", "[B", ACC_PRIVATE, None),
         field("position", "I", ACC_PRIVATE, None),
         field("writable", "Z", ACC_PRIVATE, None),
+        field("closed", "I", ACC_PRIVATE, None),
         field(
             "channel",
             "Ljava/nio/channels/FileChannel;",
