@@ -2679,6 +2679,262 @@ pub(crate) const WRITER: oxjvm_vm::NativeClass = class(
 );
 
 // -------------------------------------------------------------------------------------------
+// FilterReader / FilterWriter: abstract wrappers that delegate every operation to
+// an underlying Reader / Writer held in a protected field.  Subclasses override
+// selected methods (e.g. close) and call super to reach the delegate.
+fn filter_reader_in(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field_any(this, "in").unwrap_or(ObjectRef::NULL)
+}
+
+fn filter_writer_out(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field_any(this, "out")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn delegate_reader(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    args: Vec<Value>,
+) -> Result<Value, VmError> {
+    let reader = filter_reader_in(vm, this);
+    let (class, method) = vm.resolve_virtual_method(reader, name, descriptor)?;
+    vm.invoke_method(class, method, args)
+}
+
+fn delegate_writer(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    args: Vec<Value>,
+) -> Result<Value, VmError> {
+    let writer = filter_writer_out(vm, this);
+    let (class, method) = vm.resolve_virtual_method(writer, name, descriptor)?;
+    vm.invoke_method(class, method, args)
+}
+
+const FILTER_READER_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+    method(
+        "<init>",
+        "(Ljava/io/Reader;)V",
+        ACC_PROTECTED,
+        |vm, _, args| {
+            let this = receiver(args);
+            let in_reader = ref_arg(args, 1);
+            let class = vm.class_of(this);
+            if let Some((declaring, field)) = vm.find_field_opt(class, "in", "Ljava/io/Reader;") {
+                vm.set_instance_ref(this, declaring, field, in_reader);
+            }
+            // super(in): the Reader lock is the underlying reader.
+            if let Some((declaring, field)) = vm.find_field_opt(class, "lock", "Ljava/lang/Object;")
+            {
+                vm.set_instance_ref(this, declaring, field, in_reader);
+            }
+            void()
+        },
+    ),
+    method("read", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        delegate_reader(
+            vm,
+            this,
+            "read",
+            "()I",
+            vec![Value::Ref(filter_reader_in(vm, this))],
+        )
+    }),
+    method("read", "([CII)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        delegate_reader(
+            vm,
+            this,
+            "read",
+            "([CII)I",
+            vec![
+                Value::Ref(filter_reader_in(vm, this)),
+                Value::Ref(ref_arg(args, 1)),
+                Value::Int(int_arg(args, 2)),
+                Value::Int(int_arg(args, 3)),
+            ],
+        )
+    }),
+    method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        delegate_reader(
+            vm,
+            this,
+            "skip",
+            "(J)J",
+            vec![Value::Ref(filter_reader_in(vm, this)), args[1]],
+        )
+    }),
+    method("ready", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        delegate_reader(
+            vm,
+            this,
+            "ready",
+            "()Z",
+            vec![Value::Ref(filter_reader_in(vm, this))],
+        )
+    }),
+    method("markSupported", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        delegate_reader(
+            vm,
+            this,
+            "markSupported",
+            "()Z",
+            vec![Value::Ref(filter_reader_in(vm, this))],
+        )
+    }),
+    method("mark", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        delegate_reader(
+            vm,
+            this,
+            "mark",
+            "(I)V",
+            vec![
+                Value::Ref(filter_reader_in(vm, this)),
+                Value::Int(int_arg(args, 1)),
+            ],
+        )
+    }),
+    method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        delegate_reader(
+            vm,
+            this,
+            "reset",
+            "()V",
+            vec![Value::Ref(filter_reader_in(vm, this))],
+        )
+    }),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        delegate_reader(
+            vm,
+            this,
+            "close",
+            "()V",
+            vec![Value::Ref(filter_reader_in(vm, this))],
+        )
+    }),
+];
+
+pub(crate) const FILTER_READER: oxjvm_vm::NativeClass = class(
+    "java/io/FilterReader",
+    Some("java/io/Reader"),
+    &[],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[field("in", "Ljava/io/Reader;", ACC_PROTECTED, None)],
+    &FILTER_READER_METHODS,
+    None,
+);
+
+const FILTER_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method(
+        "<init>",
+        "(Ljava/io/Writer;)V",
+        ACC_PROTECTED,
+        |vm, _, args| {
+            let this = receiver(args);
+            let out_writer = ref_arg(args, 1);
+            let class = vm.class_of(this);
+            if let Some((declaring, field)) = vm.find_field_opt(class, "out", "Ljava/io/Writer;") {
+                vm.set_instance_ref(this, declaring, field, out_writer);
+            }
+            if let Some((declaring, field)) = vm.find_field_opt(class, "lock", "Ljava/lang/Object;")
+            {
+                vm.set_instance_ref(this, declaring, field, out_writer);
+            }
+            void()
+        },
+    ),
+    method("write", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        delegate_writer(
+            vm,
+            this,
+            "write",
+            "(I)V",
+            vec![
+                Value::Ref(filter_writer_out(vm, this)),
+                Value::Int(int_arg(args, 1)),
+            ],
+        )
+    }),
+    method("write", "([CII)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        delegate_writer(
+            vm,
+            this,
+            "write",
+            "([CII)V",
+            vec![
+                Value::Ref(filter_writer_out(vm, this)),
+                Value::Ref(ref_arg(args, 1)),
+                Value::Int(int_arg(args, 2)),
+                Value::Int(int_arg(args, 3)),
+            ],
+        )
+    }),
+    method(
+        "write",
+        "(Ljava/lang/String;II)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            delegate_writer(
+                vm,
+                this,
+                "write",
+                "(Ljava/lang/String;II)V",
+                vec![
+                    Value::Ref(filter_writer_out(vm, this)),
+                    Value::Ref(ref_arg(args, 1)),
+                    Value::Int(int_arg(args, 2)),
+                    Value::Int(int_arg(args, 3)),
+                ],
+            )
+        },
+    ),
+    method("flush", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        delegate_writer(
+            vm,
+            this,
+            "flush",
+            "()V",
+            vec![Value::Ref(filter_writer_out(vm, this))],
+        )
+    }),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        delegate_writer(
+            vm,
+            this,
+            "close",
+            "()V",
+            vec![Value::Ref(filter_writer_out(vm, this))],
+        )
+    }),
+];
+
+pub(crate) const FILTER_WRITER: oxjvm_vm::NativeClass = class(
+    "java/io/FilterWriter",
+    Some("java/io/Writer"),
+    &[],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[field("out", "Ljava/io/Writer;", ACC_PROTECTED, None)],
+    &FILTER_WRITER_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
 // StreamTokenizer: a syntax-table driven tokenizer over a Reader (or the
 // deprecated InputStream). The character class table lives in a byte[256]
 // instance field; nextToken is a faithful port of the JDK parser, reading one
