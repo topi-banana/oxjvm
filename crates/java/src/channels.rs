@@ -750,6 +750,9 @@ const INPUT_STREAM_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
+            if crate::lang::read_int_field(vm, this, "closed") != 0 {
+                return Err(vm.throw_new("java/nio/channels/ClosedChannelException", None));
+            }
             let buffer = ref_arg(args, 1);
             if buffer.is_null() {
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
@@ -768,6 +771,10 @@ const INPUT_STREAM_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
     ),
     method("close", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        if crate::lang::read_int_field(vm, this, "closed") != 0 {
+            return void();
+        }
+        crate::lang::write_int_field(vm, this, "closed", 1);
         let stream = ref_field(vm, this, "in", "Ljava/io/InputStream;");
         if !stream.is_null() {
             let (class, method) = vm.resolve_virtual_method(stream, "close", "()V")?;
@@ -775,7 +782,9 @@ const INPUT_STREAM_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         }
         void()
     }),
-    method("isOpen", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
+    method("isOpen", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "closed") == 0)
+    }),
 ];
 
 pub(crate) const INPUT_STREAM_CHANNEL: oxjvm_vm::NativeClass = class(
@@ -783,7 +792,10 @@ pub(crate) const INPUT_STREAM_CHANNEL: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &["java/nio/channels/ReadableByteChannel"],
     ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
-    &[field("in", "Ljava/io/InputStream;", ACC_PRIVATE, None)],
+    &[
+        field("in", "Ljava/io/InputStream;", ACC_PRIVATE, None),
+        field("closed", "I", ACC_PRIVATE, None),
+    ],
     &INPUT_STREAM_CHANNEL_METHODS,
     None,
 );
@@ -810,6 +822,9 @@ const OUTPUT_STREAM_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
+            if crate::lang::read_int_field(vm, this, "closed") != 0 {
+                return Err(vm.throw_new("java/nio/channels/ClosedChannelException", None));
+            }
             let buffer = ref_arg(args, 1);
             if buffer.is_null() {
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
@@ -832,6 +847,10 @@ const OUTPUT_STREAM_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
     ),
     method("close", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        if crate::lang::read_int_field(vm, this, "closed") != 0 {
+            return void();
+        }
+        crate::lang::write_int_field(vm, this, "closed", 1);
         let stream = ref_field(vm, this, "out", "Ljava/io/OutputStream;");
         if !stream.is_null() {
             let (class, method) = vm.resolve_virtual_method(stream, "close", "()V")?;
@@ -839,7 +858,9 @@ const OUTPUT_STREAM_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         }
         void()
     }),
-    method("isOpen", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
+    method("isOpen", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "closed") == 0)
+    }),
 ];
 
 pub(crate) const OUTPUT_STREAM_CHANNEL: oxjvm_vm::NativeClass = class(
@@ -847,7 +868,10 @@ pub(crate) const OUTPUT_STREAM_CHANNEL: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &["java/nio/channels/WritableByteChannel"],
     ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
-    &[field("out", "Ljava/io/OutputStream;", ACC_PRIVATE, None)],
+    &[
+        field("out", "Ljava/io/OutputStream;", ACC_PRIVATE, None),
+        field("closed", "I", ACC_PRIVATE, None),
+    ],
     &OUTPUT_STREAM_CHANNEL_METHODS,
     None,
 );

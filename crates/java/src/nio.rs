@@ -5190,6 +5190,7 @@ fn open_channel_from_options(
     let mut append = false;
     let mut truncate = false;
     let mut create = false;
+    let mut create_new = false;
     let length = vm.array_length(options).unwrap_or(0);
     for index in 0..length {
         let option = vm.array_get(options, index as i32)?.as_ref();
@@ -5202,19 +5203,23 @@ fn open_channel_from_options(
             writable = true;
         } else if option == truncate_opt {
             truncate = true;
-        } else if option == create_opt || option == create_new_opt {
+        } else if option == create_opt {
             create = true;
+        } else if option == create_new_opt {
+            create_new = true;
         }
     }
     if !readable && !writable {
         readable = true;
     }
-    let bytes = vm
-        .host
-        .filesystem()
-        .and_then(|fs| fs.read(path))
-        .unwrap_or_default();
-    if create && bytes.is_empty() {
+    let exists = fs_metadata(vm, path).is_some();
+    if create_new {
+        // CREATE_NEW fails when the file already exists, otherwise creates it.
+        if exists {
+            return Err(vm.throw_new("java/nio/file/FileAlreadyExistsException", Some(path)));
+        }
+        let _ = vm.host.filesystem().map(|fs| fs.write(path, &[], false));
+    } else if create && !exists {
         let _ = vm.host.filesystem().map(|fs| fs.write(path, &[], false));
     }
     if truncate && writable {

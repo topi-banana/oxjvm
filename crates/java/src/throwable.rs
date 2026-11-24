@@ -1352,6 +1352,11 @@ exception!(
     "java/lang/RuntimeException"
 );
 exception!(
+    FILE_ALREADY_EXISTS_EXCEPTION,
+    "java/nio/file/FileAlreadyExistsException",
+    "java/nio/file/FileSystemException"
+);
+exception!(
     ILLEGAL_ACCESS_EXCEPTION,
     "java/lang/IllegalAccessException",
     "java/lang/ReflectiveOperationException"
