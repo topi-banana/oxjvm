@@ -582,29 +582,59 @@ pub(crate) fn atan2(y: f64, x: f64) -> f64 {
     if x.is_nan() || y.is_nan() {
         return f64::NAN;
     }
-    if x == 0.0 && y == 0.0 {
-        return if x.is_sign_negative() {
-            if y.is_sign_negative() {
-                -core::f64::consts::PI
+    let pi = core::f64::consts::PI;
+    let half_pi = core::f64::consts::FRAC_PI_2;
+    let y_neg = y.is_sign_negative();
+    if x == 0.0 {
+        if y == 0.0 {
+            // atan2(±0, +0) = ±0; atan2(±0, -0) = ±π.
+            return if x.is_sign_negative() {
+                if y_neg { -pi } else { pi }
             } else {
-                core::f64::consts::PI
-            }
+                y
+            };
+        }
+        // x == ±0 with y nonzero (including ±∞): ±π/2 by the sign of y.
+        return if y_neg { -half_pi } else { half_pi };
+    }
+    if x.is_infinite() {
+        if y.is_infinite() {
+            // atan2(±∞, +∞) = ±π/4; atan2(±∞, -∞) = ±3π/4.
+            let magnitude = if x > 0.0 {
+                core::f64::consts::FRAC_PI_4
+            } else {
+                3.0 * core::f64::consts::FRAC_PI_4
+            };
+            return if y_neg { -magnitude } else { magnitude };
+        }
+        // x == +∞ with y finite: ±0; x == -∞ with y finite: ±π.
+        return if x > 0.0 {
+            if y_neg { -0.0 } else { 0.0 }
+        } else if y_neg {
+            -pi
         } else {
+            pi
+        };
+    }
+    if y.is_infinite() {
+        return if y_neg { -half_pi } else { half_pi };
+    }
+    if y == 0.0 {
+        // y == ±0 with x finite and nonzero: ±0 for x > 0, ±π for x < 0.
+        return if x > 0.0 {
             y
+        } else if y_neg {
+            -pi
+        } else {
+            pi
         };
     }
     if x > 0.0 {
         atan(y / x)
-    } else if x < 0.0 {
-        if y >= 0.0 {
-            atan(y / x) + core::f64::consts::PI
-        } else {
-            atan(y / x) - core::f64::consts::PI
-        }
-    } else if y > 0.0 {
-        core::f64::consts::FRAC_PI_2
+    } else if y_neg {
+        atan(y / x) - pi
     } else {
-        -core::f64::consts::FRAC_PI_2
+        atan(y / x) + pi
     }
 }
 
