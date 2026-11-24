@@ -6957,9 +6957,18 @@ fn double_to_hex_string(value: f64) -> String {
         return alloc::format!("{sign}0x0.0p0");
     }
     let bits = magnitude.to_bits();
-    let exponent = ((bits >> 52) & 0x7ff) as i32 - 1023;
+    let raw_exponent = ((bits >> 52) & 0x7ff) as i32;
+    let fraction_bits = bits & 0x000f_ffff_ffff_ffff;
+    if raw_exponent == 0 {
+        // Subnormal: no implicit leading one.  The JDK writes these as
+        // 0x0.<fraction>p-1022 (the minimum normal exponent), not 0x1.xxxp-1023.
+        let digits = alloc::format!("{fraction_bits:013x}");
+        let fraction = digits.trim_end_matches('0');
+        return alloc::format!("{sign}0x0.{fraction}p-1022");
+    }
+    let exponent = raw_exponent - 1023;
     // The implicit leading one and the 52 fraction bits are the significand.
-    let significand = (bits & 0x000f_ffff_ffff_ffff) | 0x0010_0000_0000_0000;
+    let significand = fraction_bits | 0x0010_0000_0000_0000;
     let digits = alloc::format!("{significand:013x}");
     let fraction = digits[1..].trim_end_matches('0');
     if fraction.is_empty() {
@@ -6987,9 +6996,19 @@ fn float_to_hex_string(value: f32) -> String {
         return alloc::format!("{sign}0x0.0p0");
     }
     let bits = magnitude.to_bits();
-    let exponent = ((bits >> 23) & 0xff) as i32 - 127;
-    let significand = (bits & 0x007f_ffff) | 0x0080_0000;
-    let digits = alloc::format!("{significand:06x}");
+    let raw_exponent = ((bits >> 23) & 0xff) as i32;
+    // The 23 fraction bits are displayed left-aligned in 24 bits (6 hex digits),
+    // so the least-significant bit of the printed fraction is always zero.
+    let fraction_bits = (bits & 0x007f_ffff) << 1;
+    if raw_exponent == 0 {
+        // Subnormal: no implicit leading one, minimum normal exponent -126.
+        let digits = alloc::format!("{fraction_bits:06x}");
+        let fraction = digits.trim_end_matches('0');
+        return alloc::format!("{sign}0x0.{fraction}p-126");
+    }
+    let exponent = raw_exponent - 127;
+    let significand = fraction_bits | 0x0100_0000;
+    let digits = alloc::format!("{significand:07x}");
     let fraction = digits[1..].trim_end_matches('0');
     if fraction.is_empty() {
         alloc::format!("{sign}0x1.0p{exponent}")
