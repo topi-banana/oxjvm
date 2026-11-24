@@ -7037,11 +7037,46 @@ pub(crate) const IV_PARAMETER_SPEC: oxjvm_vm::NativeClass = class(
             if iv.is_null() {
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
-            set_ref_field(vm, receiver(args), "iv", "[B", iv)?;
+            let len = vm.array_length(iv)?;
+            let copy = byte_slice(vm, iv, 0, len)?;
+            set_ref_field(vm, receiver(args), "iv", "[B", copy)?;
+            void()
+        }),
+        method("<init>", "([BII)V", ACC_PUBLIC, |vm, _, args| {
+            let this = receiver(args);
+            let iv = ref_arg(args, 1);
+            let offset = int_arg(args, 2);
+            let len = int_arg(args, 3);
+            if iv.is_null() {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("IV missing")));
+            }
+            if offset < 0 {
+                return Err(vm.throw_new(
+                    "java/lang/ArrayIndexOutOfBoundsException",
+                    Some("offset is negative"),
+                ));
+            }
+            if len < 0 {
+                return Err(vm.throw_new(
+                    "java/lang/ArrayIndexOutOfBoundsException",
+                    Some("len is negative"),
+                ));
+            }
+            let total = vm.array_length(iv)? as i32;
+            if total - offset < len {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("IV buffer too short for given offset/length combination"),
+                ));
+            }
+            let copy = byte_slice(vm, iv, offset as usize, len as usize)?;
+            set_ref_field(vm, this, "iv", "[B", copy)?;
             void()
         }),
         method("getIV", "()[B", ACC_PUBLIC, |vm, _, args| {
-            object(ref_field(vm, receiver(args), "iv", "[B"))
+            let iv = ref_field(vm, receiver(args), "iv", "[B");
+            let len = vm.array_length(iv)?;
+            object(byte_slice(vm, iv, 0, len)?)
         }),
     ],
     None,
@@ -7059,10 +7094,28 @@ pub(crate) const GCMPARAMETER_SPEC: oxjvm_vm::NativeClass = class(
     &[
         method("<init>", "(I[B)V", ACC_PUBLIC, |vm, _, args| {
             let this = receiver(args);
-            let class = vm.class_of(this);
-            let (declaring, field) = vm.find_field(class, "tLen", "I")?;
-            vm.set_instance_int(this, declaring, field, int_arg(args, 1));
-            set_ref_field(vm, this, "src", "[B", ref_arg(args, 2))?;
+            let t_len = int_arg(args, 1);
+            let src = ref_arg(args, 2);
+            if src.is_null() {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("src array is null"),
+                ));
+            }
+            let len = vm.array_length(src)? as i32;
+            gcm_init(vm, this, t_len, src, 0, len)?;
+            void()
+        }),
+        method("<init>", "(I[BII)V", ACC_PUBLIC, |vm, _, args| {
+            let this = receiver(args);
+            gcm_init(
+                vm,
+                this,
+                int_arg(args, 1),
+                ref_arg(args, 2),
+                int_arg(args, 3),
+                int_arg(args, 4),
+            )?;
             void()
         }),
         method("getTLen", "()I", ACC_PUBLIC, |vm, _, args| {
@@ -7072,7 +7125,9 @@ pub(crate) const GCMPARAMETER_SPEC: oxjvm_vm::NativeClass = class(
             int(vm.read_instance_int(this, declaring, field).unwrap_or(0))
         }),
         method("getIV", "()[B", ACC_PUBLIC, |vm, _, args| {
-            object(ref_field(vm, receiver(args), "src", "[B"))
+            let src = ref_field(vm, receiver(args), "src", "[B");
+            let len = vm.array_length(src)?;
+            object(byte_slice(vm, src, 0, len)?)
         }),
     ],
     None,
@@ -9349,7 +9404,25 @@ const SECRET_KEY_FACTORY_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
                 ));
             }
             let algorithm = string_field(vm, this, "algorithm");
-            let bytes = key_encoded(vm, spec)?;
+            let des_class = vm.resolve_class("javax/crypto/spec/DESKeySpec")?;
+            let desede_class = vm.resolve_class("javax/crypto/spec/DESedeKeySpec")?;
+            let bytes = if vm.is_instance(spec, des_class) || vm.is_instance(spec, desede_class) {
+                let (kc, km) = vm.resolve_virtual_method(spec, "getKey", "()[B")?;
+                let array = vm.invoke_method(kc, km, vec![Value::Ref(spec)])?.as_ref();
+                let mut key_bytes = read_byte_array(vm, array)?;
+                if algorithm.eq_ignore_ascii_case("DES") || algorithm.eq_ignore_ascii_case("DESede")
+                {
+                    // DES key generation forces odd parity on every byte.
+                    for byte in key_bytes.iter_mut() {
+                        if (*byte as u32).count_ones() & 1 == 0 {
+                            *byte ^= 1;
+                        }
+                    }
+                }
+                key_bytes
+            } else {
+                key_encoded(vm, spec)?
+            };
             if bytes.is_empty() {
                 return Err(vm.throw_new(
                     "java/security/spec/InvalidKeySpecException",
@@ -11296,5 +11369,452 @@ pub(crate) const SERVICE_PERMISSION_COLLECTION: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC | ACC_FINAL,
     &[field("perms", "Ljava/util/ArrayList;", ACC_PRIVATE, None)],
     &SERVICE_PERMISSION_COLLECTION_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// javax.crypto.spec parameter helpers and RC5 / RC2 / DES / DESede key specs
+// -------------------------------------------------------------------------------------------
+
+/// Copy `len` bytes starting at `offset` out of a byte array into a fresh array.
+fn byte_slice(
+    vm: &mut Vm<'_>,
+    array: ObjectRef,
+    offset: usize,
+    len: usize,
+) -> Result<ObjectRef, VmError> {
+    let bytes = read_byte_array(vm, array)?;
+    new_byte_array(vm, &bytes[offset..offset + len])
+}
+
+/// `Arrays.hashCode(byte[])` over raw bytes (a null array contributes zero).
+fn byte_array_hash_bytes(bytes: Option<&[u8]>) -> i32 {
+    let mut result = 1i32;
+    if let Some(bytes) = bytes {
+        for byte in bytes {
+            result = result.wrapping_mul(31).wrapping_add(i32::from(*byte));
+        }
+    }
+    result
+}
+
+/// Shared GCMParameterSpec init: validate tLen and the buffer window, then copy.
+fn gcm_init(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    t_len: i32,
+    src: ObjectRef,
+    offset: i32,
+    len: i32,
+) -> Result<(), VmError> {
+    if t_len < 0 {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("Length argument is negative"),
+        ));
+    }
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, "tLen", "I")?;
+    vm.set_instance_int(this, declaring, field, t_len);
+    let total = if src.is_null() {
+        0
+    } else {
+        vm.array_length(src)? as i32
+    };
+    if src.is_null() || len < 0 || offset < 0 || len > total - offset {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("Invalid buffer arguments"),
+        ));
+    }
+    let copy = byte_slice(vm, src, offset as usize, len as usize)?;
+    set_ref_field(vm, this, "src", "[B", copy)?;
+    Ok(())
+}
+
+const RC5_PARAMETER_SPEC_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+    method("<init>", "(III)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        crate::lang::write_int_field(vm, this, "version", int_arg(args, 1));
+        crate::lang::write_int_field(vm, this, "rounds", int_arg(args, 2));
+        crate::lang::write_int_field(vm, this, "wordSize", int_arg(args, 3));
+        void()
+    }),
+    method("<init>", "(III[B)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let word_size = int_arg(args, 3);
+        crate::lang::write_int_field(vm, this, "version", int_arg(args, 1));
+        crate::lang::write_int_field(vm, this, "rounds", int_arg(args, 2));
+        crate::lang::write_int_field(vm, this, "wordSize", word_size);
+        let iv = ref_arg(args, 4);
+        let block_size = (word_size / 8) * 2;
+        rc5_rc2_iv(vm, this, iv, 0, block_size)?;
+        void()
+    }),
+    method("<init>", "(III[BI)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let word_size = int_arg(args, 3);
+        crate::lang::write_int_field(vm, this, "version", int_arg(args, 1));
+        crate::lang::write_int_field(vm, this, "rounds", int_arg(args, 2));
+        crate::lang::write_int_field(vm, this, "wordSize", word_size);
+        let block_size = (word_size / 8) * 2;
+        rc5_rc2_iv(vm, this, ref_arg(args, 4), int_arg(args, 5), block_size)?;
+        void()
+    }),
+    method("getVersion", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "version"))
+    }),
+    method("getRounds", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "rounds"))
+    }),
+    method("getWordSize", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "wordSize"))
+    }),
+    method("getIV", "()[B", ACC_PUBLIC, |vm, _, args| {
+        let iv = ref_field(vm, receiver(args), "iv", "[B");
+        if iv.is_null() {
+            return object(ObjectRef::NULL);
+        }
+        let len = vm.array_length(iv)?;
+        object(byte_slice(vm, iv, 0, len)?)
+    }),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if this == other {
+                return boolean(true);
+            }
+            let class = vm.resolve_class("javax/crypto/spec/RC5ParameterSpec")?;
+            if other.is_null() || !vm.is_instance(other, class) {
+                return boolean(false);
+            }
+            let same_params = crate::lang::read_int_field(vm, this, "version")
+                == crate::lang::read_int_field(vm, other, "version")
+                && crate::lang::read_int_field(vm, this, "rounds")
+                    == crate::lang::read_int_field(vm, other, "rounds")
+                && crate::lang::read_int_field(vm, this, "wordSize")
+                    == crate::lang::read_int_field(vm, other, "wordSize");
+            let this_iv = ref_field(vm, this, "iv", "[B");
+            let other_iv = ref_field(vm, other, "iv", "[B");
+            let same_iv = read_byte_array(vm, this_iv)? == read_byte_array(vm, other_iv)?;
+            boolean(same_params && same_iv)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let iv = ref_field(vm, this, "iv", "[B");
+        let iv_bytes = if iv.is_null() {
+            None
+        } else {
+            Some(read_byte_array(vm, iv)?)
+        };
+        let hash = byte_array_hash_bytes(iv_bytes.as_deref())
+            .wrapping_add(crate::lang::read_int_field(vm, this, "version"))
+            .wrapping_add(crate::lang::read_int_field(vm, this, "rounds"))
+            .wrapping_add(crate::lang::read_int_field(vm, this, "wordSize"));
+        int(hash)
+    }),
+];
+
+/// Validate and copy the IV window shared by RC5/RC2 (blockSize bytes required).
+fn rc5_rc2_iv(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    iv: ObjectRef,
+    offset: i32,
+    block_size: i32,
+) -> Result<(), VmError> {
+    if iv.is_null() {
+        return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("IV missing")));
+    }
+    if offset < 0 {
+        return Err(vm.throw_new(
+            "java/lang/ArrayIndexOutOfBoundsException",
+            Some("offset is negative"),
+        ));
+    }
+    let total = vm.array_length(iv)? as i32;
+    if total - offset < block_size {
+        return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("IV too short")));
+    }
+    let copy = byte_slice(vm, iv, offset as usize, block_size as usize)?;
+    set_ref_field(vm, this, "iv", "[B", copy)?;
+    Ok(())
+}
+
+pub(crate) const RC5_PARAMETER_SPEC: oxjvm_vm::NativeClass = class(
+    "javax/crypto/spec/RC5ParameterSpec",
+    Some("java/lang/Object"),
+    &["java/security/spec/AlgorithmParameterSpec"],
+    ACC_PUBLIC,
+    &[
+        field("version", "I", ACC_PRIVATE, None),
+        field("rounds", "I", ACC_PRIVATE, None),
+        field("wordSize", "I", ACC_PRIVATE, None),
+        field("iv", "[B", ACC_PRIVATE, None),
+    ],
+    &RC5_PARAMETER_SPEC_METHODS,
+    None,
+);
+
+const RC2_PARAMETER_SPEC_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        crate::lang::write_int_field(vm, receiver(args), "effectiveKeyBits", int_arg(args, 1));
+        void()
+    }),
+    method("<init>", "(I[B)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        crate::lang::write_int_field(vm, this, "effectiveKeyBits", int_arg(args, 1));
+        rc5_rc2_iv(vm, this, ref_arg(args, 2), 0, 8)?;
+        void()
+    }),
+    method("<init>", "(I[BI)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        crate::lang::write_int_field(vm, this, "effectiveKeyBits", int_arg(args, 1));
+        rc5_rc2_iv(vm, this, ref_arg(args, 2), int_arg(args, 3), 8)?;
+        void()
+    }),
+    method("getEffectiveKeyBits", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(
+            vm,
+            receiver(args),
+            "effectiveKeyBits",
+        ))
+    }),
+    method("getIV", "()[B", ACC_PUBLIC, |vm, _, args| {
+        let iv = ref_field(vm, receiver(args), "iv", "[B");
+        if iv.is_null() {
+            return object(ObjectRef::NULL);
+        }
+        let len = vm.array_length(iv)?;
+        object(byte_slice(vm, iv, 0, len)?)
+    }),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if this == other {
+                return boolean(true);
+            }
+            let class = vm.resolve_class("javax/crypto/spec/RC2ParameterSpec")?;
+            if other.is_null() || !vm.is_instance(other, class) {
+                return boolean(false);
+            }
+            let same_bits = crate::lang::read_int_field(vm, this, "effectiveKeyBits")
+                == crate::lang::read_int_field(vm, other, "effectiveKeyBits");
+            let this_iv = ref_field(vm, this, "iv", "[B");
+            let other_iv = ref_field(vm, other, "iv", "[B");
+            let same_iv = read_byte_array(vm, this_iv)? == read_byte_array(vm, other_iv)?;
+            boolean(same_bits && same_iv)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let iv = ref_field(vm, this, "iv", "[B");
+        let iv_bytes = if iv.is_null() {
+            None
+        } else {
+            Some(read_byte_array(vm, iv)?)
+        };
+        let hash = byte_array_hash_bytes(iv_bytes.as_deref())
+            .wrapping_add(crate::lang::read_int_field(vm, this, "effectiveKeyBits"));
+        int(hash)
+    }),
+];
+
+pub(crate) const RC2_PARAMETER_SPEC: oxjvm_vm::NativeClass = class(
+    "javax/crypto/spec/RC2ParameterSpec",
+    Some("java/lang/Object"),
+    &["java/security/spec/AlgorithmParameterSpec"],
+    ACC_PUBLIC,
+    &[
+        field("effectiveKeyBits", "I", ACC_PRIVATE, None),
+        field("iv", "[B", ACC_PRIVATE, None),
+    ],
+    &RC2_PARAMETER_SPEC_METHODS,
+    None,
+);
+
+// DES weak / semi-weak key table (16 entries of 8 bytes), mirroring the JDK.
+const DES_WEAK_KEYS: [[u8; 8]; 16] = [
+    [0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01],
+    [0xFE, 0xFE, 0xFE, 0xFE, 0xFE, 0xFE, 0xFE, 0xFE],
+    [0x1F, 0x1F, 0x1F, 0x1F, 0x0E, 0x0E, 0x0E, 0x0E],
+    [0xE0, 0xE0, 0xE0, 0xE0, 0xF1, 0xF1, 0xF1, 0xF1],
+    [0x01, 0xFE, 0x01, 0xFE, 0x01, 0xFE, 0x01, 0xFE],
+    [0x1F, 0xE0, 0x1F, 0xE0, 0x0E, 0xF1, 0x0E, 0xF1],
+    [0x01, 0xE0, 0x01, 0xE0, 0x01, 0xF1, 0x01, 0xF1],
+    [0x1F, 0xFE, 0x1F, 0xFE, 0x0E, 0xFE, 0x0E, 0xFE],
+    [0x01, 0x1F, 0x01, 0x1F, 0x01, 0x0E, 0x01, 0x0E],
+    [0xE0, 0xFE, 0xE0, 0xFE, 0xF1, 0xFE, 0xF1, 0xFE],
+    [0xFE, 0x01, 0xFE, 0x01, 0xFE, 0x01, 0xFE, 0x01],
+    [0xE0, 0x1F, 0xE0, 0x1F, 0xF1, 0x0E, 0xF1, 0x0E],
+    [0xE0, 0x01, 0xE0, 0x01, 0xF1, 0x01, 0xF1, 0x01],
+    [0xFE, 0x1F, 0xFE, 0x1F, 0xFE, 0x0E, 0xFE, 0x0E],
+    [0x1F, 0x01, 0x1F, 0x01, 0x0E, 0x01, 0x0E, 0x01],
+    [0xFE, 0xE0, 0xFE, 0xE0, 0xFE, 0xF1, 0xFE, 0xF1],
+];
+
+/// Shared DES/DESede key-window validation: null key, negative offset, short key.
+fn des_key_window(
+    vm: &mut Vm<'_>,
+    key: ObjectRef,
+    offset: i32,
+    key_len: i32,
+) -> Result<Vec<u8>, VmError> {
+    if key.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", Some("null key")));
+    }
+    if offset < 0 {
+        return Err(vm.throw_new(
+            "java/lang/ArrayIndexOutOfBoundsException",
+            Some("offset is negative"),
+        ));
+    }
+    let bytes = read_byte_array(vm, key)?;
+    if (bytes.len() as i32) - offset < key_len {
+        return Err(vm.throw_new("java/security/InvalidKeyException", Some("Wrong key size")));
+    }
+    Ok(bytes)
+}
+
+/// Static isParityAdjusted/isWeak validation uses InvalidKeyException for null.
+fn des_static_window(
+    vm: &mut Vm<'_>,
+    key: ObjectRef,
+    offset: i32,
+    key_len: i32,
+) -> Result<Vec<u8>, VmError> {
+    if key.is_null() {
+        return Err(vm.throw_new("java/security/InvalidKeyException", Some("null key")));
+    }
+    if offset < 0 {
+        return Err(vm.throw_new(
+            "java/lang/ArrayIndexOutOfBoundsException",
+            Some("offset is negative"),
+        ));
+    }
+    let bytes = read_byte_array(vm, key)?;
+    if (bytes.len() as i32) - offset < key_len {
+        return Err(vm.throw_new("java/security/InvalidKeyException", Some("Wrong key size")));
+    }
+    Ok(bytes)
+}
+
+fn des_parity_adjusted(bytes: &[u8], offset: usize) -> bool {
+    for i in 0..8 {
+        let k = (bytes[offset + i] as u32).count_ones();
+        if k & 1 == 0 {
+            return false;
+        }
+    }
+    true
+}
+
+const DES_KEY_SPEC_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method("<init>", "([B)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let bytes = des_key_window(vm, ref_arg(args, 1), 0, 8)?;
+        let copy = new_byte_array(vm, &bytes[0..8])?;
+        set_ref_field(vm, this, "key", "[B", copy)?;
+        void()
+    }),
+    method("<init>", "([BI)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let offset = int_arg(args, 2);
+        let bytes = des_key_window(vm, ref_arg(args, 1), offset, 8)?;
+        let copy = new_byte_array(vm, &bytes[offset as usize..offset as usize + 8])?;
+        set_ref_field(vm, this, "key", "[B", copy)?;
+        void()
+    }),
+    method("getKey", "()[B", ACC_PUBLIC, |vm, _, args| {
+        let key = ref_field(vm, receiver(args), "key", "[B");
+        let len = vm.array_length(key)?;
+        object(byte_slice(vm, key, 0, len)?)
+    }),
+    method(
+        "isParityAdjusted",
+        "([BI)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let bytes = des_static_window(vm, ref_arg(args, 0), int_arg(args, 1), 8)?;
+            boolean(des_parity_adjusted(&bytes, int_arg(args, 1) as usize))
+        },
+    ),
+    method(
+        "isWeak",
+        "([BI)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let offset = int_arg(args, 1);
+            let bytes = des_static_window(vm, ref_arg(args, 0), offset, 8)?;
+            let window = &bytes[offset as usize..offset as usize + 8];
+            boolean(DES_WEAK_KEYS.iter().any(|weak| weak == window))
+        },
+    ),
+];
+
+pub(crate) const DES_KEY_SPEC: oxjvm_vm::NativeClass = class(
+    "javax/crypto/spec/DESKeySpec",
+    Some("java/lang/Object"),
+    &["java/security/spec/KeySpec"],
+    ACC_PUBLIC,
+    &[field("key", "[B", ACC_PRIVATE, None)],
+    &DES_KEY_SPEC_METHODS,
+    None,
+);
+
+const DES_EDE_KEY_SPEC_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method("<init>", "([B)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let bytes = des_key_window(vm, ref_arg(args, 1), 0, 24)?;
+        let copy = new_byte_array(vm, &bytes[0..24])?;
+        set_ref_field(vm, this, "key", "[B", copy)?;
+        void()
+    }),
+    method("<init>", "([BI)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let offset = int_arg(args, 2);
+        let bytes = des_key_window(vm, ref_arg(args, 1), offset, 24)?;
+        let copy = new_byte_array(vm, &bytes[offset as usize..offset as usize + 24])?;
+        set_ref_field(vm, this, "key", "[B", copy)?;
+        void()
+    }),
+    method("getKey", "()[B", ACC_PUBLIC, |vm, _, args| {
+        let key = ref_field(vm, receiver(args), "key", "[B");
+        let len = vm.array_length(key)?;
+        object(byte_slice(vm, key, 0, len)?)
+    }),
+    method(
+        "isParityAdjusted",
+        "([BI)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let offset = int_arg(args, 1);
+            let bytes = des_static_window(vm, ref_arg(args, 0), offset, 24)?;
+            let o = offset as usize;
+            boolean(
+                des_parity_adjusted(&bytes, o)
+                    && des_parity_adjusted(&bytes, o + 8)
+                    && des_parity_adjusted(&bytes, o + 16),
+            )
+        },
+    ),
+];
+
+pub(crate) const DES_EDE_KEY_SPEC: oxjvm_vm::NativeClass = class(
+    "javax/crypto/spec/DESedeKeySpec",
+    Some("java/lang/Object"),
+    &["java/security/spec/KeySpec"],
+    ACC_PUBLIC,
+    &[field("key", "[B", ACC_PRIVATE, None)],
+    &DES_EDE_KEY_SPEC_METHODS,
     None,
 );
