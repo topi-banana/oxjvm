@@ -7607,6 +7607,135 @@ pub(crate) const ALGORITHM_PARAMETER_SPEC: oxjvm_vm::NativeClass = class(
     None,
 );
 
+const NAMED_PARAMETER_SPEC_NAMES: [&str; 10] = [
+    "X25519",
+    "X448",
+    "ED25519",
+    "ED448",
+    "ML_DSA_44",
+    "ML_DSA_65",
+    "ML_DSA_87",
+    "ML_KEM_512",
+    "ML_KEM_768",
+    "ML_KEM_1024",
+];
+
+fn named_parameter_spec_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class("java/security/spec/NamedParameterSpec")?;
+    for name in NAMED_PARAMETER_SPEC_NAMES {
+        let instance = vm.new_instance(class)?;
+        set_string_field(vm, instance, "name", name)?;
+        vm.set_static_value(
+            class,
+            name,
+            "Ljava/security/spec/NamedParameterSpec;",
+            Value::Ref(instance),
+        );
+    }
+    Ok(())
+}
+
+pub(crate) const NAMED_PARAMETER_SPEC: oxjvm_vm::NativeClass = class(
+    "java/security/spec/NamedParameterSpec",
+    Some("java/lang/Object"),
+    &["java/security/spec/AlgorithmParameterSpec"],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field(
+            "X25519",
+            "Ljava/security/spec/NamedParameterSpec;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "X448",
+            "Ljava/security/spec/NamedParameterSpec;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "ED25519",
+            "Ljava/security/spec/NamedParameterSpec;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "ED448",
+            "Ljava/security/spec/NamedParameterSpec;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "ML_DSA_44",
+            "Ljava/security/spec/NamedParameterSpec;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "ML_DSA_65",
+            "Ljava/security/spec/NamedParameterSpec;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "ML_DSA_87",
+            "Ljava/security/spec/NamedParameterSpec;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "ML_KEM_512",
+            "Ljava/security/spec/NamedParameterSpec;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "ML_KEM_768",
+            "Ljava/security/spec/NamedParameterSpec;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "ML_KEM_1024",
+            "Ljava/security/spec/NamedParameterSpec;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field("name", "Ljava/lang/String;", ACC_PRIVATE | ACC_FINAL, None),
+    ],
+    &[
+        method(
+            "<init>",
+            "(Ljava/lang/String;)V",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let this = receiver(args);
+                let name = ref_arg(args, 0);
+                if name.is_null() {
+                    return Err(vm.throw_new("java/lang/NullPointerException", None));
+                }
+                let text = vm.string_or_empty(name);
+                set_string_field(vm, this, "name", &text)?;
+                void()
+            },
+        ),
+        method(
+            "getName",
+            "()Ljava/lang/String;",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let this = receiver(args);
+                let class = vm.class_of(this);
+                let name = vm
+                    .read_ref_field(this, class, "name", "Ljava/lang/String;")
+                    .unwrap_or(ObjectRef::NULL);
+                object(name)
+            },
+        ),
+    ],
+    Some(named_parameter_spec_clinit),
+);
+
 // -------------------------------------------------------------------------------------------
 // javax.net.ssl.SSLContext (+ its collaborators)
 // -------------------------------------------------------------------------------------------
