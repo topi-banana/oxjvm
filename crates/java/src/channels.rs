@@ -1276,6 +1276,21 @@ pub(crate) const SCATTERING_BYTE_CHANNEL: oxjvm_vm::NativeClass = class(
     None,
 );
 
+pub(crate) const SEEKABLE_BYTE_CHANNEL: oxjvm_vm::NativeClass = class(
+    "java/nio/channels/SeekableByteChannel",
+    Some("java/lang/Object"),
+    &["java/nio/channels/ByteChannel"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[
+        abstract_method("position", "()J"),
+        abstract_method("position", "(J)Ljava/nio/channels/SeekableByteChannel;"),
+        abstract_method("size", "()J"),
+        abstract_method("truncate", "(J)Ljava/nio/channels/SeekableByteChannel;"),
+    ],
+    None,
+);
+
 pub(crate) const NETWORK_CHANNEL: oxjvm_vm::NativeClass = class(
     "java/nio/channels/NetworkChannel",
     Some("java/lang/Object"),

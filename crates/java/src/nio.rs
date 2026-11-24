@@ -1637,7 +1637,27 @@ pub(crate) const POSIX_FILE_PERMISSIONS: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 66] = [
+fn check_temp_attrs(vm: &mut Vm<'_>, attrs: ObjectRef) -> Result<(), VmError> {
+    if attrs.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let length = vm.array_length(attrs)?;
+    for index in 0..length {
+        if vm.array_get(attrs, index as i32)?.as_ref().is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+    }
+    Ok(())
+}
+
+fn check_temp_name(vm: &mut Vm<'_>, name: &str) -> Result<(), VmError> {
+    if name.contains('/') || name.contains('\\') {
+        return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+    }
+    Ok(())
+}
+
+const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 68] = [
     method(
         "getPosixFilePermissions",
         "(Ljava/nio/file/Path;[Ljava/nio/file/LinkOption;)Ljava/util/Set;",
@@ -1886,11 +1906,31 @@ const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 66] = [
         },
     ),
     method(
+        "newByteChannel",
+        "(Ljava/nio/file/Path;[Ljava/nio/file/OpenOption;)Ljava/nio/channels/SeekableByteChannel;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            object(open_channel_from_options(vm, &path, ref_arg(args, 1))?)
+        },
+    ),
+    method(
+        "newByteChannel",
+        "(Ljava/nio/file/Path;Ljava/util/Set;[Ljava/nio/file/attribute/FileAttribute;)Ljava/nio/channels/SeekableByteChannel;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let path = path_string(vm, ref_arg(args, 0));
+            object(new_file_channel(vm, &path, 0, true)?)
+        },
+    ),
+    method(
         "createTempDirectory",
         "(Ljava/lang/String;[Ljava/nio/file/attribute/FileAttribute;)Ljava/nio/file/Path;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            let prefix = string_arg(vm, args[0])?;
+            let prefix = vm.string_or_empty(args[0].as_ref());
+            check_temp_name(vm, &prefix)?;
+            check_temp_attrs(vm, ref_arg(args, 1))?;
             let dir =
                 crate::lang::system_property(vm, "java.io.tmpdir").unwrap_or_else(|| "/tmp".into());
             let seed = vm.host.random_seed();
@@ -1903,6 +1943,8 @@ const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 66] = [
             if !created {
                 return Err(vm.throw_new("java/io/IOException", Some(&path)));
             }
+            // Temporary directories are created owner-only (rwx------), like the JDK.
+            let _ = vm.host.filesystem().map(|fs| fs.set_mode(&path, 0o700));
             new_path(vm, &path)
         },
     ),
@@ -1969,13 +2011,20 @@ const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 66] = [
         "(Ljava/nio/file/Path;Ljava/lang/String;[Ljava/nio/file/attribute/FileAttribute;)Ljava/nio/file/Path;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            let dir = path_string(vm, ref_arg(args, 0));
-            let prefix = string_arg(vm, args[1])?;
+            let dir_ref = ref_arg(args, 0);
+            if dir_ref.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let dir = path_string(vm, dir_ref);
+            let prefix = vm.string_or_empty(args[1].as_ref());
+            check_temp_name(vm, &prefix)?;
+            check_temp_attrs(vm, ref_arg(args, 2))?;
             let seed = vm.host.random_seed();
             let path = alloc::format!("{dir}/{prefix}{seed:016x}");
             if !fs_create_dir(vm, &path) {
                 return Err(vm.throw_new("java/io/IOException", Some(&path)));
             }
+            let _ = vm.host.filesystem().map(|fs| fs.set_mode(&path, 0o700));
             new_path(vm, &path)
         },
     ),
@@ -1984,18 +2033,27 @@ const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 66] = [
         "(Ljava/nio/file/Path;Ljava/lang/String;Ljava/lang/String;[Ljava/nio/file/attribute/FileAttribute;)Ljava/nio/file/Path;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            let dir = path_string(vm, ref_arg(args, 0));
+            let dir_ref = ref_arg(args, 0);
+            if dir_ref.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let dir = path_string(vm, dir_ref);
             let prefix = vm.string_or_empty(ref_arg(args, 1));
             let suffix = if ref_arg(args, 2).is_null() {
                 String::from(".tmp")
             } else {
                 vm.string_or_empty(ref_arg(args, 2))
             };
+            check_temp_name(vm, &prefix)?;
+            check_temp_name(vm, &suffix)?;
+            check_temp_attrs(vm, ref_arg(args, 3))?;
             let seed = vm.host.random_seed();
             let path = alloc::format!("{dir}/{prefix}{seed:016x}{suffix}");
             if !fs_write(vm, &path, &[], false) {
                 return Err(vm.throw_new("java/io/IOException", Some(&path)));
             }
+            // Temporary files are created owner-only (rw-------), like the JDK.
+            let _ = vm.host.filesystem().map(|fs| fs.set_mode(&path, 0o600));
             new_path(vm, &path)
         },
     ),
@@ -2040,6 +2098,9 @@ const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 66] = [
             } else {
                 vm.string_or_empty(ref_arg(args, 1))
             };
+            check_temp_name(vm, &prefix)?;
+            check_temp_name(vm, &suffix)?;
+            check_temp_attrs(vm, ref_arg(args, 2))?;
             let dir = crate::lang::system_property(vm, "java.io.tmpdir")
                 .unwrap_or_else(|| String::from("/tmp"));
             let seed = vm.host.random_seed();
@@ -2047,6 +2108,8 @@ const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 66] = [
             if !fs_write(vm, &path, &[], false) {
                 return Err(vm.throw_new("java/io/IOException", Some(&path)));
             }
+            // Temporary files are created owner-only (rw-------), like the JDK.
+            let _ = vm.host.filesystem().map(|fs| fs.set_mode(&path, 0o600));
             new_path(vm, &path)
         },
     ),
@@ -5433,7 +5496,10 @@ const FILE_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
 pub(crate) const FILE_CHANNEL: oxjvm_vm::NativeClass = class(
     "java/nio/channels/FileChannel",
     Some("java/lang/Object"),
-    &["java/nio/channels/ByteChannel"],
+    &[
+        "java/nio/channels/ByteChannel",
+        "java/nio/channels/SeekableByteChannel",
+    ],
     ACC_PUBLIC | ACC_ABSTRACT,
     &[],
     &FILE_CHANNEL_METHODS,
