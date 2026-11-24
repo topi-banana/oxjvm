@@ -2569,6 +2569,51 @@ fn log_manager_local_map(vm: &mut Vm<'_>, manager: ObjectRef) -> Result<ObjectRe
         .ok_or_else(|| VmError::internal("LogManager.localLoggers missing"))
 }
 
+fn log_manager_configuration_listeners(
+    vm: &mut Vm<'_>,
+    manager: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.class_of(manager);
+    vm.read_ref_field(
+        manager,
+        class,
+        "configurationListeners",
+        "Ljava/util/ArrayList;",
+    )
+    .filter(|list| !list.is_null())
+    .ok_or_else(|| VmError::internal("LogManager.configurationListeners missing"))
+}
+
+/// Run the registered configuration listeners after a configuration change.
+/// Each listener runs even if an earlier one throws; the first error/exception
+/// is rethrown once all have run, with the later ones attached as suppressed.
+fn invoke_configuration_listeners(vm: &mut Vm<'_>, manager: ObjectRef) -> Result<(), VmError> {
+    let list = log_manager_configuration_listeners(vm, manager)?;
+    let listeners = crate::util::array_list_elements(vm, list);
+    let mut first: ObjectRef = ObjectRef::NULL;
+    for listener in listeners {
+        if listener.is_null() {
+            continue;
+        }
+        let (run_class, run) = vm.resolve_virtual_method(listener, "run", "()V")?;
+        if let Err(VmError::Thrown(exc)) =
+            vm.invoke_method(run_class, run, vec![Value::Ref(listener)])
+        {
+            if first.is_null() {
+                first = exc;
+            } else {
+                let (sup_class, sup) =
+                    vm.resolve_virtual_method(first, "addSuppressed", "(Ljava/lang/Throwable;)V")?;
+                vm.invoke_method(sup_class, sup, vec![Value::Ref(first), Value::Ref(exc)])?;
+            }
+        }
+    }
+    if !first.is_null() {
+        return Err(VmError::Thrown(first));
+    }
+    Ok(())
+}
+
 fn log_manager_properties(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class(LOG_MANAGER_CLASS)?;
     if let Some(map) = vm.read_static_ref_if_set(class, "properties", "Ljava/util/HashMap;") {
@@ -4183,6 +4228,10 @@ fn log_manager_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     // The singleton shares the static registry as its logger namespace.
     let (declaring, field) = vm.find_field(class, "localLoggers", "Ljava/util/HashMap;")?;
     vm.set_instance_ref(manager, declaring, field, map);
+    let listeners = crate::util::new_array_list(vm)?;
+    let (declaring, field) =
+        vm.find_field(class, "configurationListeners", "Ljava/util/ArrayList;")?;
+    vm.set_instance_ref(manager, declaring, field, listeners);
     vm.set_static_value(
         class,
         "manager",
@@ -4253,7 +4302,7 @@ fn logger_from_registry_initializing(vm: &mut Vm<'_>) -> Result<ObjectRef, VmErr
     Ok(logger)
 }
 
-const LOG_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
+const LOG_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method("<init>", "()V", ACC_PROTECTED, |vm, _, args| {
         // Each LogManager instance owns a private logger namespace; the
         // singleton's is later pointed at the shared static registry.
@@ -4262,6 +4311,10 @@ const LOG_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
         let class = vm.class_of(this);
         let (declaring, field) = vm.find_field(class, "localLoggers", "Ljava/util/HashMap;")?;
         vm.set_instance_ref(this, declaring, field, map);
+        let listeners = crate::util::new_array_list(vm)?;
+        let (declaring, field) =
+            vm.find_field(class, "configurationListeners", "Ljava/util/ArrayList;")?;
+        vm.set_instance_ref(this, declaring, field, listeners);
         void()
     }),
     method(
@@ -4309,6 +4362,48 @@ const LOG_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
         },
     ),
     method(
+        "addConfigurationListener",
+        "(Ljava/lang/Runnable;)Ljava/util/logging/LogManager;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let listener = ref_arg(args, 1);
+            if listener.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let list = log_manager_configuration_listeners(vm, this)?;
+            // putIfAbsent semantics: registering the same listener twice is a no-op.
+            let elements = crate::util::array_list_elements(vm, list);
+            if !elements.contains(&listener) {
+                let (add_class, add) =
+                    vm.resolve_virtual_method(list, "add", "(Ljava/lang/Object;)Z")?;
+                vm.invoke_method(add_class, add, vec![Value::Ref(list), Value::Ref(listener)])?;
+            }
+            object(this)
+        },
+    ),
+    method(
+        "removeConfigurationListener",
+        "(Ljava/lang/Runnable;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let listener = ref_arg(args, 1);
+            if listener.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let list = log_manager_configuration_listeners(vm, this)?;
+            let (remove_class, remove) =
+                vm.resolve_virtual_method(list, "remove", "(Ljava/lang/Object;)Z")?;
+            vm.invoke_method(
+                remove_class,
+                remove,
+                vec![Value::Ref(list), Value::Ref(listener)],
+            )?;
+            void()
+        },
+    ),
+    method(
         "getProperty",
         "(Ljava/lang/String;)Ljava/lang/String;",
         ACC_PUBLIC,
@@ -4353,6 +4448,7 @@ const LOG_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
                 .ok_or_else(|| VmError::internal("Properties.load missing"))?;
             vm.invoke_method(load_class, load, vec![Value::Ref(props), Value::Ref(ins)])?;
             merge_configuration(vm, props, mapper)?;
+            invoke_configuration_listeners(vm, receiver(args))?;
             void()
         },
     ),
@@ -4364,11 +4460,13 @@ const LOG_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
             let mapper = ref_arg(args, 1);
             let props = logging_config_properties(vm)?;
             merge_configuration(vm, props, mapper)?;
+            invoke_configuration_listeners(vm, receiver(args))?;
             void()
         },
     ),
-    method("readConfiguration", "()V", ACC_PUBLIC, |vm, _, _| {
+    method("readConfiguration", "()V", ACC_PUBLIC, |vm, _, args| {
         read_logging_config_file(vm)?;
+        invoke_configuration_listeners(vm, receiver(args))?;
         void()
     }),
     method(
@@ -4401,6 +4499,7 @@ const LOG_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
                 return Err(VmError::Thrown(exc));
             }
             apply_logging_properties(vm, props)?;
+            invoke_configuration_listeners(vm, receiver(args))?;
             void()
         },
     ),
@@ -4509,6 +4608,12 @@ pub(crate) const LOG_MANAGER: oxjvm_vm::NativeClass = class(
             None,
         ),
         field("localLoggers", "Ljava/util/HashMap;", ACC_PRIVATE, None),
+        field(
+            "configurationListeners",
+            "Ljava/util/ArrayList;",
+            ACC_PRIVATE,
+            None,
+        ),
     ],
     &LOG_MANAGER_METHODS,
     Some(log_manager_clinit),
