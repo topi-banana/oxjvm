@@ -1387,7 +1387,9 @@ const FILE_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
                 .read_string_field(this, vm.class_of(this), "path")
                 .unwrap_or_default();
             let position = fs_metadata(vm, &path).map_or(0, |metadata| metadata.len as i64);
-            object(crate::nio::new_file_channel(vm, &path, position, true)?)
+            let channel = crate::nio::new_file_channel(vm, &path, position, true)?;
+            crate::lang::write_int_field(vm, channel, "readable", 0);
+            object(channel)
         },
     ),
     method(

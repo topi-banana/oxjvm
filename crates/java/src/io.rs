@@ -78,6 +78,16 @@ io_exception!(
     "java/io/InvalidObjectException",
     "java/io/ObjectStreamException"
 );
+io_exception!(
+    NON_WRITABLE_CHANNEL_EXCEPTION,
+    "java/nio/channels/NonWritableChannelException",
+    "java/io/IOException"
+);
+io_exception!(
+    NON_READABLE_CHANNEL_EXCEPTION,
+    "java/nio/channels/NonReadableChannelException",
+    "java/io/IOException"
+);
 
 pub(crate) const CLOSEABLE: oxjvm_vm::NativeClass = class(
     "java/io/Closeable",

@@ -4770,6 +4770,7 @@ pub(crate) fn new_file_channel(
     let (declaring, field) = vm.find_field(class, "position", "J")?;
     vm.set_instance_long(channel, declaring, field, position);
     crate::lang::write_int_field(vm, channel, "writable", i32::from(writable));
+    crate::lang::write_int_field(vm, channel, "readable", 1);
     crate::lang::write_int_field(vm, channel, "open", 1);
     Ok(channel)
 }
@@ -5078,6 +5079,19 @@ const FILE_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
                     Some("Size exceeds Integer.MAX_VALUE"),
                 ));
             }
+            let mode = ref_arg(args, 1);
+            let mode_name = vm
+                .read_string_field(mode, vm.class_of(mode), "name")
+                .unwrap_or_default();
+            let read_only = mode_name == "READ_ONLY";
+            let writable = crate::lang::read_int_field(vm, this, "writable") != 0;
+            let readable = crate::lang::read_int_field(vm, this, "readable") != 0;
+            if read_only && !readable {
+                return Err(vm.throw_new("java/nio/channels/NonReadableChannelException", None));
+            }
+            if !read_only && !writable {
+                return Err(vm.throw_new("java/nio/channels/NonWritableChannelException", None));
+            }
             let path = vm
                 .read_string_field(this, vm.class_of(this), "path")
                 .unwrap_or_default();
@@ -5088,9 +5102,10 @@ const FILE_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
                 .unwrap_or_default();
             let start = (position as usize).min(bytes.len());
             let end = (position.saturating_add(size) as usize).min(bytes.len());
-            object(crate::buffer::byte_buffer_from_bytes(
+            object(crate::buffer::mapped_byte_buffer_from_bytes(
                 vm,
                 &bytes[start..end],
+                read_only,
             )?)
         },
     ),
@@ -5124,6 +5139,7 @@ pub(crate) const OJVM_FILE_CHANNEL: oxjvm_vm::NativeClass = class(
         field("path", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("position", "J", ACC_PRIVATE, None),
         field("writable", "I", ACC_PRIVATE, None),
+        field("readable", "I", ACC_PRIVATE, None),
         field("open", "I", ACC_PRIVATE, None),
         field("owner", "Ljava/lang/Object;", ACC_PRIVATE, None),
     ],

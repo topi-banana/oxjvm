@@ -1652,6 +1652,33 @@ pub(crate) const OJVM_BYTE_BUFFER: oxjvm_vm::NativeClass = class(
     None,
 );
 
+const MAPPED_BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method(
+        "force",
+        "()Ljava/nio/MappedByteBuffer;",
+        ACC_PUBLIC,
+        |_, _, args| object(receiver(args)),
+    ),
+    method(
+        "load",
+        "()Ljava/nio/MappedByteBuffer;",
+        ACC_PUBLIC,
+        |_, _, args| object(receiver(args)),
+    ),
+    method("isLoaded", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
+];
+
+// A file-backed byte buffer returned by FileChannel.map.
+pub(crate) const MAPPED_BYTE_BUFFER: oxjvm_vm::NativeClass = class(
+    "java/nio/MappedByteBuffer",
+    Some("java/nio/ByteBuffer"),
+    &[],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[],
+    &MAPPED_BYTE_BUFFER_METHODS,
+    None,
+);
+
 // -------------------------------------------------------------------------------------------
 // CharBuffer (the subset used by CharsetEncoder/Decoder)
 // -------------------------------------------------------------------------------------------
@@ -5233,6 +5260,32 @@ pub(crate) fn byte_buffer_from_bytes(vm: &mut Vm<'_>, bytes: &[u8]) -> Result<Ob
         order,
         false,
     )
+}
+
+/// Build a fresh `MappedByteBuffer` over `bytes`, optionally read-only.
+pub(crate) fn mapped_byte_buffer_from_bytes(
+    vm: &mut Vm<'_>,
+    bytes: &[u8],
+    read_only: bool,
+) -> Result<ObjectRef, VmError> {
+    let array = vm.allocate_array_of(ArrayComponent::Byte, bytes.len())?;
+    for (index, byte) in bytes.iter().enumerate() {
+        put_byte_at(vm, array, index, *byte)?;
+    }
+    let order = default_byte_order(vm)?;
+    let class = vm.resolve_class("java/nio/MappedByteBuffer")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "bytes", "[B")?;
+    vm.set_instance_ref(instance, declaring, field, array);
+    set_field_int(vm, instance, "offset", 0);
+    set_field_int(vm, instance, "capacity", bytes.len() as i32);
+    set_field_int(vm, instance, "position", 0);
+    set_field_int(vm, instance, "limit", bytes.len() as i32);
+    set_field_int(vm, instance, "mark", -1);
+    let (declaring, field) = vm.find_field(class, "order", "Ljava/nio/ByteOrder;")?;
+    vm.set_instance_ref(instance, declaring, field, order);
+    set_field_int(vm, instance, "readOnly", i32::from(read_only));
+    Ok(instance)
 }
 
 /// Put as many bytes as fit, returning the number written.
