@@ -135,10 +135,27 @@ fn throwable_add_suppressed(
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
     if suppressed == this {
-        return Err(vm.throw_new(
-            "java/lang/IllegalArgumentException",
-            Some("Self-suppression not permitted"),
-        ));
+        // The JDK reports self-suppression as an IllegalArgumentException whose
+        // cause is the throwable itself (Throwable.addSuppressed uses the
+        // (String, Throwable) constructor with `this`).
+        let class = vm.resolve_class("java/lang/IllegalArgumentException")?;
+        let message = vm.make_string("Self-suppression not permitted")?;
+        let exception = vm.new_instance(class)?;
+        let (declaring, ctor) = vm
+            .find_method(
+                class,
+                "<init>",
+                "(Ljava/lang/String;Ljava/lang/Throwable;)V",
+            )
+            .ok_or_else(|| {
+                VmError::internal("IllegalArgumentException(String,Throwable) missing")
+            })?;
+        vm.invoke_method(
+            declaring,
+            ctor,
+            vec![Value::Ref(exception), Value::Ref(message), Value::Ref(this)],
+        )?;
+        return Err(VmError::Thrown(exception));
     }
     let class = vm.class_of(this);
     let existing = vm
