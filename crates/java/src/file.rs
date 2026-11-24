@@ -1062,8 +1062,14 @@ const FILE_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
             let path = vm
                 .read_string_field(this, vm.class_of(this), "path")
                 .unwrap_or_default();
-            let (_, position) = file_input_state(vm, this)?;
+            // getChannel still hands out a channel after the stream is closed;
+            // the channel is simply closed too (JDK behavior).
+            let closed = read_z_field(vm, this, "closed");
+            let position = crate::lang::read_int_field(vm, this, "position").max(0);
             let channel = crate::nio::new_file_channel(vm, &path, position as i64, false)?;
+            if closed {
+                crate::lang::write_int_field(vm, channel, "open", 0);
+            }
             crate::nio::set_file_channel_owner(vm, channel, this)?;
             object(channel)
         },
@@ -1389,6 +1395,9 @@ const FILE_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
             let position = fs_metadata(vm, &path).map_or(0, |metadata| metadata.len as i64);
             let channel = crate::nio::new_file_channel(vm, &path, position, true)?;
             crate::lang::write_int_field(vm, channel, "readable", 0);
+            if read_z_field(vm, this, "closed") {
+                crate::lang::write_int_field(vm, channel, "open", 0);
+            }
             object(channel)
         },
     ),

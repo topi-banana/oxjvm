@@ -88,6 +88,11 @@ io_exception!(
     "java/nio/channels/NonReadableChannelException",
     "java/io/IOException"
 );
+io_exception!(
+    CLOSED_CHANNEL_EXCEPTION,
+    "java/nio/channels/ClosedChannelException",
+    "java/io/IOException"
+);
 
 pub(crate) const CLOSEABLE: oxjvm_vm::NativeClass = class(
     "java/io/Closeable",
@@ -7676,6 +7681,9 @@ const RANDOM_ACCESS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
                 .unwrap_or(0)
                 != 0;
             let channel = crate::nio::new_file_channel(vm, &path, 0, writable)?;
+            if read_int_field(vm, this, "closed") != 0 {
+                write_int_field(vm, channel, "open", 0);
+            }
             if let Some((declaring, field)) =
                 vm.find_field_opt(class, "channel", "Ljava/nio/channels/FileChannel;")
             {

@@ -4842,7 +4842,7 @@ fn file_channel_write(
     Ok(bytes.len() as i32)
 }
 
-const FILE_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+const FILE_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
     method(
         "open",
         "(Ljava/nio/file/Path;[Ljava/nio/file/OpenOption;)Ljava/nio/channels/FileChannel;",
@@ -4915,6 +4915,9 @@ const FILE_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
     ),
     method("position", "()J", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        if crate::lang::read_int_field(vm, this, "open") == 0 {
+            return Err(vm.throw_new("java/nio/channels/ClosedChannelException", None));
+        }
         long(
             vm.read_instance_long_named(this, vm.class_of(this), "position", "J")
                 .unwrap_or(0),
@@ -5126,6 +5129,35 @@ const FILE_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
             )?)
         },
     ),
+    method(
+        "tryLock",
+        "(JJZ)Ljava/nio/channels/FileLock;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            if crate::lang::read_int_field(vm, this, "open") == 0 {
+                return Err(vm.throw_new("java/nio/channels/ClosedChannelException", None));
+            }
+            let position = crate::long_arg(args, 1);
+            let size = crate::long_arg(args, 2);
+            let shared = crate::int_arg(args, 3) != 0;
+            if position < 0 || size < 0 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            let class = vm.resolve_class("java/nio/channels/FileLock")?;
+            let lock = vm.new_instance(class)?;
+            let (declaring, field) =
+                vm.find_field(class, "channel", "Ljava/nio/channels/FileChannel;")?;
+            vm.set_instance_ref(lock, declaring, field, this);
+            let (declaring, field) = vm.find_field(class, "position", "J")?;
+            vm.set_instance_long(lock, declaring, field, position);
+            let (declaring, field) = vm.find_field(class, "size", "J")?;
+            vm.set_instance_long(lock, declaring, field, size);
+            crate::lang::write_int_field(vm, lock, "shared", i32::from(shared));
+            crate::lang::write_int_field(vm, lock, "valid", 1);
+            object(lock)
+        },
+    ),
     method("force", "(Z)V", ACC_PUBLIC, |_, _, _| void()),
     method("isOpen", "()Z", ACC_PUBLIC, |vm, _, args| {
         boolean(crate::lang::read_int_field(vm, receiver(args), "open") != 0)
@@ -5219,6 +5251,73 @@ pub(crate) const MAP_MODE: oxjvm_vm::NativeClass = class(
     ],
     &MAP_MODE_METHODS,
     Some(map_mode_clinit),
+);
+
+const FILE_LOCK_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method("isValid", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "valid") != 0)
+    }),
+    method("release", "()V", ACC_PUBLIC, |vm, _, args| {
+        crate::lang::write_int_field(vm, receiver(args), "valid", 0);
+        void()
+    }),
+    method(
+        "channel",
+        "()Ljava/nio/channels/FileChannel;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(
+                vm.read_ref_field(
+                    receiver(args),
+                    vm.class_of(receiver(args)),
+                    "channel",
+                    "Ljava/nio/channels/FileChannel;",
+                )
+                .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method("position", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(
+            vm.read_instance_long_named(
+                receiver(args),
+                vm.class_of(receiver(args)),
+                "position",
+                "J",
+            )
+            .unwrap_or(0),
+        )
+    }),
+    method("size", "()J", ACC_PUBLIC, |vm, _, args| {
+        long(
+            vm.read_instance_long_named(receiver(args), vm.class_of(receiver(args)), "size", "J")
+                .unwrap_or(0),
+        )
+    }),
+    method("shared", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "shared") != 0)
+    }),
+];
+
+pub(crate) const FILE_LOCK: oxjvm_vm::NativeClass = class(
+    "java/nio/channels/FileLock",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[
+        field(
+            "channel",
+            "Ljava/nio/channels/FileChannel;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field("position", "J", ACC_PRIVATE, None),
+        field("size", "J", ACC_PRIVATE, None),
+        field("shared", "I", ACC_PRIVATE, None),
+        field("valid", "I", ACC_PRIVATE, None),
+    ],
+    &FILE_LOCK_METHODS,
+    None,
 );
 
 /// Link a stream-derived channel back to its owning stream so that seeking the
