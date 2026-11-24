@@ -10603,3 +10603,87 @@ pub(crate) const TRUST_MANAGER_FACTORY: oxjvm_vm::NativeClass = class(
     &TRUST_MANAGER_FACTORY_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// javax.security.auth.login exception hierarchy
+// -------------------------------------------------------------------------------------------
+
+pub(crate) const LOGIN_EXCEPTION: oxjvm_vm::NativeClass = class(
+    "javax/security/auth/login/LoginException",
+    Some("java/security/GeneralSecurityException"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const ACCOUNT_EXCEPTION: oxjvm_vm::NativeClass = class(
+    "javax/security/auth/login/AccountException",
+    Some("javax/security/auth/login/LoginException"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const ACCOUNT_EXPIRED_EXCEPTION: oxjvm_vm::NativeClass = class(
+    "javax/security/auth/login/AccountExpiredException",
+    Some("javax/security/auth/login/AccountException"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const ACCOUNT_LOCKED_EXCEPTION: oxjvm_vm::NativeClass = class(
+    "javax/security/auth/login/AccountLockedException",
+    Some("javax/security/auth/login/AccountException"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const ACCOUNT_NOT_FOUND_EXCEPTION: oxjvm_vm::NativeClass = class(
+    "javax/security/auth/login/AccountNotFoundException",
+    Some("javax/security/auth/login/AccountException"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const CREDENTIAL_EXCEPTION: oxjvm_vm::NativeClass = class(
+    "javax/security/auth/login/CredentialException",
+    Some("javax/security/auth/login/LoginException"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const CREDENTIAL_EXPIRED_EXCEPTION: oxjvm_vm::NativeClass = class(
+    "javax/security/auth/login/CredentialExpiredException",
+    Some("javax/security/auth/login/CredentialException"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const CREDENTIAL_NOT_FOUND_EXCEPTION: oxjvm_vm::NativeClass = class(
+    "javax/security/auth/login/CredentialNotFoundException",
+    Some("javax/security/auth/login/CredentialException"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &[],
+    None,
+);
