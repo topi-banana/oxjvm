@@ -310,6 +310,14 @@ const PATH_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
                 alloc::format!("{dir}/{path}")
             }
         };
+        // A Windows drive-letter path (C:/...) has no leading slash; the JDK still
+        // emits an authority-less file:/// URI, so ensure the path component is
+        // rooted rather than letting the drive letter become the authority.
+        let absolute = if absolute.starts_with('/') {
+            absolute
+        } else {
+            alloc::format!("/{absolute}")
+        };
         let text = alloc::format!("file://{}", crate::file::uri_encode_path(&absolute));
         crate::uri::new_uri(vm, &text)
     }),
