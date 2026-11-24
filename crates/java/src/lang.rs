@@ -11219,14 +11219,18 @@ pub(crate) fn abstract_method_pub(
 /// Read one byte from a `ByteArrayInputStream`-shaped object (`buf`/`pos` fields), advancing the
 /// position. Returns `None` at end of stream.
 pub(crate) fn read_input_byte(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Option<i32>, VmError> {
-    let class = vm.class_of(this);
+    // Field access is statically bound to ByteArrayInputStream: a subclass may
+    // shadow `buf`/`pos`/`count` with its own fields, which must not be used here.
+    let class = vm.resolve_class("java/io/ByteArrayInputStream")?;
     let buffer = vm
         .read_ref_field(this, class, "buf", "[B")
         .unwrap_or(ObjectRef::NULL);
     if buffer.is_null() {
         return Ok(None);
     }
-    let position = read_int_field(vm, this, "pos");
+    let position = vm
+        .read_instance_int_named(this, class, "pos", "I")
+        .unwrap_or(0);
     let length = vm
         .read_instance_int_named(this, class, "count", "I")
         .unwrap_or(vm.array_length(buffer).unwrap_or(0) as i32);
@@ -11234,7 +11238,8 @@ pub(crate) fn read_input_byte(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Option
         return Ok(None);
     }
     let byte = vm.array_get(buffer, position)?.as_int();
-    write_int_field(vm, this, "pos", position + 1);
+    let (declaring, field) = vm.find_field(class, "pos", "I")?;
+    vm.set_instance_int(this, declaring, field, position + 1);
     // `InputStream.read()` yields the byte as an unsigned value 0..255; the array stores it
     // signed, so mask off the sign extension here.
     Ok(Some(byte & 0xFF))

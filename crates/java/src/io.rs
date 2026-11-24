@@ -1100,7 +1100,11 @@ const INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method("markSupported", "()Z", ACC_PUBLIC, |_, _, _| boolean(false)),
     method("readNBytes", "(I)[B", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let limit = int_arg(args, 1).max(0) as usize;
+        let len = int_arg(args, 1);
+        if len < 0 {
+            return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("len < 0")));
+        }
+        let limit = len as usize;
         let mut bytes = Vec::new();
         while bytes.len() < limit {
             let (declaring, method) = vm.resolve_virtual_method(this, "read", "()I")?;
@@ -1238,7 +1242,7 @@ const BYTE_ARRAY_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method("<init>", "([B)V", ACC_PUBLIC, byte_array_input_init),
     method("<init>", "([BII)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let class = vm.class_of(this);
+        let class = vm.resolve_class("java/io/ByteArrayInputStream")?;
         let buf = ref_arg(args, 1);
         let offset = int_arg(args, 2);
         let length = int_arg(args, 3);
@@ -1274,10 +1278,7 @@ const BYTE_ARRAY_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         let count = int_arg(args, 3);
         // Bounds are validated before the zero-length and EOF shortcuts.
         reader_check_range(vm, target, offset, count)?;
-        if count == 0 {
-            return int(0);
-        }
-        let class = vm.class_of(this);
+        let class = vm.resolve_class("java/io/ByteArrayInputStream")?;
         let buf = vm
             .read_ref_field(this, class, "buf", "[B")
             .unwrap_or(ObjectRef::NULL);
@@ -1290,8 +1291,14 @@ const BYTE_ARRAY_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         let length = vm
             .read_instance_int_named(this, class, "count", "I")
             .unwrap_or(vm.array_length(buf)? as i32);
+        // EOF takes precedence over the zero-length shortcut: the JDK checks
+        // pos >= count before considering len, so a zero-length read at EOF
+        // still reports -1.
         if pos >= length {
             return int(-1);
+        }
+        if count == 0 {
+            return int(0);
         }
         let count = count.min(length - pos);
         for index in 0..count {
@@ -1304,7 +1311,7 @@ const BYTE_ARRAY_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     }),
     method("available", "()I", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let class = vm.class_of(this);
+        let class = vm.resolve_class("java/io/ByteArrayInputStream")?;
         let buf = vm
             .read_ref_field(this, class, "buf", "[B")
             .unwrap_or(ObjectRef::NULL);
@@ -1322,7 +1329,7 @@ const BYTE_ARRAY_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
     method("mark", "(I)V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let class = vm.class_of(this);
+        let class = vm.resolve_class("java/io/ByteArrayInputStream")?;
         let pos = vm
             .read_instance_int_named(this, class, "pos", "I")
             .unwrap_or(0);
@@ -1332,7 +1339,7 @@ const BYTE_ARRAY_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
     }),
     method("reset", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let class = vm.class_of(this);
+        let class = vm.resolve_class("java/io/ByteArrayInputStream")?;
         let mark = vm
             .read_instance_int_named(this, class, "mark", "I")
             .unwrap_or(0);
@@ -1351,7 +1358,7 @@ const BYTE_ARRAY_INPUT_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
             if out.is_null() {
                 return Err(vm.throw_new("java/lang/NullPointerException", Some("out")));
             }
-            let class = vm.class_of(this);
+            let class = vm.resolve_class("java/io/ByteArrayInputStream")?;
             let buf = vm
                 .read_ref_field(this, class, "buf", "[B")
                 .unwrap_or(ObjectRef::NULL);
@@ -1433,7 +1440,7 @@ fn byte_array_input_init(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let this = receiver(args);
-    let class = vm.class_of(this);
+    let class = vm.resolve_class("java/io/ByteArrayInputStream")?;
     let buf = ref_arg(args, 1);
     let (declaring, field) = vm.find_field(class, "buf", "[B")?;
     vm.set_instance_ref(this, declaring, field, buf);
