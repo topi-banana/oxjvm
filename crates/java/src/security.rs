@@ -326,8 +326,11 @@ const SECURITY_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "(Ljava/lang/String;)Ljava/lang/String;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            let props = security_properties(vm)?;
             let name = ref_arg(args, 0);
+            if name.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let props = security_properties(vm)?;
             property_call(
                 vm,
                 props,
@@ -342,6 +345,10 @@ const SECURITY_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
+            let name = ref_arg(args, 0);
+            if name.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let props = security_properties(vm)?;
             property_call(
                 vm,
@@ -350,7 +357,7 @@ const SECURITY_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
                 "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
                 vec![
                     Value::Ref(props),
-                    Value::Ref(ref_arg(args, 0)),
+                    Value::Ref(name),
                     Value::Ref(ref_arg(args, 1)),
                 ],
             )
@@ -361,6 +368,11 @@ const SECURITY_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "(Ljava/lang/String;Ljava/lang/String;)V",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
+            let name = ref_arg(args, 0);
+            let value = ref_arg(args, 1);
+            if name.is_null() || value.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let props = security_properties(vm)?;
             property_call(
                 vm,
@@ -424,7 +436,10 @@ const SECURITY_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "getProviders",
         "(Ljava/lang/String;)[Ljava/security/Provider;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| {
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let provider_class = vm.resolve_class("java/security/Provider")?;
             let names = ["SUN", "SunRsaSign", "SunEC", "SunJSSE", "SunJCE"];
             let array = vm.allocate_object_array(provider_class, names.len())?;
@@ -439,7 +454,10 @@ const SECURITY_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "getProviders",
         "(Ljava/util/Map;)[Ljava/security/Provider;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _| {
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let provider_class = vm.resolve_class("java/security/Provider")?;
             object(vm.allocate_object_array(provider_class, 0)?)
         },
@@ -488,7 +506,10 @@ const SECURITY_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "removeProvider",
         "(Ljava/lang/String;)V",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, _args| {
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() {
+                return void();
+            }
             let security = vm.resolve_class("java/security/Security")?;
             vm.ensure_initialized(security)?;
             vm.set_static_value(
