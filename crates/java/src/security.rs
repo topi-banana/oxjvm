@@ -295,6 +295,28 @@ pub(crate) fn known_provider(name: &str) -> bool {
 }
 
 pub(crate) fn new_sun_provider(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
+    // Installed providers are singletons in the JDK: cache them by (case-folded)
+    // name so Security.getProvider(name) and getInstance(...).getProvider() hand
+    // back the very same object.
+    let security = vm.resolve_class("java/security/Security")?;
+    vm.ensure_initialized(security)?;
+    let mut cache = vm
+        .read_static_ref(security, "providerCache", "Ljava/util/HashMap;")
+        .unwrap_or(ObjectRef::NULL);
+    if cache.is_null() {
+        cache = crate::util::new_hash_map(vm)?;
+        vm.set_static_value(
+            security,
+            "providerCache",
+            "Ljava/util/HashMap;",
+            Value::Ref(cache),
+        );
+    }
+    let key = vm.make_string(&name.to_lowercase())?;
+    let existing = crate::util::hash_map_lookup(vm, cache, key)?;
+    if !existing.is_null() {
+        return Ok(existing);
+    }
     let provider_class = vm.resolve_class("java/security/Provider")?;
     let provider = vm.new_instance(provider_class)?;
     let (declaring, ctor) = vm
@@ -317,6 +339,7 @@ pub(crate) fn new_sun_provider(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef,
             Value::Ref(info),
         ],
     )?;
+    crate::util::hash_map_insert(vm, cache, key, provider)?;
     Ok(provider)
 }
 
@@ -550,6 +573,12 @@ pub(crate) const SECURITY: oxjvm_vm::NativeClass = class(
         field(
             "extra",
             "Ljava/security/Provider;",
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
+        field(
+            "providerCache",
+            "Ljava/util/HashMap;",
             ACC_PRIVATE | ACC_STATIC,
             None,
         ),
@@ -7342,7 +7371,7 @@ fn ssl_context_instance(vm: &mut Vm<'_>, protocol: &str) -> Result<ObjectRef, Vm
     let class = vm.resolve_class("javax/net/ssl/SSLContext")?;
     let context = vm.new_instance(class)?;
     set_string_field(vm, context, "protocol", protocol)?;
-    let provider = new_sun_provider(vm, "SUN")?;
+    let provider = new_sun_provider(vm, "SunJSSE")?;
     set_ref_field(
         vm,
         context,
@@ -10355,3 +10384,222 @@ const CERT_PATH_PARAMETERS_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
     ACC_PUBLIC | ACC_ABSTRACT,
     crate::lang::abstract_method_pub,
 )];
+
+// -------------------------------------------------------------------------------------------
+// javax.net.ssl KeyManagerFactory / TrustManagerFactory getInstance contracts
+// -------------------------------------------------------------------------------------------
+
+fn ssl_factory_instance(
+    vm: &mut Vm<'_>,
+    class_name: &str,
+    algorithm: &str,
+) -> Result<ObjectRef, VmError> {
+    if algorithm.is_empty() {
+        return Err(vm.throw_new(
+            "java/security/NoSuchAlgorithmException",
+            Some("algorithm must not be empty"),
+        ));
+    }
+    let class = vm.resolve_class(class_name)?;
+    let factory = vm.new_instance(class)?;
+    set_string_field(vm, factory, "algorithm", algorithm)?;
+    let provider = new_sun_provider(vm, "SunJSSE")?;
+    set_ref_field(
+        vm,
+        factory,
+        "provider",
+        "Ljava/security/Provider;",
+        provider,
+    )?;
+    Ok(factory)
+}
+
+const KEY_MANAGER_FACTORY_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method(
+        "getInstance",
+        "(Ljava/lang/String;)Ljavax/net/ssl/KeyManagerFactory;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = ref_arg(args, 0);
+            if name.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let algorithm = vm.string_or_empty(name);
+            object(ssl_factory_instance(
+                vm,
+                "javax/net/ssl/KeyManagerFactory",
+                &algorithm,
+            )?)
+        },
+    ),
+    method(
+        "getInstance",
+        "(Ljava/lang/String;Ljava/lang/String;)Ljavax/net/ssl/KeyManagerFactory;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() || ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let provider = vm.string_or_empty(ref_arg(args, 1));
+            if !known_provider(&provider) {
+                return Err(vm.throw_new("java/security/NoSuchProviderException", Some(&provider)));
+            }
+            let algorithm = vm.string_or_empty(ref_arg(args, 0));
+            object(ssl_factory_instance(
+                vm,
+                "javax/net/ssl/KeyManagerFactory",
+                &algorithm,
+            )?)
+        },
+    ),
+    method(
+        "getInstance",
+        "(Ljava/lang/String;Ljava/security/Provider;)Ljavax/net/ssl/KeyManagerFactory;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() || ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let algorithm = vm.string_or_empty(ref_arg(args, 0));
+            object(ssl_factory_instance(
+                vm,
+                "javax/net/ssl/KeyManagerFactory",
+                &algorithm,
+            )?)
+        },
+    ),
+    method(
+        "getAlgorithm",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "algorithm",
+                "Ljava/lang/String;",
+            ))
+        },
+    ),
+    method(
+        "getProvider",
+        "()Ljava/security/Provider;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "provider",
+                "Ljava/security/Provider;",
+            ))
+        },
+    ),
+];
+
+pub(crate) const KEY_MANAGER_FACTORY: oxjvm_vm::NativeClass = class(
+    "javax/net/ssl/KeyManagerFactory",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("algorithm", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("provider", "Ljava/security/Provider;", ACC_PRIVATE, None),
+    ],
+    &KEY_MANAGER_FACTORY_METHODS,
+    None,
+);
+
+const TRUST_MANAGER_FACTORY_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method(
+        "getInstance",
+        "(Ljava/lang/String;)Ljavax/net/ssl/TrustManagerFactory;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = ref_arg(args, 0);
+            if name.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let algorithm = vm.string_or_empty(name);
+            object(ssl_factory_instance(
+                vm,
+                "javax/net/ssl/TrustManagerFactory",
+                &algorithm,
+            )?)
+        },
+    ),
+    method(
+        "getInstance",
+        "(Ljava/lang/String;Ljava/lang/String;)Ljavax/net/ssl/TrustManagerFactory;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() || ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let provider = vm.string_or_empty(ref_arg(args, 1));
+            if !known_provider(&provider) {
+                return Err(vm.throw_new("java/security/NoSuchProviderException", Some(&provider)));
+            }
+            let algorithm = vm.string_or_empty(ref_arg(args, 0));
+            object(ssl_factory_instance(
+                vm,
+                "javax/net/ssl/TrustManagerFactory",
+                &algorithm,
+            )?)
+        },
+    ),
+    method(
+        "getInstance",
+        "(Ljava/lang/String;Ljava/security/Provider;)Ljavax/net/ssl/TrustManagerFactory;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            if ref_arg(args, 0).is_null() || ref_arg(args, 1).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let algorithm = vm.string_or_empty(ref_arg(args, 0));
+            object(ssl_factory_instance(
+                vm,
+                "javax/net/ssl/TrustManagerFactory",
+                &algorithm,
+            )?)
+        },
+    ),
+    method(
+        "getAlgorithm",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "algorithm",
+                "Ljava/lang/String;",
+            ))
+        },
+    ),
+    method(
+        "getProvider",
+        "()Ljava/security/Provider;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "provider",
+                "Ljava/security/Provider;",
+            ))
+        },
+    ),
+];
+
+pub(crate) const TRUST_MANAGER_FACTORY: oxjvm_vm::NativeClass = class(
+    "javax/net/ssl/TrustManagerFactory",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("algorithm", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("provider", "Ljava/security/Provider;", ACC_PRIVATE, None),
+    ],
+    &TRUST_MANAGER_FACTORY_METHODS,
+    None,
+);
