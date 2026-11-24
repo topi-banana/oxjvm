@@ -8,7 +8,17 @@ use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
 use crate::{boolean, class, field, method, object, receiver, ref_arg, void};
 
-const REFERENCE_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+const REFERENCE_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method(
+        "clone",
+        "()Ljava/lang/Object;",
+        ACC_PROTECTED,
+        |vm, _, _| {
+            // References are not cloneable; a subclass that wants cloning must
+            // override clone itself (JDK Reference.clone always throws).
+            Err(vm.throw_new("java/lang/CloneNotSupportedException", None))
+        },
+    ),
     method("get", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
         object(
             vm.read_ref_field(
