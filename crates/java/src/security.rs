@@ -2516,13 +2516,186 @@ pub(crate) const KEY_STORE_ENTRY: oxjvm_vm::NativeClass = class(
     None,
 );
 
+/// Clone an object array preserving its component type, then (per the JDK's
+/// PrivateKeyEntry) re-type it to X509Certificate[] when the end-entity cert is
+/// an X509Certificate but the incoming array is not already X509Certificate[].
+fn pke_clone_chain(vm: &mut Vm<'_>, chain: ObjectRef) -> Result<ObjectRef, VmError> {
+    let length = vm.array_length(chain)?;
+    let array_class_name = String::from(vm.class_name(vm.class_of(chain)));
+    let component_name = array_class_name
+        .strip_prefix("[L")
+        .and_then(|s| s.strip_suffix(';'))
+        .unwrap_or("java/lang/Object");
+    let component = vm.resolve_class(component_name)?;
+    let mut copy = vm.allocate_object_array(component, length)?;
+    for index in 0..length {
+        let value = vm.array_get(chain, index as i32)?;
+        vm.array_set_ref(copy, index, value.as_ref())?;
+    }
+    if length > 0 {
+        let first = vm.array_get(copy, 0)?.as_ref();
+        let x509 = vm.resolve_class("java/security/cert/X509Certificate")?;
+        if vm.is_instance(first, x509)
+            && array_class_name != "[Ljava/security/cert/X509Certificate;"
+        {
+            let retyped = vm.allocate_object_array(x509, length)?;
+            for index in 0..length {
+                let value = vm.array_get(copy, index as i32)?;
+                vm.array_set_ref(retyped, index, value.as_ref())?;
+            }
+            copy = retyped;
+        }
+    }
+    Ok(copy)
+}
+
+fn pke_init(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    private_key: ObjectRef,
+    chain: ObjectRef,
+) -> Result<(), VmError> {
+    if private_key.is_null() || chain.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", Some("invalid null input")));
+    }
+    let length = vm.array_length(chain)?;
+    if length == 0 {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("invalid zero-length input chain"),
+        ));
+    }
+    let cloned = pke_clone_chain(vm, chain)?;
+    // All certificates must share the same type.
+    let first = vm.array_get(cloned, 0)?.as_ref();
+    let (tc, get_type) = vm.resolve_virtual_method(first, "getType", "()Ljava/lang/String;")?;
+    let cert_type = vm
+        .invoke_method(tc, get_type, vec![Value::Ref(first)])?
+        .as_ref();
+    let cert_type_text = vm.string_or_empty(cert_type);
+    for index in 1..length {
+        let cert = vm.array_get(cloned, index as i32)?.as_ref();
+        let (c, m) = vm.resolve_virtual_method(cert, "getType", "()Ljava/lang/String;")?;
+        let t = vm.invoke_method(c, m, vec![Value::Ref(cert)])?.as_ref();
+        if vm.string_or_empty(t) != cert_type_text {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("chain does not contain certificates of the same type"),
+            ));
+        }
+    }
+    // The private key algorithm must match the end-entity public key algorithm.
+    let (kc, get_alg) =
+        vm.resolve_virtual_method(private_key, "getAlgorithm", "()Ljava/lang/String;")?;
+    let key_alg = vm
+        .invoke_method(kc, get_alg, vec![Value::Ref(private_key)])?
+        .as_ref();
+    let (pc, get_pub) =
+        vm.resolve_virtual_method(first, "getPublicKey", "()Ljava/security/PublicKey;")?;
+    let pub_key = vm
+        .invoke_method(pc, get_pub, vec![Value::Ref(first)])?
+        .as_ref();
+    let (qc, pub_alg) =
+        vm.resolve_virtual_method(pub_key, "getAlgorithm", "()Ljava/lang/String;")?;
+    let pub_alg_ref = vm
+        .invoke_method(qc, pub_alg, vec![Value::Ref(pub_key)])?
+        .as_ref();
+    if vm.string_or_empty(key_alg) != vm.string_or_empty(pub_alg_ref) {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some(
+                "private key algorithm does not match algorithm of public key in end entity certificate (at index 0)",
+            ),
+        ));
+    }
+    set_ref_field(
+        vm,
+        this,
+        "privKey",
+        "Ljava/security/PrivateKey;",
+        private_key,
+    )?;
+    set_ref_field(
+        vm,
+        this,
+        "chain",
+        "[Ljava/security/cert/Certificate;",
+        cloned,
+    )?;
+    let empty = new_hash_set(vm)?;
+    set_ref_field(vm, this, "attributes", "Ljava/util/Set;", empty)?;
+    Ok(())
+}
+
+const KEY_STORE_PRIVATE_KEY_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "<init>",
+        "(Ljava/security/PrivateKey;[Ljava/security/cert/Certificate;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            pke_init(vm, receiver(args), ref_arg(args, 1), ref_arg(args, 2))?;
+            void()
+        },
+    ),
+    method(
+        "getPrivateKey",
+        "()Ljava/security/PrivateKey;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "privKey",
+                "Ljava/security/PrivateKey;",
+            ))
+        },
+    ),
+    method(
+        "getCertificateChain",
+        "()[Ljava/security/cert/Certificate;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let chain = ref_field(
+                vm,
+                receiver(args),
+                "chain",
+                "[Ljava/security/cert/Certificate;",
+            );
+            object(pke_clone_chain(vm, chain)?)
+        },
+    ),
+    method(
+        "getCertificate",
+        "()Ljava/security/cert/Certificate;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let chain = ref_field(
+                vm,
+                receiver(args),
+                "chain",
+                "[Ljava/security/cert/Certificate;",
+            );
+            object(vm.array_get(chain, 0)?.as_ref())
+        },
+    ),
+];
+
 pub(crate) const KEY_STORE_PRIVATE_KEY_ENTRY: oxjvm_vm::NativeClass = class(
     "java/security/KeyStore$PrivateKeyEntry",
     Some("java/lang/Object"),
     &["java/security/KeyStore$Entry"],
     ACC_PUBLIC | ACC_FINAL,
-    &[],
-    &[],
+    &[
+        field("privKey", "Ljava/security/PrivateKey;", ACC_PRIVATE, None),
+        field(
+            "chain",
+            "[Ljava/security/cert/Certificate;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field("attributes", "Ljava/util/Set;", ACC_PRIVATE, None),
+    ],
+    &KEY_STORE_PRIVATE_KEY_ENTRY_METHODS,
     None,
 );
 
@@ -3127,7 +3300,11 @@ pub(crate) const CERTIFICATE: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const X509_CERTIFICATE_METHODS: [oxjvm_vm::NativeMethodDef; 25] = [
+const X509_CERTIFICATE_METHODS: [oxjvm_vm::NativeMethodDef; 26] = [
+    method("<init>", "()V", ACC_PROTECTED, |vm, _, args| {
+        set_string_field(vm, receiver(args), "type", "X.509")?;
+        void()
+    }),
     method("getEncoded", "()[B", ACC_PUBLIC, |vm, _, args| {
         object(ref_field(vm, receiver(args), "encoded", "[B"))
     }),
