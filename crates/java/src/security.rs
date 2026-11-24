@@ -2784,10 +2784,11 @@ pub(crate) const KEY_PAIR_GENERATOR_SPI: oxjvm_vm::NativeClass = class(
 // -------------------------------------------------------------------------------------------
 
 fn certificate_factory_instance(vm: &mut Vm<'_>, cert_type: &str) -> Result<ObjectRef, VmError> {
-    if cert_type.is_empty() {
+    let folded = cert_type.to_uppercase();
+    if folded != "X.509" && folded != "X509" {
         return Err(vm.throw_new(
             "java/security/cert/CertificateException",
-            Some("type must not be empty"),
+            Some(&alloc::format!("{cert_type} not found")),
         ));
     }
     let class = vm.resolve_class("java/security/cert/CertificateFactory")?;
@@ -9842,5 +9843,296 @@ pub(crate) const PRIVATE_CREDENTIAL_PERMISSION: oxjvm_vm::NativeClass = class(
         field("owners", "[[Ljava/lang/String;", ACC_PRIVATE, None),
     ],
     &PRIVATE_CREDENTIAL_PERMISSION_METHODS,
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// java.security.cert CertStore / CertPathBuilder / CertPathValidator getInstance contracts
+// -------------------------------------------------------------------------------------------
+
+pub(crate) const CERT_STORE_PARAMETERS: oxjvm_vm::NativeClass = class(
+    "java/security/cert/CertStoreParameters",
+    Some("java/lang/Object"),
+    &["java/lang/Cloneable"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &CERT_STORE_PARAMETERS_METHODS,
+    None,
+);
+
+const CERT_STORE_PARAMETERS_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "clone",
+    "()Ljava/lang/Object;",
+    ACC_PUBLIC | ACC_ABSTRACT,
+    crate::lang::abstract_method_pub,
+)];
+
+const COLLECTION_CERT_STORE_PARAMETERS_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method(
+        "<init>",
+        "(Ljava/util/Collection;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let collection = ref_arg(args, 1);
+            if collection.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            set_ref_field(vm, this, "coll", "Ljava/util/Collection;", collection)?;
+            void()
+        },
+    ),
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let empty = new_hash_set(vm)?;
+        set_ref_field(vm, this, "coll", "Ljava/util/Collection;", empty)?;
+        void()
+    }),
+    method(
+        "getCollection",
+        "()Ljava/util/Collection;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "coll",
+                "Ljava/util/Collection;",
+            ))
+        },
+    ),
+    method(
+        "clone",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let copy = vm.new_instance(class)?;
+            let coll = ref_field(vm, this, "coll", "Ljava/util/Collection;");
+            set_ref_field(vm, copy, "coll", "Ljava/util/Collection;", coll)?;
+            object(copy)
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let coll = ref_field(vm, receiver(args), "coll", "Ljava/util/Collection;");
+            let (class, to_string) =
+                vm.resolve_virtual_method(coll, "toString", "()Ljava/lang/String;")?;
+            let text = vm.invoke_method(class, to_string, vec![Value::Ref(coll)])?;
+            let rendered = vm.string_or_empty(text.as_ref());
+            object(vm.make_string(&alloc::format!(
+                "CollectionCertStoreParameters: [\n  collection: {rendered}\n]"
+            ))?)
+        },
+    ),
+];
+
+pub(crate) const COLLECTION_CERT_STORE_PARAMETERS: oxjvm_vm::NativeClass = class(
+    "java/security/cert/CollectionCertStoreParameters",
+    Some("java/lang/Object"),
+    &["java/security/cert/CertStoreParameters"],
+    ACC_PUBLIC,
+    &[field("coll", "Ljava/util/Collection;", ACC_PRIVATE, None)],
+    &COLLECTION_CERT_STORE_PARAMETERS_METHODS,
+    None,
+);
+
+fn cert_store_instance(
+    vm: &mut Vm<'_>,
+    cert_type: &str,
+    params: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    let folded = cert_type.to_uppercase();
+    let collection_class = vm.resolve_class("java/security/cert/CollectionCertStoreParameters")?;
+    if folded == "COLLECTION" {
+        if params.is_null() || !vm.is_instance(params, collection_class) {
+            return Err(vm.throw_new(
+                "java/security/InvalidAlgorithmParameterException",
+                Some("params must be CollectionCertStoreParameters"),
+            ));
+        }
+    } else if folded == "LDAP" {
+        // The LDAP store requires LDAPCertStoreParameters, which this runtime
+        // does not provide, so any argument is rejected like the JDK SPI does.
+        return Err(vm.throw_new(
+            "java/security/InvalidAlgorithmParameterException",
+            Some("params must be LDAPCertStoreParameters"),
+        ));
+    } else {
+        return Err(vm.throw_new("java/security/NoSuchAlgorithmException", Some(cert_type)));
+    }
+    let class = vm.resolve_class("java/security/cert/CertStore")?;
+    let store = vm.new_instance(class)?;
+    set_string_field(vm, store, "type", cert_type)?;
+    set_ref_field(
+        vm,
+        store,
+        "params",
+        "Ljava/security/cert/CertStoreParameters;",
+        params,
+    )?;
+    Ok(store)
+}
+
+const CERT_STORE_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method(
+        "getInstance",
+        "(Ljava/lang/String;Ljava/security/cert/CertStoreParameters;)Ljava/security/cert/CertStore;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = ref_arg(args, 0);
+            if name.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", Some("null type name")));
+            }
+            let cert_type = vm.string_or_empty(name);
+            object(cert_store_instance(vm, &cert_type, ref_arg(args, 1))?)
+        },
+    ),
+    method(
+        "getType",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| object(ref_field(vm, receiver(args), "type", "Ljava/lang/String;")),
+    ),
+    method(
+        "getCertStoreParameters",
+        "()Ljava/security/cert/CertStoreParameters;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "params",
+                "Ljava/security/cert/CertStoreParameters;",
+            ))
+        },
+    ),
+];
+
+pub(crate) const CERT_STORE: oxjvm_vm::NativeClass = class(
+    "java/security/cert/CertStore",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("type", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field(
+            "params",
+            "Ljava/security/cert/CertStoreParameters;",
+            ACC_PRIVATE,
+            None,
+        ),
+    ],
+    &CERT_STORE_METHODS,
+    None,
+);
+
+fn cert_path_instance(
+    vm: &mut Vm<'_>,
+    class_name: &str,
+    algorithm: &str,
+) -> Result<ObjectRef, VmError> {
+    if algorithm.to_uppercase() != "PKIX" {
+        return Err(vm.throw_new("java/security/NoSuchAlgorithmException", Some(algorithm)));
+    }
+    let class = vm.resolve_class(class_name)?;
+    let instance = vm.new_instance(class)?;
+    set_string_field(vm, instance, "algorithm", algorithm)?;
+    Ok(instance)
+}
+
+const CERT_PATH_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "getInstance",
+        "(Ljava/lang/String;)Ljava/security/cert/CertPathBuilder;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = ref_arg(args, 0);
+            if name.is_null() {
+                return Err(vm.throw_new(
+                    "java/lang/NullPointerException",
+                    Some("null algorithm name"),
+                ));
+            }
+            let algorithm = vm.string_or_empty(name);
+            object(cert_path_instance(
+                vm,
+                "java/security/cert/CertPathBuilder",
+                &algorithm,
+            )?)
+        },
+    ),
+    method(
+        "getAlgorithm",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "algorithm",
+                "Ljava/lang/String;",
+            ))
+        },
+    ),
+];
+
+pub(crate) const CERT_PATH_BUILDER: oxjvm_vm::NativeClass = class(
+    "java/security/cert/CertPathBuilder",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[field("algorithm", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &CERT_PATH_BUILDER_METHODS,
+    None,
+);
+
+const CERT_PATH_VALIDATOR_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "getInstance",
+        "(Ljava/lang/String;)Ljava/security/cert/CertPathValidator;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = ref_arg(args, 0);
+            if name.is_null() {
+                return Err(vm.throw_new(
+                    "java/lang/NullPointerException",
+                    Some("null algorithm name"),
+                ));
+            }
+            let algorithm = vm.string_or_empty(name);
+            object(cert_path_instance(
+                vm,
+                "java/security/cert/CertPathValidator",
+                &algorithm,
+            )?)
+        },
+    ),
+    method(
+        "getAlgorithm",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "algorithm",
+                "Ljava/lang/String;",
+            ))
+        },
+    ),
+];
+
+pub(crate) const CERT_PATH_VALIDATOR: oxjvm_vm::NativeClass = class(
+    "java/security/cert/CertPathValidator",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[field("algorithm", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &CERT_PATH_VALIDATOR_METHODS,
     None,
 );
