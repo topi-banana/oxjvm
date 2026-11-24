@@ -8992,8 +8992,49 @@ fn signature_digest(name: &str) -> Option<SignatureDigest> {
     }
 }
 
+/// Resolve a Signature implementation advertised by a custom installed provider
+/// through its `Signature.<algorithm>` property, mirroring the JDK's SPI lookup.
+fn signature_custom_instance(
+    vm: &mut Vm<'_>,
+    algorithm: &str,
+) -> Result<Option<ObjectRef>, VmError> {
+    let security = vm.resolve_class("java/security/Security")?;
+    vm.ensure_initialized(security)?;
+    let extra = vm
+        .read_static_ref(security, "extra", "Ljava/security/Provider;")
+        .unwrap_or(ObjectRef::NULL);
+    if extra.is_null() {
+        return Ok(None);
+    }
+    let key = vm.make_string(&alloc::format!("Signature.{algorithm}"))?;
+    let value = property_call(
+        vm,
+        extra,
+        "getProperty",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+        vec![Value::Ref(extra), Value::Ref(key)],
+    )?
+    .as_ref();
+    if value.is_null() {
+        return Ok(None);
+    }
+    let impl_name = vm.string_or_empty(value).replace('.', "/");
+    let class = vm.resolve_class(&impl_name)?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, ctor) = vm
+        .find_method(class, "<init>", "()V")
+        .ok_or_else(|| VmError::internal("Signature impl lacks <init>"))?;
+    vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
+    set_string_field(vm, instance, "algorithm", algorithm)?;
+    set_ref_field(vm, instance, "provider", "Ljava/security/Provider;", extra)?;
+    Ok(Some(instance))
+}
+
 fn signature_instance(vm: &mut Vm<'_>, algorithm: &str) -> Result<ObjectRef, VmError> {
     if signature_digest(algorithm).is_none() {
+        if let Some(custom) = signature_custom_instance(vm, algorithm)? {
+            return Ok(custom);
+        }
         return Err(vm.throw_new(
             "java/security/NoSuchAlgorithmException",
             Some(&alloc::format!("{algorithm} Signature not available")),
@@ -9027,7 +9068,23 @@ fn signature_hash(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Vec<u8>, VmError> 
     Ok(func(&data))
 }
 
-const SIGNATURE_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
+const SIGNATURE_METHODS: [oxjvm_vm::NativeMethodDef; 20] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PROTECTED,
+        |vm, _, args| {
+            let this = receiver(args);
+            let name = ref_arg(args, 1);
+            if name.is_null() {
+                set_ref_field(vm, this, "algorithm", "Ljava/lang/String;", ObjectRef::NULL)?;
+            } else {
+                let text = vm.string_or_empty(name);
+                set_string_field(vm, this, "algorithm", &text)?;
+            }
+            void()
+        },
+    ),
     method(
         "getInstance",
         "(Ljava/lang/String;)Ljava/security/Signature;",
