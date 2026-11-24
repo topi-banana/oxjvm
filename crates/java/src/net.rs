@@ -2115,7 +2115,20 @@ pub(crate) const URL_DECODER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const URL_CONNECTION_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
+const URL_CONNECTION_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
+    method(
+        "<init>",
+        "(Ljava/net/URL;)V",
+        ACC_PROTECTED,
+        |vm, _, args| {
+            let this = receiver(args);
+            let url = ref_arg(args, 1);
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "url", "Ljava/net/URL;")?;
+            vm.set_instance_ref(this, declaring, field, url);
+            void()
+        },
+    ),
     method(
         "getInputStream",
         "()Ljava/io/InputStream;",
