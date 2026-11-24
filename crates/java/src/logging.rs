@@ -2861,6 +2861,21 @@ fn infer_caller_source(vm: &mut Vm<'_>) -> Result<(ObjectRef, ObjectRef), VmErro
     Ok((ObjectRef::NULL, ObjectRef::NULL))
 }
 
+/// Whether the logger will log at `level`, dispatching `isLoggable` virtually
+/// so a subclass override (for example per-thread filtering) is honored.
+fn logger_is_loggable(
+    vm: &mut Vm<'_>,
+    logger: ObjectRef,
+    level: ObjectRef,
+) -> Result<bool, VmError> {
+    let (class, method) =
+        vm.resolve_virtual_method(logger, "isLoggable", "(Ljava/util/logging/Level;)Z")?;
+    Ok(vm
+        .invoke_method(class, method, vec![Value::Ref(logger), Value::Ref(level)])?
+        .as_int()
+        != 0)
+}
+
 fn logger_log_message(
     vm: &mut Vm<'_>,
     logger: ObjectRef,
@@ -2871,7 +2886,7 @@ fn logger_log_message(
     if level.is_null() {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
-    if level_int(vm, level) < effective_level(vm, logger) {
+    if !logger_is_loggable(vm, logger, level)? {
         return Ok(());
     }
     let class = vm.resolve_class(LOG_RECORD_CLASS)?;
@@ -2918,7 +2933,7 @@ fn logger_logp(
     if level.is_null() {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
-    if level_int(vm, level) < effective_level(vm, logger) {
+    if !logger_is_loggable(vm, logger, level)? {
         return Ok(());
     }
     let class = vm.resolve_class(LOG_RECORD_CLASS)?;
@@ -2971,7 +2986,7 @@ fn logger_logrb(
     if level.is_null() {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
-    if level_int(vm, level) < effective_level(vm, logger) {
+    if !logger_is_loggable(vm, logger, level)? {
         return Ok(());
     }
     let class = vm.resolve_class(LOG_RECORD_CLASS)?;
@@ -3089,7 +3104,7 @@ fn level_named(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
         .ok_or_else(|| VmError::internal("Level constant missing"))
 }
 
-const LOGGER_METHODS: [oxjvm_vm::NativeMethodDef; 51] = [
+const LOGGER_METHODS: [oxjvm_vm::NativeMethodDef; 52] = [
     method(
         "getLogger",
         "(Ljava/lang/String;)Ljava/util/logging/Logger;",
@@ -3769,6 +3784,26 @@ const LOGGER_METHODS: [oxjvm_vm::NativeMethodDef; 51] = [
                 message,
                 params,
                 ObjectRef::NULL,
+            )?;
+            void()
+        },
+    ),
+    method(
+        "throwing",
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/Throwable;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let level = level_named(vm, "FINER")?;
+            let message = vm.make_string("THROW")?;
+            logger_logp(
+                vm,
+                receiver(args),
+                level,
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                message,
+                ObjectRef::NULL,
+                ref_arg(args, 3),
             )?;
             void()
         },
