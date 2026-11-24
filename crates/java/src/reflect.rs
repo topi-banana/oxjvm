@@ -581,9 +581,14 @@ fn reflect_invoke(
             &field_type_descriptor(parameter),
         )?);
     }
+    // Initialize the declaring class first so a failing <clinit> surfaces as
+    // ExceptionInInitializerError/NoClassDefFoundError directly: JVMS 5.5 errors
+    // are not method-body exceptions and must not be wrapped in an
+    // InvocationTargetException (java/lang/reflect/classInitialization).
+    vm.ensure_initialized(class)?;
     let result = match vm.invoke_method(class, slot, call_args) {
         Ok(value) => value,
-        // `Method.invoke` wraps every exception the target throws.
+        // `Method.invoke` wraps every exception the target's body throws.
         Err(VmError::Thrown(target)) => return Err(new_invocation_target(vm, target)),
         Err(other) => return Err(other),
     };

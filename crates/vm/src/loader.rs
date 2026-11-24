@@ -1377,7 +1377,9 @@ impl<'a> Vm<'a> {
             ClassState::Initialized | ClassState::Initializing => Ok(()),
             ClassState::Errored => {
                 if let Some(exception) = self.classes.get(class).initialization_error {
-                    Err(VmError::Thrown(exception))
+                    // JVMS 5.5: a second attempt to initialize an erroneous class
+                    // throws NoClassDefFoundError carrying the original failure.
+                    Err(self.throw_new_with_cause("java/lang/NoClassDefFoundError", exception))
                 } else {
                     Err(self.throw_new("java/lang/NoClassDefFoundError", None))
                 }
