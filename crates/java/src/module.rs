@@ -115,7 +115,7 @@ fn field_set(vm: &mut Vm<'_>, object_ref: ObjectRef, name: &str) -> Result<Objec
     }
 }
 
-fn field_string(vm: &Vm<'_>, object_ref: ObjectRef, name: &str) -> String {
+pub(crate) fn field_string(vm: &Vm<'_>, object_ref: ObjectRef, name: &str) -> String {
     vm.read_string_field_any(object_ref, name)
         .unwrap_or_default()
 }
@@ -470,7 +470,7 @@ fn string_hash(text: &str) -> i32 {
     hash
 }
 
-fn enum_constant(
+pub(crate) fn enum_constant(
     vm: &mut Vm<'_>,
     class_name: &str,
     name: &str,
@@ -594,6 +594,8 @@ macro_rules! enum_class {
         );
     };
 }
+
+pub(crate) use enum_class;
 
 enum_class!(
     REQUIRES_MODIFIER,

@@ -9,6 +9,7 @@ use oxjvm_classfile::flags::*;
 use oxjvm_platform::FileKind;
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
+use crate::module::{enum_class, enum_constant, field_string};
 use crate::{
     boolean, class, field, int, long, method, object, receiver, ref_arg, string_arg, void,
 };
@@ -935,6 +936,570 @@ const POSIX_FILE_PERMISSION_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         },
     ),
 ];
+
+// -------------------------------------------------------------------------------------------
+// java.nio.file.attribute.AclEntry / AclEntry$Builder / AclEntryType / AclEntryFlag /
+// AclEntryPermission / UserPrincipal
+// -------------------------------------------------------------------------------------------
+
+enum_class!(
+    ACL_ENTRY_TYPE,
+    ACL_ENTRY_TYPE_METHODS,
+    acl_entry_type_clinit,
+    "java/nio/file/attribute/AclEntryType",
+    ["ALLOW", "DENY", "AUDIT", "ALARM"]
+);
+
+enum_class!(
+    ACL_ENTRY_FLAG,
+    ACL_ENTRY_FLAG_METHODS,
+    acl_entry_flag_clinit,
+    "java/nio/file/attribute/AclEntryFlag",
+    [
+        "FILE_INHERIT",
+        "DIRECTORY_INHERIT",
+        "NO_PROPAGATE_INHERIT",
+        "INHERIT_ONLY"
+    ]
+);
+
+enum_class!(
+    ACL_ENTRY_PERMISSION,
+    ACL_ENTRY_PERMISSION_METHODS,
+    acl_entry_permission_clinit,
+    "java/nio/file/attribute/AclEntryPermission",
+    [
+        "READ_DATA",
+        "WRITE_DATA",
+        "APPEND_DATA",
+        "READ_NAMED_ATTRS",
+        "WRITE_NAMED_ATTRS",
+        "EXECUTE",
+        "DELETE_CHILD",
+        "READ_ATTRIBUTES",
+        "WRITE_ATTRIBUTES",
+        "DELETE",
+        "READ_ACL",
+        "WRITE_ACL",
+        "WRITE_OWNER",
+        "SYNCHRONIZE"
+    ]
+);
+
+pub(crate) const USER_PRINCIPAL: oxjvm_vm::NativeClass = class(
+    "java/nio/file/attribute/UserPrincipal",
+    Some("java/lang/Object"),
+    &["java/security/Principal"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[],
+    None,
+);
+
+fn acl_field(vm: &Vm<'_>, object_ref: ObjectRef, name: &str, descriptor: &str) -> ObjectRef {
+    vm.read_ref_field(object_ref, vm.class_of(object_ref), name, descriptor)
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn acl_set_field(
+    vm: &mut Vm<'_>,
+    object_ref: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    value: ObjectRef,
+) -> Result<(), VmError> {
+    let (declaring, field) = vm.find_field(vm.class_of(object_ref), name, descriptor)?;
+    vm.set_instance_ref(object_ref, declaring, field, value);
+    Ok(())
+}
+
+fn acl_empty_set(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/Collections")?;
+    let (declaring, method) = vm
+        .find_method(class, "emptySet", "()Ljava/util/Set;")
+        .ok_or_else(|| VmError::internal("Collections.emptySet missing"))?;
+    Ok(vm.invoke_method(declaring, method, vec![])?.as_ref())
+}
+
+/// Copy a permission/flag set the way `AclEntry.Builder` does: an empty set
+/// becomes the shared empty set, anything else is copied into an `EnumSet`
+/// and every element is checked against the expected enum type.
+fn acl_copy_enum_set(
+    vm: &mut Vm<'_>,
+    set: ObjectRef,
+    enum_name: &str,
+) -> Result<ObjectRef, VmError> {
+    if set.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let (class, method) = vm.resolve_virtual_method(set, "isEmpty", "()Z")?;
+    let empty = vm
+        .invoke_method(class, method, vec![Value::Ref(set)])?
+        .as_int()
+        != 0;
+    if empty {
+        return acl_empty_set(vm);
+    }
+    let enum_set_class = vm.resolve_class("java/util/EnumSet")?;
+    let (declaring, copy_of) = vm
+        .find_method(
+            enum_set_class,
+            "copyOf",
+            "(Ljava/util/Collection;)Ljava/util/EnumSet;",
+        )
+        .ok_or_else(|| VmError::internal("EnumSet.copyOf missing"))?;
+    let copy = vm
+        .invoke_method(declaring, copy_of, vec![Value::Ref(set)])?
+        .as_ref();
+    let enum_class = vm.resolve_class(enum_name)?;
+    for element in crate::util::collection_elements(vm, copy)? {
+        if element.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        if !vm.is_instance(element, enum_class) {
+            return Err(vm.throw_new("java/lang/ClassCastException", None));
+        }
+    }
+    Ok(copy)
+}
+
+/// Build an `EnumSet` from a varargs array, rejecting null elements.
+fn acl_enum_set_from_array(
+    vm: &mut Vm<'_>,
+    array: ObjectRef,
+    enum_name: &str,
+) -> Result<ObjectRef, VmError> {
+    if array.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let enum_class = vm.resolve_class(enum_name)?;
+    let mirror = vm.class_object(enum_class)?;
+    let enum_set_class = vm.resolve_class("java/util/EnumSet")?;
+    let (declaring, none_of) = vm
+        .find_method(
+            enum_set_class,
+            "noneOf",
+            "(Ljava/lang/Class;)Ljava/util/EnumSet;",
+        )
+        .ok_or_else(|| VmError::internal("EnumSet.noneOf missing"))?;
+    let set = vm
+        .invoke_method(declaring, none_of, vec![Value::Ref(mirror)])?
+        .as_ref();
+    let (add_class, add) = vm.resolve_virtual_method(set, "add", "(Ljava/lang/Object;)Z")?;
+    let length = vm.array_length(array)?;
+    for index in 0..length {
+        let element = vm.array_get(array, index as i32)?.as_ref();
+        if element.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        vm.invoke_method(add_class, add, vec![Value::Ref(set), Value::Ref(element)])?;
+    }
+    Ok(set)
+}
+
+fn acl_builder_new(
+    vm: &mut Vm<'_>,
+    entry_type: ObjectRef,
+    who: ObjectRef,
+    perms: ObjectRef,
+    flags: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/nio/file/attribute/AclEntry$Builder")?;
+    let builder = vm.new_instance(class)?;
+    acl_set_field(
+        vm,
+        builder,
+        "type",
+        "Ljava/nio/file/attribute/AclEntryType;",
+        entry_type,
+    )?;
+    acl_set_field(
+        vm,
+        builder,
+        "who",
+        "Ljava/nio/file/attribute/UserPrincipal;",
+        who,
+    )?;
+    acl_set_field(vm, builder, "perms", "Ljava/util/Set;", perms)?;
+    acl_set_field(vm, builder, "flags", "Ljava/util/Set;", flags)?;
+    Ok(builder)
+}
+
+const ACL_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+    method(
+        "newBuilder",
+        "()Ljava/nio/file/attribute/AclEntry$Builder;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let empty = acl_empty_set(vm)?;
+            object(acl_builder_new(
+                vm,
+                ObjectRef::NULL,
+                ObjectRef::NULL,
+                empty,
+                empty,
+            )?)
+        },
+    ),
+    method(
+        "newBuilder",
+        "(Ljava/nio/file/attribute/AclEntry;)Ljava/nio/file/attribute/AclEntry$Builder;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let entry = ref_arg(args, 0);
+            if entry.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let entry_type = acl_field(vm, entry, "type", "Ljava/nio/file/attribute/AclEntryType;");
+            let who = acl_field(vm, entry, "who", "Ljava/nio/file/attribute/UserPrincipal;");
+            let perms = acl_field(vm, entry, "perms", "Ljava/util/Set;");
+            let flags = acl_field(vm, entry, "flags", "Ljava/util/Set;");
+            object(acl_builder_new(vm, entry_type, who, perms, flags)?)
+        },
+    ),
+    method(
+        "type",
+        "()Ljava/nio/file/attribute/AclEntryType;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(acl_field(
+                vm,
+                receiver(args),
+                "type",
+                "Ljava/nio/file/attribute/AclEntryType;",
+            ))
+        },
+    ),
+    method(
+        "principal",
+        "()Ljava/nio/file/attribute/UserPrincipal;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(acl_field(
+                vm,
+                receiver(args),
+                "who",
+                "Ljava/nio/file/attribute/UserPrincipal;",
+            ))
+        },
+    ),
+    method(
+        "permissions",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC,
+        |vm, _, args| object(acl_field(vm, receiver(args), "perms", "Ljava/util/Set;")),
+    ),
+    method("flags", "()Ljava/util/Set;", ACC_PUBLIC, |vm, _, args| {
+        object(acl_field(vm, receiver(args), "flags", "Ljava/util/Set;"))
+    }),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if this == other {
+                return boolean(true);
+            }
+            let acl_class = vm.resolve_class("java/nio/file/attribute/AclEntry")?;
+            if other.is_null() || !vm.is_instance(other, acl_class) {
+                return boolean(false);
+            }
+            let this_type = acl_field(vm, this, "type", "Ljava/nio/file/attribute/AclEntryType;");
+            let other_type = acl_field(vm, other, "type", "Ljava/nio/file/attribute/AclEntryType;");
+            if this_type != other_type {
+                return boolean(false);
+            }
+            for (name, descriptor) in [
+                ("who", "Ljava/nio/file/attribute/UserPrincipal;"),
+                ("perms", "Ljava/util/Set;"),
+                ("flags", "Ljava/util/Set;"),
+            ] {
+                let left = acl_field(vm, this, name, descriptor);
+                let right = acl_field(vm, other, name, descriptor);
+                let (class, method) =
+                    vm.resolve_virtual_method(left, "equals", "(Ljava/lang/Object;)Z")?;
+                let equal = vm
+                    .invoke_method(class, method, vec![Value::Ref(left), Value::Ref(right)])?
+                    .as_int()
+                    != 0;
+                if !equal {
+                    return boolean(false);
+                }
+            }
+            boolean(true)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let object_class = vm.resolve_class("java/lang/Object")?;
+        let array = vm.allocate_object_array(object_class, 4)?;
+        vm.array_set_ref(
+            array,
+            0,
+            acl_field(vm, this, "type", "Ljava/nio/file/attribute/AclEntryType;"),
+        )?;
+        vm.array_set_ref(
+            array,
+            1,
+            acl_field(vm, this, "who", "Ljava/nio/file/attribute/UserPrincipal;"),
+        )?;
+        vm.array_set_ref(array, 2, acl_field(vm, this, "perms", "Ljava/util/Set;"))?;
+        vm.array_set_ref(array, 3, acl_field(vm, this, "flags", "Ljava/util/Set;"))?;
+        let objects_class = vm.resolve_class("java/util/Objects")?;
+        let (declaring, hash) = vm
+            .find_method(objects_class, "hash", "([Ljava/lang/Object;)I")
+            .ok_or_else(|| VmError::internal("Objects.hash missing"))?;
+        let value = vm
+            .invoke_method(declaring, hash, vec![Value::Ref(array)])?
+            .as_int();
+        int(value)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let who = acl_field(vm, this, "who", "Ljava/nio/file/attribute/UserPrincipal;");
+            let (class, method) =
+                vm.resolve_virtual_method(who, "getName", "()Ljava/lang/String;")?;
+            let name = vm
+                .invoke_method(class, method, vec![Value::Ref(who)])?
+                .as_ref();
+            let mut text = vm.string_or_empty(name);
+            text.push(':');
+            let perms = acl_field(vm, this, "perms", "Ljava/util/Set;");
+            text.push_str(&acl_enum_names(vm, perms)?);
+            text.push(':');
+            let flags = acl_field(vm, this, "flags", "Ljava/util/Set;");
+            let (flag_class, is_empty) = vm.resolve_virtual_method(flags, "isEmpty", "()Z")?;
+            let flags_empty = vm
+                .invoke_method(flag_class, is_empty, vec![Value::Ref(flags)])?
+                .as_int()
+                != 0;
+            if !flags_empty {
+                text.push_str(&acl_enum_names(vm, flags)?);
+                text.push(':');
+            }
+            let entry_type = acl_field(vm, this, "type", "Ljava/nio/file/attribute/AclEntryType;");
+            let (type_class, type_name) =
+                vm.resolve_virtual_method(entry_type, "name", "()Ljava/lang/String;")?;
+            let name = vm
+                .invoke_method(type_class, type_name, vec![Value::Ref(entry_type)])?
+                .as_ref();
+            text.push_str(&vm.string_or_empty(name));
+            object(vm.make_string(&text)?)
+        },
+    ),
+];
+
+/// Join the `name()` of every enum constant in a set with `/`.
+fn acl_enum_names(vm: &mut Vm<'_>, set: ObjectRef) -> Result<String, VmError> {
+    let mut names = Vec::new();
+    for element in crate::util::collection_elements(vm, set)? {
+        let (class, method) = vm.resolve_virtual_method(element, "name", "()Ljava/lang/String;")?;
+        let name = vm
+            .invoke_method(class, method, vec![Value::Ref(element)])?
+            .as_ref();
+        names.push(vm.string_or_empty(name));
+    }
+    Ok(names.join("/"))
+}
+
+pub(crate) const ACL_ENTRY: oxjvm_vm::NativeClass = class(
+    "java/nio/file/attribute/AclEntry",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field(
+            "type",
+            "Ljava/nio/file/attribute/AclEntryType;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field(
+            "who",
+            "Ljava/nio/file/attribute/UserPrincipal;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field("perms", "Ljava/util/Set;", ACC_PRIVATE, None),
+        field("flags", "Ljava/util/Set;", ACC_PRIVATE, None),
+    ],
+    &ACL_ENTRY_METHODS,
+    None,
+);
+
+const ACL_ENTRY_BUILDER_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method(
+        "setType",
+        "(Ljava/nio/file/attribute/AclEntryType;)Ljava/nio/file/attribute/AclEntry$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let entry_type = ref_arg(args, 1);
+            if entry_type.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            acl_set_field(
+                vm,
+                this,
+                "type",
+                "Ljava/nio/file/attribute/AclEntryType;",
+                entry_type,
+            )?;
+            object(this)
+        },
+    ),
+    method(
+        "setPrincipal",
+        "(Ljava/nio/file/attribute/UserPrincipal;)Ljava/nio/file/attribute/AclEntry$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let who = ref_arg(args, 1);
+            if who.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            acl_set_field(
+                vm,
+                this,
+                "who",
+                "Ljava/nio/file/attribute/UserPrincipal;",
+                who,
+            )?;
+            object(this)
+        },
+    ),
+    method(
+        "setPermissions",
+        "(Ljava/util/Set;)Ljava/nio/file/attribute/AclEntry$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let perms = acl_copy_enum_set(
+                vm,
+                ref_arg(args, 1),
+                "java/nio/file/attribute/AclEntryPermission",
+            )?;
+            acl_set_field(vm, this, "perms", "Ljava/util/Set;", perms)?;
+            object(this)
+        },
+    ),
+    method(
+        "setPermissions",
+        "([Ljava/nio/file/attribute/AclEntryPermission;)Ljava/nio/file/attribute/AclEntry$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let perms = acl_enum_set_from_array(
+                vm,
+                ref_arg(args, 1),
+                "java/nio/file/attribute/AclEntryPermission",
+            )?;
+            acl_set_field(vm, this, "perms", "Ljava/util/Set;", perms)?;
+            object(this)
+        },
+    ),
+    method(
+        "setFlags",
+        "(Ljava/util/Set;)Ljava/nio/file/attribute/AclEntry$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let flags =
+                acl_copy_enum_set(vm, ref_arg(args, 1), "java/nio/file/attribute/AclEntryFlag")?;
+            acl_set_field(vm, this, "flags", "Ljava/util/Set;", flags)?;
+            object(this)
+        },
+    ),
+    method(
+        "setFlags",
+        "([Ljava/nio/file/attribute/AclEntryFlag;)Ljava/nio/file/attribute/AclEntry$Builder;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let flags = acl_enum_set_from_array(
+                vm,
+                ref_arg(args, 1),
+                "java/nio/file/attribute/AclEntryFlag",
+            )?;
+            acl_set_field(vm, this, "flags", "Ljava/util/Set;", flags)?;
+            object(this)
+        },
+    ),
+    method(
+        "build",
+        "()Ljava/nio/file/attribute/AclEntry;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let entry_type = acl_field(vm, this, "type", "Ljava/nio/file/attribute/AclEntryType;");
+            if entry_type.is_null() {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalStateException",
+                    Some("Missing type component"),
+                ));
+            }
+            let who = acl_field(vm, this, "who", "Ljava/nio/file/attribute/UserPrincipal;");
+            if who.is_null() {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalStateException",
+                    Some("Missing who component"),
+                ));
+            }
+            let perms = acl_field(vm, this, "perms", "Ljava/util/Set;");
+            let flags = acl_field(vm, this, "flags", "Ljava/util/Set;");
+            let class = vm.resolve_class("java/nio/file/attribute/AclEntry")?;
+            let entry = vm.new_instance(class)?;
+            acl_set_field(
+                vm,
+                entry,
+                "type",
+                "Ljava/nio/file/attribute/AclEntryType;",
+                entry_type,
+            )?;
+            acl_set_field(
+                vm,
+                entry,
+                "who",
+                "Ljava/nio/file/attribute/UserPrincipal;",
+                who,
+            )?;
+            acl_set_field(vm, entry, "perms", "Ljava/util/Set;", perms)?;
+            acl_set_field(vm, entry, "flags", "Ljava/util/Set;", flags)?;
+            object(entry)
+        },
+    ),
+];
+
+pub(crate) const ACL_ENTRY_BUILDER: oxjvm_vm::NativeClass = class(
+    "java/nio/file/attribute/AclEntry$Builder",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field(
+            "type",
+            "Ljava/nio/file/attribute/AclEntryType;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field(
+            "who",
+            "Ljava/nio/file/attribute/UserPrincipal;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field("perms", "Ljava/util/Set;", ACC_PRIVATE, None),
+        field("flags", "Ljava/util/Set;", ACC_PRIVATE, None),
+    ],
+    &ACL_ENTRY_BUILDER_METHODS,
+    None,
+);
 
 pub(crate) const POSIX_FILE_PERMISSION: oxjvm_vm::NativeClass = class(
     "java/nio/file/attribute/PosixFilePermission",
