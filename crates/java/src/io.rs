@@ -3765,7 +3765,20 @@ const PRINT_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
     ),
     method("checkError", "()Z", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        print_writer_flush(vm, this)?;
+        let out = vm
+            .read_ref_field(this, vm.class_of(this), "out", "Ljava/io/Writer;")
+            .unwrap_or(ObjectRef::NULL);
+        // A closed writer has no destination left to flush; flushing it would
+        // re-set the trouble flag that clearError() just cleared.
+        if !out.is_null() {
+            print_writer_flush(vm, this)?;
+            let print_writer = vm.resolve_class("java/io/PrintWriter")?;
+            if vm.is_instance(out, print_writer) {
+                let (class, method) = vm.resolve_virtual_method(out, "checkError", "()Z")?;
+                let value = vm.invoke_method(class, method, vec![Value::Ref(out)])?;
+                return boolean(value.as_int() != 0);
+            }
+        }
         boolean(read_int_field(vm, this, "trouble") != 0)
     }),
     method("setError", "()V", ACC_PROTECTED, |vm, _, args| {
@@ -3872,6 +3885,11 @@ const PRINT_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
                 }
                 Err(other) => return Err(other),
             }
+            // JDK nulls the destination on close so later checkError() calls
+            // report the stored trouble flag without re-flushing.
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "out", "Ljava/io/Writer;")?;
+            vm.set_instance_ref(this, declaring, field, ObjectRef::NULL);
         }
         void()
     }),
@@ -3965,6 +3983,8 @@ fn print_writer_flush(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
         .read_ref_field(this, vm.class_of(this), "out", "Ljava/io/Writer;")
         .unwrap_or(ObjectRef::NULL);
     if out.is_null() {
+        // ensureOpen(): a closed PrintWriter records trouble instead of throwing.
+        write_int_field(vm, this, "trouble", 1);
         return Ok(());
     }
     let (class, method) = vm.resolve_virtual_method(out, "flush", "()V")?;
