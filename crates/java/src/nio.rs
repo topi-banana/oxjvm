@@ -3101,7 +3101,14 @@ fn walk_file_tree(
             "(Ljava/lang/Object;Ljava/nio/file/attribute/BasicFileAttributes;)Ljava/nio/file/FileVisitResult;",
             &[Value::Ref(path_ref), Value::Ref(attributes)],
         )?;
-        return Ok(if visit_code(vm, result) == 1 { 1 } else { 0 });
+        let code = visit_code(vm, result);
+        return Ok(if code == 1 {
+            1
+        } else if code == 3 {
+            3
+        } else {
+            0
+        });
     }
     let pre = visit_call(
         vm,
