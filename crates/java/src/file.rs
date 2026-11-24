@@ -678,7 +678,7 @@ fn file_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
 
 /// Percent-encode a file path for the path component of a `file:` URI, the way
 /// `new URI("file", null, path, null)` quotes characters outside the URI set.
-fn uri_encode_path(path: &str) -> String {
+pub(crate) fn uri_encode_path(path: &str) -> String {
     let mut out = String::new();
     for &byte in path.as_bytes() {
         let allowed = byte.is_ascii_alphanumeric()

@@ -238,6 +238,109 @@ fn parse_uri(text: &str) -> UriParts<'_> {
     }
 }
 
+/// Whether a URI reference is opaque: it has a scheme, no authority, and its
+/// scheme-specific part does not begin with '/'.
+fn uri_is_opaque(parts: &UriParts<'_>) -> bool {
+    parts.scheme.is_some() && parts.authority.is_none() && !parts.path.starts_with('/')
+}
+
+/// The raw scheme-specific part of an opaque URI (its path plus any query).
+fn uri_opaque_ssp(parts: &UriParts<'_>) -> String {
+    match parts.query {
+        Some(query) => alloc::format!("{}?{}", parts.path, query),
+        None => String::from(parts.path),
+    }
+}
+
+/// A comparison key for an authority: the host is case-insensitive while the
+/// user info and port stay case-sensitive; a registry-based authority (no
+/// server host) keeps its exact text.
+fn uri_authority_key(authority: &str) -> String {
+    let Some(host) = uri_server_host(authority) else {
+        return String::from(authority);
+    };
+    let hostport = authority.rsplit('@').next().unwrap_or(authority);
+    let rest = &hostport[host.len()..];
+    let mut key = String::new();
+    if let Some((userinfo, _)) = authority.rsplit_once('@') {
+        key.push_str(userinfo);
+        key.push('@');
+    }
+    key.push_str(&host.to_ascii_lowercase());
+    key.push_str(rest);
+    key
+}
+
+/// Component-based equality matching `java.net.URI.equals`: scheme and host are
+/// case-insensitive, an empty authority equals a missing one, the path/query
+/// compare in raw (encoded) form, and opaque URIs compare scheme-specific parts.
+pub(crate) fn uri_equal(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    let pa = parse_uri(a);
+    let pb = parse_uri(b);
+    match (pa.scheme, pb.scheme) {
+        (Some(sa), Some(sb)) => {
+            if !sa.eq_ignore_ascii_case(sb) {
+                return false;
+            }
+        }
+        (None, None) => {}
+        _ => return false,
+    }
+    if pa.fragment != pb.fragment {
+        return false;
+    }
+    let opaque_a = uri_is_opaque(&pa);
+    if opaque_a != uri_is_opaque(&pb) {
+        return false;
+    }
+    if opaque_a {
+        return uri_opaque_ssp(&pa) == uri_opaque_ssp(&pb);
+    }
+    let aa = pa.authority.filter(|s| !s.is_empty());
+    let ba = pb.authority.filter(|s| !s.is_empty());
+    match (aa, ba) {
+        (None, None) => {}
+        (Some(x), Some(y)) if uri_authority_key(x) == uri_authority_key(y) => {}
+        _ => return false,
+    }
+    pa.path == pb.path && pa.query == pb.query
+}
+
+/// A hash consistent with [`uri_equal`]: equal URIs hash to the same value.
+pub(crate) fn uri_hash(text: &str) -> i32 {
+    let parts = parse_uri(text);
+    let mut canonical = String::new();
+    if let Some(scheme) = parts.scheme {
+        canonical.push_str(&scheme.to_ascii_lowercase());
+    }
+    canonical.push('\u{1}');
+    if uri_is_opaque(&parts) {
+        canonical.push_str(&uri_opaque_ssp(&parts));
+    } else {
+        if let Some(authority) = parts.authority.filter(|s| !s.is_empty()) {
+            canonical.push_str(&uri_authority_key(authority));
+        }
+        canonical.push('\u{1}');
+        canonical.push_str(parts.path);
+        canonical.push('\u{1}');
+        if let Some(query) = parts.query {
+            canonical.push_str(query);
+        }
+    }
+    canonical.push('\u{1}');
+    if let Some(fragment) = parts.fragment {
+        canonical.push_str(fragment);
+    }
+    let mut hash = 0i32;
+    for unit in canonical.encode_utf16() {
+        hash = hash.wrapping_mul(31).wrapping_add(i32::from(unit));
+    }
+    hash
+}
+
 /// Normalize dot segments in a URI path the way `java.net.URI` does: remove
 /// "." segments and ".." segments together with their predecessor, collapse
 /// redundant slashes, and keep leading ".." segments and any trailing slash.
@@ -852,16 +955,15 @@ const URI_METHODS: [oxjvm_vm::NativeMethodDef; 34] = [
             if other.is_null() || vm.class_of(receiver(args)) != vm.class_of(other) {
                 return boolean(false);
             }
-            boolean(uri_text(vm, receiver(args)) == uri_text(vm, other))
+            boolean(uri_equal(
+                &uri_text(vm, receiver(args)),
+                &uri_text(vm, other),
+            ))
         },
     ),
     method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
         let text = uri_text(vm, receiver(args));
-        let mut hash = 0i32;
-        for unit in text.encode_utf16() {
-            hash = hash.wrapping_mul(31).wrapping_add(i32::from(unit));
-        }
-        int(hash)
+        int(uri_hash(&text))
     }),
     method(
         "toASCIIString",

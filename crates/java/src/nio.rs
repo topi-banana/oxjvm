@@ -297,11 +297,20 @@ const PATH_METHODS: [oxjvm_vm::NativeMethodDef; 31] = [
     }),
     method("toUri", "()Ljava/net/URI;", ACC_PUBLIC, |vm, _, args| {
         let path = path_string(vm, receiver(args));
-        let text = if path.starts_with('/') {
-            alloc::format!("file:{path}")
+        // Like the JDK, toUri absolutizes a relative path against user.dir and
+        // percent-encodes it, producing an authority-less file:/// URI.
+        let absolute = if path.starts_with('/') {
+            path
         } else {
-            alloc::format!("file:/{path}")
+            let dir =
+                crate::lang::system_property(vm, "user.dir").unwrap_or_else(|| String::from("/"));
+            if dir == "/" {
+                alloc::format!("/{path}")
+            } else {
+                alloc::format!("{dir}/{path}")
+            }
         };
+        let text = alloc::format!("file://{}", crate::file::uri_encode_path(&absolute));
         crate::uri::new_uri(vm, &text)
     }),
     method(
@@ -473,21 +482,7 @@ const PATH_INTERFACE_METHODS: [oxjvm_vm::NativeMethodDef; 28] = [
         "of",
         "(Ljava/net/URI;)Ljava/nio/file/Path;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| {
-            let uri = ref_arg(args, 0);
-            let (class, method) =
-                vm.resolve_virtual_method(uri, "toString", "()Ljava/lang/String;")?;
-            let text = vm.invoke_method(class, method, vec![Value::Ref(uri)])?;
-            let text = vm.string_or_empty(text.as_ref());
-            let path = text
-                .strip_prefix("file:")
-                .unwrap_or(&text)
-                .trim_start_matches("//")
-                .to_string();
-            let path = path.trim_end_matches('/');
-            let path = if path.is_empty() { "/" } else { path };
-            new_path(vm, path)
-        },
+        |vm, _, args| path_from_uri(vm, ref_arg(args, 0)),
     ),
     method(
         "compareTo",
@@ -668,23 +663,69 @@ const PATHS_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
         "get",
         "(Ljava/net/URI;)Ljava/nio/file/Path;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| {
-            let uri = ref_arg(args, 0);
-            let (class, method) =
-                vm.resolve_virtual_method(uri, "toString", "()Ljava/lang/String;")?;
-            let text = vm.invoke_method(class, method, vec![Value::Ref(uri)])?;
-            let text = vm.string_or_empty(text.as_ref());
-            let path = text
-                .strip_prefix("file:")
-                .unwrap_or(&text)
-                .trim_start_matches("//")
-                .to_string();
-            let path = path.trim_end_matches('/');
-            let path = if path.is_empty() { "/" } else { path };
-            new_path(vm, path)
-        },
+        |vm, _, args| path_from_uri(vm, ref_arg(args, 0)),
     ),
 ];
+
+/// Read a String-valued accessor of a `java.net.URI` instance.
+fn uri_string_component(vm: &mut Vm<'_>, uri: ObjectRef, name: &str) -> Result<ObjectRef, VmError> {
+    let (class, method) = vm.resolve_virtual_method(uri, name, "()Ljava/lang/String;")?;
+    Ok(vm
+        .invoke_method(class, method, vec![Value::Ref(uri)])?
+        .as_ref())
+}
+
+/// `Paths.get(URI)` / `Path.of(URI)`: only absolute `file:` URIs without an
+/// authority, query or fragment convert to a path; anything else raises
+/// IllegalArgumentException (NullPointerException for a null URI), like the JDK.
+fn path_from_uri(vm: &mut Vm<'_>, uri: ObjectRef) -> Result<Value, VmError> {
+    if uri.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let scheme = uri_string_component(vm, uri, "getScheme")?;
+    if !vm.string_or_empty(scheme).eq_ignore_ascii_case("file") {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("URI scheme is not \"file\""),
+        ));
+    }
+    if !uri_string_component(vm, uri, "getAuthority")?.is_null() {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("URI has an authority component"),
+        ));
+    }
+    if !uri_string_component(vm, uri, "getQuery")?.is_null() {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("URI has a query component"),
+        ));
+    }
+    if !uri_string_component(vm, uri, "getFragment")?.is_null() {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("URI has a fragment component"),
+        ));
+    }
+    let path_ref = uri_string_component(vm, uri, "getPath")?;
+    let path = vm.string_or_empty(path_ref);
+    if path_ref.is_null() || !path.starts_with('/') {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("URI path is not absolute"),
+        ));
+    }
+    if path.contains('\0') {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("Path contains NUL"),
+        ));
+    }
+    // UnixPath drops trailing slashes (keeping the root "/").
+    let path = path.trim_end_matches('/');
+    let path = if path.is_empty() { "/" } else { path };
+    new_path(vm, path)
+}
 
 /// `Paths.get(first, more...)` / `Path.of(first, more...)`.
 fn path_of(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
@@ -4466,19 +4507,7 @@ const FILE_SYSTEM_PROVIDER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         "getPath",
         "(Ljava/net/URI;)Ljava/nio/file/Path;",
         ACC_PUBLIC,
-        |vm, _, args| {
-            let uri = ref_arg(args, 1);
-            let (class, method) =
-                vm.resolve_virtual_method(uri, "toString", "()Ljava/lang/String;")?;
-            let text = vm.invoke_method(class, method, vec![Value::Ref(uri)])?;
-            let text = vm.string_or_empty(text.as_ref());
-            let path = text
-                .strip_prefix("file:")
-                .unwrap_or(&text)
-                .trim_start_matches("//")
-                .to_string();
-            new_path(vm, &path)
-        },
+        |vm, _, args| path_from_uri(vm, ref_arg(args, 1)),
     ),
 ];
 
