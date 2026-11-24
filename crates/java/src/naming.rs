@@ -757,9 +757,186 @@ pub(crate) const CONTEXT: oxjvm_vm::NativeClass = class(
     &[],
     ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
     &[],
-    &[],
+    &CONTEXT_METHODS,
     None,
 );
+
+const CONTEXT_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
+    method(
+        "lookup",
+        "(Ljavax/naming/Name;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "lookup",
+        "(Ljava/lang/String;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "bind",
+        "(Ljavax/naming/Name;Ljava/lang/Object;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "bind",
+        "(Ljava/lang/String;Ljava/lang/Object;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "rebind",
+        "(Ljavax/naming/Name;Ljava/lang/Object;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "rebind",
+        "(Ljava/lang/String;Ljava/lang/Object;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "unbind",
+        "(Ljavax/naming/Name;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "unbind",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "rename",
+        "(Ljavax/naming/Name;Ljavax/naming/Name;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "rename",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "list",
+        "(Ljavax/naming/Name;)Ljavax/naming/NamingEnumeration;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "list",
+        "(Ljava/lang/String;)Ljavax/naming/NamingEnumeration;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "listBindings",
+        "(Ljavax/naming/Name;)Ljavax/naming/NamingEnumeration;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "listBindings",
+        "(Ljava/lang/String;)Ljavax/naming/NamingEnumeration;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "destroySubcontext",
+        "(Ljavax/naming/Name;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "destroySubcontext",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "createSubcontext",
+        "(Ljavax/naming/Name;)Ljavax/naming/Context;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "createSubcontext",
+        "(Ljava/lang/String;)Ljavax/naming/Context;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "lookupLink",
+        "(Ljavax/naming/Name;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "lookupLink",
+        "(Ljava/lang/String;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getNameParser",
+        "(Ljavax/naming/Name;)Ljavax/naming/NameParser;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getNameParser",
+        "(Ljava/lang/String;)Ljavax/naming/NameParser;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "composeName",
+        "(Ljavax/naming/Name;Ljavax/naming/Name;)Ljavax/naming/Name;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "composeName",
+        "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "addToEnvironment",
+        "(Ljava/lang/String;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "removeFromEnvironment",
+        "(Ljava/lang/String;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getEnvironment",
+        "()Ljava/util/Hashtable;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "close",
+        "()V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getNameInNamespace",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
 
 // -------------------------------------------------------------------------------------------
 // javax.naming.NamingException
@@ -4551,3 +4728,763 @@ fn ldap_enum_new(
     )?;
     Ok(enumeration)
 }
+// -------------------------------------------------------------------------------------------
+// javax.naming.CannotProceedException
+// -------------------------------------------------------------------------------------------
+
+/// `javax.naming.CannotProceedException`: the operation cannot proceed past
+/// the current context; carries the environment and continuation hints.
+pub(crate) const CANNOT_PROCEED_EXCEPTION: oxjvm_vm::NativeClass = class(
+    "javax/naming/CannotProceedException",
+    Some("javax/naming/NamingException"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field(
+            "remainingNewName",
+            "Ljavax/naming/Name;",
+            ACC_PROTECTED,
+            None,
+        ),
+        field("environment", "Ljava/util/Hashtable;", ACC_PROTECTED, None),
+        field("altName", "Ljavax/naming/Name;", ACC_PROTECTED, None),
+        field("altNameCtx", "Ljavax/naming/Context;", ACC_PROTECTED, None),
+    ],
+    &CANNOT_PROCEED_EXCEPTION_METHODS,
+    None,
+);
+
+const CANNOT_PROCEED_EXCEPTION_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+    method(
+        "<init>",
+        "()V",
+        ACC_PUBLIC,
+        crate::throwable::exception_ctor,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        crate::throwable::exception_ctor,
+    ),
+    method(
+        "getEnvironment",
+        "()Ljava/util/Hashtable;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(ldap_read_ref(
+                vm,
+                this,
+                "environment",
+                "Ljava/util/Hashtable;",
+            ))
+        },
+    ),
+    method(
+        "setEnvironment",
+        "(Ljava/util/Hashtable;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            ldap_set_ref(
+                vm,
+                this,
+                "environment",
+                "Ljava/util/Hashtable;",
+                ref_arg(args, 1),
+            )?;
+            void()
+        },
+    ),
+    method(
+        "getRemainingNewName",
+        "()Ljavax/naming/Name;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(ldap_read_ref(
+                vm,
+                this,
+                "remainingNewName",
+                "Ljavax/naming/Name;",
+            ))
+        },
+    ),
+    method(
+        "setRemainingNewName",
+        "(Ljavax/naming/Name;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            ldap_set_ref(
+                vm,
+                this,
+                "remainingNewName",
+                "Ljavax/naming/Name;",
+                ref_arg(args, 1),
+            )?;
+            void()
+        },
+    ),
+    method(
+        "getAltName",
+        "()Ljavax/naming/Name;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(ldap_read_ref(vm, this, "altName", "Ljavax/naming/Name;"))
+        },
+    ),
+    method(
+        "setAltName",
+        "(Ljavax/naming/Name;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            ldap_set_ref(vm, this, "altName", "Ljavax/naming/Name;", ref_arg(args, 1))?;
+            void()
+        },
+    ),
+    method(
+        "getAltNameCtx",
+        "()Ljavax/naming/Context;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(ldap_read_ref(
+                vm,
+                this,
+                "altNameCtx",
+                "Ljavax/naming/Context;",
+            ))
+        },
+    ),
+    method(
+        "setAltNameCtx",
+        "(Ljavax/naming/Context;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            ldap_set_ref(
+                vm,
+                this,
+                "altNameCtx",
+                "Ljavax/naming/Context;",
+                ref_arg(args, 1),
+            )?;
+            void()
+        },
+    ),
+];
+
+// javax.naming.Referenceable and javax.naming.spi.ObjectFactory
+// -------------------------------------------------------------------------------------------
+
+/// `javax.naming.Referenceable`: an object that can produce a `Reference`.
+pub(crate) const REFERENCEABLE: oxjvm_vm::NativeClass = class(
+    "javax/naming/Referenceable",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &REFERENCEABLE_METHODS,
+    None,
+);
+
+const REFERENCEABLE_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "getReference",
+    "()Ljavax/naming/Reference;",
+    ACC_PUBLIC | ACC_ABSTRACT,
+    crate::lang::abstract_method_pub,
+)];
+
+/// `javax.naming.spi.ObjectFactory`: creates an object from a reference or
+/// other factory input.
+pub(crate) const OBJECT_FACTORY: oxjvm_vm::NativeClass = class(
+    "javax/naming/spi/ObjectFactory",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &OBJECT_FACTORY_METHODS,
+    None,
+);
+
+const OBJECT_FACTORY_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "getObjectInstance",
+    "(Ljava/lang/Object;Ljavax/naming/Name;Ljavax/naming/Context;Ljava/util/Hashtable;)Ljava/lang/Object;",
+    ACC_PUBLIC | ACC_ABSTRACT,
+    crate::lang::abstract_method_pub,
+)]; // -------------------------------------------------------------------------------------------
+// javax.naming.spi.NamingManager / DirectoryManager
+// -------------------------------------------------------------------------------------------
+
+/// `javax.naming.spi.NamingManager`: factory access and continuation
+/// contexts for naming service providers.
+pub(crate) const NAMING_MANAGER: oxjvm_vm::NativeClass = class(
+    "javax/naming/spi/NamingManager",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[field(
+        "CPE",
+        "Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        Some(oxjvm_vm::NativeConstant::Str(
+            "java.naming.spi.CannotProceedException",
+        )),
+    )],
+    &NAMING_MANAGER_METHODS,
+    None,
+);
+
+const NAMING_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "getContinuationContext",
+        "(Ljavax/naming/CannotProceedException;)Ljavax/naming/Context;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let cpe = ref_arg(args, 0);
+            let env = naming_continuation_env(vm, cpe)?;
+            let class = vm.resolve_class("javax/naming/spi/ContinuationContext")?;
+            let cctx = vm.new_instance(class)?;
+            ldap_self_call(
+                vm,
+                cctx,
+                "<init>",
+                "(Ljavax/naming/CannotProceedException;Ljava/util/Hashtable;)V",
+                vec![Value::Ref(cpe), Value::Ref(env)],
+            )?;
+            let target = continuation_target(vm, cctx)?;
+            object(target)
+        },
+    ),
+    method(
+        "getObjectInstance",
+        "(Ljava/lang/Object;Ljavax/naming/Name;Ljavax/naming/Context;Ljava/util/Hashtable;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            naming_get_object_instance(
+                vm,
+                ref_arg(args, 0),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                ref_arg(args, 3),
+            )
+        },
+    ),
+];
+
+/// `javax.naming.spi.DirectoryManager`: the `DirContext` extension of
+/// `NamingManager`.
+pub(crate) const DIRECTORY_MANAGER: oxjvm_vm::NativeClass = class(
+    "javax/naming/spi/DirectoryManager",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &DIRECTORY_MANAGER_METHODS,
+    None,
+);
+
+const DIRECTORY_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "getContinuationDirContext",
+    "(Ljavax/naming/CannotProceedException;)Ljavax/naming/directory/DirContext;",
+    ACC_PUBLIC | ACC_STATIC,
+    |vm, _, args| {
+        let cpe = ref_arg(args, 0);
+        let env = naming_continuation_env(vm, cpe)?;
+        let class = vm.resolve_class("javax/naming/spi/ContinuationDirContext")?;
+        let cctx = vm.new_instance(class)?;
+        ldap_self_call(
+            vm,
+            cctx,
+            "<init>",
+            "(Ljavax/naming/CannotProceedException;Ljava/util/Hashtable;)V",
+            vec![Value::Ref(cpe), Value::Ref(env)],
+        )?;
+        object(cctx)
+    },
+)];
+
+/// Copy the CPE environment (or create one) and record the CPE under the
+/// `NamingManager.CPE` key.
+fn naming_continuation_env(vm: &mut Vm<'_>, cpe: ObjectRef) -> Result<ObjectRef, VmError> {
+    let env = ldap_read_ref(vm, cpe, "environment", "Ljava/util/Hashtable;");
+    let env = if env.is_null() {
+        new_hashtable(vm, 7)?
+    } else {
+        ldap_call(vm, env, "clone", "()Ljava/lang/Object;", vec![])?.as_ref()
+    };
+    let key = vm.make_string("java.naming.spi.CannotProceedException")?;
+    ldap_call(
+        vm,
+        env,
+        "put",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        vec![Value::Ref(key), Value::Ref(cpe)],
+    )?;
+    Ok(env)
+}
+
+/// `NamingManager.getObjectInstance`: resolve a `Reference` (or
+/// `Referenceable`) through its named object factory.
+fn naming_get_object_instance(
+    vm: &mut Vm<'_>,
+    ref_info: ObjectRef,
+    name: ObjectRef,
+    name_ctx: ObjectRef,
+    environment: ObjectRef,
+) -> Result<Value, VmError> {
+    let reference_class = vm.resolve_class("javax/naming/Reference")?;
+    let referenceable_class = vm.resolve_class("javax/naming/Referenceable")?;
+    let mut reference = ObjectRef::NULL;
+    if vm.is_instance(ref_info, reference_class) {
+        reference = ref_info;
+    } else if vm.is_instance(ref_info, referenceable_class) {
+        reference = ldap_call(
+            vm,
+            ref_info,
+            "getReference",
+            "()Ljavax/naming/Reference;",
+            vec![],
+        )?
+        .as_ref();
+    }
+    if !reference.is_null() {
+        let factory_name = ldap_call(
+            vm,
+            reference,
+            "getFactoryClassName",
+            "()Ljava/lang/String;",
+            vec![],
+        )?
+        .as_ref();
+        if !factory_name.is_null() {
+            let factory = naming_load_factory(vm, factory_name)?;
+            if !factory.is_null() {
+                return ldap_call(
+                    vm,
+                    factory,
+                    "getObjectInstance",
+                    "(Ljava/lang/Object;Ljavax/naming/Name;Ljavax/naming/Context;Ljava/util/Hashtable;)Ljava/lang/Object;",
+                    vec![
+                        Value::Ref(reference),
+                        Value::Ref(name),
+                        Value::Ref(name_ctx),
+                        Value::Ref(environment),
+                    ],
+                );
+            }
+            // No factory found: return the original reference info.
+            return object(ref_info);
+        }
+    }
+    // No reference factory and no environment factories: return the input.
+    object(ref_info)
+}
+
+/// Load and instantiate the named factory class; a missing class yields null
+/// (the JDK falls back to returning the reference itself).
+fn naming_load_factory(vm: &mut Vm<'_>, factory_name: ObjectRef) -> Result<ObjectRef, VmError> {
+    let name = vm.string_value(factory_name).unwrap_or_default();
+    let internal = name.replace('.', "/");
+    let class = match vm.resolve_class(&internal) {
+        Ok(class) => class,
+        Err(VmError::Thrown(exception)) => {
+            let not_found = vm.resolve_class("java/lang/ClassNotFoundException")?;
+            let no_class = vm.resolve_class("java/lang/NoClassDefFoundError")?;
+            if vm.is_instance(exception, not_found) || vm.is_instance(exception, no_class) {
+                vm.discard_backtrace(exception);
+                return Ok(ObjectRef::NULL);
+            }
+            return Err(VmError::Thrown(exception));
+        }
+        Err(other) => return Err(other),
+    };
+    let class_object = vm.class_object(class)?;
+    Ok(ldap_call(
+        vm,
+        class_object,
+        "newInstance",
+        "()Ljava/lang/Object;",
+        vec![],
+    )?
+    .as_ref())
+}
+
+/// `NamingManager.getContext`: the object itself when it is a `Context`,
+/// otherwise the result of the object-factory lookup.
+fn naming_get_context(
+    vm: &mut Vm<'_>,
+    obj: ObjectRef,
+    name: ObjectRef,
+    name_ctx: ObjectRef,
+    environment: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    let context_class = vm.resolve_class("javax/naming/Context")?;
+    if vm.is_instance(obj, context_class) {
+        return Ok(obj);
+    }
+    let answer = match naming_get_object_instance(vm, obj, name, name_ctx, environment) {
+        Ok(value) => value.as_ref(),
+        Err(VmError::Thrown(exception)) => {
+            let naming = vm.resolve_class("javax/naming/NamingException")?;
+            if vm.is_instance(exception, naming) {
+                return Err(VmError::Thrown(exception));
+            }
+            let wrapped = vm.throw_new("javax/naming/NamingException", None);
+            let VmError::Thrown(naming_exception) = wrapped else {
+                return Ok(ObjectRef::NULL);
+            };
+            ldap_call(
+                vm,
+                naming_exception,
+                "setRootCause",
+                "(Ljava/lang/Throwable;)V",
+                vec![Value::Ref(exception)],
+            )?;
+            return Err(VmError::Thrown(naming_exception));
+        }
+        Err(other) => return Err(other),
+    };
+    if vm.is_instance(answer, context_class) {
+        Ok(answer)
+    } else {
+        Ok(ObjectRef::NULL)
+    }
+} // -------------------------------------------------------------------------------------------
+// javax.naming.spi.ContinuationContext / ContinuationDirContext
+// -------------------------------------------------------------------------------------------
+
+/// `javax.naming.spi.ContinuationContext`: lazily resolves the target
+/// context from the `CannotProceedException` and delegates to it.
+pub(crate) const CONTINUATION_CONTEXT: oxjvm_vm::NativeClass = class(
+    "javax/naming/spi/ContinuationContext",
+    Some("java/lang/Object"),
+    &["javax/naming/Context"],
+    ACC_PUBLIC,
+    &[
+        field(
+            "cpe",
+            "Ljavax/naming/CannotProceedException;",
+            ACC_PROTECTED,
+            None,
+        ),
+        field("env", "Ljava/util/Hashtable;", ACC_PROTECTED, None),
+        field("contCtx", "Ljavax/naming/Context;", ACC_PROTECTED, None),
+    ],
+    &CONTINUATION_CONTEXT_METHODS,
+    None,
+);
+
+const CONTINUATION_CONTEXT_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+    method(
+        "<init>",
+        "(Ljavax/naming/CannotProceedException;Ljava/util/Hashtable;)V",
+        ACC_PROTECTED,
+        |vm, _, args| {
+            let this = receiver(args);
+            ldap_set_ref(
+                vm,
+                this,
+                "cpe",
+                "Ljavax/naming/CannotProceedException;",
+                ref_arg(args, 1),
+            )?;
+            ldap_set_ref(vm, this, "env", "Ljava/util/Hashtable;", ref_arg(args, 2))?;
+            void()
+        },
+    ),
+    method(
+        "getTargetContext",
+        "()Ljavax/naming/Context;",
+        ACC_PROTECTED,
+        |vm, _, args| {
+            let target = continuation_target(vm, receiver(args))?;
+            object(target)
+        },
+    ),
+    method(
+        "getEnvironment",
+        "()Ljava/util/Hashtable;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let target = continuation_target(vm, receiver(args))?;
+            ldap_call(
+                vm,
+                target,
+                "getEnvironment",
+                "()Ljava/util/Hashtable;",
+                vec![],
+            )
+        },
+    ),
+    method(
+        "getNameInNamespace",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let target = continuation_target(vm, receiver(args))?;
+            ldap_call(
+                vm,
+                target,
+                "getNameInNamespace",
+                "()Ljava/lang/String;",
+                vec![],
+            )
+        },
+    ),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        let target = continuation_target(vm, receiver(args))?;
+        ldap_call(vm, target, "close", "()V", vec![])?;
+        void()
+    }),
+    method(
+        "lookup",
+        "(Ljava/lang/String;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let target = continuation_target(vm, receiver(args))?;
+            ldap_call(
+                vm,
+                target,
+                "lookup",
+                "(Ljava/lang/String;)Ljava/lang/Object;",
+                vec![Value::Ref(ref_arg(args, 1))],
+            )
+        },
+    ),
+    method(
+        "lookup",
+        "(Ljavax/naming/Name;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let target = continuation_target(vm, receiver(args))?;
+            ldap_call(
+                vm,
+                target,
+                "lookup",
+                "(Ljavax/naming/Name;)Ljava/lang/Object;",
+                vec![Value::Ref(ref_arg(args, 1))],
+            )
+        },
+    ),
+    method(
+        "addToEnvironment",
+        "(Ljava/lang/String;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let target = continuation_target(vm, receiver(args))?;
+            ldap_call(
+                vm,
+                target,
+                "addToEnvironment",
+                "(Ljava/lang/String;Ljava/lang/Object;)Ljava/lang/Object;",
+                vec![Value::Ref(ref_arg(args, 1)), Value::Ref(ref_arg(args, 2))],
+            )
+        },
+    ),
+    method(
+        "removeFromEnvironment",
+        "(Ljava/lang/String;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let target = continuation_target(vm, receiver(args))?;
+            ldap_call(
+                vm,
+                target,
+                "removeFromEnvironment",
+                "(Ljava/lang/String;)Ljava/lang/Object;",
+                vec![Value::Ref(ref_arg(args, 1))],
+            )
+        },
+    ),
+];
+
+/// Resolve (and cache) the continuation target; a missing resolved object or
+/// a non-context answer rethrows the CPE with a fresh stack trace.
+fn continuation_target(vm: &mut Vm<'_>, cctx: ObjectRef) -> Result<ObjectRef, VmError> {
+    let cached = ldap_read_ref(vm, cctx, "contCtx", "Ljavax/naming/Context;");
+    if !cached.is_null() {
+        return Ok(cached);
+    }
+    let cpe = ldap_read_ref(vm, cctx, "cpe", "Ljavax/naming/CannotProceedException;");
+    let env = ldap_read_ref(vm, cctx, "env", "Ljava/util/Hashtable;");
+    let resolved = ldap_call(vm, cpe, "getResolvedObj", "()Ljava/lang/Object;", vec![])?.as_ref();
+    if resolved.is_null() {
+        ldap_call(
+            vm,
+            cpe,
+            "fillInStackTrace",
+            "()Ljava/lang/Throwable;",
+            vec![],
+        )?;
+        return Err(VmError::Thrown(cpe));
+    }
+    let alt_name = ldap_call(vm, cpe, "getAltName", "()Ljavax/naming/Name;", vec![])?.as_ref();
+    let alt_ctx = ldap_call(vm, cpe, "getAltNameCtx", "()Ljavax/naming/Context;", vec![])?.as_ref();
+    let target = naming_get_context(vm, resolved, alt_name, alt_ctx, env)?;
+    if target.is_null() {
+        ldap_call(
+            vm,
+            cpe,
+            "fillInStackTrace",
+            "()Ljava/lang/Throwable;",
+            vec![],
+        )?;
+        return Err(VmError::Thrown(cpe));
+    }
+    ldap_set_ref(vm, cctx, "contCtx", "Ljavax/naming/Context;", target)?;
+    Ok(target)
+}
+
+/// `javax.naming.spi.ContinuationDirContext`: the `DirContext` flavor of the
+/// continuation context.
+pub(crate) const CONTINUATION_DIR_CONTEXT: oxjvm_vm::NativeClass = class(
+    "javax/naming/spi/ContinuationDirContext",
+    Some("javax/naming/spi/ContinuationContext"),
+    &["javax/naming/directory/DirContext"],
+    ACC_PUBLIC,
+    &[],
+    &CONTINUATION_DIR_CONTEXT_METHODS,
+    None,
+);
+
+const CONTINUATION_DIR_CONTEXT_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "<init>",
+    "(Ljavax/naming/CannotProceedException;Ljava/util/Hashtable;)V",
+    ACC_PUBLIC,
+    |vm, _, args| {
+        let this = receiver(args);
+        let super_class = vm.resolve_class("javax/naming/spi/ContinuationContext")?;
+        let (declaring, ctor) = vm
+            .find_method(
+                super_class,
+                "<init>",
+                "(Ljavax/naming/CannotProceedException;Ljava/util/Hashtable;)V",
+            )
+            .ok_or_else(|| VmError::internal("ContinuationContext() missing"))?;
+        vm.invoke_method(
+            declaring,
+            ctor,
+            vec![
+                Value::Ref(this),
+                Value::Ref(ref_arg(args, 1)),
+                Value::Ref(ref_arg(args, 2)),
+            ],
+        )?;
+        void()
+    },
+)];
+
+/// `javax.naming.directory.DirContext`: a context with directory operations.
+pub(crate) const DIR_CONTEXT: oxjvm_vm::NativeClass = class(
+    "javax/naming/directory/DirContext",
+    Some("java/lang/Object"),
+    &["javax/naming/Context"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &DIR_CONTEXT_METHODS,
+    None,
+);
+
+const DIR_CONTEXT_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
+    method(
+        "getAttributes",
+        "(Ljava/lang/String;)Ljavax/naming/directory/Attributes;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getAttributes",
+        "(Ljavax/naming/Name;)Ljavax/naming/directory/Attributes;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getAttributes",
+        "(Ljava/lang/String;[Ljava/lang/String;)Ljavax/naming/directory/Attributes;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getAttributes",
+        "(Ljavax/naming/Name;[Ljava/lang/String;)Ljavax/naming/directory/Attributes;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "modifyAttributes",
+        "(Ljava/lang/String;ILjavax/naming/directory/Attributes;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "modifyAttributes",
+        "(Ljavax/naming/Name;ILjavax/naming/directory/Attributes;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "modifyAttributes",
+        "(Ljava/lang/String;Ljavax/naming/directory/Attributes;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "modifyAttributes",
+        "(Ljavax/naming/Name;Ljavax/naming/directory/Attributes;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "bind",
+        "(Ljava/lang/String;Ljava/lang/Object;Ljavax/naming/directory/Attributes;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "bind",
+        "(Ljavax/naming/Name;Ljava/lang/Object;Ljavax/naming/directory/Attributes;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "rebind",
+        "(Ljava/lang/String;Ljava/lang/Object;Ljavax/naming/directory/Attributes;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "rebind",
+        "(Ljavax/naming/Name;Ljava/lang/Object;Ljavax/naming/directory/Attributes;)V",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "createSubcontext",
+        "(Ljava/lang/String;Ljavax/naming/directory/Attributes;)Ljavax/naming/directory/DirContext;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "createSubcontext",
+        "(Ljavax/naming/Name;Ljavax/naming/directory/Attributes;)Ljavax/naming/directory/DirContext;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getSchema",
+        "(Ljava/lang/String;)Ljavax/naming/directory/DirContext;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method(
+        "getSchema",
+        "(Ljavax/naming/Name;)Ljavax/naming/directory/DirContext;",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+];
