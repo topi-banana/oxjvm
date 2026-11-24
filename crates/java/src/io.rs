@@ -4066,6 +4066,15 @@ const PRINT_WRITER_METHODS: [oxjvm_vm::NativeMethodDef; 38] = [
                 return boolean(value.as_int() != 0);
             }
         }
+        // A wrapped PrintStream swallows its IOExceptions; report its error state.
+        let ps_out = vm
+            .read_ref_field(this, vm.class_of(this), "psOut", "Ljava/io/PrintStream;")
+            .unwrap_or(ObjectRef::NULL);
+        if !ps_out.is_null() {
+            let (class, method) = vm.resolve_virtual_method(ps_out, "checkError", "()Z")?;
+            let value = vm.invoke_method(class, method, vec![Value::Ref(ps_out)])?;
+            return boolean(value.as_int() != 0);
+        }
         boolean(read_int_field(vm, this, "trouble") != 0)
     }),
     method("setError", "()V", ACC_PROTECTED, |vm, _, args| {
@@ -4361,6 +4370,7 @@ pub(crate) const PRINT_WRITER: oxjvm_vm::NativeClass = class(
         field("autoFlush", "I", ACC_PRIVATE, None),
         field("trouble", "I", ACC_PRIVATE, None),
         field("closed", "I", ACC_PRIVATE, None),
+        field("psOut", "Ljava/io/PrintStream;", ACC_PRIVATE, None),
     ],
     &PRINT_WRITER_METHODS,
     None,
@@ -5236,6 +5246,14 @@ fn print_writer_init_stream(
     let print_class = vm.class_of(this);
     let (declaring, field) = vm.find_field(print_class, "out", "Ljava/io/Writer;")?;
     vm.set_instance_ref(this, declaring, field, writer);
+    // The JDK remembers a wrapped PrintStream so checkError() can report its
+    // swallowed errors (the OutputStreamWriter never sees them).
+    let stream = ref_arg(args, 1);
+    let print_stream = vm.resolve_class("java/io/PrintStream")?;
+    if vm.is_instance(stream, print_stream) {
+        let (declaring, field) = vm.find_field(print_class, "psOut", "Ljava/io/PrintStream;")?;
+        vm.set_instance_ref(this, declaring, field, stream);
+    }
     void()
 }
 
