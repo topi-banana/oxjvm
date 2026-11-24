@@ -1382,6 +1382,260 @@ pub(crate) const PROPERTY_RESOURCE_BUNDLE: oxjvm_vm::NativeClass = class(
 );
 
 // -------------------------------------------------------------------------------------------
+// ResourceBundle.Control
+// -------------------------------------------------------------------------------------------
+
+const RESOURCE_BUNDLE_CONTROL_CLASS: &str = "java/util/ResourceBundle$Control";
+const RESOURCE_BUNDLE_CONTROL_DESC: &str = "Ljava/util/ResourceBundle$Control;";
+
+/// Initialize the `FORMAT_*` list constants and the TTL sentinels.
+fn control_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let class = vm.resolve_class(RESOURCE_BUNDLE_CONTROL_CLASS)?;
+    let class_format = vm.make_string("java.class")?;
+    let properties_format = vm.make_string("java.properties")?;
+    let format_class = crate::util::array_list_from(vm, &[class_format])?;
+    let format_properties = crate::util::array_list_from(vm, &[properties_format])?;
+    let format_default = crate::util::array_list_from(vm, &[class_format, properties_format])?;
+    vm.set_static_value(
+        class,
+        "FORMAT_CLASS",
+        "Ljava/util/List;",
+        Value::Ref(format_class),
+    );
+    vm.set_static_value(
+        class,
+        "FORMAT_PROPERTIES",
+        "Ljava/util/List;",
+        Value::Ref(format_properties),
+    );
+    vm.set_static_value(
+        class,
+        "FORMAT_DEFAULT",
+        "Ljava/util/List;",
+        Value::Ref(format_default),
+    );
+    vm.set_static_value(class, "TTL_DONT_CACHE", "J", Value::Long(-1));
+    vm.set_static_value(class, "TTL_NO_EXPIRATION_CONTROL", "J", Value::Long(-2));
+    Ok(())
+}
+
+/// `Control.getControl` / `getNoFallbackControl`: validate the format list and
+/// return the cached singleton for that format combination.  Only the three
+/// canonical combinations are legal; anything else is an IllegalArgumentException.
+fn control_factory(
+    vm: &mut Vm<'_>,
+    formats: ObjectRef,
+    no_fallback: bool,
+) -> Result<Value, VmError> {
+    if formats.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let elements = crate::util::collection_elements(vm, formats)?;
+    let mut names: Vec<String> = Vec::new();
+    for element in &elements {
+        if element.is_null() {
+            return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+        }
+        names.push(vm.string_or_empty(*element));
+    }
+    let (canonical, cache_field) = match names.as_slice() {
+        [a, b] if a == "java.class" && b == "java.properties" => (
+            "FORMAT_DEFAULT",
+            if no_fallback {
+                "nfControlDefault"
+            } else {
+                "controlDefault"
+            },
+        ),
+        [a] if a == "java.class" => (
+            "FORMAT_CLASS",
+            if no_fallback {
+                "nfControlClass"
+            } else {
+                "controlClass"
+            },
+        ),
+        [a] if a == "java.properties" => (
+            "FORMAT_PROPERTIES",
+            if no_fallback {
+                "nfControlProperties"
+            } else {
+                "controlProperties"
+            },
+        ),
+        _ => return Err(vm.throw_new("java/lang/IllegalArgumentException", None)),
+    };
+    let class = vm.resolve_class(RESOURCE_BUNDLE_CONTROL_CLASS)?;
+    vm.ensure_initialized(class)?;
+    if let Some(existing) =
+        vm.read_static_ref_if_set(class, cache_field, RESOURCE_BUNDLE_CONTROL_DESC)
+    {
+        return object(existing);
+    }
+    let instance = vm.new_instance(class)?;
+    let (declaring, ctor) = vm
+        .find_method(class, "<init>", "()V")
+        .ok_or_else(|| VmError::internal("ResourceBundle.Control() missing"))?;
+    vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
+    let canonical_list = vm
+        .read_static_ref_if_set(class, canonical, "Ljava/util/List;")
+        .unwrap_or(ObjectRef::NULL);
+    record_set_ref(vm, instance, "formats", "Ljava/util/List;", canonical_list);
+    crate::lang::write_int_field(vm, instance, "noFallback", i32::from(no_fallback));
+    vm.set_static_value(
+        class,
+        cache_field,
+        RESOURCE_BUNDLE_CONTROL_DESC,
+        Value::Ref(instance),
+    );
+    object(instance)
+}
+
+const RESOURCE_BUNDLE_CONTROL_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method("<init>", "()V", ACC_PROTECTED, |_, _, _| void()),
+    method(
+        "getControl",
+        "(Ljava/util/List;)Ljava/util/ResourceBundle$Control;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        |vm, _, args| control_factory(vm, ref_arg(args, 0), false),
+    ),
+    method(
+        "getNoFallbackControl",
+        "(Ljava/util/List;)Ljava/util/ResourceBundle$Control;",
+        ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+        |vm, _, args| control_factory(vm, ref_arg(args, 0), true),
+    ),
+    method(
+        "getFormats",
+        "(Ljava/lang/String;)Ljava/util/List;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let formats = record_get_ref(vm, this, "formats", "Ljava/util/List;");
+            if !formats.is_null() {
+                return object(formats);
+            }
+            let class = vm.resolve_class(RESOURCE_BUNDLE_CONTROL_CLASS)?;
+            let default = vm
+                .read_static_ref_if_set(class, "FORMAT_DEFAULT", "Ljava/util/List;")
+                .unwrap_or(ObjectRef::NULL);
+            object(default)
+        },
+    ),
+    method(
+        "getFallbackLocale",
+        "(Ljava/lang/String;Ljava/util/Locale;)Ljava/util/Locale;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let locale = ref_arg(args, 2);
+            if crate::lang::read_int_field(vm, this, "noFallback") != 0 {
+                return object(ObjectRef::NULL);
+            }
+            let default = crate::format::default_locale(vm);
+            if default.is_null() || locale.is_null() {
+                return object(default);
+            }
+            let (class, method) =
+                vm.resolve_virtual_method(locale, "equals", "(Ljava/lang/Object;)Z")?;
+            let same = vm
+                .invoke_method(class, method, vec![Value::Ref(locale), Value::Ref(default)])?
+                .as_int();
+            if same != 0 {
+                object(ObjectRef::NULL)
+            } else {
+                object(default)
+            }
+        },
+    ),
+    method(
+        "getTimeToLive",
+        "(Ljava/lang/String;Ljava/util/Locale;)J",
+        ACC_PUBLIC,
+        |_, _, _| Ok(Value::Long(-2)),
+    ),
+];
+
+pub(crate) const RESOURCE_BUNDLE_CONTROL: oxjvm_vm::NativeClass = class(
+    RESOURCE_BUNDLE_CONTROL_CLASS,
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_ABSTRACT,
+    &[
+        field("formats", "Ljava/util/List;", ACC_PRIVATE, None),
+        field("noFallback", "I", ACC_PRIVATE, None),
+        field(
+            "FORMAT_DEFAULT",
+            "Ljava/util/List;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "FORMAT_CLASS",
+            "Ljava/util/List;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "FORMAT_PROPERTIES",
+            "Ljava/util/List;",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "TTL_DONT_CACHE",
+            "J",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "TTL_NO_EXPIRATION_CONTROL",
+            "J",
+            ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            None,
+        ),
+        field(
+            "controlDefault",
+            RESOURCE_BUNDLE_CONTROL_DESC,
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
+        field(
+            "controlClass",
+            RESOURCE_BUNDLE_CONTROL_DESC,
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
+        field(
+            "controlProperties",
+            RESOURCE_BUNDLE_CONTROL_DESC,
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
+        field(
+            "nfControlDefault",
+            RESOURCE_BUNDLE_CONTROL_DESC,
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
+        field(
+            "nfControlClass",
+            RESOURCE_BUNDLE_CONTROL_DESC,
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
+        field(
+            "nfControlProperties",
+            RESOURCE_BUNDLE_CONTROL_DESC,
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
+    ],
+    &RESOURCE_BUNDLE_CONTROL_METHODS,
+    Some(control_clinit),
+);
+
+// -------------------------------------------------------------------------------------------
 // Filter / Formatter / ErrorManager
 // -------------------------------------------------------------------------------------------
 
