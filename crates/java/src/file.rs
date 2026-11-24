@@ -1063,12 +1063,9 @@ const FILE_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
                 .read_string_field(this, vm.class_of(this), "path")
                 .unwrap_or_default();
             let (_, position) = file_input_state(vm, this)?;
-            object(crate::nio::new_file_channel(
-                vm,
-                &path,
-                position as i64,
-                false,
-            )?)
+            let channel = crate::nio::new_file_channel(vm, &path, position as i64, false)?;
+            crate::nio::set_file_channel_owner(vm, channel, this)?;
+            object(channel)
         },
     ),
     method(

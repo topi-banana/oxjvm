@@ -4925,8 +4925,16 @@ const FILE_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
-            let (declaring, field) = vm.find_field(vm.class_of(this), "position", "J")?;
-            vm.set_instance_long(this, declaring, field, crate::long_arg(args, 1));
+            let new_position = crate::long_arg(args, 1);
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "position", "J")?;
+            vm.set_instance_long(this, declaring, field, new_position);
+            let owner = vm
+                .read_ref_field(this, class, "owner", "Ljava/lang/Object;")
+                .unwrap_or(ObjectRef::NULL);
+            if !owner.is_null() {
+                propagate_channel_position(vm, owner, new_position);
+            }
             object(this)
         },
     ),
@@ -4995,10 +5003,35 @@ pub(crate) const OJVM_FILE_CHANNEL: oxjvm_vm::NativeClass = class(
         field("position", "J", ACC_PRIVATE, None),
         field("writable", "I", ACC_PRIVATE, None),
         field("open", "I", ACC_PRIVATE, None),
+        field("owner", "Ljava/lang/Object;", ACC_PRIVATE, None),
     ],
     &[],
     None,
 );
+
+/// Link a stream-derived channel back to its owning stream so that seeking the
+/// channel (`FileChannel.position(long)`) moves the stream's read/write cursor,
+/// matching the JDK's shared file-descriptor position.
+pub(crate) fn set_file_channel_owner(
+    vm: &mut Vm<'_>,
+    channel: ObjectRef,
+    owner: ObjectRef,
+) -> Result<(), VmError> {
+    let class = vm.class_of(channel);
+    let (declaring, field) = vm.find_field(class, "owner", "Ljava/lang/Object;")?;
+    vm.set_instance_ref(channel, declaring, field, owner);
+    Ok(())
+}
+
+/// Mirror a channel seek onto the owning stream's `position` field (int or long).
+fn propagate_channel_position(vm: &mut Vm<'_>, owner: ObjectRef, position: i64) {
+    let class = vm.class_of(owner);
+    if let Some((declaring, field)) = vm.find_field_opt(class, "position", "I") {
+        vm.set_instance_int(owner, declaring, field, position as i32);
+    } else if let Some((declaring, field)) = vm.find_field_opt(class, "position", "J") {
+        vm.set_instance_long(owner, declaring, field, position);
+    }
+}
 
 pub(crate) const BYTE_CHANNEL: oxjvm_vm::NativeClass = class(
     "java/nio/channels/ByteChannel",
