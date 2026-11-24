@@ -766,11 +766,16 @@ pub(crate) fn round_f32(x: f32) -> i32 {
 pub(crate) fn hypot(x: f64, y: f64) -> f64 {
     let x = x.abs();
     let y = y.abs();
-    let max = if x > y { x } else { y };
-    let min = if x > y { y } else { x };
-    if max.is_infinite() {
+    // An infinite argument dominates everything, including NaN; check this
+    // before the max/min comparison, which NaN would otherwise poison.
+    if x.is_infinite() || y.is_infinite() {
         return f64::INFINITY;
     }
+    if x.is_nan() || y.is_nan() {
+        return f64::NAN;
+    }
+    let max = if x > y { x } else { y };
+    let min = if x > y { y } else { x };
     if max == 0.0 {
         return 0.0;
     }
