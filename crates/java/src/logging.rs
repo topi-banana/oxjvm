@@ -2578,6 +2578,83 @@ fn log_manager_get_property(vm: &mut Vm<'_>, name: &str) -> Result<Option<String
     Ok(Some(vm.string_or_empty(value)))
 }
 
+/// Store every entry of `props` in the configuration property store and apply
+/// the `<logger>.level` entries to the corresponding loggers (`.level` targets
+/// the root logger), the way `LogManager.readConfiguration` does.
+fn apply_logging_properties(vm: &mut Vm<'_>, props: ObjectRef) -> Result<(), VmError> {
+    let (names_class, names_method) =
+        vm.resolve_virtual_method(props, "stringPropertyNames", "()Ljava/util/Set;")?;
+    let names = vm
+        .invoke_method(names_class, names_method, vec![Value::Ref(props)])?
+        .as_ref();
+    let store = log_manager_properties(vm)?;
+    let (get_class, get) = vm.resolve_virtual_method(
+        props,
+        "getProperty",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+    )?;
+    for key in crate::util::collection_elements(vm, names)? {
+        let value = vm
+            .invoke_method(get_class, get, vec![Value::Ref(props), Value::Ref(key)])?
+            .as_ref();
+        if value.is_null() {
+            continue;
+        }
+        crate::util::hash_map_insert(vm, store, key, value)?;
+        let name = vm.string_or_empty(key);
+        if let Some(logger_name) = name.strip_suffix(".level") {
+            let level_name = vm.string_or_empty(value);
+            if let Ok(level) = level_named(vm, &level_name) {
+                let logger = logger_from_registry(vm, logger_name)?;
+                record_set_ref(vm, logger, "level", "Ljava/util/logging/Level;", level);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Read the file named by the `java.util.logging.config.file` system property
+/// (if any) and apply it, as the LogManager does on initialization and on a
+/// no-argument `readConfiguration()`.
+fn read_logging_config_file(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let path = match crate::lang::system_property(vm, "java.util.logging.config.file") {
+        Some(path) if !path.is_empty() => path,
+        _ => return Ok(()),
+    };
+    let stream_class = vm.resolve_class("java/io/FileInputStream")?;
+    let stream = vm.new_instance(stream_class)?;
+    let path_ref = vm.make_string(&path)?;
+    let (ctor_class, ctor) = vm
+        .find_method(stream_class, "<init>", "(Ljava/lang/String;)V")
+        .ok_or_else(|| VmError::internal("FileInputStream(String) missing"))?;
+    // A missing/unreadable config file is silently ignored, as in the JDK.
+    if vm
+        .invoke_method(
+            ctor_class,
+            ctor,
+            vec![Value::Ref(stream), Value::Ref(path_ref)],
+        )
+        .is_err()
+    {
+        return Ok(());
+    }
+    let props_class = vm.resolve_class("java/util/Properties")?;
+    let props = vm.new_instance(props_class)?;
+    let (props_ctor_class, props_ctor) = vm
+        .find_method(props_class, "<init>", "()V")
+        .ok_or_else(|| VmError::internal("Properties() missing"))?;
+    vm.invoke_method(props_ctor_class, props_ctor, vec![Value::Ref(props)])?;
+    let (load_class, load) = vm
+        .find_method(props_class, "load", "(Ljava/io/InputStream;)V")
+        .ok_or_else(|| VmError::internal("Properties.load missing"))?;
+    vm.invoke_method(
+        load_class,
+        load,
+        vec![Value::Ref(props), Value::Ref(stream)],
+    )?;
+    apply_logging_properties(vm, props)
+}
+
 fn logger_from_registry(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
     let map = registry_map(vm)?;
     let key = vm.make_string(name)?;
@@ -3821,6 +3898,7 @@ fn log_manager_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     vm.invoke_method(declaring, ctor, vec![Value::Ref(handler)])?;
     let handlers = logger_handlers(vm, root);
     hlist_add(vm, handlers, handler)?;
+    read_logging_config_file(vm)?;
     Ok(())
 }
 
@@ -4007,7 +4085,10 @@ const LOG_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
             void()
         },
     ),
-    method("readConfiguration", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("readConfiguration", "()V", ACC_PUBLIC, |vm, _, _| {
+        read_logging_config_file(vm)?;
+        void()
+    }),
     method(
         "readConfiguration",
         "(Ljava/io/InputStream;)V",
@@ -4027,25 +4108,7 @@ const LOG_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
                 .find_method(props_class, "load", "(Ljava/io/InputStream;)V")
                 .ok_or_else(|| VmError::internal("Properties.load missing"))?;
             vm.invoke_method(load_class, load, vec![Value::Ref(props), Value::Ref(ins)])?;
-            let (names_class, names_method) =
-                vm.resolve_virtual_method(props, "stringPropertyNames", "()Ljava/util/Set;")?;
-            let names = vm
-                .invoke_method(names_class, names_method, vec![Value::Ref(props)])?
-                .as_ref();
-            let store = log_manager_properties(vm)?;
-            for key in crate::util::collection_elements(vm, names)? {
-                let (get_class, get) = vm.resolve_virtual_method(
-                    props,
-                    "getProperty",
-                    "(Ljava/lang/String;)Ljava/lang/String;",
-                )?;
-                let value = vm
-                    .invoke_method(get_class, get, vec![Value::Ref(props), Value::Ref(key)])?
-                    .as_ref();
-                if !value.is_null() {
-                    crate::util::hash_map_insert(vm, store, key, value)?;
-                }
-            }
+            apply_logging_properties(vm, props)?;
             void()
         },
     ),
