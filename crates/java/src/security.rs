@@ -571,6 +571,9 @@ fn provider_init(
         set_ref_field(vm, this, "versionStr", "Ljava/lang/String;", version)?;
     }
     provider_put_id(vm, this)?;
+    let services = crate::util::linked_hash_map_new(vm)?;
+    set_ref_field(vm, this, "services", "Ljava/util/LinkedHashMap;", services)?;
+    crate::lang::write_int_field(vm, this, "dirty", 1);
     void()
 }
 
@@ -670,13 +673,46 @@ const PROVIDER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
         "getService",
         "(Ljava/lang/String;Ljava/lang/String;)Ljava/security/Provider$Service;",
         ACC_PUBLIC,
-        |_, _, _| object(ObjectRef::NULL),
+        |vm, _, args| {
+            let this = receiver(args);
+            let service_type = vm.string_or_empty(ref_arg(args, 1));
+            let algorithm = vm.string_or_empty(ref_arg(args, 2));
+            let services = provider_ensure_parsed(vm, this)?;
+            let map_key = vm.make_string(&provider_service_key(
+                &provider_engine_name(&service_type),
+                &algorithm,
+            ))?;
+            let service = crate::util::hash_map_lookup(vm, services, map_key)?;
+            if service.is_null() || opt_string_field(vm, service, "className").is_none() {
+                return object(ObjectRef::NULL);
+            }
+            object(service)
+        },
     ),
     method(
         "getServices",
         "()Ljava/util/Set;",
         ACC_PUBLIC,
-        |vm, _, _| object(new_hash_set(vm)?),
+        |vm, _, args| {
+            let this = receiver(args);
+            let services = provider_ensure_parsed(vm, this)?;
+            let set = new_hash_set(vm)?;
+            let pairs = crate::util::hash_map_pairs(vm, services);
+            let mut seen: Vec<ObjectRef> = Vec::new();
+            for (_, service) in pairs {
+                if service.is_null()
+                    || opt_string_field(vm, service, "className").is_none()
+                    || seen.contains(&service)
+                {
+                    continue;
+                }
+                seen.push(service);
+                let (class, add) =
+                    vm.resolve_virtual_method(set, "add", "(Ljava/lang/Object;)Z")?;
+                vm.invoke_method(class, add, vec![Value::Ref(set), Value::Ref(service)])?;
+            }
+            object(set)
+        },
     ),
     method("isConfigured", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
     method(
@@ -697,7 +733,7 @@ const PROVIDER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
                     "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
                 )
                 .ok_or_else(|| VmError::internal("Hashtable.put missing"))?;
-            vm.invoke_method(
+            let result = vm.invoke_method(
                 declaring,
                 put,
                 vec![
@@ -705,7 +741,9 @@ const PROVIDER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
                     Value::Ref(key),
                     Value::Ref(ref_arg(args, 2)),
                 ],
-            )
+            )?;
+            crate::lang::write_int_field(vm, this, "dirty", 1);
+            Ok(result)
         },
     ),
     method(
@@ -722,7 +760,10 @@ const PROVIDER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
             let (declaring, remove) = vm
                 .find_method(table, "remove", "(Ljava/lang/Object;)Ljava/lang/Object;")
                 .ok_or_else(|| VmError::internal("Hashtable.remove missing"))?;
-            vm.invoke_method(declaring, remove, vec![Value::Ref(this), Value::Ref(key)])
+            let result =
+                vm.invoke_method(declaring, remove, vec![Value::Ref(this), Value::Ref(key)])?;
+            crate::lang::write_int_field(vm, this, "dirty", 1);
+            Ok(result)
         },
     ),
     method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
@@ -733,6 +774,7 @@ const PROVIDER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
             .ok_or_else(|| VmError::internal("Hashtable.clear missing"))?;
         vm.invoke_method(declaring, clear, vec![Value::Ref(this)])?;
         provider_put_id(vm, this)?;
+        crate::lang::write_int_field(vm, this, "dirty", 1);
         void()
     }),
 ];
@@ -746,18 +788,408 @@ pub(crate) const PROVIDER: oxjvm_vm::NativeClass = class(
         field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("versionStr", "Ljava/lang/String;", ACC_PRIVATE, None),
         field("info", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("services", "Ljava/util/LinkedHashMap;", ACC_PRIVATE, None),
+        field("dirty", "I", ACC_PRIVATE, None),
     ],
     &PROVIDER_METHODS,
     None,
 );
+
+/// Canonical engine name for a (possibly mis-cased) service type, matching
+/// the JDK's `getEngineName`; unknown types pass through unchanged.
+fn provider_engine_name(name: &str) -> String {
+    const ENGINES: &[&str] = &[
+        "AlgorithmParameterGenerator",
+        "AlgorithmParameters",
+        "KeyFactory",
+        "KeyPairGenerator",
+        "KeyStore",
+        "MessageDigest",
+        "SecureRandom",
+        "Signature",
+        "CertificateFactory",
+        "CertPathBuilder",
+        "CertPathValidator",
+        "CertStore",
+        "Cipher",
+        "ExemptionMechanism",
+        "Mac",
+        "KeyAgreement",
+        "KeyGenerator",
+        "SecretKeyFactory",
+        "KEM",
+        "KDF",
+        "KeyManagerFactory",
+        "SSLContext",
+        "TrustManagerFactory",
+        "GssApiMechanism",
+        "SaslClientFactory",
+        "SaslServerFactory",
+        "Policy",
+        "Configuration",
+    ];
+    let lower = name.to_lowercase();
+    for engine in ENGINES {
+        if engine.to_lowercase() == lower {
+            return String::from(*engine);
+        }
+    }
+    String::from(name)
+}
+
+/// The upper-cased `TYPE.ALGORITHM` key used by the service map. The JDK
+/// upper-cases with `Locale.ENGLISH`, so the folding must stay locale-free.
+fn provider_service_key(service_type: &str, algorithm: &str) -> String {
+    alloc::format!("{}.{}", service_type, algorithm.to_uppercase())
+}
+
+fn svc_new(
+    vm: &mut Vm<'_>,
+    provider: ObjectRef,
+    service_type: &str,
+    algorithm: &str,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/security/Provider$Service")?;
+    let service = vm.new_instance(class)?;
+    set_ref_field(
+        vm,
+        service,
+        "provider",
+        "Ljava/security/Provider;",
+        provider,
+    )?;
+    set_string_field(vm, service, "type", service_type)?;
+    set_string_field(vm, service, "algorithm", algorithm)?;
+    let string_class = vm.resolve_class("java/lang/String")?;
+    let empty = vm.allocate_object_array(string_class, 0)?;
+    set_ref_field(vm, service, "aliases", "[Ljava/lang/String;", empty)?;
+    let string_array_class = vm.resolve_class("[Ljava/lang/String;")?;
+    let empty_pairs = vm.allocate_object_array(string_array_class, 0)?;
+    set_ref_field(
+        vm,
+        service,
+        "attributes",
+        "[[Ljava/lang/String;",
+        empty_pairs,
+    )?;
+    Ok(service)
+}
+
+fn svc_aliases(vm: &mut Vm<'_>, service: ObjectRef) -> Result<Vec<String>, VmError> {
+    let array = ref_field(vm, service, "aliases", "[Ljava/lang/String;");
+    let mut aliases = Vec::new();
+    if array.is_null() {
+        return Ok(aliases);
+    }
+    let length = vm.array_length(array)?;
+    for index in 0..length {
+        let item = vm.array_get(array, index as i32)?.as_ref();
+        aliases.push(vm.string_value(item).unwrap_or_default());
+    }
+    Ok(aliases)
+}
+
+fn svc_store_aliases(
+    vm: &mut Vm<'_>,
+    service: ObjectRef,
+    aliases: &[String],
+) -> Result<(), VmError> {
+    let string_class = vm.resolve_class("java/lang/String")?;
+    let array = vm.allocate_object_array(string_class, aliases.len())?;
+    for (index, alias) in aliases.iter().enumerate() {
+        let text = vm.make_string(alias)?;
+        vm.array_set_ref(array, index, text)?;
+    }
+    set_ref_field(vm, service, "aliases", "[Ljava/lang/String;", array)?;
+    Ok(())
+}
+
+fn svc_add_alias(vm: &mut Vm<'_>, service: ObjectRef, alias: &str) -> Result<(), VmError> {
+    let mut aliases = svc_aliases(vm, service)?;
+    aliases.push(String::from(alias));
+    svc_store_aliases(vm, service, &aliases)
+}
+
+fn svc_remove_alias(vm: &mut Vm<'_>, service: ObjectRef, alias: &str) -> Result<(), VmError> {
+    let mut aliases = svc_aliases(vm, service)?;
+    if let Some(position) = aliases.iter().position(|item| item == alias) {
+        aliases.remove(position);
+        svc_store_aliases(vm, service, &aliases)?;
+    }
+    Ok(())
+}
+
+fn svc_attributes(vm: &mut Vm<'_>, service: ObjectRef) -> Result<Vec<(String, String)>, VmError> {
+    let array = ref_field(vm, service, "attributes", "[[Ljava/lang/String;");
+    let mut attributes = Vec::new();
+    if array.is_null() {
+        return Ok(attributes);
+    }
+    let length = vm.array_length(array)?;
+    for index in 0..length {
+        let pair = vm.array_get(array, index as i32)?.as_ref();
+        let name_ref = vm.array_get(pair, 0)?.as_ref();
+        let value_ref = vm.array_get(pair, 1)?.as_ref();
+        let name = vm.string_value(name_ref).unwrap_or_default();
+        let value = vm.string_value(value_ref).unwrap_or_default();
+        attributes.push((name, value));
+    }
+    Ok(attributes)
+}
+
+fn svc_add_attribute(
+    vm: &mut Vm<'_>,
+    service: ObjectRef,
+    name: &str,
+    value: &str,
+) -> Result<(), VmError> {
+    let mut attributes = svc_attributes(vm, service)?;
+    // Attribute names are case-insensitive (the JDK's UString map).
+    let lower = name.to_lowercase();
+    if let Some(entry) = attributes
+        .iter_mut()
+        .find(|(existing, _)| existing.to_lowercase() == lower)
+    {
+        entry.1 = String::from(value);
+    } else {
+        attributes.push((String::from(name), String::from(value)));
+    }
+    let string_class = vm.resolve_class("java/lang/String")?;
+    let string_array_class = vm.resolve_class("[Ljava/lang/String;")?;
+    let array = vm.allocate_object_array(string_array_class, attributes.len())?;
+    for (index, (attr_name, attr_value)) in attributes.iter().enumerate() {
+        let pair = vm.allocate_object_array(string_class, 2)?;
+        let name_ref = vm.make_string(attr_name)?;
+        let value_ref = vm.make_string(attr_value)?;
+        vm.array_set_ref(pair, 0, name_ref)?;
+        vm.array_set_ref(pair, 1, value_ref)?;
+        vm.array_set_ref(array, index, pair)?;
+    }
+    set_ref_field(vm, service, "attributes", "[[Ljava/lang/String;", array)?;
+    Ok(())
+}
+
+/// Re-parse the property table into the service map when it changed, walking
+/// the entries in table order exactly like the JDK's incremental parseLegacy.
+fn provider_ensure_parsed(vm: &mut Vm<'_>, this: ObjectRef) -> Result<ObjectRef, VmError> {
+    let services = ref_field(vm, this, "services", "Ljava/util/LinkedHashMap;");
+    if !services.is_null() && crate::lang::read_int_field(vm, this, "dirty") == 0 {
+        return Ok(services);
+    }
+    let services = if services.is_null() {
+        crate::util::linked_hash_map_new(vm)?
+    } else {
+        let (class, clear) = vm.resolve_virtual_method(services, "clear", "()V")?;
+        vm.invoke_method(class, clear, vec![Value::Ref(services)])?;
+        services
+    };
+    set_ref_field(vm, this, "services", "Ljava/util/LinkedHashMap;", services)?;
+    let table = vm
+        .read_ref_field(this, vm.class_of(this), "map", "Ljava/util/HashMap;")
+        .unwrap_or(ObjectRef::NULL);
+    let pairs = if table.is_null() {
+        Vec::new()
+    } else {
+        crate::util::hash_map_pairs(vm, table)
+    };
+    for (key_ref, value_ref) in pairs {
+        if key_ref.is_null()
+            || value_ref.is_null()
+            || vm.class_name(vm.class_of(key_ref)) != "java/lang/String"
+            || vm.class_name(vm.class_of(value_ref)) != "java/lang/String"
+        {
+            continue;
+        }
+        let key = vm.string_or_empty(key_ref);
+        let value = vm.string_or_empty(value_ref);
+        if key.starts_with("Provider.") {
+            continue;
+        }
+        let get_or_create =
+            |vm: &mut Vm<'_>, service_type: &str, algorithm: &str| -> Result<ObjectRef, VmError> {
+                let map_key = vm.make_string(&provider_service_key(service_type, algorithm))?;
+                let existing = crate::util::hash_map_lookup(vm, services, map_key)?;
+                if !existing.is_null() {
+                    return Ok(existing);
+                }
+                let service = svc_new(vm, this, service_type, algorithm)?;
+                let map_key = vm.make_string(&provider_service_key(service_type, algorithm))?;
+                crate::util::hash_map_insert(vm, services, map_key, service)?;
+                Ok(service)
+            };
+        if key.to_lowercase().starts_with("alg.alias.") {
+            let rest = &key[10..];
+            let Some(dot) = rest.find('.') else { continue };
+            if dot < 1 {
+                continue;
+            }
+            let service_type = provider_engine_name(&rest[..dot]);
+            let alias_alg = &rest[dot + 1..];
+            let std_service = get_or_create(vm, &service_type, &value)?;
+            let alias_key = vm.make_string(&provider_service_key(&service_type, alias_alg))?;
+            let previous = crate::util::hash_map_lookup(vm, services, alias_key)?;
+            if !previous.is_null() && previous != std_service {
+                svc_remove_alias(vm, previous, alias_alg)?;
+            }
+            svc_add_alias(vm, std_service, alias_alg)?;
+            let alias_key = vm.make_string(&provider_service_key(&service_type, alias_alg))?;
+            crate::util::hash_map_insert(vm, services, alias_key, std_service)?;
+        } else {
+            let Some(dot) = key.find('.') else { continue };
+            if dot < 1 {
+                continue;
+            }
+            let service_type = provider_engine_name(&key[..dot]);
+            let rest = &key[dot + 1..];
+            if let Some(space) = rest.find(' ') {
+                let algorithm = &rest[..space];
+                let attr_name = rest[space + 1..].trim_start_matches(' ');
+                let service = get_or_create(vm, &service_type, algorithm)?;
+                svc_add_attribute(vm, service, attr_name, &value)?;
+            } else {
+                let service = get_or_create(vm, &service_type, rest)?;
+                set_string_field(vm, service, "className", &value)?;
+            }
+        }
+    }
+    crate::lang::write_int_field(vm, this, "dirty", 0);
+    Ok(services)
+}
+
+const PROVIDER_SERVICE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+    method(
+        "getType",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| object(ref_field(vm, receiver(args), "type", "Ljava/lang/String;")),
+    ),
+    method(
+        "getAlgorithm",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "algorithm",
+                "Ljava/lang/String;",
+            ))
+        },
+    ),
+    method(
+        "getClassName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "className",
+                "Ljava/lang/String;",
+            ))
+        },
+    ),
+    method(
+        "getProvider",
+        "()Ljava/security/Provider;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "provider",
+                "Ljava/security/Provider;",
+            ))
+        },
+    ),
+    method(
+        "getAttribute",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let name_ref = ref_arg(args, 1);
+            if name_ref.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let name = vm.string_or_empty(name_ref).to_lowercase();
+            let attributes = svc_attributes(vm, receiver(args))?;
+            for (attr_name, value) in attributes {
+                if attr_name.to_lowercase() == name {
+                    return object(vm.make_string(&value)?);
+                }
+            }
+            object(ObjectRef::NULL)
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let provider = ref_field(vm, this, "provider", "Ljava/security/Provider;");
+            let provider_name = string_field(vm, provider, "name");
+            let service_type = string_field(vm, this, "type");
+            let algorithm = string_field(vm, this, "algorithm");
+            let class_name =
+                opt_string_field(vm, this, "className").unwrap_or_else(|| String::from("null"));
+            let mut text =
+                alloc::format!("{provider_name}: {service_type}.{algorithm} -> {class_name}");
+            let aliases = svc_aliases(vm, this)?;
+            if !aliases.is_empty() {
+                text.push_str(&alloc::format!("\r\n  aliases: [{}]", aliases.join(", ")));
+            }
+            let attributes = svc_attributes(vm, this)?;
+            if !attributes.is_empty() {
+                let rendered: Vec<String> = attributes
+                    .iter()
+                    .map(|(name, value)| alloc::format!("{name}={value}"))
+                    .collect();
+                text.push_str(&alloc::format!(
+                    "\r\n  attributes: {{{}}}",
+                    rendered.join(", ")
+                ));
+            }
+            text.push_str("\r\n");
+            object(vm.make_string(&text)?)
+        },
+    ),
+    method(
+        "newInstance",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let class_name = string_field(vm, receiver(args), "className");
+            Err(vm.throw_new(
+                "java/security/NoSuchAlgorithmException",
+                Some(&alloc::format!(
+                    "Error constructing implementation (class: {class_name})"
+                )),
+            ))
+        },
+    ),
+    method(
+        "supportsParameter",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |_, _, _| boolean(true),
+    ),
+];
 
 pub(crate) const PROVIDER_SERVICE: oxjvm_vm::NativeClass = class(
     "java/security/Provider$Service",
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC,
-    &[],
-    &[],
+    &[
+        field("provider", "Ljava/security/Provider;", ACC_PRIVATE, None),
+        field("type", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("algorithm", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("className", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("aliases", "[Ljava/lang/String;", ACC_PRIVATE, None),
+        field("attributes", "[[Ljava/lang/String;", ACC_PRIVATE, None),
+    ],
+    &PROVIDER_SERVICE_METHODS,
     None,
 );
 
