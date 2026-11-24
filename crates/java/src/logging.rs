@@ -286,8 +286,11 @@ const LOG_RECORD_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
                 ref_arg(args, 1),
             );
             record_set_ref(vm, this, "message", "Ljava/lang/String;", ref_arg(args, 2));
-            let millis = vm.host_time_millis();
-            crate::lang::write_long_field(vm, this, "millis", millis);
+            // Capture the wall clock with nanosecond precision (Instant.now()):
+            // the host nano_time reports epoch nanoseconds on the CLI host.
+            let nanos = vm.host_nano_time();
+            crate::lang::write_long_field(vm, this, "millis", nanos / 1_000_000);
+            crate::lang::write_int_field(vm, this, "nanoAdjustment", (nanos % 1_000_000) as i32);
             stamp_record(vm, this);
             void()
         },
@@ -520,7 +523,10 @@ const LOG_RECORD_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
         long(crate::lang::read_long_field(vm, receiver(args), "millis"))
     }),
     method("setMillis", "(J)V", ACC_PUBLIC, |vm, _, args| {
-        crate::lang::write_long_field(vm, receiver(args), "millis", crate::long_arg(args, 1));
+        let this = receiver(args);
+        crate::lang::write_long_field(vm, this, "millis", crate::long_arg(args, 1));
+        // setMillis is Instant.ofEpochMilli(millis): the sub-millisecond part is zero.
+        crate::lang::write_int_field(vm, this, "nanoAdjustment", 0);
         void()
     }),
     method(
@@ -548,9 +554,13 @@ const LOG_RECORD_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
             }
             let epoch_second = crate::lang::read_long_field(vm, instant, "epochSecond");
             let nano = crate::lang::read_int_field(vm, instant, "nano");
+            // Instant.toEpochMilli throws ArithmeticException on overflow.
             let millis = epoch_second
-                .saturating_mul(1000)
-                .saturating_add(i64::from(nano / 1_000_000));
+                .checked_mul(1000)
+                .and_then(|m| m.checked_add(i64::from(nano / 1_000_000)))
+                .ok_or_else(|| {
+                    vm.throw_new("java/lang/ArithmeticException", Some("long overflow"))
+                })?;
             crate::lang::write_long_field(vm, this, "millis", millis);
             crate::lang::write_int_field(vm, this, "nanoAdjustment", nano % 1_000_000);
             void()
