@@ -2115,7 +2115,7 @@ pub(crate) const URL_DECODER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const URL_CONNECTION_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
+const URL_CONNECTION_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
     method(
         "getInputStream",
         "()Ljava/io/InputStream;",
@@ -2183,8 +2183,47 @@ const URL_CONNECTION_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
                 }
                 return object(vm.make_string("x-java/jar")?);
             }
+            if protocol == "file" {
+                let path = url_connection_path(vm, this);
+                let name_ref = vm.make_string(&path)?;
+                let (declaring, guess) = vm
+                    .find_method(
+                        vm.class_of(this),
+                        "guessContentTypeFromName",
+                        "(Ljava/lang/String;)Ljava/lang/String;",
+                    )
+                    .ok_or_else(|| VmError::internal("guessContentTypeFromName missing"))?;
+                let guessed = vm
+                    .invoke_method(declaring, guess, vec![Value::Ref(name_ref)])?
+                    .as_ref();
+                if guessed.is_null() {
+                    return object(vm.make_string("content/unknown")?);
+                }
+                return object(guessed);
+            }
             object(ObjectRef::NULL)
         },
+    ),
+    method(
+        "getHeaderField",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let name = vm.string_or_empty(ref_arg(args, 1));
+            if name.eq_ignore_ascii_case("content-type") {
+                let (class, method) =
+                    vm.resolve_virtual_method(this, "getContentType", "()Ljava/lang/String;")?;
+                return vm.invoke_method(class, method, vec![Value::Ref(this)]);
+            }
+            object(ObjectRef::NULL)
+        },
+    ),
+    method(
+        "getHeaderField",
+        "(I)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
     ),
     method(
         "getHeaderFields",
