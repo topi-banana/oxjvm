@@ -4179,7 +4179,17 @@ const LOG_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
             let (load_class, load) = vm
                 .find_method(props_class, "load", "(Ljava/io/InputStream;)V")
                 .ok_or_else(|| VmError::internal("Properties.load missing"))?;
-            vm.invoke_method(load_class, load, vec![Value::Ref(props), Value::Ref(ins)])?;
+            // The JDK wraps a malformed-escape IllegalArgumentException from
+            // Properties.load in an IOException.
+            if let Err(VmError::Thrown(exc)) =
+                vm.invoke_method(load_class, load, vec![Value::Ref(props), Value::Ref(ins)])
+            {
+                let iae = vm.resolve_class("java/lang/IllegalArgumentException")?;
+                if vm.is_instance(exc, iae) {
+                    return Err(vm.throw_new_with_cause("java/io/IOException", exc));
+                }
+                return Err(VmError::Thrown(exc));
+            }
             apply_logging_properties(vm, props)?;
             void()
         },
