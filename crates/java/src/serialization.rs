@@ -42,6 +42,27 @@ fn map_insert(vm: &mut Vm<'_>, id: i32, value: ObjectRef) -> Result<(), VmError>
     crate::util::hash_map_insert(vm, map, key.as_ref(), value)
 }
 
+/// The JDK reconstructs an independent object graph on deserialization, so mutating
+/// the result must not corrupt the serialized source. This runtime's reference-passing
+/// model stores the original object in the handle map; return a copy via the object's
+/// `clone()` when it provides one (collections and maps copy their backing store there),
+/// falling back to the original reference when cloning is unavailable or fails.
+fn deserialized_copy(vm: &mut Vm<'_>, obj: ObjectRef) -> ObjectRef {
+    if obj.is_null() {
+        return obj;
+    }
+    let class = vm.class_of(obj);
+    if let Some((declaring, method)) = vm.find_method(class, "clone", "()Ljava/lang/Object;") {
+        if let Ok(value) = vm.invoke_method(declaring, method, vec![Value::Ref(obj)]) {
+            let copy = value.as_ref();
+            if !copy.is_null() {
+                return copy;
+            }
+        }
+    }
+    obj
+}
+
 fn write_to_output(vm: &mut Vm<'_>, out: ObjectRef, bytes: &[u8]) -> Result<(), VmError> {
     let array = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, bytes.len())?;
     for (index, byte) in bytes.iter().enumerate() {
@@ -312,7 +333,8 @@ const OBJECT_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         |vm, _, args| {
             let input = input_of(vm, receiver(args));
             let id = read_int_value(vm, input)?;
-            object(map_lookup(vm, id)?)
+            let obj = map_lookup(vm, id)?;
+            object(deserialized_copy(vm, obj))
         },
     ),
     method(
@@ -322,7 +344,8 @@ const OBJECT_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         |vm, _, args| {
             let input = input_of(vm, receiver(args));
             let id = read_int_value(vm, input)?;
-            object(map_lookup(vm, id)?)
+            let obj = map_lookup(vm, id)?;
+            object(deserialized_copy(vm, obj))
         },
     ),
     method("defaultReadObject", "()V", ACC_PUBLIC, |_, _, _| void()),

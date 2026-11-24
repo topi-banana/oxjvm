@@ -11524,15 +11524,25 @@ fn map_index_of(
     key: ObjectRef,
     by_identity: bool,
 ) -> Result<i32, VmError> {
-    let pairs = hash_map_pairs(vm, this);
-    for (index, (candidate, _)) in pairs.iter().enumerate() {
+    // Read the live key array in place instead of cloning both pair arrays on
+    // every lookup: a remove-heavy iteration otherwise pays O(n) allocation per
+    // step, turning a full drain into O(n^2) copying.
+    let size = crate::lang::read_int_field(vm, this, "size").max(0);
+    let keys = vm
+        .read_ref_field(this, vm.class_of(this), "keys", "[Ljava/lang/Object;")
+        .unwrap_or(ObjectRef::NULL);
+    if keys.is_null() {
+        return Ok(-1);
+    }
+    for index in 0..size {
+        let candidate = vm.array_get(keys, index)?.as_ref();
         let equal = if by_identity {
-            *candidate == key
+            candidate == key
         } else {
-            keys_equal(vm, *candidate, key)?
+            keys_equal(vm, candidate, key)?
         };
         if equal {
-            return Ok(index as i32);
+            return Ok(index);
         }
     }
     Ok(-1)
@@ -11544,6 +11554,29 @@ pub(crate) fn keys_equal(vm: &mut Vm<'_>, a: ObjectRef, b: ObjectRef) -> Result<
     }
     if a.is_null() || b.is_null() {
         return Ok(false);
+    }
+    // Boxed primitives are final and compare by value; reading the stored value
+    // avoids a virtual `equals` dispatch per comparison, which otherwise dominates
+    // remove-heavy iteration over large maps.
+    let a_class = vm.class_of(a);
+    if a_class == vm.class_of(b) {
+        match vm.class_name(a_class) {
+            "java/lang/Integer"
+            | "java/lang/Short"
+            | "java/lang/Byte"
+            | "java/lang/Character"
+            | "java/lang/Boolean" => {
+                return Ok(
+                    crate::boxed::read_value_int(vm, a) == crate::boxed::read_value_int(vm, b)
+                );
+            }
+            "java/lang/Long" => {
+                return Ok(
+                    crate::boxed::read_value_long(vm, a) == crate::boxed::read_value_long(vm, b)
+                );
+            }
+            _ => {}
+        }
     }
     let (class, method) = vm.resolve_virtual_method(a, "equals", "(Ljava/lang/Object;)Z")?;
     let result = vm.invoke_method(class, method, vec![Value::Ref(a), Value::Ref(b)])?;
@@ -16424,11 +16457,16 @@ const HASH_SET_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let map = hash_set_map(vm, receiver(args));
-            let keys = map_keys(vm, map);
-            let list = array_list_from(vm, &keys)?;
+            // Iterate a live view of the backing map so iterator.remove() removes
+            // from the set; a snapshot list would detach removals from the store.
+            let (ks_class, ks_method) =
+                vm.resolve_virtual_method(map, "keySet", "()Ljava/util/Set;")?;
+            let key_set = vm
+                .invoke_method(ks_class, ks_method, vec![Value::Ref(map)])?
+                .as_ref();
             let (class, method) =
-                vm.resolve_virtual_method(list, "iterator", "()Ljava/util/Iterator;")?;
-            vm.invoke_method(class, method, vec![Value::Ref(list)])
+                vm.resolve_virtual_method(key_set, "iterator", "()Ljava/util/Iterator;")?;
+            vm.invoke_method(class, method, vec![Value::Ref(key_set)])
         },
     ),
     method(
