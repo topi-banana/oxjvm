@@ -5491,7 +5491,53 @@ fn char_is_identifier_ignorable(cp: u32) -> bool {
     idx > 0 && IGNORABLE_RANGES[idx - 1].1 >= cp
 }
 
-const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 79] = [
+/// Whether a UTF-16 code unit is a high (leading) surrogate.
+fn cp_is_high(unit: u32) -> bool {
+    (0xD800..0xDC00).contains(&unit)
+}
+
+/// Whether a UTF-16 code unit is a low (trailing) surrogate.
+fn cp_is_low(unit: u32) -> bool {
+    (0xDC00..0xE000).contains(&unit)
+}
+
+/// Combine a valid surrogate pair into its supplementary code point.
+fn cp_pair(high: u32, low: u32) -> i32 {
+    (0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00)) as i32
+}
+
+/// Read a `char[]` argument into exact UTF-16 code units.
+fn char_array_units(vm: &mut Vm<'_>, array: ObjectRef) -> Result<Vec<u16>, VmError> {
+    let length = vm.array_length(array)?;
+    let mut units = Vec::with_capacity(length);
+    for index in 0..length {
+        units.push(vm.array_get(array, index as i32)?.as_int() as u16);
+    }
+    Ok(units)
+}
+
+/// Read a `CharSequence` argument into exact UTF-16 code units via `length()`/`charAt(int)`.
+fn char_sequence_units(vm: &mut Vm<'_>, sequence: ObjectRef) -> Result<Vec<u16>, VmError> {
+    let (length_class, length) = vm.resolve_virtual_method(sequence, "length", "()I")?;
+    let length = vm
+        .invoke_method(length_class, length, vec![Value::Ref(sequence)])?
+        .as_int();
+    let (char_at_class, char_at) = vm.resolve_virtual_method(sequence, "charAt", "(I)C")?;
+    let mut units = Vec::new();
+    for index in 0..length {
+        units.push(
+            vm.invoke_method(
+                char_at_class,
+                char_at,
+                vec![Value::Ref(sequence), Value::Int(index)],
+            )?
+            .as_int() as u16,
+        );
+    }
+    Ok(units)
+}
+
+const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 88] = [
     method("<init>", "(C)V", ACC_PUBLIC, |vm, _, args| {
         write_value_int(vm, receiver(args), int_arg(args, 1));
         void()
@@ -5799,6 +5845,258 @@ const CHARACTER_METHODS: [oxjvm_vm::NativeMethodDef; 79] = [
                 }
             }
             int(high as i32)
+        },
+    ),
+    method(
+        "codePointAt",
+        "([CII)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            let index = int_arg(args, 1);
+            let limit = int_arg(args, 2);
+            let length = vm.array_length(array)? as i32;
+            if index < 0 || index >= limit || limit > length {
+                return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+            }
+            let high = vm.array_get(array, index)?.as_int() as u32 & 0xFFFF;
+            if cp_is_high(high) && index + 1 < limit {
+                let low = vm.array_get(array, index + 1)?.as_int() as u32 & 0xFFFF;
+                if cp_is_low(low) {
+                    return int(cp_pair(high, low));
+                }
+            }
+            int(high as i32)
+        },
+    ),
+    method(
+        "isSurrogatePair",
+        "(CC)Z",
+        ACC_PUBLIC | ACC_STATIC,
+        |_, _, args| {
+            let high = int_arg(args, 0) as u32 & 0xFFFF;
+            let low = int_arg(args, 1) as u32 & 0xFFFF;
+            boolean(cp_is_high(high) && cp_is_low(low))
+        },
+    ),
+    method(
+        "codePointBefore",
+        "(Ljava/lang/CharSequence;I)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let units = char_sequence_units(vm, ref_arg(args, 0))?;
+            let index = int_arg(args, 1);
+            let i = index - 1;
+            if i < 0 || i >= units.len() as i32 {
+                return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+            }
+            let low = u32::from(units[i as usize]);
+            if cp_is_low(low) && i > 0 {
+                let high = u32::from(units[(i - 1) as usize]);
+                if cp_is_high(high) {
+                    return int(cp_pair(high, low));
+                }
+            }
+            int(low as i32)
+        },
+    ),
+    method(
+        "codePointBefore",
+        "([CI)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            let index = int_arg(args, 1);
+            let length = vm.array_length(array)? as i32;
+            let i = index - 1;
+            if i < 0 || i >= length {
+                return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+            }
+            let low = vm.array_get(array, i)?.as_int() as u32 & 0xFFFF;
+            if cp_is_low(low) && i > 0 {
+                let high = vm.array_get(array, i - 1)?.as_int() as u32 & 0xFFFF;
+                if cp_is_high(high) {
+                    return int(cp_pair(high, low));
+                }
+            }
+            int(low as i32)
+        },
+    ),
+    method(
+        "codePointBefore",
+        "([CII)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let array = ref_arg(args, 0);
+            let index = int_arg(args, 1);
+            let start = int_arg(args, 2);
+            let length = vm.array_length(array)? as i32;
+            let i = index - 1;
+            if i < start || i >= length {
+                return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+            }
+            let low = vm.array_get(array, i)?.as_int() as u32 & 0xFFFF;
+            if cp_is_low(low) && i > start {
+                let high = vm.array_get(array, i - 1)?.as_int() as u32 & 0xFFFF;
+                if cp_is_high(high) {
+                    return int(cp_pair(high, low));
+                }
+            }
+            int(low as i32)
+        },
+    ),
+    method(
+        "codePointCount",
+        "(Ljava/lang/CharSequence;II)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let units = char_sequence_units(vm, ref_arg(args, 0))?;
+            let begin = int_arg(args, 1);
+            let end = int_arg(args, 2);
+            let length = units.len() as i32;
+            if begin < 0 || end > length || begin > end {
+                return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+            }
+            let mut count = 0;
+            let mut i = begin;
+            while i < end {
+                let high = u32::from(units[i as usize]);
+                if cp_is_high(high) && i + 1 < end && cp_is_low(u32::from(units[(i + 1) as usize]))
+                {
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+                count += 1;
+            }
+            int(count)
+        },
+    ),
+    method(
+        "codePointCount",
+        "([CII)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let units = char_array_units(vm, ref_arg(args, 0))?;
+            let offset = int_arg(args, 1);
+            let count = int_arg(args, 2);
+            let length = units.len() as i32;
+            let limit = offset + count;
+            if offset < 0 || count < 0 || limit > length {
+                return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+            }
+            let mut n = 0;
+            let mut i = offset;
+            while i < limit {
+                let high = u32::from(units[i as usize]);
+                if cp_is_high(high)
+                    && i + 1 < limit
+                    && cp_is_low(u32::from(units[(i + 1) as usize]))
+                {
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+                n += 1;
+            }
+            int(n)
+        },
+    ),
+    method(
+        "offsetByCodePoints",
+        "(Ljava/lang/CharSequence;II)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let units = char_sequence_units(vm, ref_arg(args, 0))?;
+            let index = int_arg(args, 1);
+            let offset = int_arg(args, 2);
+            let length = units.len() as i32;
+            if index < 0 || index > length {
+                return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+            }
+            let mut x = index;
+            if offset >= 0 {
+                let mut i = 0;
+                while x < length && i < offset {
+                    if cp_is_high(u32::from(units[x as usize]))
+                        && x + 1 < length
+                        && cp_is_low(u32::from(units[(x + 1) as usize]))
+                    {
+                        x += 1;
+                    }
+                    x += 1;
+                    i += 1;
+                }
+                if i < offset {
+                    return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+                }
+            } else {
+                let mut i = offset;
+                while x > 0 && i < 0 {
+                    x -= 1;
+                    if cp_is_low(u32::from(units[x as usize]))
+                        && x > 0
+                        && cp_is_high(u32::from(units[(x - 1) as usize]))
+                    {
+                        x -= 1;
+                    }
+                    i += 1;
+                }
+                if i < 0 {
+                    return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+                }
+            }
+            int(x)
+        },
+    ),
+    method(
+        "offsetByCodePoints",
+        "([CIIII)I",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let units = char_array_units(vm, ref_arg(args, 0))?;
+            let start = int_arg(args, 1);
+            let count = int_arg(args, 2);
+            let index = int_arg(args, 3);
+            let offset = int_arg(args, 4);
+            let length = units.len() as i32;
+            let limit = start + count;
+            if start < 0 || count < 0 || limit > length || index < start || index > limit {
+                return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+            }
+            let mut x = index;
+            if offset >= 0 {
+                let mut i = 0;
+                while x < limit && i < offset {
+                    if cp_is_high(u32::from(units[x as usize]))
+                        && x + 1 < limit
+                        && cp_is_low(u32::from(units[(x + 1) as usize]))
+                    {
+                        x += 1;
+                    }
+                    x += 1;
+                    i += 1;
+                }
+                if i < offset {
+                    return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+                }
+            } else {
+                let mut i = offset;
+                while x > start && i < 0 {
+                    x -= 1;
+                    if cp_is_low(u32::from(units[x as usize]))
+                        && x > start
+                        && cp_is_high(u32::from(units[(x - 1) as usize]))
+                    {
+                        x -= 1;
+                    }
+                    i += 1;
+                }
+                if i < 0 {
+                    return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+                }
+            }
+            int(x)
         },
     ),
     method(
