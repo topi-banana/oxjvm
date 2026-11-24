@@ -263,7 +263,27 @@ impl<'a> Vm<'a> {
             return;
         }
         let frames = self.capture_frames();
-        self.backtraces.insert(throwable, frames);
+        // The JDK's fillInStackTrace drops the Throwable constructor frames that
+        // sit on top of the stack while the exception is being constructed, so the
+        // recorded trace starts at the code that created the exception rather than
+        // at the exception's own `<init>`.
+        let mut start = 0;
+        if let Some(throwable_class) = self.classes.by_name("java/lang/Throwable") {
+            while start < frames.len() {
+                let frame = &frames[start];
+                if frame.method_name != "<init>" {
+                    break;
+                }
+                let Some(frame_class) = self.classes.by_name(&frame.class_name) else {
+                    break;
+                };
+                if !self.class_is_subtype(frame_class, throwable_class) {
+                    break;
+                }
+                start += 1;
+            }
+        }
+        self.backtraces.insert(throwable, frames[start..].to_vec());
     }
 
     /// The captured frames of a throwable.
