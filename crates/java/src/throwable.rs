@@ -1441,6 +1441,11 @@ exception!(
     "java/lang/Exception"
 );
 exception!(
+    COMPLETION_EXCEPTION,
+    "java/util/concurrent/CompletionException",
+    "java/lang/RuntimeException"
+);
+exception!(
     BUFFER_OVERFLOW_EXCEPTION,
     "java/nio/BufferOverflowException",
     "java/lang/RuntimeException"

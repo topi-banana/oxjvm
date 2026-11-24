@@ -12387,7 +12387,63 @@ fn subject_null_clean_set(vm: &mut Vm<'_>, collection: ObjectRef) -> Result<Obje
     Ok(set)
 }
 
-const SUBJECT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+/// Bind `subject` as the current Subject, returning the previous binding so it
+/// can be restored (the JDK uses a ScopedValue; oxjvm tracks a single binding).
+fn subject_push(vm: &mut Vm<'_>, subject: ObjectRef) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("javax/security/auth/Subject")?;
+    let old = vm
+        .read_static_ref(class, "currentSubject", "Ljavax/security/auth/Subject;")
+        .unwrap_or(ObjectRef::NULL);
+    vm.set_static_value(
+        class,
+        "currentSubject",
+        "Ljavax/security/auth/Subject;",
+        Value::Ref(subject),
+    );
+    Ok(old)
+}
+
+fn subject_pop(vm: &mut Vm<'_>, old: ObjectRef) -> Result<(), VmError> {
+    let class = vm.resolve_class("javax/security/auth/Subject")?;
+    vm.set_static_value(
+        class,
+        "currentSubject",
+        "Ljavax/security/auth/Subject;",
+        Value::Ref(old),
+    );
+    Ok(())
+}
+
+/// `Subject.callAs`: run a Callable with the subject bound, wrapping any thrown
+/// exception in a CompletionException.
+fn subject_call_as(
+    vm: &mut Vm<'_>,
+    subject: ObjectRef,
+    callable: ObjectRef,
+) -> Result<Value, VmError> {
+    if callable.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let old = subject_push(vm, subject)?;
+    let (class, method) = vm.resolve_virtual_method(callable, "call", "()Ljava/lang/Object;")?;
+    let result = vm.invoke_method(class, method, vec![Value::Ref(callable)]);
+    subject_pop(vm, old)?;
+    match result {
+        Ok(value) => Ok(value),
+        Err(VmError::Thrown(exc)) => {
+            let ce_class = vm.resolve_class("java/util/concurrent/CompletionException")?;
+            let ce = vm.new_instance(ce_class)?;
+            let (declaring, ctor) = vm
+                .find_method(ce_class, "<init>", "(Ljava/lang/Throwable;)V")
+                .ok_or_else(|| VmError::internal("CompletionException lacks <init>"))?;
+            vm.invoke_method(declaring, ctor, vec![Value::Ref(ce), Value::Ref(exc)])?;
+            Err(VmError::Thrown(ce))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+const SUBJECT_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let principals = new_hash_set(vm)?;
@@ -12506,28 +12562,66 @@ const SUBJECT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         boolean(crate::lang::read_int_field(vm, receiver(args), "readOnly") != 0)
     }),
     method(
+        "current",
+        "()Ljavax/security/auth/Subject;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            let class = vm.resolve_class("javax/security/auth/Subject")?;
+            let current = vm
+                .read_static_ref(class, "currentSubject", "Ljavax/security/auth/Subject;")
+                .unwrap_or(ObjectRef::NULL);
+            object(current)
+        },
+    ),
+    method(
+        "callAs",
+        "(Ljavax/security/auth/Subject;Ljava/util/concurrent/Callable;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| subject_call_as(vm, ref_arg(args, 0), ref_arg(args, 1)),
+    ),
+    method(
         "doAs",
         "(Ljavax/security/auth/Subject;Ljava/security/PrivilegedAction;)Ljava/lang/Object;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| run_privileged_action(vm, ref_arg(args, 1), false),
+        |vm, _, args| {
+            let old = subject_push(vm, ref_arg(args, 0))?;
+            let result = run_privileged_action(vm, ref_arg(args, 1), false);
+            subject_pop(vm, old)?;
+            result
+        },
     ),
     method(
         "doAs",
         "(Ljavax/security/auth/Subject;Ljava/security/PrivilegedExceptionAction;)Ljava/lang/Object;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| run_privileged_action(vm, ref_arg(args, 1), true),
+        |vm, _, args| {
+            let old = subject_push(vm, ref_arg(args, 0))?;
+            let result = run_privileged_action(vm, ref_arg(args, 1), true);
+            subject_pop(vm, old)?;
+            result
+        },
     ),
     method(
         "doAsPrivileged",
         "(Ljavax/security/auth/Subject;Ljava/security/PrivilegedAction;Ljava/security/AccessControlContext;)Ljava/lang/Object;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| run_privileged_action(vm, ref_arg(args, 1), false),
+        |vm, _, args| {
+            let old = subject_push(vm, ref_arg(args, 0))?;
+            let result = run_privileged_action(vm, ref_arg(args, 1), false);
+            subject_pop(vm, old)?;
+            result
+        },
     ),
     method(
         "doAsPrivileged",
         "(Ljavax/security/auth/Subject;Ljava/security/PrivilegedExceptionAction;Ljava/security/AccessControlContext;)Ljava/lang/Object;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| run_privileged_action(vm, ref_arg(args, 1), true),
+        |vm, _, args| {
+            let old = subject_push(vm, ref_arg(args, 0))?;
+            let result = run_privileged_action(vm, ref_arg(args, 1), true);
+            subject_pop(vm, old)?;
+            result
+        },
     ),
 ];
 
@@ -12541,6 +12635,12 @@ pub(crate) const SUBJECT: oxjvm_vm::NativeClass = class(
         field("pubCredentials", "Ljava/util/Set;", ACC_PRIVATE, None),
         field("privCredentials", "Ljava/util/Set;", ACC_PRIVATE, None),
         field("readOnly", "Z", ACC_PRIVATE, None),
+        field(
+            "currentSubject",
+            "Ljavax/security/auth/Subject;",
+            ACC_PRIVATE | ACC_STATIC,
+            None,
+        ),
     ],
     &SUBJECT_METHODS,
     None,
