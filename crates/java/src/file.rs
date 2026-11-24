@@ -1307,7 +1307,7 @@ fn file_input_read_into(
 // java.io.FileOutputStream
 // -------------------------------------------------------------------------------------------
 
-const FILE_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const FILE_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -1336,6 +1336,27 @@ const FILE_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         let append = crate::bool_arg(args, 2);
         file_output_init(vm, receiver(args), &path, append)
     }),
+    method(
+        "<init>",
+        "(Ljava/io/FileDescriptor;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let fd = ref_arg(args, 1);
+            if fd.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let fd_class = vm.class_of(fd);
+            let path = vm
+                .read_ref_field(fd, fd_class, "path", "Ljava/lang/String;")
+                .unwrap_or(ObjectRef::NULL);
+            if path.is_null() {
+                return Err(vm.throw_new("java/io/IOException", Some("Invalid file descriptor")));
+            }
+            let path_text = vm.string_or_empty(path);
+            let append = read_z_field(vm, fd, "append");
+            file_output_init(vm, receiver(args), &path_text, append)
+        },
+    ),
     method("write", "(I)V", ACC_PUBLIC, |vm, _, args| {
         let byte = crate::int_arg(args, 1) as u8;
         file_output_write(vm, receiver(args), &[byte])
@@ -1376,9 +1397,19 @@ const FILE_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         "getFD",
         "()Ljava/io/FileDescriptor;",
         ACC_PUBLIC,
-        |vm, _, _| {
+        |vm, _, args| {
+            let this = receiver(args);
             let class = vm.resolve_class("java/io/FileDescriptor")?;
-            object(vm.new_instance(class)?)
+            let fd = vm.new_instance(class)?;
+            // The descriptor remembers the stream's path and append mode so a
+            // new FileOutputStream(fd) keeps writing to the same place.
+            let path = vm
+                .read_ref_field(this, vm.class_of(this), "path", "Ljava/lang/String;")
+                .unwrap_or(ObjectRef::NULL);
+            let (fd_declaring, fd_field) = vm.find_field(class, "path", "Ljava/lang/String;")?;
+            vm.set_instance_ref(fd, fd_declaring, fd_field, path);
+            write_z_field(vm, fd, "append", read_z_field(vm, this, "append"));
+            object(fd)
         },
     ),
 ];

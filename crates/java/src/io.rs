@@ -983,7 +983,10 @@ pub(crate) const FILE_DESCRIPTOR: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_FINAL,
-    &[],
+    &[
+        field("path", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("append", "Z", ACC_PRIVATE, None),
+    ],
     &FILE_DESCRIPTOR_METHODS,
     None,
 );
