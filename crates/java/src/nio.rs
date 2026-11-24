@@ -5100,12 +5100,29 @@ const FILE_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 16] = [
                 .filesystem()
                 .and_then(|fs| fs.read(&path))
                 .unwrap_or_default();
-            let start = (position as usize).min(bytes.len());
-            let end = (position.saturating_add(size) as usize).min(bytes.len());
+            // The mapped region is always `size` bytes; bytes past the current
+            // end of file read as zero.  A writable mapping extends the file to
+            // cover the region, just like the JDK.
+            let start = position as usize;
+            let length = size as usize;
+            let mut region = vec![0u8; length];
+            if start < bytes.len() {
+                let available = (bytes.len() - start).min(length);
+                region[..available].copy_from_slice(&bytes[start..start + available]);
+            }
+            if !read_only {
+                let needed = start.saturating_add(length);
+                if bytes.len() < needed {
+                    let mut extended = bytes;
+                    extended.resize(needed, 0);
+                    let _ = vm
+                        .host
+                        .filesystem()
+                        .map(|fs| fs.write(&path, &extended, false));
+                }
+            }
             object(crate::buffer::mapped_byte_buffer_from_bytes(
-                vm,
-                &bytes[start..end],
-                read_only,
+                vm, &region, read_only,
             )?)
         },
     ),

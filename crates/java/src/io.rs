@@ -7671,7 +7671,10 @@ const RANDOM_ACCESS_FILE_METHODS: [oxjvm_vm::NativeMethodDef; 41] = [
             let path = vm
                 .read_string_field(this, class, "path")
                 .unwrap_or_default();
-            let writable = read_int_field(vm, this, "writable") != 0;
+            let writable = vm
+                .read_instance_int_named(this, class, "writable", "Z")
+                .unwrap_or(0)
+                != 0;
             let channel = crate::nio::new_file_channel(vm, &path, 0, writable)?;
             if let Some((declaring, field)) =
                 vm.find_field_opt(class, "channel", "Ljava/nio/channels/FileChannel;")
