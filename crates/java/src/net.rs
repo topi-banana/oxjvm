@@ -2255,7 +2255,22 @@ const URL_CONNECTION_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
             .unwrap_or(ObjectRef::NULL),
         )
     }),
-    method("connect", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("connect", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let protocol = url_connection_protocol(vm, this)?;
+        if protocol == "file" {
+            let path = url_connection_path(vm, this);
+            let exists = vm
+                .host
+                .filesystem()
+                .and_then(|fs| fs.metadata(&path))
+                .is_some();
+            if !exists {
+                return Err(vm.throw_new("java/io/FileNotFoundException", Some(&path)));
+            }
+        }
+        void()
+    }),
     method(
         "guessContentTypeFromStream",
         "(Ljava/io/InputStream;)Ljava/lang/String;",
