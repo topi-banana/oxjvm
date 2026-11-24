@@ -12830,3 +12830,399 @@ pub(crate) const SUBJECT: oxjvm_vm::NativeClass = class(
     &SUBJECT_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// java.security.PKCS12Attribute
+// -------------------------------------------------------------------------------------------
+
+/// Parse a dotted-decimal OID into its components.
+fn pkcs12_oid_components(name: &str) -> Option<Vec<u64>> {
+    let mut components = Vec::new();
+    for part in name.split('.') {
+        if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        components.push(part.parse::<u64>().ok()?);
+    }
+    if components.len() < 2 {
+        return None;
+    }
+    Some(components)
+}
+
+/// Append one OID subidentifier in base-128 (most significant group first).
+fn pkcs12_push_subidentifier(out: &mut Vec<u8>, value: u64) {
+    let mut groups = Vec::new();
+    let mut v = value;
+    loop {
+        groups.push((v & 0x7f) as u8);
+        v >>= 7;
+        if v == 0 {
+            break;
+        }
+    }
+    for i in (0..groups.len()).rev() {
+        let mut byte = groups[i];
+        if i != 0 {
+            byte |= 0x80;
+        }
+        out.push(byte);
+    }
+}
+
+fn pkcs12_encode_oid(components: &[u64]) -> Vec<u8> {
+    let mut out = Vec::new();
+    pkcs12_push_subidentifier(&mut out, 40 * components[0] + components[1]);
+    for &c in &components[2..] {
+        pkcs12_push_subidentifier(&mut out, c);
+    }
+    out
+}
+
+fn pkcs12_der_length(out: &mut Vec<u8>, len: usize) {
+    if len < 0x80 {
+        out.push(len as u8);
+    } else {
+        let mut bytes = Vec::new();
+        let mut v = len;
+        while v > 0 {
+            bytes.push((v & 0xff) as u8);
+            v >>= 8;
+        }
+        out.push(0x80 | bytes.len() as u8);
+        for i in (0..bytes.len()).rev() {
+            out.push(bytes[i]);
+        }
+    }
+}
+
+fn pkcs12_der_tlv(tag: u8, content: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.push(tag);
+    pkcs12_der_length(&mut out, content.len());
+    out.extend_from_slice(content);
+    out
+}
+
+fn pkcs12_is_colon_hex(value: &str) -> bool {
+    let parts: Vec<&str> = value.split(':').collect();
+    parts.len() >= 2
+        && parts
+            .iter()
+            .all(|p| p.len() == 2 && p.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+fn pkcs12_hex_pairs_to_bytes(value: &str) -> Vec<u8> {
+    let mut bytes: Vec<u8> = value
+        .split(':')
+        .filter_map(|p| u8::from_str_radix(p, 16).ok())
+        .collect();
+    // BigInteger.toByteArray strips leading zero bytes.
+    while bytes.len() > 1 && bytes[0] == 0 {
+        bytes.remove(0);
+    }
+    bytes
+}
+
+/// DER-encode `SEQUENCE { OID, SET { value... } }` as the JDK does.
+fn pkcs12_encode(components: &[u64], values: &[String]) -> Vec<u8> {
+    let oid = pkcs12_der_tlv(0x06, &pkcs12_encode_oid(components));
+    let mut set_content = Vec::new();
+    for value in values {
+        if pkcs12_is_colon_hex(value) {
+            set_content.extend_from_slice(&pkcs12_der_tlv(0x04, &pkcs12_hex_pairs_to_bytes(value)));
+        } else {
+            set_content.extend_from_slice(&pkcs12_der_tlv(0x0c, value.as_bytes()));
+        }
+    }
+    let set = pkcs12_der_tlv(0x31, &set_content);
+    let mut seq_content = Vec::new();
+    seq_content.extend_from_slice(&oid);
+    seq_content.extend_from_slice(&set);
+    pkcs12_der_tlv(0x30, &seq_content)
+}
+
+fn pkcs12_read_tlv(bytes: &[u8], pos: usize) -> Option<(u8, Vec<u8>, usize)> {
+    if pos >= bytes.len() {
+        return None;
+    }
+    let tag = bytes[pos];
+    let mut p = pos + 1;
+    if p >= bytes.len() {
+        return None;
+    }
+    let len_byte = bytes[p];
+    p += 1;
+    let len = if len_byte < 0x80 {
+        len_byte as usize
+    } else {
+        let n = (len_byte & 0x7f) as usize;
+        if n == 0 || p + n > bytes.len() {
+            return None;
+        }
+        let mut l = 0usize;
+        for _ in 0..n {
+            l = (l << 8) | bytes[p] as usize;
+            p += 1;
+        }
+        l
+    };
+    if p + len > bytes.len() {
+        return None;
+    }
+    Some((tag, bytes[p..p + len].to_vec(), p + len))
+}
+
+fn pkcs12_decode_oid(content: &[u8]) -> Option<String> {
+    let mut subids = Vec::new();
+    let mut value = 0u64;
+    for &b in content {
+        value = (value << 7) | (b & 0x7f) as u64;
+        if b & 0x80 == 0 {
+            subids.push(value);
+            value = 0;
+        }
+    }
+    if subids.is_empty() {
+        return None;
+    }
+    let first = subids[0];
+    let (c0, c1) = if first < 40 {
+        (0, first)
+    } else if first < 80 {
+        (1, first - 40)
+    } else {
+        (2, first - 80)
+    };
+    let mut parts = vec![alloc::format!("{c0}"), alloc::format!("{c1}")];
+    for &s in &subids[1..] {
+        parts.push(alloc::format!("{s}"));
+    }
+    Some(parts.join("."))
+}
+
+fn pkcs12_bytes_to_hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|b| alloc::format!("{b:02X}"))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+fn pkcs12_parse(bytes: &[u8]) -> Option<(String, String)> {
+    let (tag, seq, _) = pkcs12_read_tlv(bytes, 0)?;
+    if tag != 0x30 {
+        return None;
+    }
+    let (oid_tag, oid_content, next) = pkcs12_read_tlv(&seq, 0)?;
+    if oid_tag != 0x06 {
+        return None;
+    }
+    let name = pkcs12_decode_oid(&oid_content)?;
+    let (set_tag, set_content, _) = pkcs12_read_tlv(&seq, next)?;
+    if set_tag != 0x31 {
+        return None;
+    }
+    let mut values = Vec::new();
+    let mut p = 0;
+    while p < set_content.len() {
+        let (vtag, vcontent, np) = pkcs12_read_tlv(&set_content, p)?;
+        if vtag == 0x0c {
+            values.push(String::from_utf8(vcontent).ok()?);
+        } else if vtag == 0x04 {
+            values.push(pkcs12_bytes_to_hex(&vcontent));
+        } else {
+            return None;
+        }
+        p = np;
+    }
+    let value = if values.len() == 1 {
+        values[0].clone()
+    } else {
+        alloc::format!("[{}]", values.join(", "))
+    };
+    Some((name, value))
+}
+
+fn pkcs12_arrays_hash(bytes: &[u8]) -> i32 {
+    let mut result = 1i32;
+    for &b in bytes {
+        result = result.wrapping_mul(31).wrapping_add((b as i8) as i32);
+    }
+    result
+}
+
+fn pkcs12_bytes_to_array(vm: &mut Vm<'_>, bytes: &[u8]) -> Result<ObjectRef, VmError> {
+    let arr = vm.allocate_array_of(oxjvm_vm::ArrayComponent::Byte, bytes.len())?;
+    for (i, &b) in bytes.iter().enumerate() {
+        vm.array_set(arr, i as i32, Value::Int(b as i32), false)?;
+    }
+    Ok(arr)
+}
+
+fn pkcs12_store(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+    value: &str,
+    encoded: &[u8],
+) -> Result<(), VmError> {
+    let class = vm.class_of(this);
+    let (d, f) = vm.find_field(class, "name", "Ljava/lang/String;")?;
+    let name_str = vm.make_string(name)?;
+    vm.set_instance_ref(this, d, f, name_str);
+    let (d, f) = vm.find_field(class, "value", "Ljava/lang/String;")?;
+    let value_str = vm.make_string(value)?;
+    vm.set_instance_ref(this, d, f, value_str);
+    let (d, f) = vm.find_field(class, "encoded", "[B")?;
+    let arr = pkcs12_bytes_to_array(vm, encoded)?;
+    vm.set_instance_ref(this, d, f, arr);
+    Ok(())
+}
+
+fn pkcs12_encoded_bytes(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Vec<u8>, VmError> {
+    let encoded = vm
+        .read_ref_field(this, vm.class_of(this), "encoded", "[B")
+        .unwrap_or(ObjectRef::NULL);
+    crate::lang::array_bytes(vm, encoded)
+}
+
+const PKCS12_ATTRIBUTE_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let name_ref = ref_arg(args, 1);
+            let value_ref = ref_arg(args, 2);
+            if name_ref.is_null() || value_ref.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let name = vm.string_or_empty(name_ref);
+            let value = vm.string_or_empty(value_ref);
+            let components = match pkcs12_oid_components(&name) {
+                Some(c) => c,
+                None => {
+                    return Err(vm.throw_new(
+                        "java/lang/IllegalArgumentException",
+                        Some("Incorrect format: name"),
+                    ));
+                }
+            };
+            let values: Vec<String> =
+                if value.len() > 1 && value.starts_with('[') && value.ends_with(']') {
+                    value[1..value.len() - 1]
+                        .split(", ")
+                        .map(String::from)
+                        .collect()
+                } else {
+                    vec![value.clone()]
+                };
+            let encoded = pkcs12_encode(&components, &values);
+            pkcs12_store(vm, this, &name, &value, &encoded)?;
+            void()
+        },
+    ),
+    method("<init>", "([B)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let encoded_ref = ref_arg(args, 1);
+        if encoded_ref.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let bytes = crate::lang::array_bytes(vm, encoded_ref)?;
+        let (name, value) = match pkcs12_parse(&bytes) {
+            Some(nv) => nv,
+            None => {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("Incorrect format: encoded"),
+                ));
+            }
+        };
+        pkcs12_store(vm, this, &name, &value, &bytes)?;
+        void()
+    }),
+    method(
+        "getName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(
+                vm.read_ref_field(this, vm.class_of(this), "name", "Ljava/lang/String;")
+                    .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method(
+        "getValue",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(
+                vm.read_ref_field(this, vm.class_of(this), "value", "Ljava/lang/String;")
+                    .unwrap_or(ObjectRef::NULL),
+            )
+        },
+    ),
+    method("getEncoded", "()[B", ACC_PUBLIC, |vm, _, args| {
+        let bytes = pkcs12_encoded_bytes(vm, receiver(args))?;
+        object(pkcs12_bytes_to_array(vm, &bytes)?)
+    }),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if this == other {
+                return boolean(true);
+            }
+            let pkcs12 = vm.resolve_class("java/security/PKCS12Attribute")?;
+            if other.is_null() || !vm.is_instance(other, pkcs12) {
+                return boolean(false);
+            }
+            let a = pkcs12_encoded_bytes(vm, this)?;
+            let b = pkcs12_encoded_bytes(vm, other)?;
+            boolean(a == b)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let bytes = pkcs12_encoded_bytes(vm, receiver(args))?;
+        int(pkcs12_arrays_hash(&bytes))
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let name = vm
+                .read_ref_field(this, class, "name", "Ljava/lang/String;")
+                .unwrap_or(ObjectRef::NULL);
+            let value = vm
+                .read_ref_field(this, class, "value", "Ljava/lang/String;")
+                .unwrap_or(ObjectRef::NULL);
+            let text = alloc::format!("{}={}", vm.string_or_empty(name), vm.string_or_empty(value));
+            object(vm.make_string(&text)?)
+        },
+    ),
+];
+
+pub(crate) const PKCS12_ATTRIBUTE: oxjvm_vm::NativeClass = class(
+    "java/security/PKCS12Attribute",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("name", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("value", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("encoded", "[B", ACC_PRIVATE, None),
+    ],
+    &PKCS12_ATTRIBUTE_METHODS,
+    None,
+);
