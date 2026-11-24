@@ -1,13 +1,16 @@
-//! `javax.naming` reference addresses: `RefAddr`, `StringRefAddr`,
-//! `BinaryRefAddr` and `Reference`. These are the plain data carriers used by
-//! JNDI `Reference` objects; no directory/service-provider machinery.
+//! `javax.naming` reference addresses and initial-context plumbing:
+//! `RefAddr`, `StringRefAddr`, `BinaryRefAddr`, `Reference`, `NamingException`
+//! and `InitialContext`. These are the plain data carriers and environment
+//! handling used by JNDI; no directory/service-provider machinery.
 
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use oxjvm_classfile::flags::*;
 
-use crate::{boolean, class, field, int, int_arg, method, object, receiver, ref_arg, void};
+use crate::{
+    bool_arg, boolean, class, field, int, int_arg, method, object, receiver, ref_arg, void,
+};
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
 // -------------------------------------------------------------------------------------------
@@ -740,4 +743,448 @@ fn reference_to_string(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmErro
         text.push_str(&vm.string_value(result.as_ref()).unwrap_or_default());
     }
     object(vm.make_string(&text)?)
+}
+
+// -------------------------------------------------------------------------------------------
+// javax.naming.Context
+// -------------------------------------------------------------------------------------------
+
+/// `javax.naming.Context`: the naming-operation interface. Only the type is
+/// modeled; the directory operations themselves need a service provider.
+pub(crate) const CONTEXT: oxjvm_vm::NativeClass = class(
+    "javax/naming/Context",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[],
+    None,
+);
+
+// -------------------------------------------------------------------------------------------
+// javax.naming.NamingException
+// -------------------------------------------------------------------------------------------
+
+/// `javax.naming.NamingException`: the root of the JNDI exception hierarchy.
+pub(crate) const NAMING_EXCEPTION: oxjvm_vm::NativeClass = class(
+    "javax/naming/NamingException",
+    Some("java/lang/Exception"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("resolvedName", "Ljavax/naming/Name;", ACC_PROTECTED, None),
+        field("resolvedObj", "Ljava/lang/Object;", ACC_PROTECTED, None),
+        field("remainingName", "Ljavax/naming/Name;", ACC_PROTECTED, None),
+        field(
+            "rootException",
+            "Ljava/lang/Throwable;",
+            ACC_PROTECTED,
+            None,
+        ),
+    ],
+    &NAMING_EXCEPTION_METHODS,
+    None,
+);
+
+const NAMING_EXCEPTION_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
+    method(
+        "<init>",
+        "()V",
+        ACC_PUBLIC,
+        crate::throwable::exception_ctor,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        crate::throwable::exception_ctor,
+    ),
+    method(
+        "getExplanation",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let (class, method) =
+                vm.resolve_virtual_method(this, "getMessage", "()Ljava/lang/String;")?;
+            let result = vm.invoke_method(class, method, vec![Value::Ref(this)])?;
+            object(result.as_ref())
+        },
+    ),
+    method(
+        "getResolvedObj",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(naming_exception_field(
+                vm,
+                this,
+                "resolvedObj",
+                "Ljava/lang/Object;",
+            ))
+        },
+    ),
+    method(
+        "setResolvedObj",
+        "(Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            set_naming_exception_field(
+                vm,
+                this,
+                "resolvedObj",
+                "Ljava/lang/Object;",
+                ref_arg(args, 1),
+            )
+        },
+    ),
+    method(
+        "getResolvedName",
+        "()Ljavax/naming/Name;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(naming_exception_field(
+                vm,
+                this,
+                "resolvedName",
+                "Ljavax/naming/Name;",
+            ))
+        },
+    ),
+    method(
+        "setResolvedName",
+        "(Ljavax/naming/Name;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            set_naming_exception_field(
+                vm,
+                this,
+                "resolvedName",
+                "Ljavax/naming/Name;",
+                ref_arg(args, 1),
+            )
+        },
+    ),
+    method(
+        "getRemainingName",
+        "()Ljavax/naming/Name;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(naming_exception_field(
+                vm,
+                this,
+                "remainingName",
+                "Ljavax/naming/Name;",
+            ))
+        },
+    ),
+    method(
+        "setRemainingName",
+        "(Ljavax/naming/Name;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            set_naming_exception_field(
+                vm,
+                this,
+                "remainingName",
+                "Ljavax/naming/Name;",
+                ref_arg(args, 1),
+            )
+        },
+    ),
+    method(
+        "getRootCause",
+        "()Ljava/lang/Throwable;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(naming_exception_field(
+                vm,
+                this,
+                "rootException",
+                "Ljava/lang/Throwable;",
+            ))
+        },
+    ),
+    method(
+        "setRootCause",
+        "(Ljava/lang/Throwable;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let cause = ref_arg(args, 1);
+            if cause != this {
+                set_naming_exception_field(
+                    vm,
+                    this,
+                    "rootException",
+                    "Ljava/lang/Throwable;",
+                    cause,
+                )?;
+            }
+            void()
+        },
+    ),
+    method(
+        "getCause",
+        "()Ljava/lang/Throwable;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            object(naming_exception_field(
+                vm,
+                this,
+                "rootException",
+                "Ljava/lang/Throwable;",
+            ))
+        },
+    ),
+    method(
+        "initCause",
+        "(Ljava/lang/Throwable;)Ljava/lang/Throwable;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let cause = ref_arg(args, 1);
+            let throwable = vm.resolve_class("java/lang/Throwable")?;
+            let (declaring, method) = vm
+                .find_method(
+                    throwable,
+                    "initCause",
+                    "(Ljava/lang/Throwable;)Ljava/lang/Throwable;",
+                )
+                .ok_or_else(|| VmError::internal("Throwable lacks initCause"))?;
+            vm.invoke_method(declaring, method, vec![Value::Ref(this), Value::Ref(cause)])?;
+            if cause != this {
+                set_naming_exception_field(
+                    vm,
+                    this,
+                    "rootException",
+                    "Ljava/lang/Throwable;",
+                    cause,
+                )?;
+            }
+            object(this)
+        },
+    ),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| naming_exception_to_string(vm, receiver(args)),
+    ),
+    method(
+        "toString",
+        "(Z)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let detail = bool_arg(args, 1);
+            let resolved = naming_exception_field(vm, this, "resolvedObj", "Ljava/lang/Object;");
+            if !detail || resolved.is_null() {
+                return naming_exception_to_string(vm, this);
+            }
+            let base = naming_exception_to_string(vm, this)?;
+            let mut text = vm.string_value(base.as_ref()).unwrap_or_default();
+            let (class, method) =
+                vm.resolve_virtual_method(resolved, "toString", "()Ljava/lang/String;")?;
+            let result = vm.invoke_method(class, method, vec![Value::Ref(resolved)])?;
+            text.push_str("; resolved object ");
+            text.push_str(&vm.string_value(result.as_ref()).unwrap_or_default());
+            object(vm.make_string(&text)?)
+        },
+    ),
+];
+
+fn naming_exception_field(vm: &Vm<'_>, this: ObjectRef, name: &str, descriptor: &str) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), name, descriptor)
+        .unwrap_or(ObjectRef::NULL)
+}
+
+fn set_naming_exception_field(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    name: &str,
+    descriptor: &str,
+    value: ObjectRef,
+) -> Result<Value, VmError> {
+    let class = vm.class_of(this);
+    let (declaring, field) = vm.find_field(class, name, descriptor)?;
+    vm.set_instance_ref(this, declaring, field, value);
+    void()
+}
+
+/// `NamingException.toString()`: `Throwable.toString()` plus the root exception
+/// and remaining name, when present.
+fn naming_exception_to_string(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError> {
+    let throwable = vm.resolve_class("java/lang/Throwable")?;
+    let (declaring, method) = vm
+        .find_method(throwable, "toString", "()Ljava/lang/String;")
+        .ok_or_else(|| VmError::internal("Throwable lacks toString"))?;
+    let base = vm.invoke_method(declaring, method, vec![Value::Ref(this)])?;
+    let mut text = vm.string_value(base.as_ref()).unwrap_or_default();
+    let root = naming_exception_field(vm, this, "rootException", "Ljava/lang/Throwable;");
+    if !root.is_null() {
+        text.push_str(" [Root exception is ");
+        text.push_str(&object_text(vm, root)?);
+        text.push(']');
+    }
+    let remaining = naming_exception_field(vm, this, "remainingName", "Ljavax/naming/Name;");
+    if !remaining.is_null() {
+        text.push_str("; remaining name '");
+        text.push_str(&object_text(vm, remaining)?);
+        text.push('\'');
+    }
+    object(vm.make_string(&text)?)
+}
+
+/// The virtual `toString()` of an object as text.
+fn object_text(vm: &mut Vm<'_>, reference: ObjectRef) -> Result<String, VmError> {
+    let (class, method) =
+        vm.resolve_virtual_method(reference, "toString", "()Ljava/lang/String;")?;
+    let result = vm.invoke_method(class, method, vec![Value::Ref(reference)])?;
+    Ok(vm.string_value(result.as_ref()).unwrap_or_default())
+}
+
+// -------------------------------------------------------------------------------------------
+// javax.naming.InitialContext
+// -------------------------------------------------------------------------------------------
+
+/// `javax.naming.InitialContext`: the entry point that holds the environment.
+/// Without a service provider the default context cannot be created, but the
+/// environment cloning/initialization contract is fully modeled.
+pub(crate) const INITIAL_CONTEXT: oxjvm_vm::NativeClass = class(
+    "javax/naming/InitialContext",
+    Some("java/lang/Object"),
+    &["javax/naming/Context"],
+    ACC_PUBLIC,
+    &[
+        field("myProps", "Ljava/util/Hashtable;", ACC_PROTECTED, None),
+        field(
+            "defaultInitCtx",
+            "Ljavax/naming/Context;",
+            ACC_PROTECTED,
+            None,
+        ),
+        field("gotDefault", "Z", ACC_PROTECTED, None),
+    ],
+    &INITIAL_CONTEXT_METHODS,
+    None,
+);
+
+const INITIAL_CONTEXT_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        initial_context_init(vm, receiver(args), ObjectRef::NULL)
+    }),
+    method(
+        "<init>",
+        "(Ljava/util/Hashtable;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let env = ref_arg(args, 1);
+            // The constructor clones the environment before handing it to init().
+            let env = if env.is_null() {
+                env
+            } else {
+                let (class, method) =
+                    vm.resolve_virtual_method(env, "clone", "()Ljava/lang/Object;")?;
+                vm.invoke_method(class, method, vec![Value::Ref(env)])?
+                    .as_ref()
+            };
+            initial_context_init(vm, this, env)
+        },
+    ),
+    method("<init>", "(Z)V", ACC_PUBLIC, |vm, _, args| {
+        if !bool_arg(args, 1) {
+            initial_context_init(vm, receiver(args), ObjectRef::NULL)?;
+        }
+        void()
+    }),
+    method(
+        "init",
+        "(Ljava/util/Hashtable;)V",
+        ACC_PROTECTED,
+        |vm, _, args| initial_context_init(vm, receiver(args), ref_arg(args, 1)),
+    ),
+    method(
+        "getDefaultInitCtx",
+        "()Ljavax/naming/Context;",
+        ACC_PROTECTED,
+        |vm, _, _| {
+            Err(vm.throw_new(
+                "javax/naming/NamingException",
+                Some("Cannot instantiate initial context: no service provider is available"),
+            ))
+        },
+    ),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let class = vm.class_of(this);
+        let (declaring, field) = vm.find_field(class, "myProps", "Ljava/util/Hashtable;")?;
+        vm.set_instance_ref(this, declaring, field, ObjectRef::NULL);
+        let (declaring, field) =
+            vm.find_field(class, "defaultInitCtx", "Ljavax/naming/Context;")?;
+        vm.set_instance_ref(this, declaring, field, ObjectRef::NULL);
+        let (declaring, field) = vm.find_field(class, "gotDefault", "Z")?;
+        vm.set_instance_int(this, declaring, field, 0);
+        void()
+    }),
+];
+
+/// Create an empty `java.util.Hashtable` with the given initial capacity.
+fn new_hashtable(vm: &mut Vm<'_>, capacity: i32) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/util/Hashtable")?;
+    let instance = vm.new_instance(class)?;
+    let (declaring, ctor) = vm
+        .find_method(class, "<init>", "(I)V")
+        .ok_or_else(|| VmError::internal("Hashtable lacks its capacity constructor"))?;
+    vm.invoke_method(
+        declaring,
+        ctor,
+        vec![Value::Ref(instance), Value::Int(capacity)],
+    )?;
+    Ok(instance)
+}
+
+/// `InitialContext.init()`: store the environment as-is (a null environment
+/// becomes a fresh table), then try the factory when one is configured.
+fn initial_context_init(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    env: ObjectRef,
+) -> Result<Value, VmError> {
+    let class = vm.class_of(this);
+    let props = if env.is_null() {
+        new_hashtable(vm, 11)?
+    } else {
+        env
+    };
+    let (declaring, field) = vm.find_field(class, "myProps", "Ljava/util/Hashtable;")?;
+    vm.set_instance_ref(this, declaring, field, props);
+    // ResourceManager.getInitialEnvironment() merges JNDI system properties and
+    // application resource files into the table in place; neither source exists
+    // in this VM, so a non-null environment passes through unchanged.
+    let key = vm.make_string("java.naming.factory.initial")?;
+    let (method_class, method) =
+        vm.resolve_virtual_method(props, "get", "(Ljava/lang/Object;)Ljava/lang/Object;")?;
+    let factory = vm.invoke_method(
+        method_class,
+        method,
+        vec![Value::Ref(props), Value::Ref(key)],
+    )?;
+    if !factory.as_ref().is_null() {
+        let factory_name = vm.string_value(factory.as_ref()).unwrap_or_default();
+        return Err(vm.throw_new(
+            "javax/naming/NamingException",
+            Some(&alloc::format!("Cannot instantiate class: {factory_name}")),
+        ));
+    }
+    void()
 }
