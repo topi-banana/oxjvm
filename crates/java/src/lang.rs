@@ -3278,14 +3278,13 @@ fn string_last_index_of_string(
     args: &[Value],
     from: i32,
 ) -> Result<Value, VmError> {
-    let haystack = vm
-        .string_utf16(receiver(args))
-        .map(<[u16]>::to_vec)
-        .unwrap_or_default();
-    let needle = vm
-        .string_utf16(ref_arg(args, 1))
-        .map(<[u16]>::to_vec)
-        .ok_or_else(|| vm.throw_new("java/lang/NullPointerException", None))?;
+    let this = receiver(args);
+    let needle_ref = ref_arg(args, 1);
+    let needle = match vm.string_utf16(needle_ref) {
+        Some(needle) => needle,
+        None => return Err(vm.throw_new("java/lang/NullPointerException", None)),
+    };
+    let haystack = vm.string_utf16(this).unwrap_or_default();
     if needle.is_empty() {
         let index = (from as isize).clamp(0, haystack.len() as isize);
         return int(index as i32);
@@ -3296,7 +3295,7 @@ fn string_last_index_of_string(
     }
     let last = limit as usize;
     for start in (0..=last).rev() {
-        if haystack[start..].starts_with(&needle) {
+        if haystack[start..].starts_with(needle) {
             return int(start as i32);
         }
     }
