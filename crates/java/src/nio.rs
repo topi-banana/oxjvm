@@ -4781,6 +4781,17 @@ fn file_channel_read(
     target: ObjectRef,
     absolute: Option<i64>,
 ) -> Result<i32, VmError> {
+    if crate::lang::read_int_field(vm, this, "readable") == 0 {
+        return Err(vm.throw_new("java/nio/channels/NonReadableChannelException", None));
+    }
+    if let Some(position) = absolute {
+        if position < 0 {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("Negative position"),
+            ));
+        }
+    }
     let path = vm
         .read_string_field(this, vm.class_of(this), "path")
         .unwrap_or_default();
@@ -4791,7 +4802,7 @@ fn file_channel_read(
         vm.read_instance_long_named(this, vm.class_of(this), "position", "J")
             .unwrap_or(0)
     });
-    if position >= bytes.len() as i64 {
+    if position < 0 || position >= bytes.len() as i64 {
         return Ok(-1);
     }
     let start = position as usize;
@@ -4810,6 +4821,17 @@ fn file_channel_write(
     source: ObjectRef,
     absolute: Option<i64>,
 ) -> Result<i32, VmError> {
+    if crate::lang::read_int_field(vm, this, "writable") == 0 {
+        return Err(vm.throw_new("java/nio/channels/NonWritableChannelException", None));
+    }
+    if let Some(position) = absolute {
+        if position < 0 {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("Negative position"),
+            ));
+        }
+    }
     let path = vm
         .read_string_field(this, vm.class_of(this), "path")
         .unwrap_or_default();
@@ -4837,8 +4859,10 @@ fn file_channel_write(
     {
         return Err(vm.throw_new("java/io/IOException", Some(&path)));
     }
-    let (declaring, field) = vm.find_field(vm.class_of(this), "position", "J")?;
-    vm.set_instance_long(this, declaring, field, (position + bytes.len()) as i64);
+    if absolute.is_none() {
+        let (declaring, field) = vm.find_field(vm.class_of(this), "position", "J")?;
+        vm.set_instance_long(this, declaring, field, (position + bytes.len()) as i64);
+    }
     Ok(bytes.len() as i32)
 }
 
