@@ -660,7 +660,7 @@ pub(crate) const LOG_RECORD: oxjvm_vm::NativeClass = class(
 // ResourceBundle (minimal)
 // -------------------------------------------------------------------------------------------
 
-const RESOURCE_BUNDLE_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
+const RESOURCE_BUNDLE_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method(
         "getBundle",
         "(Ljava/lang/String;)Ljava/util/ResourceBundle;",
@@ -681,6 +681,23 @@ const RESOURCE_BUNDLE_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
         "(Ljava/lang/String;Ljava/util/Locale;Ljava/lang/Module;)Ljava/util/ResourceBundle;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| resource_bundle_get(vm, ref_arg(args, 0), ref_arg(args, 1)),
+    ),
+    method(
+        "getBundle",
+        "(Ljava/lang/String;Ljava/util/ResourceBundle$Control;)Ljava/util/ResourceBundle;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let locale = crate::format::default_locale(vm);
+            resource_bundle_get_control(vm, ref_arg(args, 0), locale, ref_arg(args, 1))
+        },
+    ),
+    method(
+        "getBundle",
+        "(Ljava/lang/String;Ljava/util/Locale;Ljava/util/ResourceBundle$Control;)Ljava/util/ResourceBundle;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            resource_bundle_get_control(vm, ref_arg(args, 0), ref_arg(args, 1), ref_arg(args, 2))
+        },
     ),
     method(
         "getObject",
@@ -1133,6 +1150,124 @@ fn resource_bundle_get(
     Err(vm.throw_new("java/util/MissingResourceException", Some(&message)))
 }
 
+/// `ResourceBundle.getBundle(baseName, locale, control)`: validate the control's
+/// `getFormats` / `getCandidateLocales` / `getTimeToLive` results the way the JDK
+/// does (IllegalArgumentException on null or malformed values), then load.  A
+/// `toBundleName` that returns null surfaces as a MissingResourceException whose
+/// cause is a NullPointerException.
+fn resource_bundle_get_control(
+    vm: &mut Vm<'_>,
+    base_object: ObjectRef,
+    locale: ObjectRef,
+    control: ObjectRef,
+) -> Result<Value, VmError> {
+    if control.is_null() || base_object.is_null() || locale.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let (format_class, format_method) = vm.resolve_virtual_method(
+        control,
+        "getFormats",
+        "(Ljava/lang/String;)Ljava/util/List;",
+    )?;
+    let formats = vm
+        .invoke_method(
+            format_class,
+            format_method,
+            vec![Value::Ref(control), Value::Ref(base_object)],
+        )?
+        .as_ref();
+    if formats.is_null() {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("null formats list"),
+        ));
+    }
+    let format_elements = crate::util::collection_elements(vm, formats)?;
+    if format_elements.iter().any(|element| element.is_null()) {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("null format element"),
+        ));
+    }
+    let (candidate_class, candidate_method) = vm.resolve_virtual_method(
+        control,
+        "getCandidateLocales",
+        "(Ljava/lang/String;Ljava/util/Locale;)Ljava/util/List;",
+    )?;
+    let candidates = vm
+        .invoke_method(
+            candidate_class,
+            candidate_method,
+            vec![
+                Value::Ref(control),
+                Value::Ref(base_object),
+                Value::Ref(locale),
+            ],
+        )?
+        .as_ref();
+    if candidates.is_null() {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("null candidate locales"),
+        ));
+    }
+    let candidate_elements = crate::util::collection_elements(vm, candidates)?;
+    if candidate_elements.iter().any(|element| element.is_null()) {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("null candidate locale"),
+        ));
+    }
+    let (ttl_class, ttl_method) = vm.resolve_virtual_method(
+        control,
+        "getTimeToLive",
+        "(Ljava/lang/String;Ljava/util/Locale;)J",
+    )?;
+    let ttl = vm
+        .invoke_method(
+            ttl_class,
+            ttl_method,
+            vec![
+                Value::Ref(control),
+                Value::Ref(base_object),
+                Value::Ref(locale),
+            ],
+        )?
+        .as_long();
+    if ttl < -2 {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("invalid time to live"),
+        ));
+    }
+    let (name_class, name_method) = vm.resolve_virtual_method(
+        control,
+        "toBundleName",
+        "(Ljava/lang/String;Ljava/util/Locale;)Ljava/lang/String;",
+    )?;
+    for candidate in &candidate_elements {
+        let bundle_name = vm
+            .invoke_method(
+                name_class,
+                name_method,
+                vec![
+                    Value::Ref(control),
+                    Value::Ref(base_object),
+                    Value::Ref(*candidate),
+                ],
+            )?
+            .as_ref();
+        if bundle_name.is_null() {
+            let cause = match vm.throw_new("java/lang/NullPointerException", None) {
+                VmError::Thrown(exception) => exception,
+                other => return Err(other),
+            };
+            return Err(vm.throw_new_with_cause("java/util/MissingResourceException", cause));
+        }
+    }
+    resource_bundle_get(vm, base_object, locale)
+}
+
 fn resource_bundle_object(
     vm: &mut Vm<'_>,
     bundle: ObjectRef,
@@ -1491,7 +1626,72 @@ fn control_factory(
     object(instance)
 }
 
-const RESOURCE_BUNDLE_CONTROL_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
+/// Default `Control.getCandidateLocales`: the locale's language/country/variant
+/// fallback chain, most specific first, ending at `Locale.ROOT`.
+fn control_candidate_locales(vm: &mut Vm<'_>, locale: ObjectRef) -> Result<Value, VmError> {
+    let class = vm.class_of(locale);
+    let language = vm
+        .read_string_field(locale, class, "language")
+        .unwrap_or_default();
+    let country = vm
+        .read_string_field(locale, class, "country")
+        .unwrap_or_default();
+    let variant = vm
+        .read_string_field(locale, class, "variant")
+        .unwrap_or_default();
+    let mut candidates: Vec<ObjectRef> = Vec::new();
+    if !variant.is_empty() {
+        candidates.push(locale_from_parts(vm, &language, &country, &variant)?);
+    }
+    if !country.is_empty() {
+        candidates.push(locale_from_parts(vm, &language, &country, "")?);
+    }
+    if !language.is_empty() {
+        candidates.push(locale_from_parts(vm, &language, "", "")?);
+    }
+    candidates.push(locale_from_parts(vm, "", "", "")?);
+    let list = crate::util::array_list_from(vm, &candidates)?;
+    object(list)
+}
+
+/// Default `Control.toBundleName`: the base name suffixed with the locale's
+/// non-empty language/country/variant parts (the base name itself for ROOT).
+fn control_to_bundle_name(
+    vm: &mut Vm<'_>,
+    base_object: ObjectRef,
+    locale: ObjectRef,
+) -> Result<Value, VmError> {
+    let class = vm.class_of(locale);
+    let language = vm
+        .read_string_field(locale, class, "language")
+        .unwrap_or_default();
+    let country = vm
+        .read_string_field(locale, class, "country")
+        .unwrap_or_default();
+    let variant = vm
+        .read_string_field(locale, class, "variant")
+        .unwrap_or_default();
+    if language.is_empty() && country.is_empty() && variant.is_empty() {
+        return object(base_object);
+    }
+    let mut name = vm.string_or_empty(base_object);
+    if !language.is_empty() {
+        name.push('_');
+        name.push_str(&language);
+    }
+    if !country.is_empty() {
+        name.push('_');
+        name.push_str(&country);
+    }
+    if !variant.is_empty() {
+        name.push('_');
+        name.push_str(&variant);
+    }
+    let text = vm.make_string(&name)?;
+    object(text)
+}
+
+const RESOURCE_BUNDLE_CONTROL_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method("<init>", "()V", ACC_PROTECTED, |_, _, _| void()),
     method(
         "getControl",
@@ -1553,6 +1753,18 @@ const RESOURCE_BUNDLE_CONTROL_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         "(Ljava/lang/String;Ljava/util/Locale;)J",
         ACC_PUBLIC,
         |_, _, _| Ok(Value::Long(-2)),
+    ),
+    method(
+        "getCandidateLocales",
+        "(Ljava/lang/String;Ljava/util/Locale;)Ljava/util/List;",
+        ACC_PUBLIC,
+        |vm, _, args| control_candidate_locales(vm, ref_arg(args, 2)),
+    ),
+    method(
+        "toBundleName",
+        "(Ljava/lang/String;Ljava/util/Locale;)Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| control_to_bundle_name(vm, ref_arg(args, 1), ref_arg(args, 2)),
     ),
 ];
 
