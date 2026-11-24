@@ -5107,11 +5107,21 @@ const FILE_PERMISSION_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
                 return void();
             }
             let remember_star = name.ends_with('*');
-            let work = if remember_star {
+            let mut work = if remember_star {
                 alloc::format!("{}-", &name[..name.len() - 1])
             } else {
                 name.clone()
             };
+            // With jdk.io.permissionsUseCanonicalPath=true the JDK resolves the
+            // path against the working directory (File.getCanonicalPath), so a
+            // relative name and its absolute form denote the same permission.
+            if crate::lang::system_property(vm, "jdk.io.permissionsUseCanonicalPath").as_deref()
+                == Some("true")
+                && !work.starts_with('/')
+            {
+                let dir = crate::lang::system_property(vm, "user.dir").unwrap_or_default();
+                work = alloc::format!("{}/{}", dir.trim_end_matches('/'), work);
+            }
             match normalize_file_path(&work) {
                 None => {
                     crate::lang::write_int_field(vm, this, "invalid", 1);
