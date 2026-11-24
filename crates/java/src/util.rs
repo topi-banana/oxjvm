@@ -12816,8 +12816,10 @@ fn properties_load(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
             bytes.push((value & 0xFF) as u8);
         }
     }
-    let text = String::from_utf8_lossy(&bytes).into_owned();
-    properties_parse_text(vm, this, &text)
+    // load(InputStream) reads ISO-8859-1: every byte is one char, including
+    // bytes >= 0x80 which must not be treated as UTF-8.
+    let units: Vec<u16> = bytes.iter().map(|&b| u16::from(b)).collect();
+    properties_parse_text(vm, this, &units)
 }
 
 /// Reads logical lines from `.properties` text, mirroring the JDK `LineReader`:
@@ -12893,7 +12895,7 @@ impl PropertiesLineReader {
 }
 
 /// Unescape a property key/value, mirroring the JDK `loadConvert`.
-fn properties_load_convert(vm: &mut Vm<'_>, input: &[u16]) -> Result<String, VmError> {
+fn properties_load_convert(vm: &mut Vm<'_>, input: &[u16]) -> Result<Vec<u16>, VmError> {
     let mut out: Vec<u16> = Vec::new();
     let mut i = 0;
     while i < input.len() {
@@ -12944,12 +12946,11 @@ fn properties_load_convert(vm: &mut Vm<'_>, input: &[u16]) -> Result<String, VmE
             out.push(mapped);
         }
     }
-    Ok(String::from_utf16_lossy(&out))
+    Ok(out)
 }
 
 /// Escape a property key/value for storage, mirroring the JDK `saveConvert`.
-fn properties_save_convert(text: &str, escape_space: bool, escape_unicode: bool) -> String {
-    let units: Vec<u16> = text.encode_utf16().collect();
+fn properties_save_convert(units: &[u16], escape_space: bool, escape_unicode: bool) -> Vec<u16> {
     let mut out: Vec<u16> = Vec::new();
     let backslash = u16::from(b'\\');
     for (x, &u) in units.iter().enumerate() {
@@ -12993,13 +12994,13 @@ fn properties_save_convert(text: &str, escape_space: bool, escape_unicode: bool)
             }
         }
     }
-    String::from_utf16_lossy(&out)
+    out
 }
 
 /// Parse `.properties` text into the map backing `this`, mirroring the JDK `load0`.
-fn properties_parse_text(vm: &mut Vm<'_>, this: ObjectRef, text: &str) -> Result<Value, VmError> {
+fn properties_parse_text(vm: &mut Vm<'_>, this: ObjectRef, text: &[u16]) -> Result<Value, VmError> {
     let mut reader = PropertiesLineReader {
-        chars: text.encode_utf16().collect(),
+        chars: text.to_vec(),
         pos: 0,
     };
     while let Some(line) = reader.read_line() {
@@ -13038,8 +13039,8 @@ fn properties_parse_text(vm: &mut Vm<'_>, this: ObjectRef, text: &str) -> Result
         }
         let key = properties_load_convert(vm, &line[..key_len])?;
         let value = properties_load_convert(vm, &line[value_start..])?;
-        let key = vm.make_string(&key)?;
-        let value = vm.make_string(&value)?;
+        let key = vm.make_string_utf16(key)?;
+        let value = vm.make_string_utf16(value)?;
         properties_map_call(
             vm,
             this,
@@ -13118,7 +13119,7 @@ fn properties_load_reader(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmEr
     if reader.is_null() {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
-    let mut text = String::new();
+    let mut units: Vec<u16> = Vec::new();
     {
         let (class, method) = vm.resolve_virtual_method(reader, "read", "()I")?;
         loop {
@@ -13128,12 +13129,11 @@ fn properties_load_reader(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmEr
             if value < 0 {
                 break;
             }
-            if let Some(ch) = char::from_u32(value as u32) {
-                text.push(ch);
-            }
+            // Reader.read() returns a UTF-16 unit; keep lone surrogates intact.
+            units.push(value as u16);
         }
     }
-    properties_parse_text(vm, this, &text)
+    properties_parse_text(vm, this, &units)
 }
 
 /// `Properties.store`: write the properties in the JDK's format.
@@ -13198,39 +13198,46 @@ fn properties_store(vm: &mut Vm<'_>, args: &[Value]) -> Result<Value, VmError> {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
     let comment = vm.string_value(ref_arg(args, 2)).unwrap_or_default();
-    let mut text = String::new();
+    let mut text: Vec<u16> = Vec::new();
     if !comment.is_empty() {
-        text.push_str(&properties_write_comments(&comment));
+        text.extend(properties_write_comments(&comment).encode_utf16());
     }
     // The JDK writes the time of the store as a comment line below the caller's comment.
-    text.push('#');
-    text.push_str(&date_to_string(vm.host.current_time_millis()));
-    text.push('\n');
+    text.push(u16::from(b'#'));
+    text.extend(date_to_string(vm.host.current_time_millis()).encode_utf16());
+    text.push(u16::from(b'\n'));
     // The Writer path keeps Unicode as-is; the ISO-8859-1 byte path escapes it.
     let writer_method = vm.find_method(vm.class_of(stream), "write", "(Ljava/lang/String;)V");
     let escape_unicode = writer_method.is_none();
     let pairs = hash_map_pairs(vm, properties_map(vm, this));
-    let mut entries: Vec<(String, String)> = pairs
+    let mut entries: Vec<(Vec<u16>, Vec<u16>)> = pairs
         .iter()
-        .map(|(key, value)| (vm.string_or_empty(*key), vm.string_or_empty(*value)))
+        .map(|(key, value)| {
+            (
+                vm.string_utf16(*key).unwrap_or_default().to_vec(),
+                vm.string_utf16(*value).unwrap_or_default().to_vec(),
+            )
+        })
         .collect();
-    // The JDK writes entries in the natural sort order of their keys.
+    // The JDK writes entries in the natural sort order of their keys (UTF-16 order).
     entries.sort_by(|a, b| a.0.cmp(&b.0));
     for (key, value) in entries {
-        text.push_str(&properties_save_convert(&key, true, escape_unicode));
-        text.push('=');
-        text.push_str(&properties_save_convert(&value, false, escape_unicode));
-        text.push('\n');
+        text.extend(properties_save_convert(&key, true, escape_unicode));
+        text.push(u16::from(b'='));
+        text.extend(properties_save_convert(&value, false, escape_unicode));
+        text.push(u16::from(b'\n'));
     }
     if let Some((declaring, method)) = writer_method {
-        let string = vm.make_string(&text)?;
+        let string = vm.make_string_utf16(text)?;
         vm.invoke_method(
             declaring,
             method,
             vec![Value::Ref(stream), Value::Ref(string)],
         )?;
     } else {
-        let bytes = text.into_bytes();
+        // ISO-8859-1: one byte per unit; saveConvert and writeComments have
+        // already escaped everything above 0xFF on this path.
+        let bytes: Vec<u8> = text.iter().map(|&u| (u & 0xFF) as u8).collect();
         let array = vm.allocate_array_of(ArrayComponent::Byte, bytes.len())?;
         for (index, byte) in bytes.iter().enumerate() {
             vm.array_set(array, index as i32, Value::Int(i32::from(*byte)), false)?;
