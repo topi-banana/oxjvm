@@ -943,17 +943,25 @@ fn load_bundle_candidate(
     matched_locale: ObjectRef,
 ) -> Result<Option<ObjectRef>, VmError> {
     if let Some(class) = vm.resolve_class_lenient(internal) {
-        let instance = vm.new_instance(class)?;
-        if let Some((declaring, ctor)) = vm.find_method(class, "<init>", "()V") {
-            vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
+        // Only a ResourceBundle subclass may back a class-based bundle; a plain
+        // class that happens to share the base name (e.g. the test class itself)
+        // must fall through to the .properties resource instead of being
+        // instantiated, which would re-enter getBundle from its initializer.
+        let rb_class = vm.resolve_class("java/util/ResourceBundle")?;
+        if vm.class_is_subtype(class, rb_class) {
+            let instance = vm.new_instance(class)?;
+            if let Some((declaring, ctor)) = vm.find_method(class, "<init>", "()V") {
+                vm.invoke_method(declaring, ctor, vec![Value::Ref(instance)])?;
+            }
+            // getBundle records the base name; a directly instantiated bundle
+            // (e.g. `new ListBundle()`) keeps a null base name, as in the JDK.
+            let base_ref = vm.make_string(base)?;
+            let (declaring, field) =
+                vm.find_field(class, "baseBundleName", "Ljava/lang/String;")?;
+            vm.set_instance_ref(instance, declaring, field, base_ref);
+            record_set_ref(vm, instance, "locale", "Ljava/util/Locale;", matched_locale);
+            return Ok(Some(instance));
         }
-        // getBundle records the base name; a directly instantiated bundle
-        // (e.g. `new ListBundle()`) keeps a null base name, as in the JDK.
-        let base_ref = vm.make_string(base)?;
-        let (declaring, field) = vm.find_field(class, "baseBundleName", "Ljava/lang/String;")?;
-        vm.set_instance_ref(instance, declaring, field, base_ref);
-        record_set_ref(vm, instance, "locale", "Ljava/util/Locale;", matched_locale);
-        return Ok(Some(instance));
     }
     // A .properties resource on the classpath backs a PropertyResourceBundle.
     let resource = format!("{internal}.properties");
