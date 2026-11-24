@@ -11875,3 +11875,127 @@ pub(crate) const DES_EDE_KEY_SPEC: oxjvm_vm::NativeClass = class(
     &DES_EDE_KEY_SPEC_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// java.security.URIParameter and javax.security.auth.login.Configuration
+// -------------------------------------------------------------------------------------------
+
+pub(crate) const POLICY_PARAMETERS: oxjvm_vm::NativeClass = class(
+    "java/security/Policy$Parameters",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const CONFIGURATION_PARAMETERS: oxjvm_vm::NativeClass = class(
+    "javax/security/auth/login/Configuration$Parameters",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &[],
+    None,
+);
+
+pub(crate) const URI_PARAMETER: oxjvm_vm::NativeClass = class(
+    "java/security/URIParameter",
+    Some("java/lang/Object"),
+    &[
+        "java/security/Policy$Parameters",
+        "javax/security/auth/login/Configuration$Parameters",
+    ],
+    ACC_PUBLIC,
+    &[field("uri", "Ljava/net/URI;", ACC_PRIVATE, None)],
+    &[
+        method("<init>", "(Ljava/net/URI;)V", ACC_PUBLIC, |vm, _, args| {
+            let uri = ref_arg(args, 1);
+            if uri.is_null() {
+                return Err(
+                    vm.throw_new("java/lang/NullPointerException", Some("invalid null URI"))
+                );
+            }
+            set_ref_field(vm, receiver(args), "uri", "Ljava/net/URI;", uri)?;
+            void()
+        }),
+        method("getURI", "()Ljava/net/URI;", ACC_PUBLIC, |vm, _, args| {
+            object(ref_field(vm, receiver(args), "uri", "Ljava/net/URI;"))
+        }),
+    ],
+    None,
+);
+
+fn configuration_instance(vm: &mut Vm<'_>, service_type: &str) -> Result<ObjectRef, VmError> {
+    if !service_type.eq_ignore_ascii_case("JavaLoginConfig") {
+        return Err(vm.throw_new(
+            "java/security/NoSuchAlgorithmException",
+            Some(&alloc::format!(
+                "{service_type} Configuration not available"
+            )),
+        ));
+    }
+    let class = vm.resolve_class("javax/security/auth/login/Configuration")?;
+    let config = vm.new_instance(class)?;
+    set_string_field(vm, config, "type", service_type)?;
+    Ok(config)
+}
+
+const CONFIGURATION_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "getInstance",
+        "(Ljava/lang/String;Ljavax/security/auth/login/Configuration$Parameters;)Ljavax/security/auth/login/Configuration;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = ref_arg(args, 0);
+            if name.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", Some("null type name")));
+            }
+            object(configuration_instance(vm, &vm.string_or_empty(name))?)
+        },
+    ),
+    method(
+        "getInstance",
+        "(Ljava/lang/String;Ljavax/security/auth/login/Configuration$Parameters;Ljava/security/Provider;)Ljavax/security/auth/login/Configuration;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = ref_arg(args, 0);
+            if name.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", Some("null type name")));
+            }
+            if ref_arg(args, 2).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(configuration_instance(vm, &vm.string_or_empty(name))?)
+        },
+    ),
+    method(
+        "getInstance",
+        "(Ljava/lang/String;Ljava/security/Provider;)Ljavax/security/auth/login/Configuration;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let name = ref_arg(args, 0);
+            if name.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", Some("null type name")));
+            }
+            object(configuration_instance(vm, &vm.string_or_empty(name))?)
+        },
+    ),
+    method(
+        "getType",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| object(ref_field(vm, receiver(args), "type", "Ljava/lang/String;")),
+    ),
+];
+
+pub(crate) const CONFIGURATION: oxjvm_vm::NativeClass = class(
+    "javax/security/auth/login/Configuration",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[field("type", "Ljava/lang/String;", ACC_PRIVATE, None)],
+    &CONFIGURATION_METHODS,
+    None,
+);
