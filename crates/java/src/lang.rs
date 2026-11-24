@@ -3125,15 +3125,14 @@ fn string_index_of_string(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let haystack = vm
-        .string_utf16(receiver(args))
-        .map(<[u16]>::to_vec)
-        .unwrap_or_default();
-    let needle = vm
-        .string_utf16(ref_arg(args, 1))
-        .map(<[u16]>::to_vec)
-        .ok_or_else(|| vm.throw_new("java/lang/NullPointerException", None))?;
-    int(find_units(&haystack, &needle, 0))
+    let this = receiver(args);
+    let needle_ref = ref_arg(args, 1);
+    let needle = match vm.string_utf16(needle_ref) {
+        Some(needle) => needle,
+        None => return Err(vm.throw_new("java/lang/NullPointerException", None)),
+    };
+    let haystack = vm.string_utf16(this).unwrap_or_default();
+    int(find_units(haystack, needle, 0))
 }
 
 fn string_index_of_string_from(
@@ -3141,16 +3140,15 @@ fn string_index_of_string_from(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let haystack = vm
-        .string_utf16(receiver(args))
-        .map(<[u16]>::to_vec)
-        .unwrap_or_default();
-    let needle = vm
-        .string_utf16(ref_arg(args, 1))
-        .map(<[u16]>::to_vec)
-        .ok_or_else(|| vm.throw_new("java/lang/NullPointerException", None))?;
+    let this = receiver(args);
+    let needle_ref = ref_arg(args, 1);
     let from = int_arg(args, 2).max(0) as usize;
-    int(find_units(&haystack, &needle, from))
+    let needle = match vm.string_utf16(needle_ref) {
+        Some(needle) => needle,
+        None => return Err(vm.throw_new("java/lang/NullPointerException", None)),
+    };
+    let haystack = vm.string_utf16(this).unwrap_or_default();
+    int(find_units(haystack, needle, from))
 }
 
 /// `String.indexOf(String, int, int)`: search within `[beginIndex, endIndex)`.
@@ -3589,19 +3587,35 @@ fn string_repeat(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let text = vm.string_or_empty(receiver(args));
+    let this = receiver(args);
     let count = int_arg(args, 1);
     if count < 0 {
         return Err(vm.throw_new(
             "java/lang/IllegalArgumentException",
-            Some("count is negative"),
+            Some(&alloc::format!("count is negative: {count}")),
         ));
     }
-    let mut out = String::new();
-    for _ in 0..count {
-        out.push_str(&text);
+    let units = vm.string_utf16(this).unwrap_or_default().to_vec();
+    if count == 0 || units.is_empty() {
+        return object(vm.make_string("")?);
     }
-    object(vm.make_string(&out)?)
+    if count == 1 {
+        return object(this);
+    }
+    // The JDK rejects a result whose UTF-16 length would overflow an int with
+    // an OutOfMemoryError before allocating anything (String.repeat).
+    let long_size = (units.len() as i64) * (count as i64);
+    if long_size > i32::MAX as i64 {
+        return Err(vm.throw_new(
+            "java/lang/OutOfMemoryError",
+            Some("Required length exceeds implementation limit"),
+        ));
+    }
+    let mut out: Vec<u16> = Vec::with_capacity(long_size as usize);
+    for _ in 0..count {
+        out.extend_from_slice(&units);
+    }
+    object(vm.make_string_utf16(out)?)
 }
 
 /// `Character.isWhitespace(int)`: Unicode space/line/paragraph separators and the
