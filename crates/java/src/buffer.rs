@@ -366,6 +366,10 @@ fn byte_buffer_read_only(vm: &Vm<'_>, this: ObjectRef) -> bool {
     field_int(vm, this, "readOnly") != 0
 }
 
+fn byte_buffer_direct(vm: &Vm<'_>, this: ObjectRef) -> bool {
+    field_int(vm, this, "direct") != 0
+}
+
 fn byte_buffer_order(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
     vm.read_ref_field(this, vm.class_of(this), "order", "Ljava/nio/ByteOrder;")
         .unwrap_or(ObjectRef::NULL)
@@ -632,7 +636,7 @@ fn byte_buffer_put_at(
     Ok(())
 }
 
-const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 65] = [
+const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 66] = [
     method(
         "allocate",
         "(I)Ljava/nio/ByteBuffer;",
@@ -643,7 +647,33 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 65] = [
         "allocateDirect",
         "(I)Ljava/nio/ByteBuffer;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| byte_buffer_allocate(vm, crate::int_arg(args, 0)),
+        |vm, _, args| {
+            let length = crate::int_arg(args, 0);
+            if length < 0 {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("negative capacity"),
+                ));
+            }
+            // The JDK's direct buffer class extends MappedByteBuffer, so a
+            // direct allocation must be assignable to MappedByteBuffer.
+            let array = vm.allocate_array_of(ArrayComponent::Byte, length as usize)?;
+            let order = default_byte_order(vm)?;
+            let class = vm.resolve_class("java/nio/MappedByteBuffer")?;
+            let instance = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "bytes", "[B")?;
+            vm.set_instance_ref(instance, declaring, field, array);
+            set_field_int(vm, instance, "offset", 0);
+            set_field_int(vm, instance, "capacity", length);
+            set_field_int(vm, instance, "position", 0);
+            set_field_int(vm, instance, "limit", length);
+            set_field_int(vm, instance, "mark", -1);
+            let (declaring, field) = vm.find_field(class, "order", "Ljava/nio/ByteOrder;")?;
+            vm.set_instance_ref(instance, declaring, field, order);
+            set_field_int(vm, instance, "readOnly", 0);
+            set_field_int(vm, instance, "direct", 1);
+            object(instance)
+        },
     ),
     method(
         "wrap",
@@ -1099,13 +1129,20 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 65] = [
     method("isReadOnly", "()Z", ACC_PUBLIC, |vm, _, args| {
         boolean(byte_buffer_read_only(vm, receiver(args)))
     }),
+    method("isDirect", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(byte_buffer_direct(vm, receiver(args)))
+    }),
     method("hasArray", "()Z", ACC_PUBLIC, |vm, _, args| {
-        boolean(!byte_buffer_read_only(vm, receiver(args)))
+        let this = receiver(args);
+        boolean(!byte_buffer_read_only(vm, this) && !byte_buffer_direct(vm, this))
     }),
     method("array", "()[B", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         if byte_buffer_read_only(vm, this) {
             return Err(vm.throw_new("java/nio/ReadOnlyBufferException", None));
+        }
+        if byte_buffer_direct(vm, this) {
+            return Err(vm.throw_new("java/lang/UnsupportedOperationException", None));
         }
         object(byte_buffer_bytes(vm, this))
     }),
@@ -1113,6 +1150,9 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 65] = [
         let this = receiver(args);
         if byte_buffer_read_only(vm, this) {
             return Err(vm.throw_new("java/nio/ReadOnlyBufferException", None));
+        }
+        if byte_buffer_direct(vm, this) {
+            return Err(vm.throw_new("java/lang/UnsupportedOperationException", None));
         }
         int(byte_buffer_offset(vm, this))
     }),
@@ -1167,7 +1207,8 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 65] = [
             let remaining = buffer_remaining(vm, this);
             let offset = byte_buffer_offset(vm, this) + buffer_position(vm, this);
             let order = default_byte_order(vm)?;
-            object(new_byte_buffer(
+            let direct = byte_buffer_direct(vm, this);
+            let buffer = new_byte_buffer(
                 vm,
                 byte_buffer_bytes(vm, this),
                 offset,
@@ -1176,7 +1217,9 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 65] = [
                 remaining,
                 order,
                 byte_buffer_read_only(vm, this),
-            )?)
+            )?;
+            set_field_int(vm, buffer, "direct", i32::from(direct));
+            object(buffer)
         },
     ),
     method(
@@ -1192,7 +1235,8 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 65] = [
             }
             let offset = byte_buffer_offset(vm, this) + index;
             let order = default_byte_order(vm)?;
-            object(new_byte_buffer(
+            let direct = byte_buffer_direct(vm, this);
+            let buffer = new_byte_buffer(
                 vm,
                 byte_buffer_bytes(vm, this),
                 offset,
@@ -1201,7 +1245,9 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 65] = [
                 length,
                 order,
                 byte_buffer_read_only(vm, this),
-            )?)
+            )?;
+            set_field_int(vm, buffer, "direct", i32::from(direct));
+            object(buffer)
         },
     ),
     method(
@@ -1211,7 +1257,8 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 65] = [
         |vm, _, args| {
             let this = receiver(args);
             let order = default_byte_order(vm)?;
-            object(new_byte_buffer(
+            let direct = byte_buffer_direct(vm, this);
+            let buffer = new_byte_buffer(
                 vm,
                 byte_buffer_bytes(vm, this),
                 byte_buffer_offset(vm, this),
@@ -1220,7 +1267,9 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 65] = [
                 buffer_limit(vm, this),
                 order,
                 byte_buffer_read_only(vm, this),
-            )?)
+            )?;
+            set_field_int(vm, buffer, "direct", i32::from(direct));
+            object(buffer)
         },
     ),
     method(
@@ -1230,7 +1279,8 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 65] = [
         |vm, _, args| {
             let this = receiver(args);
             let order = default_byte_order(vm)?;
-            object(new_byte_buffer(
+            let direct = byte_buffer_direct(vm, this);
+            let buffer = new_byte_buffer(
                 vm,
                 byte_buffer_bytes(vm, this),
                 byte_buffer_offset(vm, this),
@@ -1239,7 +1289,9 @@ const BYTE_BUFFER_METHODS: [oxjvm_vm::NativeMethodDef; 65] = [
                 buffer_limit(vm, this),
                 order,
                 true,
-            )?)
+            )?;
+            set_field_int(vm, buffer, "direct", i32::from(direct));
+            object(buffer)
         },
     ),
     method(
@@ -1636,6 +1688,7 @@ pub(crate) const BYTE_BUFFER: oxjvm_vm::NativeClass = class(
         field("offset", "I", ACC_PRIVATE, None),
         field("order", "Ljava/nio/ByteOrder;", ACC_PRIVATE, None),
         field("readOnly", "I", ACC_PRIVATE, None),
+        field("direct", "I", ACC_PRIVATE, None),
     ],
     &BYTE_BUFFER_METHODS,
     None,
@@ -5290,6 +5343,8 @@ pub(crate) fn mapped_byte_buffer_from_bytes(
     let (declaring, field) = vm.find_field(class, "order", "Ljava/nio/ByteOrder;")?;
     vm.set_instance_ref(instance, declaring, field, order);
     set_field_int(vm, instance, "readOnly", i32::from(read_only));
+    // Mapped buffers are direct in the JDK.
+    set_field_int(vm, instance, "direct", 1);
     Ok(instance)
 }
 
