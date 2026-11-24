@@ -4971,6 +4971,78 @@ fn file_channel_write_buffers(
     Ok(total)
 }
 
+fn open_channel_from_options(
+    vm: &mut Vm<'_>,
+    path: &str,
+    options: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/nio/file/StandardOpenOption")?;
+    let desc = "Ljava/nio/file/StandardOpenOption;";
+    let read_opt = vm
+        .read_static_ref_if_set(class, "READ", desc)
+        .unwrap_or(ObjectRef::NULL);
+    let write_opt = vm
+        .read_static_ref_if_set(class, "WRITE", desc)
+        .unwrap_or(ObjectRef::NULL);
+    let append_opt = vm
+        .read_static_ref_if_set(class, "APPEND", desc)
+        .unwrap_or(ObjectRef::NULL);
+    let truncate_opt = vm
+        .read_static_ref_if_set(class, "TRUNCATE_EXISTING", desc)
+        .unwrap_or(ObjectRef::NULL);
+    let create_opt = vm
+        .read_static_ref_if_set(class, "CREATE", desc)
+        .unwrap_or(ObjectRef::NULL);
+    let create_new_opt = vm
+        .read_static_ref_if_set(class, "CREATE_NEW", desc)
+        .unwrap_or(ObjectRef::NULL);
+    let mut readable = false;
+    let mut writable = false;
+    let mut append = false;
+    let mut truncate = false;
+    let mut create = false;
+    let length = vm.array_length(options).unwrap_or(0);
+    for index in 0..length {
+        let option = vm.array_get(options, index as i32)?.as_ref();
+        if option == read_opt {
+            readable = true;
+        } else if option == write_opt {
+            writable = true;
+        } else if option == append_opt {
+            append = true;
+            writable = true;
+        } else if option == truncate_opt {
+            truncate = true;
+        } else if option == create_opt || option == create_new_opt {
+            create = true;
+        }
+    }
+    if !readable && !writable {
+        readable = true;
+    }
+    let bytes = vm
+        .host
+        .filesystem()
+        .and_then(|fs| fs.read(path))
+        .unwrap_or_default();
+    if create && bytes.is_empty() {
+        let _ = vm.host.filesystem().map(|fs| fs.write(path, &[], false));
+    }
+    if truncate && writable {
+        let _ = vm.host.filesystem().map(|fs| fs.write(path, &[], false));
+    }
+    let size = vm
+        .host
+        .filesystem()
+        .and_then(|fs| fs.read(path))
+        .map(|b| b.len() as i64)
+        .unwrap_or(0);
+    let position = if append { size } else { 0 };
+    let channel = new_file_channel(vm, path, position, writable)?;
+    crate::lang::write_int_field(vm, channel, "readable", i32::from(readable));
+    Ok(channel)
+}
+
 const FILE_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
     method(
         "open",
@@ -4978,7 +5050,7 @@ const FILE_CHANNEL_METHODS: [oxjvm_vm::NativeMethodDef; 21] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let path = path_string(vm, ref_arg(args, 0));
-            object(new_file_channel(vm, &path, 0, true)?)
+            object(open_channel_from_options(vm, &path, ref_arg(args, 1))?)
         },
     ),
     method(
