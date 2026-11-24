@@ -1051,8 +1051,8 @@ impl<'a> Vm<'a> {
         match site {
             CallSite::Concat { recipe, constants } => {
                 let values = self.pop_arguments(&parsed);
-                let text = self.concat(&recipe, &constants, &parsed, &values)?;
-                let string = self.intern(&text)?;
+                let units = self.concat(&recipe, &constants, &parsed, &values)?;
+                let string = self.intern_utf16(&units)?;
                 self.push(Value::Ref(string));
             }
             CallSite::Lambda {
@@ -1103,50 +1103,99 @@ impl<'a> Vm<'a> {
         Ok(Outcome::Continue)
     }
 
+    /// Render a concatenation argument as exact UTF-16 units, preserving unpaired surrogates
+    /// (the lossy [`Self::display_value`] view would turn them into `U+FFFD`).
+    fn display_value_units(&mut self, ty: &FieldType, value: Value) -> Result<Vec<u16>, VmError> {
+        let units = match ty {
+            FieldType::Base(base) => match base {
+                BaseType::Boolean => {
+                    if value.as_int() != 0 {
+                        "true".encode_utf16().collect()
+                    } else {
+                        "false".encode_utf16().collect()
+                    }
+                }
+                BaseType::Char => vec![value.as_int() as u16],
+                BaseType::Byte | BaseType::Short | BaseType::Int => {
+                    format::int_to_string(value.as_int())
+                        .encode_utf16()
+                        .collect()
+                }
+                BaseType::Long => format::long_to_string(value.as_long())
+                    .encode_utf16()
+                    .collect(),
+                BaseType::Float => format::float_to_string(value.as_float())
+                    .encode_utf16()
+                    .collect(),
+                BaseType::Double => format::double_to_string(value.as_double())
+                    .encode_utf16()
+                    .collect(),
+                BaseType::Void => Vec::new(),
+            },
+            FieldType::Object(_) | FieldType::Array(_) => {
+                let reference = value.as_ref();
+                if reference.is_null() {
+                    "null".encode_utf16().collect()
+                } else if let Some(units) = self.string_utf16(reference).map(<[u16]>::to_vec) {
+                    units
+                } else {
+                    let (class, method) =
+                        self.resolve_virtual_method(reference, "toString", "()Ljava/lang/String;")?;
+                    let result = self.invoke_method(class, method, vec![Value::Ref(reference)])?;
+                    let result = result.as_ref();
+                    if result.is_null() {
+                        "null".encode_utf16().collect()
+                    } else {
+                        self.string_utf16(result)
+                            .map(<[u16]>::to_vec)
+                            .unwrap_or_default()
+                    }
+                }
+            }
+        };
+        Ok(units)
+    }
+
     fn concat(
         &mut self,
-        recipe: &str,
+        recipe: &[u16],
         constants: &[ConcatConstant],
         descriptor: &MethodDescriptor,
         values: &[Value],
-    ) -> Result<String, VmError> {
-        let mut out = String::new();
+    ) -> Result<Vec<u16>, VmError> {
+        let mut out: Vec<u16> = Vec::new();
         let mut argument = 0usize;
         let mut constant = 0usize;
-        for ch in recipe.chars() {
-            match ch {
-                '\u{1}' => {
+        for &unit in recipe {
+            match unit {
+                1 => {
                     if let Some(value) = values.get(argument) {
                         let ty = descriptor
                             .parameters
                             .get(argument)
                             .cloned()
                             .unwrap_or(FieldType::Object("java/lang/Object".into()));
-                        out.push_str(&self.display_value(&ty, *value)?);
+                        out.extend(self.display_value_units(&ty, *value)?);
                     }
                     argument += 1;
                 }
-                '\u{2}' => {
+                2 => {
                     if let Some(value) = constants.get(constant) {
                         match value {
-                            ConcatConstant::Str(text) => out.push_str(text),
+                            ConcatConstant::Str(units) => out.extend_from_slice(units),
                             ConcatConstant::Int(value) => {
-                                out.push_str(&format::int_to_string(*value))
+                                out.extend(format::int_to_string(*value).encode_utf16());
                             }
                             ConcatConstant::Long(value) => {
-                                out.push_str(&format::long_to_string(*value))
+                                out.extend(format::long_to_string(*value).encode_utf16());
                             }
                             ConcatConstant::Float(value) => {
-                                out.push_str(&format::float_to_string(*value));
+                                out.extend(format::float_to_string(*value).encode_utf16());
                             }
                             ConcatConstant::Double(value) => {
-                                out.push_str(&format::double_to_string(*value));
+                                out.extend(format::double_to_string(*value).encode_utf16());
                             }
-                            ConcatConstant::Char(value) => {
-                                if let Some(ch) = char::from_u32(u32::from(*value)) {
-                                    out.push(ch);
-                                }
-                            }
+                            ConcatConstant::Char(value) => out.push(*value),
                         }
                     }
                     constant += 1;

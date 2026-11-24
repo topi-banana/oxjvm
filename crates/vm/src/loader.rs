@@ -1938,10 +1938,10 @@ impl<'a> Vm<'a> {
                 .classes
                 .get(site_class)
                 .constant_pool
-                .utf8(*index)
+                .utf16(*index)
                 .ok()
-                .map(str::to_string),
-            Ok(CpInfo::Utf8(text)) => Some(text.as_str().to_string()),
+                .map(<[u16]>::to_vec),
+            Ok(CpInfo::Utf8(text)) => Some(text.as_units().to_vec()),
             _ => None,
         }
         .ok_or_else(|| {
@@ -1957,9 +1957,9 @@ impl<'a> Vm<'a> {
                     .classes
                     .get(site_class)
                     .constant_pool
-                    .utf8(*string_index)
+                    .utf16(*string_index)
                     .ok()
-                    .map(|text| ConcatConstant::Str(text.to_string())),
+                    .map(|units| ConcatConstant::Str(units.to_vec())),
                 Ok(CpInfo::Integer(value)) => Some(ConcatConstant::Int(*value)),
                 Ok(CpInfo::Long(value)) => Some(ConcatConstant::Long(*value)),
                 Ok(CpInfo::Float(bits)) => Some(ConcatConstant::Float(f32::from_bits(*bits))),

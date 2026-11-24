@@ -66,8 +66,8 @@ use crate::value::ObjectRef as Ref;
 pub(crate) enum CallSite {
     /// A string-concatenation site.
     Concat {
-        /// The recipe with `\u{1}` placeholders (constants are in `constants`).
-        recipe: String,
+        /// The recipe with `\u{1}` placeholders (constants are in `constants`), as UTF-16 units.
+        recipe: Vec<u16>,
         /// The static constants substituted for `\u{1}`.
         constants: Vec<ConcatConstant>,
     },
@@ -91,8 +91,8 @@ pub(crate) enum CallSite {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub(crate) enum ConcatConstant {
-    /// A string constant.
-    Str(String),
+    /// A string constant, as UTF-16 units (preserves unpaired surrogates).
+    Str(Vec<u16>),
     /// An `int` constant.
     Int(i32),
     /// A `long` constant.
