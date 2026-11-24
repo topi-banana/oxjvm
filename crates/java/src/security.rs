@@ -561,19 +561,56 @@ fn provider_init(
     set_ref_field(vm, this, "info", "Ljava/lang/String;", info)?;
     if descriptor == "(Ljava/lang/String;DLjava/lang/String;)V" {
         let version = args[2].as_double();
-        let text = alloc::format!("{version}");
+        let mut text = alloc::format!("{version}");
+        if !text.contains('.') && !text.contains('E') {
+            text.push_str(".0");
+        }
         set_string_field(vm, this, "versionStr", &text)?;
-        let _ = version;
     } else {
         let version = ref_arg(args, 2);
         set_ref_field(vm, this, "versionStr", "Ljava/lang/String;", version)?;
-        let text = vm.string_or_empty(version);
-        let _ = text;
     }
+    provider_put_id(vm, this)?;
     void()
 }
 
-const PROVIDER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
+/// Register the immutable `Provider.id` attributes in the property table.
+fn provider_put_id(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    let table = vm.resolve_class("java/util/Hashtable")?;
+    let (declaring, put) = vm
+        .find_method(
+            table,
+            "put",
+            "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        )
+        .ok_or_else(|| VmError::internal("Hashtable.put missing"))?;
+    let class_name = vm.class_name(vm.class_of(this)).replace('/', ".");
+    let entries = [
+        ("Provider.id name", string_field(vm, this, "name")),
+        ("Provider.id version", string_field(vm, this, "versionStr")),
+        ("Provider.id info", string_field(vm, this, "info")),
+        ("Provider.id className", class_name),
+    ];
+    for (key, value) in entries {
+        let key = vm.make_string(key)?;
+        let value = vm.make_string(&value)?;
+        vm.invoke_method(
+            declaring,
+            put,
+            vec![Value::Ref(this), Value::Ref(key), Value::Ref(value)],
+        )?;
+    }
+    Ok(())
+}
+
+/// `Provider` ignores put/remove updates of keys starting with `Provider.`.
+fn provider_key_blocked(vm: &Vm<'_>, key: ObjectRef) -> bool {
+    !key.is_null()
+        && vm.class_name(vm.class_of(key)) == "java/lang/String"
+        && vm.string_or_empty(key).starts_with("Provider.")
+}
+
+const PROVIDER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     method(
         "<init>",
         "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
@@ -642,6 +679,62 @@ const PROVIDER_METHODS: [oxjvm_vm::NativeMethodDef; 10] = [
         |vm, _, _| object(new_hash_set(vm)?),
     ),
     method("isConfigured", "()Z", ACC_PUBLIC, |_, _, _| boolean(true)),
+    method(
+        "put",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let key = ref_arg(args, 1);
+            if provider_key_blocked(vm, key) {
+                return object(ObjectRef::NULL);
+            }
+            let table = vm.resolve_class("java/util/Hashtable")?;
+            let (declaring, put) = vm
+                .find_method(
+                    table,
+                    "put",
+                    "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                )
+                .ok_or_else(|| VmError::internal("Hashtable.put missing"))?;
+            vm.invoke_method(
+                declaring,
+                put,
+                vec![
+                    Value::Ref(this),
+                    Value::Ref(key),
+                    Value::Ref(ref_arg(args, 2)),
+                ],
+            )
+        },
+    ),
+    method(
+        "remove",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let key = ref_arg(args, 1);
+            if provider_key_blocked(vm, key) {
+                return object(ObjectRef::NULL);
+            }
+            let table = vm.resolve_class("java/util/Hashtable")?;
+            let (declaring, remove) = vm
+                .find_method(table, "remove", "(Ljava/lang/Object;)Ljava/lang/Object;")
+                .ok_or_else(|| VmError::internal("Hashtable.remove missing"))?;
+            vm.invoke_method(declaring, remove, vec![Value::Ref(this), Value::Ref(key)])
+        },
+    ),
+    method("clear", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let table = vm.resolve_class("java/util/Hashtable")?;
+        let (declaring, clear) = vm
+            .find_method(table, "clear", "()V")
+            .ok_or_else(|| VmError::internal("Hashtable.clear missing"))?;
+        vm.invoke_method(declaring, clear, vec![Value::Ref(this)])?;
+        provider_put_id(vm, this)?;
+        void()
+    }),
 ];
 
 pub(crate) const PROVIDER: oxjvm_vm::NativeClass = class(

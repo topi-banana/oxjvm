@@ -7432,9 +7432,18 @@ fn system_class(vm: &mut Vm<'_>) -> Result<ClassId, VmError> {
 }
 
 /// The VM's well-known default system properties.
-pub(crate) const SYSTEM_PROPERTY_DEFAULTS: [(&str, &str); 29] = [
-    ("java.version", "17"),
-    ("java.specification.version", "17"),
+pub(crate) const SYSTEM_PROPERTY_DEFAULTS: [(&str, &str); 35] = [
+    ("java.version", "27"),
+    ("java.specification.version", "27"),
+    ("java.specification.name", "Java Platform API Specification"),
+    ("java.specification.vendor", "Oracle Corporation"),
+    ("java.vm.specification.version", "27"),
+    (
+        "java.vm.specification.name",
+        "Java Virtual Machine Specification",
+    ),
+    ("java.vm.specification.vendor", "Oracle Corporation"),
+    ("java.class.version", "71.0"),
     ("java.vm.name", "oxjvm"),
     ("java.vm.version", "0.1.0"),
     ("java.vm.info", "interpreted mode"),
