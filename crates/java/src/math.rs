@@ -404,9 +404,9 @@ pub(crate) fn sinh(x: f64) -> f64 {
     }
     let magnitude = x.abs();
     let result = if magnitude < 1.0 {
-        let z = x * x;
-        let mut term = x;
-        let mut sum = x;
+        let z = magnitude * magnitude;
+        let mut term = magnitude;
+        let mut sum = magnitude;
         for index in 1..=12 {
             term *= z / f64::from((2 * index) * (2 * index + 1));
             sum += term;
@@ -453,6 +453,80 @@ pub(crate) fn tanh(x: f64) -> f64 {
     } else {
         let e = expm1(2.0 * magnitude);
         e / (e + 2.0)
+    };
+    if x < 0.0 { -result } else { result }
+}
+
+/// `asinh` (fdlibm).
+pub(crate) fn asinh(x: f64) -> f64 {
+    if x.is_nan() || x.is_infinite() {
+        return x + x;
+    }
+    let magnitude = x.abs();
+    let ln2 = LN2_HI + LN2_LO;
+    let result = if magnitude > 268_435_456.0 {
+        // |x| > 2**28
+        ln(magnitude) + ln2
+    } else if magnitude > 2.0 {
+        // 2**28 > |x| > 2
+        ln(2.0 * magnitude + 1.0 / (sqrt(x * x + 1.0) + magnitude))
+    } else {
+        // 2 > |x| >= 0
+        let t = x * x;
+        log1p(magnitude + t / (1.0 + sqrt(1.0 + t)))
+    };
+    if x < 0.0 { -result } else { result }
+}
+
+/// `acosh` (fdlibm).
+pub(crate) fn acosh(x: f64) -> f64 {
+    if x.is_nan() {
+        return x + x;
+    }
+    if x < 1.0 {
+        return f64::NAN;
+    }
+    if x == 1.0 {
+        return 0.0;
+    }
+    if x.is_infinite() {
+        return x;
+    }
+    let ln2 = LN2_HI + LN2_LO;
+    if x > 268_435_456.0 {
+        // x > 2**28
+        ln(x) + ln2
+    } else if x > 2.0 {
+        // 2**28 > x > 2
+        ln(2.0 * x - 1.0 / (x + sqrt(x * x - 1.0)))
+    } else {
+        // 1 < x <= 2
+        let t = x - 1.0;
+        log1p(t + sqrt(2.0 * t + t * t))
+    }
+}
+
+/// `atanh` (fdlibm).
+pub(crate) fn atanh(x: f64) -> f64 {
+    if x.is_nan() {
+        return x + x;
+    }
+    let magnitude = x.abs();
+    if magnitude >= 1.0 {
+        if magnitude == 1.0 {
+            return if x > 0.0 {
+                f64::INFINITY
+            } else {
+                f64::NEG_INFINITY
+            };
+        }
+        return f64::NAN;
+    }
+    let result = if magnitude < 0.5 {
+        let t = magnitude + magnitude;
+        0.5 * log1p(t + t * magnitude / (1.0 - magnitude))
+    } else {
+        0.5 * log1p((magnitude + magnitude) / (1.0 - magnitude))
     };
     if x < 0.0 { -result } else { result }
 }
@@ -2135,12 +2209,21 @@ macro_rules! math_methods {
             method("tanh", "(D)D", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
                 double(tanh(double_arg(args, 0)))
             }),
+            method("asinh", "(D)D", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+                double(asinh(double_arg(args, 0)))
+            }),
+            method("acosh", "(D)D", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+                double(acosh(double_arg(args, 0)))
+            }),
+            method("atanh", "(D)D", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
+                double(atanh(double_arg(args, 0)))
+            }),
         ]
     }};
 }
 
-const MATH_METHODS: [oxjvm_vm::NativeMethodDef; 100] = math_methods!();
-const STRICT_MATH_METHODS: [oxjvm_vm::NativeMethodDef; 100] = math_methods!();
+const MATH_METHODS: [oxjvm_vm::NativeMethodDef; 103] = math_methods!();
+const STRICT_MATH_METHODS: [oxjvm_vm::NativeMethodDef; 103] = math_methods!();
 
 pub(crate) const MATH: oxjvm_vm::NativeClass = class(
     "java/lang/Math",
