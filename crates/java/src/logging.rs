@@ -2061,13 +2061,8 @@ pub(crate) const STREAM_HANDLER: oxjvm_vm::NativeClass = class(
 const CONSOLE_HANDLER_METHODS: [oxjvm_vm::NativeMethodDef; 1] =
     [method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        record_set_ref(
-            vm,
-            this,
-            "level",
-            "Ljava/util/logging/Level;",
-            ObjectRef::NULL,
-        );
+        let level = level_named(vm, "INFO")?;
+        record_set_ref(vm, this, "level", "Ljava/util/logging/Level;", level);
         let formatter_class = vm.resolve_class("java/util/logging/SimpleFormatter")?;
         let formatter = vm.new_instance(formatter_class)?;
         record_set_ref(
@@ -3890,6 +3885,8 @@ fn log_manager_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     );
     // Install the root logger with a ConsoleHandler.
     let root = logger_from_registry_initializing(vm)?;
+    let root_key = vm.make_string("")?;
+    crate::util::hash_map_insert(vm, map, root_key, root)?;
     let handler_class = vm.resolve_class("java/util/logging/ConsoleHandler")?;
     let handler = vm.new_instance(handler_class)?;
     let (declaring, ctor) = vm
@@ -3898,6 +3895,8 @@ fn log_manager_clinit(vm: &mut Vm<'_>) -> Result<(), VmError> {
     vm.invoke_method(declaring, ctor, vec![Value::Ref(handler)])?;
     let handlers = logger_handlers(vm, root);
     hlist_add(vm, handlers, handler)?;
+    // The JDK also registers the "global" logger during initialization.
+    logger_from_registry(vm, "global")?;
     read_logging_config_file(vm)?;
     Ok(())
 }
@@ -3909,13 +3908,8 @@ fn logger_from_registry_initializing(vm: &mut Vm<'_>) -> Result<ObjectRef, VmErr
     let logger = vm.new_instance(class)?;
     let empty = vm.make_string("")?;
     record_set_ref(vm, logger, "name", "Ljava/lang/String;", empty);
-    record_set_ref(
-        vm,
-        logger,
-        "level",
-        "Ljava/util/logging/Level;",
-        ObjectRef::NULL,
-    );
+    let level = level_named(vm, "INFO")?;
+    record_set_ref(vm, logger, "level", "Ljava/util/logging/Level;", level);
     record_set_ref(
         vm,
         logger,
@@ -4117,7 +4111,16 @@ const LOG_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "getLoggerNames",
         "()Ljava/util/Enumeration;",
         ACC_PUBLIC,
-        |_, _, _| object(ObjectRef::NULL),
+        |vm, _, _| {
+            let map = registry_map(vm)?;
+            let (key_class, key_method) =
+                vm.resolve_virtual_method(map, "keySet", "()Ljava/util/Set;")?;
+            let keys = vm
+                .invoke_method(key_class, key_method, vec![Value::Ref(map)])?
+                .as_ref();
+            let elements = crate::util::collection_elements(vm, keys)?;
+            object(crate::util::new_enumeration(vm, &elements)?)
+        },
     ),
     method(
         "getLoggingMXBean",
