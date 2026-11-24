@@ -10166,3 +10166,192 @@ pub(crate) const CERT_PATH_VALIDATOR: oxjvm_vm::NativeClass = class(
     &CERT_PATH_VALIDATOR_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// java.security.cert TrustAnchor / PKIXParameters trust-anchor validation
+// -------------------------------------------------------------------------------------------
+
+const TRUST_ANCHOR_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/security/PublicKey;[B)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let ca_name = ref_arg(args, 1);
+            let pub_key = ref_arg(args, 2);
+            let name_constraints = ref_arg(args, 3);
+            if pub_key.is_null() {
+                return Err(vm.throw_new(
+                    "java/lang/NullPointerException",
+                    Some("the pubKey parameter must be non-null"),
+                ));
+            }
+            if ca_name.is_null() {
+                return Err(vm.throw_new(
+                    "java/lang/NullPointerException",
+                    Some("the caName parameter must be non-null"),
+                ));
+            }
+            let name = vm.string_or_empty(ca_name);
+            if name.is_empty() {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("the caName parameter must be a non-empty String"),
+                ));
+            }
+            set_string_field(vm, this, "caName", &name)?;
+            set_ref_field(vm, this, "pubKey", "Ljava/security/PublicKey;", pub_key)?;
+            set_ref_field(vm, this, "nameConstraints", "[B", name_constraints)?;
+            void()
+        },
+    ),
+    method(
+        "getCAName",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "caName",
+                "Ljava/lang/String;",
+            ))
+        },
+    ),
+    method(
+        "getCAPublicKey",
+        "()Ljava/security/PublicKey;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "pubKey",
+                "Ljava/security/PublicKey;",
+            ))
+        },
+    ),
+    method("getNameConstraints", "()[B", ACC_PUBLIC, |vm, _, args| {
+        object(ref_field(vm, receiver(args), "nameConstraints", "[B"))
+    }),
+    method(
+        "getTrustedCert",
+        "()Ljava/security/cert/X509Certificate;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+];
+
+pub(crate) const TRUST_ANCHOR: oxjvm_vm::NativeClass = class(
+    "java/security/cert/TrustAnchor",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("caName", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("pubKey", "Ljava/security/PublicKey;", ACC_PRIVATE, None),
+        field("nameConstraints", "[B", ACC_PRIVATE, None),
+    ],
+    &TRUST_ANCHOR_METHODS,
+    None,
+);
+
+fn pkix_set_trust_anchors(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    anchors: ObjectRef,
+) -> Result<(), VmError> {
+    if anchors.is_null() {
+        return Err(vm.throw_new(
+            "java/lang/NullPointerException",
+            Some("the trustAnchors parameters must be non-null"),
+        ));
+    }
+    let (class, is_empty) = vm.resolve_virtual_method(anchors, "isEmpty", "()Z")?;
+    let empty = vm
+        .invoke_method(class, is_empty, vec![Value::Ref(anchors)])?
+        .as_int()
+        != 0;
+    if empty {
+        return Err(vm.throw_new(
+            "java/security/InvalidAlgorithmParameterException",
+            Some("the trustAnchors parameter must be non-empty"),
+        ));
+    }
+    let anchor_class = vm.resolve_class("java/security/cert/TrustAnchor")?;
+    let (class, to_array) =
+        vm.resolve_virtual_method(anchors, "toArray", "()[Ljava/lang/Object;")?;
+    let array = vm
+        .invoke_method(class, to_array, vec![Value::Ref(anchors)])?
+        .as_ref();
+    let length = vm.array_length(array)?;
+    for index in 0..length {
+        let element = vm.array_get(array, index as i32)?.as_ref();
+        if element.is_null() || !vm.is_instance(element, anchor_class) {
+            return Err(vm.throw_new(
+                "java/lang/ClassCastException",
+                Some("all elements of set must be of type java.security.cert.TrustAnchor"),
+            ));
+        }
+    }
+    set_ref_field(vm, this, "trustAnchors", "Ljava/util/Set;", anchors)?;
+    Ok(())
+}
+
+const PKIX_PARAMETERS_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
+    method("<init>", "(Ljava/util/Set;)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        pkix_set_trust_anchors(vm, this, ref_arg(args, 1))?;
+        void()
+    }),
+    method(
+        "setTrustAnchors",
+        "(Ljava/util/Set;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            pkix_set_trust_anchors(vm, receiver(args), ref_arg(args, 1))?;
+            void()
+        },
+    ),
+    method(
+        "getTrustAnchors",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "trustAnchors",
+                "Ljava/util/Set;",
+            ))
+        },
+    ),
+];
+
+pub(crate) const PKIX_PARAMETERS: oxjvm_vm::NativeClass = class(
+    "java/security/cert/PKIXParameters",
+    Some("java/lang/Object"),
+    &["java/security/cert/CertPathParameters"],
+    ACC_PUBLIC,
+    &[field("trustAnchors", "Ljava/util/Set;", ACC_PRIVATE, None)],
+    &PKIX_PARAMETERS_METHODS,
+    None,
+);
+
+pub(crate) const CERT_PATH_PARAMETERS: oxjvm_vm::NativeClass = class(
+    "java/security/cert/CertPathParameters",
+    Some("java/lang/Object"),
+    &["java/lang/Cloneable"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &CERT_PATH_PARAMETERS_METHODS,
+    None,
+);
+
+const CERT_PATH_PARAMETERS_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+    "clone",
+    "()Ljava/lang/Object;",
+    ACC_PUBLIC | ACC_ABSTRACT,
+    crate::lang::abstract_method_pub,
+)];
