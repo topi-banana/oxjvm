@@ -796,10 +796,14 @@ pub(crate) fn signum_f64(x: f64) -> f64 {
 }
 
 pub(crate) fn copy_sign(magnitude: f64, sign: f64) -> f64 {
-    if sign.is_nan() {
-        return f64::NAN;
-    }
-    let bits = (magnitude.to_bits() & !(1u64 << 63)) | (sign.to_bits() & (1u64 << 63));
+    // A NaN sign is treated as positive (StrictMath requires this; Math permits
+    // it), so ignore the sign bit of a NaN rather than propagating NaN.
+    let sign_bit = if sign.is_nan() {
+        0
+    } else {
+        sign.to_bits() & (1u64 << 63)
+    };
+    let bits = (magnitude.to_bits() & !(1u64 << 63)) | sign_bit;
     f64::from_bits(bits)
 }
 
@@ -821,17 +825,100 @@ pub(crate) fn ieee_remainder(x: f64, y: f64) -> f64 {
 }
 
 pub(crate) fn pow2(exponent: i32) -> f64 {
-    let mut value = 1.0;
-    if exponent >= 0 {
-        for _ in 0..exponent {
-            value *= 2.0;
-        }
-    } else {
-        for _ in 0..(-exponent) {
-            value /= 2.0;
-        }
+    // Construct 2^exponent directly from the IEEE-754 encoding instead of a
+    // loop, so extreme scale factors (e.g. Integer.MAX_VALUE) are O(1) rather
+    // than billions of iterations.
+    if exponent >= 1024 {
+        return f64::INFINITY;
     }
-    value
+    if exponent <= -1075 {
+        return 0.0;
+    }
+    if exponent >= -1022 {
+        // Normal: biased exponent field is exponent + 1023.
+        f64::from_bits(((exponent + 1023) as u64) << 52)
+    } else {
+        // Subnormal range -1074..-1023: 2^-1074 has encoding 1.
+        f64::from_bits(1u64 << (exponent + 1074))
+    }
+}
+
+fn scalb(value: f64, scale_factor: i32) -> f64 {
+    // Zero, infinity and NaN are returned unchanged regardless of the scale
+    // factor (avoids 0 * inf and inf * 0 producing NaN for extreme factors).
+    if value.is_nan() || value == 0.0 || value.is_infinite() {
+        return value;
+    }
+    // Adjust the exponent directly rather than multiplying by 2^n: an
+    // independent 2^n over/underflows for extreme n, and staged multiplication
+    // double-rounds subnormal results.  Work on the IEEE-754 encoding with a
+    // single round-to-nearest-even step.
+    let bits = value.to_bits();
+    let sign = bits & (1u64 << 63);
+    let mut exp = ((bits >> 52) & 0x7ff) as i32;
+    let mut mant = bits & 0xf_ffff_ffff_ffff;
+    if exp == 0 {
+        // Subnormal input: normalize the significand to [2^52, 2^53).
+        let shift = mant.leading_zeros() as i32 - 11;
+        mant <<= shift;
+        mant &= 0xf_ffff_ffff_ffff;
+        exp = 1 - shift;
+    }
+    let new_exp = exp as i64 + scale_factor as i64;
+    if new_exp >= 0x7ff {
+        return f64::from_bits(sign | (0x7ffu64 << 52));
+    }
+    if new_exp <= 0 {
+        // Subnormal or zero result: shift the 53-bit significand right with
+        // round-to-nearest-even.
+        let full_mant = mant | (1u64 << 52);
+        let shift = (1 - new_exp) as u32;
+        if shift >= 54 {
+            return f64::from_bits(sign);
+        }
+        let shifted = full_mant >> shift;
+        let rem = full_mant & ((1u64 << shift) - 1);
+        let halfway = 1u64 << (shift - 1);
+        let mut rounded = shifted;
+        if rem > halfway || (rem == halfway && (shifted & 1) == 1) {
+            rounded += 1;
+        }
+        return f64::from_bits(sign | rounded);
+    }
+    f64::from_bits(sign | ((new_exp as u64) << 52) | mant)
+}
+
+fn ulp(value: f64) -> f64 {
+    if value.is_nan() {
+        return f64::NAN;
+    }
+    let value = value.abs();
+    if value.is_infinite() {
+        return f64::INFINITY;
+    }
+    let exp = ((value.to_bits() >> 52) & 0x7ff) as i32;
+    if exp == 0 {
+        // Zero or subnormal: ulp is the smallest subnormal.
+        return f64::from_bits(1);
+    }
+    // Normal: ulp = 2^(unbiased_exponent - 52).
+    pow2(exp - 1023 - 52)
+}
+
+fn ulp_float(value: f32) -> f32 {
+    if value.is_nan() {
+        return f32::NAN;
+    }
+    let value = value.abs();
+    if value.is_infinite() {
+        return f32::INFINITY;
+    }
+    let exp = ((value.to_bits() >> 23) & 0xff) as i32;
+    if exp == 0 {
+        return f32::from_bits(1);
+    }
+    // Normal: ulp = 2^(unbiased_exponent - 23), exactly representable as f32.
+    pow2(exp - 127 - 23) as f32
 }
 
 fn next_up_float(value: f32) -> f32 {
@@ -866,6 +953,27 @@ fn next_after(start: f64, direction: f64) -> f64 {
     let bits = start.to_bits();
     let towards_more = (direction > start) == (start > 0.0);
     f64::from_bits(if towards_more { bits + 1 } else { bits - 1 })
+}
+
+fn next_after_float(start: f32, direction: f64) -> f32 {
+    if start.is_nan() || direction.is_nan() {
+        return f32::NAN;
+    }
+    let start64 = f64::from(start);
+    if start64 == direction {
+        // Equal arguments return the direction (preserving its zero sign).
+        return direction as f32;
+    }
+    if start == 0.0 {
+        return if direction > 0.0 {
+            f32::from_bits(1)
+        } else {
+            f32::from_bits((1u32 << 31) | 1)
+        };
+    }
+    let bits = start.to_bits();
+    let towards_more = (direction > start64) == (start > 0.0);
+    f32::from_bits(if towards_more { bits + 1 } else { bits - 1 })
 }
 
 fn fmin(a: f32, b: f32) -> f32 {
@@ -1894,6 +2002,12 @@ macro_rules! math_methods {
                 ACC_PUBLIC | ACC_STATIC,
                 |_, _, args| double(next_after(double_arg(args, 0), double_arg(args, 1))),
             ),
+            method(
+                "nextAfter",
+                "(FD)F",
+                ACC_PUBLIC | ACC_STATIC,
+                |_, _, args| float(next_after_float(float_arg(args, 0), double_arg(args, 1))),
+            ),
             method("nextUp", "(F)F", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
                 float(next_up_float(float_arg(args, 0)))
             }),
@@ -1907,12 +2021,10 @@ macro_rules! math_methods {
                 double(next_after(double_arg(args, 0), f64::NEG_INFINITY))
             }),
             method("ulp", "(D)D", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
-                let value = double_arg(args, 0).abs();
-                double(next_after(value, f64::INFINITY) - value)
+                double(ulp(double_arg(args, 0)))
             }),
             method("ulp", "(F)F", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
-                let value = float_arg(args, 0).abs();
-                float(next_up_float(value) - value)
+                float(ulp_float(float_arg(args, 0)))
             }),
             method(
                 "getExponent",
@@ -1925,7 +2037,8 @@ macro_rules! math_methods {
                     int(if value.is_nan() || value.is_infinite() {
                         0x80
                     } else if exponent == 0 {
-                        if bits & 0x7f_ffff == 0 { -127 } else { -126 }
+                        // Zero and subnormal both yield MIN_EXPONENT - 1 (-127).
+                        -127
                     } else {
                         exponent - 127
                     })
@@ -1942,21 +2055,18 @@ macro_rules! math_methods {
                     int(if value.is_nan() || value.is_infinite() {
                         0x400
                     } else if exponent == 0 {
-                        if bits & 0xf_ffff_ffff_ffff == 0 {
-                            -1023
-                        } else {
-                            -1022
-                        }
+                        // Zero and subnormal both yield MIN_EXPONENT - 1 (-1023).
+                        -1023
                     } else {
                         exponent - 1023
                     })
                 },
             ),
             method("scalb", "(FI)F", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
-                float((f64::from(float_arg(args, 0)) * pow2(int_arg(args, 1))) as f32)
+                float(scalb(f64::from(float_arg(args, 0)), int_arg(args, 1)) as f32)
             }),
             method("scalb", "(DI)D", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
-                double(double_arg(args, 0) * pow2(int_arg(args, 1)))
+                double(scalb(double_arg(args, 0), int_arg(args, 1)))
             }),
             method("fma", "(DDD)D", ACC_PUBLIC | ACC_STATIC, |_, _, args| {
                 double(fma_f64(
@@ -2029,8 +2139,8 @@ macro_rules! math_methods {
     }};
 }
 
-const MATH_METHODS: [oxjvm_vm::NativeMethodDef; 99] = math_methods!();
-const STRICT_MATH_METHODS: [oxjvm_vm::NativeMethodDef; 99] = math_methods!();
+const MATH_METHODS: [oxjvm_vm::NativeMethodDef; 100] = math_methods!();
+const STRICT_MATH_METHODS: [oxjvm_vm::NativeMethodDef; 100] = math_methods!();
 
 pub(crate) const MATH: oxjvm_vm::NativeClass = class(
     "java/lang/Math",
