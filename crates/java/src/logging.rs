@@ -2608,13 +2608,19 @@ fn apply_logging_properties(vm: &mut Vm<'_>, props: ObjectRef) -> Result<(), VmE
     Ok(())
 }
 
-/// Read the file named by the `java.util.logging.config.file` system property
-/// (if any) and apply it, as the LogManager does on initialization and on a
-/// no-argument `readConfiguration()`.
-fn read_logging_config_file(vm: &mut Vm<'_>) -> Result<(), VmError> {
+/// Load the file named by the `java.util.logging.config.file` system property
+/// into a fresh `Properties` (empty when the property is unset or the file is
+/// missing/unreadable), as the LogManager does.
+fn logging_config_properties(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
+    let props_class = vm.resolve_class("java/util/Properties")?;
+    let props = vm.new_instance(props_class)?;
+    let (props_ctor_class, props_ctor) = vm
+        .find_method(props_class, "<init>", "()V")
+        .ok_or_else(|| VmError::internal("Properties() missing"))?;
+    vm.invoke_method(props_ctor_class, props_ctor, vec![Value::Ref(props)])?;
     let path = match crate::lang::system_property(vm, "java.util.logging.config.file") {
         Some(path) if !path.is_empty() => path,
-        _ => return Ok(()),
+        _ => return Ok(props),
     };
     let stream_class = vm.resolve_class("java/io/FileInputStream")?;
     let stream = vm.new_instance(stream_class)?;
@@ -2631,14 +2637,8 @@ fn read_logging_config_file(vm: &mut Vm<'_>) -> Result<(), VmError> {
         )
         .is_err()
     {
-        return Ok(());
+        return Ok(props);
     }
-    let props_class = vm.resolve_class("java/util/Properties")?;
-    let props = vm.new_instance(props_class)?;
-    let (props_ctor_class, props_ctor) = vm
-        .find_method(props_class, "<init>", "()V")
-        .ok_or_else(|| VmError::internal("Properties() missing"))?;
-    vm.invoke_method(props_ctor_class, props_ctor, vec![Value::Ref(props)])?;
     let (load_class, load) = vm
         .find_method(props_class, "load", "(Ljava/io/InputStream;)V")
         .ok_or_else(|| VmError::internal("Properties.load missing"))?;
@@ -2647,6 +2647,120 @@ fn read_logging_config_file(vm: &mut Vm<'_>) -> Result<(), VmError> {
         load,
         vec![Value::Ref(props), Value::Ref(stream)],
     )?;
+    Ok(props)
+}
+
+/// Replace the configuration store with `next`, optionally merging the previous
+/// and next values through the per-key function produced by `mapper`, then
+/// apply the resulting `<logger>.level` entries. Mirrors the JDK, which sets
+/// `props = next` (so keys absent from the new configuration are dropped) and
+/// treats a null mapper as "no merging".
+fn merge_configuration(vm: &mut Vm<'_>, next: ObjectRef, mapper: ObjectRef) -> Result<(), VmError> {
+    let store = log_manager_properties(vm)?;
+    let (get_class, get) = vm.resolve_virtual_method(
+        next,
+        "getProperty",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+    )?;
+    let (set_class, set) = vm.resolve_virtual_method(
+        next,
+        "setProperty",
+        "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/Object;",
+    )?;
+    if !mapper.is_null() {
+        // Union of the previous and next property names.
+        let (prev_keys_class, prev_keys_method) =
+            vm.resolve_virtual_method(store, "keySet", "()Ljava/util/Set;")?;
+        let prev_keys = vm
+            .invoke_method(prev_keys_class, prev_keys_method, vec![Value::Ref(store)])?
+            .as_ref();
+        let (next_keys_class, next_keys_method) =
+            vm.resolve_virtual_method(next, "stringPropertyNames", "()Ljava/util/Set;")?;
+        let next_keys = vm
+            .invoke_method(next_keys_class, next_keys_method, vec![Value::Ref(next)])?
+            .as_ref();
+        let mut keys = crate::util::collection_elements(vm, prev_keys)?;
+        for key in crate::util::collection_elements(vm, next_keys)? {
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+        let (apply_class, apply) =
+            vm.resolve_virtual_method(mapper, "apply", "(Ljava/lang/Object;)Ljava/lang/Object;")?;
+        for key in keys {
+            let merger = vm
+                .invoke_method(
+                    apply_class,
+                    apply,
+                    vec![Value::Ref(mapper), Value::Ref(key)],
+                )?
+                .as_ref();
+            let old = crate::util::hash_map_lookup(vm, store, key)?;
+            let new = vm
+                .invoke_method(get_class, get, vec![Value::Ref(next), Value::Ref(key)])?
+                .as_ref();
+            let (merge_class, merge) = vm.resolve_virtual_method(
+                merger,
+                "apply",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+            )?;
+            let merged = vm
+                .invoke_method(
+                    merge_class,
+                    merge,
+                    vec![Value::Ref(merger), Value::Ref(old), Value::Ref(new)],
+                )?
+                .as_ref();
+            if !merged.is_null() {
+                vm.invoke_method(
+                    set_class,
+                    set,
+                    vec![Value::Ref(next), Value::Ref(key), Value::Ref(merged)],
+                )?;
+            } else {
+                // A null merge result drops the key from the new configuration.
+                let (remove_class, remove) = vm.resolve_virtual_method(
+                    next,
+                    "remove",
+                    "(Ljava/lang/Object;)Ljava/lang/Object;",
+                )?;
+                vm.invoke_method(
+                    remove_class,
+                    remove,
+                    vec![Value::Ref(next), Value::Ref(key)],
+                )?;
+            }
+        }
+    }
+    // props = next: drop the old store and install the new configuration.
+    let (clear_class, clear) = vm.resolve_virtual_method(store, "clear", "()V")?;
+    vm.invoke_method(clear_class, clear, vec![Value::Ref(store)])?;
+    // Reset every registered logger's level before re-applying, as the JDK's
+    // resetLoggerContext does, so loggers absent from the new config revert to
+    // inheriting their parent's level.
+    let loggers = registry_map(vm)?;
+    let (values_class, values_method) =
+        vm.resolve_virtual_method(loggers, "values", "()Ljava/util/Collection;")?;
+    let values = vm
+        .invoke_method(values_class, values_method, vec![Value::Ref(loggers)])?
+        .as_ref();
+    for logger in crate::util::collection_elements(vm, values)? {
+        record_set_ref(
+            vm,
+            logger,
+            "level",
+            "Ljava/util/logging/Level;",
+            ObjectRef::NULL,
+        );
+    }
+    apply_logging_properties(vm, next)
+}
+
+/// Read the file named by the `java.util.logging.config.file` system property
+/// (if any) and apply it, as the LogManager does on initialization and on a
+/// no-argument `readConfiguration()`.
+fn read_logging_config_file(vm: &mut Vm<'_>) -> Result<(), VmError> {
+    let props = logging_config_properties(vm)?;
     apply_logging_properties(vm, props)
 }
 
@@ -3947,7 +4061,7 @@ fn logger_from_registry_initializing(vm: &mut Vm<'_>) -> Result<ObjectRef, VmErr
     Ok(logger)
 }
 
-const LOG_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+const LOG_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
     method("<init>", "()V", ACC_PROTECTED, |_, _, _| void()),
     method(
         "getLogManager",
@@ -4015,7 +4129,7 @@ const LOG_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         |vm, _, args| {
             let ins = ref_arg(args, 1);
             let mapper = ref_arg(args, 2);
-            if ins.is_null() || mapper.is_null() {
+            if ins.is_null() {
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
             let props_class = vm.resolve_class("java/util/Properties")?;
@@ -4028,54 +4142,18 @@ const LOG_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
                 .find_method(props_class, "load", "(Ljava/io/InputStream;)V")
                 .ok_or_else(|| VmError::internal("Properties.load missing"))?;
             vm.invoke_method(load_class, load, vec![Value::Ref(props), Value::Ref(ins)])?;
-            let (names_class, names_method) =
-                vm.resolve_virtual_method(props, "stringPropertyNames", "()Ljava/util/Set;")?;
-            let names = vm
-                .invoke_method(names_class, names_method, vec![Value::Ref(props)])?
-                .as_ref();
-            let store = log_manager_properties(vm)?;
-            for key in crate::util::collection_elements(vm, names)? {
-                let (apply_class, apply) = vm.resolve_virtual_method(
-                    mapper,
-                    "apply",
-                    "(Ljava/lang/Object;)Ljava/lang/Object;",
-                )?;
-                let merger = vm
-                    .invoke_method(
-                        apply_class,
-                        apply,
-                        vec![Value::Ref(mapper), Value::Ref(key)],
-                    )?
-                    .as_ref();
-                let name = vm.string_or_empty(key);
-                let old = match log_manager_get_property(vm, &name)? {
-                    Some(value) => vm.make_string(&value)?,
-                    None => ObjectRef::NULL,
-                };
-                let (get_class, get) = vm.resolve_virtual_method(
-                    props,
-                    "getProperty",
-                    "(Ljava/lang/String;)Ljava/lang/String;",
-                )?;
-                let new = vm
-                    .invoke_method(get_class, get, vec![Value::Ref(props), Value::Ref(key)])?
-                    .as_ref();
-                let (merge_class, merge) = vm.resolve_virtual_method(
-                    merger,
-                    "apply",
-                    "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
-                )?;
-                let merged = vm
-                    .invoke_method(
-                        merge_class,
-                        merge,
-                        vec![Value::Ref(merger), Value::Ref(old), Value::Ref(new)],
-                    )?
-                    .as_ref();
-                if !merged.is_null() {
-                    crate::util::hash_map_insert(vm, store, key, merged)?;
-                }
-            }
+            merge_configuration(vm, props, mapper)?;
+            void()
+        },
+    ),
+    method(
+        "updateConfiguration",
+        "(Ljava/util/function/Function;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let mapper = ref_arg(args, 1);
+            let props = logging_config_properties(vm)?;
+            merge_configuration(vm, props, mapper)?;
             void()
         },
     ),
