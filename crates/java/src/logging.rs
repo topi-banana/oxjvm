@@ -2894,6 +2894,31 @@ fn logger_is_loggable(
         != 0)
 }
 
+/// Log a message produced lazily by a `Supplier<String>`, invoking the
+/// supplier only when the level is loggable (the JDK's lazy-log contract).
+fn logger_log_supplier(
+    vm: &mut Vm<'_>,
+    logger: ObjectRef,
+    level: ObjectRef,
+    supplier: ObjectRef,
+    thrown: ObjectRef,
+) -> Result<(), VmError> {
+    if level.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    if !logger_is_loggable(vm, logger, level)? {
+        return Ok(());
+    }
+    if supplier.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let (class, method) = vm.resolve_virtual_method(supplier, "get", "()Ljava/lang/Object;")?;
+    let message = vm
+        .invoke_method(class, method, vec![Value::Ref(supplier)])?
+        .as_ref();
+    logger_log_message(vm, logger, level, message, thrown)
+}
+
 fn logger_log_message(
     vm: &mut Vm<'_>,
     logger: ObjectRef,
@@ -3122,7 +3147,7 @@ fn level_named(vm: &mut Vm<'_>, name: &str) -> Result<ObjectRef, VmError> {
         .ok_or_else(|| VmError::internal("Level constant missing"))
 }
 
-const LOGGER_METHODS: [oxjvm_vm::NativeMethodDef; 52] = [
+const LOGGER_METHODS: [oxjvm_vm::NativeMethodDef; 61] = [
     method(
         "getLogger",
         "(Ljava/lang/String;)Ljava/util/logging/Logger;",
@@ -3218,7 +3243,10 @@ const LOGGER_METHODS: [oxjvm_vm::NativeMethodDef; 52] = [
             let logger = vm.new_instance(class)?;
             let empty = vm.make_string("")?;
             record_set_ref(vm, logger, "name", "Ljava/lang/String;", empty);
-            crate::lang::write_int_field(vm, logger, "useParentHandlers", 0);
+            // Anonymous loggers publish through the root logger's handlers.
+            crate::lang::write_int_field(vm, logger, "useParentHandlers", 1);
+            let root = logger_from_registry(vm, "")?;
+            record_set_ref(vm, logger, "parent", "Ljava/util/logging/Logger;", root);
             let list = vm.resolve_class("java/util/ArrayList")?;
             let list_instance = vm.new_instance(list)?;
             let (declaring, ctor) = vm
@@ -3620,6 +3648,106 @@ const LOGGER_METHODS: [oxjvm_vm::NativeMethodDef; 52] = [
         |vm, _, args| {
             let level = level_named(vm, "CONFIG")?;
             logger_log_message(vm, receiver(args), level, ref_arg(args, 1), ObjectRef::NULL)?;
+            void()
+        },
+    ),
+    method(
+        "log",
+        "(Ljava/util/logging/Level;Ljava/util/function/Supplier;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            logger_log_supplier(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                ref_arg(args, 2),
+                ObjectRef::NULL,
+            )?;
+            void()
+        },
+    ),
+    method(
+        "log",
+        "(Ljava/util/logging/Level;Ljava/lang/Throwable;Ljava/util/function/Supplier;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            logger_log_supplier(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                ref_arg(args, 3),
+                ref_arg(args, 2),
+            )?;
+            void()
+        },
+    ),
+    method(
+        "severe",
+        "(Ljava/util/function/Supplier;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let level = level_named(vm, "SEVERE")?;
+            logger_log_supplier(vm, receiver(args), level, ref_arg(args, 1), ObjectRef::NULL)?;
+            void()
+        },
+    ),
+    method(
+        "warning",
+        "(Ljava/util/function/Supplier;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let level = level_named(vm, "WARNING")?;
+            logger_log_supplier(vm, receiver(args), level, ref_arg(args, 1), ObjectRef::NULL)?;
+            void()
+        },
+    ),
+    method(
+        "info",
+        "(Ljava/util/function/Supplier;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let level = level_named(vm, "INFO")?;
+            logger_log_supplier(vm, receiver(args), level, ref_arg(args, 1), ObjectRef::NULL)?;
+            void()
+        },
+    ),
+    method(
+        "config",
+        "(Ljava/util/function/Supplier;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let level = level_named(vm, "CONFIG")?;
+            logger_log_supplier(vm, receiver(args), level, ref_arg(args, 1), ObjectRef::NULL)?;
+            void()
+        },
+    ),
+    method(
+        "fine",
+        "(Ljava/util/function/Supplier;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let level = level_named(vm, "FINE")?;
+            logger_log_supplier(vm, receiver(args), level, ref_arg(args, 1), ObjectRef::NULL)?;
+            void()
+        },
+    ),
+    method(
+        "finer",
+        "(Ljava/util/function/Supplier;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let level = level_named(vm, "FINER")?;
+            logger_log_supplier(vm, receiver(args), level, ref_arg(args, 1), ObjectRef::NULL)?;
+            void()
+        },
+    ),
+    method(
+        "finest",
+        "(Ljava/util/function/Supplier;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let level = level_named(vm, "FINEST")?;
+            logger_log_supplier(vm, receiver(args), level, ref_arg(args, 1), ObjectRef::NULL)?;
             void()
         },
     ),
