@@ -1188,3 +1188,220 @@ fn initial_context_init(
     }
     void()
 }
+
+// -------------------------------------------------------------------------------------------
+// javax.naming.ldap.Rdn
+// -------------------------------------------------------------------------------------------
+
+/// `javax.naming.ldap.Rdn`: a relative distinguished name. The RFC 2253
+/// escape/unescape value helpers are modeled here; the parsed type/value
+/// entries and name comparison are added with the LDAP name subsystem.
+pub(crate) const RDN: oxjvm_vm::NativeClass = class(
+    "javax/naming/ldap/Rdn",
+    Some("java/lang/Object"),
+    &["java/io/Serializable", "java/lang/Comparable"],
+    ACC_PUBLIC,
+    &[],
+    &RDN_METHODS,
+    None,
+);
+
+const RDN_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+    method(
+        "escapeValue",
+        "(Ljava/lang/Object;)Ljava/lang/String;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let val = ref_arg(args, 0);
+            if val.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let class = vm.class_of(val);
+            let name = vm.class_name(class);
+            if name == "[B" {
+                let bytes = crate::lang::array_bytes(vm, val)?;
+                let text = rdn_escape_binary(&bytes);
+                object(vm.make_string(&text)?)
+            } else if name == "java/lang/String" {
+                let units = vm.string_utf16(val).unwrap_or_default().to_vec();
+                let escaped = rdn_escape_string(&units);
+                object(vm.make_string_utf16(escaped)?)
+            } else {
+                Err(vm.throw_new(
+                    "java/lang/ClassCastException",
+                    Some(&alloc::format!(
+                        "class {name} cannot be cast to class java.lang.String"
+                    )),
+                ))
+            }
+        },
+    ),
+    method(
+        "unescapeValue",
+        "(Ljava/lang/String;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let val = ref_arg(args, 0);
+            if val.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let units = vm.string_utf16(val).unwrap_or_default().to_vec();
+            let original = vm.string_value(val).unwrap_or_default();
+            rdn_unescape(vm, &units, &original)
+        },
+    ),
+];
+
+/// RFC 2253 "whitespace": space and carriage return only.
+fn rdn_is_whitespace(unit: u16) -> bool {
+    unit == u16::from(b' ') || unit == u16::from(b'\r')
+}
+
+fn rdn_char(unit: u16) -> char {
+    char::from_u32(u32::from(unit)).unwrap_or('\u{FFFD}')
+}
+
+fn rdn_digit(unit: u16, radix: u32) -> i32 {
+    rdn_char(unit).to_digit(radix).map_or(-1, |d| d as i32)
+}
+
+/// Escape a string value: backslash-prefix leading/trailing whitespace and
+/// any of `,=+<>#;"\`.
+fn rdn_escape_string(units: &[u16]) -> Vec<u16> {
+    const ESCAPEES: &str = ",=+<>#;\"\\";
+    let mut lead = 0;
+    while lead < units.len() && rdn_is_whitespace(units[lead]) {
+        lead += 1;
+    }
+    let mut trail = units.len() as i32 - 1;
+    while trail >= 0 && rdn_is_whitespace(units[trail as usize]) {
+        trail -= 1;
+    }
+    let mut out = Vec::with_capacity(units.len());
+    for (index, &unit) in units.iter().enumerate() {
+        if index < lead || index as i32 > trail || ESCAPEES.contains(rdn_char(unit)) {
+            out.push(u16::from(b'\\'));
+        }
+        out.push(unit);
+    }
+    out
+}
+
+/// Escape a binary value as `#` followed by lowercase hex pairs.
+fn rdn_escape_binary(bytes: &[u8]) -> String {
+    let mut text = String::from("#");
+    for &byte in bytes {
+        text.push(char::from_digit(u32::from(0xF & (byte >> 4)), 16).unwrap_or('0'));
+        text.push(char::from_digit(u32::from(0xF & byte), 16).unwrap_or('0'));
+    }
+    text
+}
+
+/// Decode a `#CEB1DF80`-style hex-pair value into bytes.
+fn rdn_decode_hex_pairs(
+    vm: &mut Vm<'_>,
+    units: &[u16],
+    mut beg: usize,
+    end: usize,
+    original: &str,
+) -> Result<Vec<u8>, VmError> {
+    let mut bytes = Vec::new();
+    while beg + 1 < end {
+        let hi = rdn_digit(units[beg], 16);
+        let lo = rdn_digit(units[beg + 1], 16);
+        if hi < 0 || lo < 0 {
+            break;
+        }
+        bytes.push(((hi << 4) + lo) as u8);
+        beg += 2;
+    }
+    if beg != end {
+        return Err(vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some(&alloc::format!("Illegal attribute value: {original}")),
+        ));
+    }
+    Ok(bytes)
+}
+
+/// Collect the longest prefix of `\XY` hex-encoded UTF-8 octets.
+fn rdn_utf8_octets(units: &[u16], mut beg: usize, end: usize) -> Vec<u8> {
+    let mut octets = Vec::new();
+    while beg + 2 < end {
+        if units[beg] != u16::from(b'\\') {
+            break;
+        }
+        beg += 1;
+        let hi = rdn_digit(units[beg], 16);
+        beg += 1;
+        let lo = rdn_digit(units[beg], 16);
+        beg += 1;
+        if hi < 0 || lo < 0 {
+            break;
+        }
+        octets.push(((hi << 4) + lo) as u8);
+    }
+    octets
+}
+
+/// Unescape an RFC 2253 attribute value, returning a String or a byte array.
+fn rdn_unescape(vm: &mut Vm<'_>, units: &[u16], original: &str) -> Result<Value, VmError> {
+    let mut beg = 0;
+    let mut end = units.len();
+    while beg < end && rdn_is_whitespace(units[beg]) {
+        beg += 1;
+    }
+    while beg < end && rdn_is_whitespace(units[end - 1]) {
+        end -= 1;
+    }
+    // Retain a trailing whitespace char that was preceded by a backslash.
+    if end != units.len() && beg < end && units[end - 1] == u16::from(b'\\') {
+        end += 1;
+    }
+    if beg >= end {
+        return object(vm.make_string("")?);
+    }
+    if units[beg] == u16::from(b'#') {
+        let bytes = rdn_decode_hex_pairs(vm, units, beg + 1, end, original)?;
+        return object(crate::lang::byte_array_from(vm, &bytes)?);
+    }
+    if units[beg] == u16::from(b'"') && units[end - 1] == u16::from(b'"') {
+        beg += 1;
+        end -= 1;
+    }
+    let mut builder: Vec<u16> = Vec::new();
+    let mut esc: i32 = -1;
+    let mut index = beg;
+    while index < end {
+        if units[index] == u16::from(b'\\') && index + 1 < end {
+            if !rdn_char(units[index + 1]).is_alphanumeric() {
+                index += 1;
+                builder.push(units[index]);
+                esc = index as i32;
+                index += 1;
+            } else {
+                let octets = rdn_utf8_octets(units, index, end);
+                if octets.is_empty() {
+                    return Err(vm.throw_new(
+                        "java/lang/IllegalArgumentException",
+                        Some(&alloc::format!(
+                            "Not a valid attribute string value:{original},improper usage of backslash"
+                        )),
+                    ));
+                }
+                let decoded = String::from_utf8_lossy(&octets);
+                builder.extend(decoded.encode_utf16());
+                index += octets.len() * 3;
+            }
+        } else {
+            builder.push(units[index]);
+            index += 1;
+        }
+    }
+    if let Some(&last) = builder.last() {
+        if rdn_is_whitespace(last) && esc != end as i32 - 1 {
+            builder.pop();
+        }
+    }
+    object(vm.make_string_utf16(builder)?)
+}
