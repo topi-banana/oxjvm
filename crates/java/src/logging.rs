@@ -2253,46 +2253,121 @@ pub(crate) const MEMORY_HANDLER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const FILE_HANDLER_METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
-    "<init>",
-    "(Ljava/lang/String;)V",
-    ACC_PUBLIC,
-    |vm, _, args| {
+/// Shared `FileHandler` constructor body: validate the pattern/limit/count the
+/// way the JDK does, then open the backing file and install the default
+/// formatter.
+fn file_handler_configure(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    pattern: ObjectRef,
+    limit: i32,
+    count: i32,
+    append: bool,
+) -> Result<(), VmError> {
+    if pattern.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    if limit < 0 {
+        return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("limit < 0")));
+    }
+    if count < 1 {
+        return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("count < 1")));
+    }
+    if vm.string_or_empty(pattern).is_empty() {
+        return Err(vm.throw_new("java/lang/IllegalArgumentException", Some("empty pattern")));
+    }
+    let stream_class = vm.resolve_class("java/io/FileOutputStream")?;
+    let stream = vm.new_instance(stream_class)?;
+    let (declaring, ctor) = vm
+        .find_method(stream_class, "<init>", "(Ljava/lang/String;Z)V")
+        .ok_or_else(|| VmError::internal("FileOutputStream(String,boolean) missing"))?;
+    vm.invoke_method(
+        declaring,
+        ctor,
+        vec![Value::Ref(stream), Value::Ref(pattern), boolean(append)?],
+    )?;
+    record_set_ref(
+        vm,
+        this,
+        "level",
+        "Ljava/util/logging/Level;",
+        ObjectRef::NULL,
+    );
+    let formatter_class = vm.resolve_class("java/util/logging/SimpleFormatter")?;
+    let formatter = vm.new_instance(formatter_class)?;
+    record_set_ref(
+        vm,
+        this,
+        "formatter",
+        "Ljava/util/logging/Formatter;",
+        formatter,
+    );
+    record_set_ref(vm, this, "output", "Ljava/lang/Object;", stream);
+    Ok(())
+}
+
+const FILE_HANDLER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let pattern = ref_arg(args, 1);
-        if pattern.is_null() {
-            return Err(vm.throw_new("java/lang/NullPointerException", None));
-        }
-        let stream_class = vm.resolve_class("java/io/FileOutputStream")?;
-        let stream = vm.new_instance(stream_class)?;
-        let (declaring, ctor) = vm
-            .find_method(stream_class, "<init>", "(Ljava/lang/String;)V")
-            .ok_or_else(|| VmError::internal("FileOutputStream(String) missing"))?;
-        vm.invoke_method(
-            declaring,
-            ctor,
-            vec![Value::Ref(stream), Value::Ref(pattern)],
-        )?;
-        record_set_ref(
-            vm,
-            this,
-            "level",
-            "Ljava/util/logging/Level;",
-            ObjectRef::NULL,
-        );
-        let formatter_class = vm.resolve_class("java/util/logging/SimpleFormatter")?;
-        let formatter = vm.new_instance(formatter_class)?;
-        record_set_ref(
-            vm,
-            this,
-            "formatter",
-            "Ljava/util/logging/Formatter;",
-            formatter,
-        );
-        record_set_ref(vm, this, "output", "Ljava/lang/Object;", stream);
+        let pattern = match log_manager_get_property(vm, "java.util.logging.FileHandler.pattern")? {
+            Some(value) => vm.make_string(&value)?,
+            None => ObjectRef::NULL,
+        };
+        let limit = log_manager_get_property(vm, "java.util.logging.FileHandler.limit")?
+            .and_then(|value| value.parse::<i32>().ok())
+            .unwrap_or(0);
+        let count = log_manager_get_property(vm, "java.util.logging.FileHandler.count")?
+            .and_then(|value| value.parse::<i32>().ok())
+            .unwrap_or(1);
+        let append = log_manager_get_property(vm, "java.util.logging.FileHandler.append")?
+            .map(|value| value == "true")
+            .unwrap_or(false);
+        file_handler_configure(vm, this, pattern, limit, count, append)?;
         void()
-    },
-)];
+    }),
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            file_handler_configure(vm, receiver(args), ref_arg(args, 1), 0, 1, false)?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Z)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let append = args[2].as_int() != 0;
+            file_handler_configure(vm, receiver(args), ref_arg(args, 1), 0, 1, append)?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;II)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let limit = args[2].as_int();
+            let count = args[3].as_int();
+            file_handler_configure(vm, receiver(args), ref_arg(args, 1), limit, count, false)?;
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;IIZ)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let limit = args[2].as_int();
+            let count = args[3].as_int();
+            let append = args[4].as_int() != 0;
+            file_handler_configure(vm, receiver(args), ref_arg(args, 1), limit, count, append)?;
+            void()
+        },
+    ),
+];
 
 pub(crate) const FILE_HANDLER: oxjvm_vm::NativeClass = class(
     "java/util/logging/FileHandler",
@@ -3800,7 +3875,7 @@ fn logger_from_registry_initializing(vm: &mut Vm<'_>) -> Result<ObjectRef, VmErr
     Ok(logger)
 }
 
-const LOG_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
+const LOG_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
     method("<init>", "()V", ACC_PROTECTED, |_, _, _| void()),
     method(
         "getLogManager",
@@ -3933,6 +4008,47 @@ const LOG_MANAGER_METHODS: [oxjvm_vm::NativeMethodDef; 11] = [
         },
     ),
     method("readConfiguration", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method(
+        "readConfiguration",
+        "(Ljava/io/InputStream;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let ins = ref_arg(args, 1);
+            if ins.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let props_class = vm.resolve_class("java/util/Properties")?;
+            let props = vm.new_instance(props_class)?;
+            let (ctor_class, ctor) = vm
+                .find_method(props_class, "<init>", "()V")
+                .ok_or_else(|| VmError::internal("Properties() missing"))?;
+            vm.invoke_method(ctor_class, ctor, vec![Value::Ref(props)])?;
+            let (load_class, load) = vm
+                .find_method(props_class, "load", "(Ljava/io/InputStream;)V")
+                .ok_or_else(|| VmError::internal("Properties.load missing"))?;
+            vm.invoke_method(load_class, load, vec![Value::Ref(props), Value::Ref(ins)])?;
+            let (names_class, names_method) =
+                vm.resolve_virtual_method(props, "stringPropertyNames", "()Ljava/util/Set;")?;
+            let names = vm
+                .invoke_method(names_class, names_method, vec![Value::Ref(props)])?
+                .as_ref();
+            let store = log_manager_properties(vm)?;
+            for key in crate::util::collection_elements(vm, names)? {
+                let (get_class, get) = vm.resolve_virtual_method(
+                    props,
+                    "getProperty",
+                    "(Ljava/lang/String;)Ljava/lang/String;",
+                )?;
+                let value = vm
+                    .invoke_method(get_class, get, vec![Value::Ref(props), Value::Ref(key)])?
+                    .as_ref();
+                if !value.is_null() {
+                    crate::util::hash_map_insert(vm, store, key, value)?;
+                }
+            }
+            void()
+        },
+    ),
     method("reset", "()V", ACC_PUBLIC, |_, _, _| void()),
     method(
         "getLoggerNames",
