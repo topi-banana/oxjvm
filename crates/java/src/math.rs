@@ -176,6 +176,11 @@ pub(crate) fn sin(x: f64) -> f64 {
     if !x.is_finite() {
         return f64::NAN;
     }
+    // sin(±0) = ±0: the kernel's correction term would otherwise turn -0 into
+    // +0 (-0 + +0 == +0), losing the sign of zero as the JDK preserves it.
+    if x == 0.0 {
+        return x;
+    }
     let (quadrant, r) = reduce_pi_2(x);
     kernel_sin_cos(quadrant, r, true)
 }
@@ -217,9 +222,9 @@ fn kernel_sin_cos(quadrant: i64, r: f64, sin_mode: bool) -> f64 {
     };
     let negative = match quadrant {
         0 => false,
-        1 => sin_mode,
+        1 => !sin_mode,
         2 => true,
-        _ => !sin_mode,
+        _ => sin_mode,
     };
     if negative { -value } else { value }
 }
