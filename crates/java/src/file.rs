@@ -32,7 +32,7 @@ pub(crate) const FILE_FILTER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
+const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 55] = [
     method(
         "<init>",
         "(Ljava/lang/String;)V",
@@ -352,6 +352,15 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 54] = [
                     != 0)
             })?;
             crate::lang::string_array(vm, &accepted)
+        },
+    ),
+    method(
+        "listRoots",
+        "()[Ljava/io/File;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, _| {
+            // The Unix filesystem has a single root; listRoots returns it as a File.
+            file_array(vm, &[String::from("/")])
         },
     ),
     method(

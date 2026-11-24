@@ -1977,7 +1977,7 @@ pub(crate) const BYTE_ARRAY_INPUT_STREAM: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const BYTE_ARRAY_OUTPUT_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+const BYTE_ARRAY_OUTPUT_METHODS: [oxjvm_vm::NativeMethodDef; 15] = [
     method("<init>", "()V", ACC_PUBLIC, byte_array_output_init),
     method("<init>", "(I)V", ACC_PUBLIC, byte_array_output_init),
     method("write", "(I)V", ACC_PUBLIC, byte_array_output_write),
@@ -1990,6 +1990,25 @@ const BYTE_ARRAY_OUTPUT_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
             let byte = vm.array_get(array, offset + index)?.as_int();
             byte_array_output_write(vm, ctx, &[args[0], Value::Int(byte)])?;
         }
+        void()
+    }),
+    method("writeBytes", "([B)V", ACC_PUBLIC, |vm, _, args| {
+        let array = ref_arg(args, 1);
+        if array.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let length = vm.array_length(array)?;
+        let (declaring, method) = vm.resolve_virtual_method(receiver(args), "write", "([BII)V")?;
+        vm.invoke_method(
+            declaring,
+            method,
+            vec![
+                Value::Ref(receiver(args)),
+                Value::Ref(array),
+                Value::Int(0),
+                Value::Int(length as i32),
+            ],
+        )?;
         void()
     }),
     method("flush", "()V", ACC_PUBLIC, |_, _, _| void()),
