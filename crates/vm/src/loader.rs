@@ -679,10 +679,10 @@ impl<'a> Vm<'a> {
             CpInfo::Float(bits) => Value::Float(f32::from_bits(*bits)),
             CpInfo::Double(bits) => Value::Double(f64::from_bits(*bits)),
             CpInfo::String(string_index) => {
-                let text = pool
-                    .utf8(*string_index)
+                let units = pool
+                    .utf16(*string_index)
                     .map_err(|error| VmError::invalid_code(context, error.to_string()))?;
-                Value::Ref(self.intern(text)?)
+                Value::Ref(self.intern_utf16(units)?)
             }
             other => {
                 return Err(VmError::invalid_code(
@@ -1941,7 +1941,7 @@ impl<'a> Vm<'a> {
                 .utf8(*index)
                 .ok()
                 .map(str::to_string),
-            Ok(CpInfo::Utf8(text)) => Some(text.clone()),
+            Ok(CpInfo::Utf8(text)) => Some(text.as_str().to_string()),
             _ => None,
         }
         .ok_or_else(|| {

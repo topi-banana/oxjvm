@@ -10,11 +10,54 @@ use alloc::vec::Vec;
 
 use crate::error::ParseError;
 
+/// A `CONSTANT_Utf8` value: the exact UTF-16 code units (which may include unpaired surrogates that
+/// a Rust `String` cannot represent) alongside a lossy text view for names, descriptors and
+/// diagnostics.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Utf8 {
+    text: String,
+    units: Vec<u16>,
+}
+
+impl Utf8 {
+    /// Decode modified UTF-8, preserving unpaired surrogates in the exact units.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`crate::mutf8::decode_utf16`] failures for malformed modified UTF-8.
+    pub fn decode(bytes: &[u8], index: u16) -> Result<Self, ParseError> {
+        let units = crate::mutf8::decode_utf16(bytes, index)?;
+        let text = crate::mutf8::decode_lossy(bytes);
+        Ok(Self { text, units })
+    }
+
+    /// Build from a Rust string (which cannot contain unpaired surrogates).
+    #[must_use]
+    pub fn from_text(text: &str) -> Self {
+        Self {
+            text: text.to_string(),
+            units: text.encode_utf16().collect(),
+        }
+    }
+
+    /// Lossy text view (unpaired surrogates become `U+FFFD`); fine for names and descriptors.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    /// Exact UTF-16 code units, including any unpaired surrogates.
+    #[must_use]
+    pub fn as_units(&self) -> &[u16] {
+        &self.units
+    }
+}
+
 /// One entry of the constant pool.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CpInfo {
     /// `CONSTANT_Utf8` (4.4.7): a modified-UTF-8 string.
-    Utf8(String),
+    Utf8(Utf8),
     /// `CONSTANT_Integer` (4.4.4).
     Integer(i32),
     /// `CONSTANT_Float` (4.4.4), stored as raw bits.
@@ -194,7 +237,7 @@ enum Slot {
 pub struct ConstantPool {
     slots: Vec<Slot>,
     /// Interned `Utf8` strings for O(log n) deduplication while building.
-    utf8_index: BTreeMap<String, u16>,
+    utf8_index: BTreeMap<Vec<u16>, u16>,
 }
 
 impl ConstantPool {
@@ -238,7 +281,23 @@ impl ConstantPool {
     /// Fails when the index does not name a `CONSTANT_Utf8`.
     pub fn utf8(&self, index: u16) -> Result<&str, ParseError> {
         match self.get(index)? {
-            CpInfo::Utf8(text) => Ok(text),
+            CpInfo::Utf8(text) => Ok(text.as_str()),
+            _ => Err(ParseError::BadConstantPoolIndex {
+                index,
+                expected: "CONSTANT_Utf8",
+            }),
+        }
+    }
+
+    /// Resolve a pool index to the exact UTF-16 units of a `CONSTANT_Utf8`, preserving unpaired
+    /// surrogates (use this for string literals; [`Self::utf8`] is a lossy view).
+    ///
+    /// # Errors
+    ///
+    /// Fails when the index does not name a `CONSTANT_Utf8`.
+    pub fn utf16(&self, index: u16) -> Result<&[u16], ParseError> {
+        match self.get(index)? {
+            CpInfo::Utf8(text) => Ok(text.as_units()),
             _ => Err(ParseError::BadConstantPoolIndex {
                 index,
                 expected: "CONSTANT_Utf8",
@@ -282,7 +341,7 @@ impl ConstantPool {
     pub fn push(&mut self, info: CpInfo) -> u16 {
         let index = self.count();
         if let CpInfo::Utf8(text) = &info {
-            self.utf8_index.insert(text.clone(), index);
+            self.utf8_index.insert(text.as_units().to_vec(), index);
         }
         let slots = info.slots();
         self.slots.push(Slot::Entry(info));
@@ -294,10 +353,11 @@ impl ConstantPool {
 
     /// Intern a `CONSTANT_Utf8`, returning the existing index when already present.
     pub fn intern_utf8(&mut self, text: &str) -> u16 {
-        if let Some(&index) = self.utf8_index.get(text) {
+        let units: Vec<u16> = text.encode_utf16().collect();
+        if let Some(&index) = self.utf8_index.get(&units) {
             return index;
         }
-        self.push(CpInfo::Utf8(text.to_string()))
+        self.push(CpInfo::Utf8(Utf8::from_text(text)))
     }
 
     /// Append a `CONSTANT_Class`, returning its index.
@@ -335,7 +395,7 @@ impl ConstantPool {
                 1 => {
                     let len = usize::from(reader.u2("Utf8 length")?);
                     let bytes = reader.bytes(len, "Utf8 bytes")?;
-                    CpInfo::Utf8(crate::mutf8::decode(bytes, index)?)
+                    CpInfo::Utf8(Utf8::decode(bytes, index)?)
                 }
                 3 => CpInfo::Integer(reader.i4("Integer")?),
                 4 => CpInfo::Float(reader.u4("Float")?),
@@ -379,7 +439,7 @@ impl ConstantPool {
                 other => return Err(ParseError::InvalidConstantTag { index, tag: other }),
             };
             if let CpInfo::Utf8(text) = &info {
-                utf8_index.insert(text.clone(), index);
+                utf8_index.insert(text.as_units().to_vec(), index);
             }
             let reserved = info.slots();
             slots.push(Slot::Entry(info));
@@ -407,7 +467,7 @@ impl ConstantPool {
             writer.u1(info.tag());
             match info {
                 CpInfo::Utf8(text) => {
-                    let bytes = crate::mutf8::encode(text);
+                    let bytes = crate::mutf8::encode_utf16(text.as_units());
                     writer.u2(bytes.len() as u16);
                     writer.bytes(&bytes);
                 }

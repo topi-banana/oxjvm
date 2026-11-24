@@ -85,6 +85,74 @@ pub fn decode(bytes: &[u8], index: u16) -> Result<String, ParseError> {
     Ok(out)
 }
 
+/// Decode modified UTF-8 into exact UTF-16 code units, preserving unpaired surrogates.
+///
+/// Unlike [`decode`], this does not reject lone surrogates: a `CONSTANT_Utf8` may legally contain
+/// them (JVMS 4.4.7), and the VM stores strings as UTF-16 units, so they must survive the parse.
+/// Surrogate pairs are kept as two units (UTF-16 represents them directly).
+///
+/// # Errors
+///
+/// Returns [`ParseError::InvalidUtf8`] when `bytes` is not well-formed modified UTF-8.
+pub fn decode_utf16(bytes: &[u8], index: u16) -> Result<Vec<u16>, ParseError> {
+    let mut units = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let b0 = bytes[i];
+        let (unit, len) = if b0 & 0x80 == 0 {
+            if b0 == 0 {
+                return Err(ParseError::InvalidUtf8 { index });
+            }
+            (u16::from(b0), 1)
+        } else if b0 & 0xE0 == 0xC0 {
+            (u16::from(b0 & 0x1F) << 6, 2)
+        } else if b0 & 0xF0 == 0xE0 {
+            (u16::from(b0 & 0x0F) << 12, 3)
+        } else {
+            return Err(ParseError::InvalidUtf8 { index });
+        };
+        if i + len > bytes.len() {
+            return Err(ParseError::InvalidUtf8 { index });
+        }
+        let mut unit = unit;
+        for k in 1..len {
+            let b = bytes[i + k];
+            if b & 0xC0 != 0x80 {
+                return Err(ParseError::InvalidUtf8 { index });
+            }
+            unit |= u16::from(b & 0x3F) << (6 * (len - 1 - k));
+        }
+        units.push(unit);
+        i += len;
+    }
+    Ok(units)
+}
+
+/// Encode exact UTF-16 code units as modified UTF-8, including unpaired surrogates.
+///
+/// Each unit is encoded independently (CESU-8 style), so a surrogate pair round-trips as two
+/// three-byte sequences and a lone surrogate is preserved rather than rejected.
+#[must_use]
+pub fn encode_utf16(units: &[u16]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(units.len());
+    for &unit in units {
+        let code = u32::from(unit);
+        if code == 0 {
+            out.extend_from_slice(&[0xC0, 0x80]);
+        } else if code < 0x80 {
+            out.push(code as u8);
+        } else if code < 0x800 {
+            out.push(0xC0 | (code >> 6) as u8);
+            out.push(0x80 | (code & 0x3F) as u8);
+        } else {
+            out.push(0xE0 | (code >> 12) as u8);
+            out.push(0x80 | ((code >> 6) & 0x3F) as u8);
+            out.push(0x80 | (code & 0x3F) as u8);
+        }
+    }
+    out
+}
+
 /// Encode a Rust string as Java modified UTF-8.
 #[must_use]
 pub fn encode(text: &str) -> Vec<u8> {

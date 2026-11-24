@@ -893,19 +893,19 @@ impl<'a> Vm<'a> {
             CpInfo::Long(value) => Value::Long(value),
             CpInfo::Double(bits) => Value::Double(f64::from_bits(bits)),
             CpInfo::String(string_index) => {
-                let text = self
+                let units = self
                     .classes
                     .get(class)
                     .constant_pool
-                    .utf8(string_index)
-                    .map(str::to_string)
+                    .utf16(string_index)
                     .map_err(|error| {
                         VmError::invalid_code(
                             self.classes.get(class).name.clone(),
                             error.to_string(),
                         )
-                    })?;
-                Value::Ref(self.intern(&text)?)
+                    })?
+                    .to_vec();
+                Value::Ref(self.intern_utf16(&units)?)
             }
             CpInfo::Class(name_index) => {
                 let name = self

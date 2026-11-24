@@ -175,7 +175,7 @@ pub struct Vm<'a> {
     /// Thread objects to thread indices.
     pub(crate) thread_objects: BTreeMap<Ref, usize>,
     /// Interned strings.
-    pub(crate) interned: BTreeMap<String, Ref>,
+    pub(crate) interned: BTreeMap<Vec<u16>, Ref>,
     /// Classes currently being loaded, for circularity detection.
     pub(crate) loading: BTreeSet<String>,
     /// Resolved dynamic call sites.
@@ -530,15 +530,22 @@ impl<'a> Vm<'a> {
     ///
     /// Raises `java.lang.OutOfMemoryError` when the heap budget cannot hold the string.
     pub fn intern(&mut self, text: &str) -> Result<Ref, VmError> {
-        if let Some(&existing) = self.interned.get(text) {
+        let units: Vec<u16> = text.encode_utf16().collect();
+        self.intern_utf16(&units)
+    }
+
+    /// Intern a string from exact UTF-16 code units, preserving unpaired surrogates.
+    ///
+    /// Raises `java.lang.OutOfMemoryError` when the heap budget cannot hold the string.
+    pub fn intern_utf16(&mut self, units: &[u16]) -> Result<Ref, VmError> {
+        if let Some(&existing) = self.interned.get(units) {
             return Ok(existing);
         }
         let string_class = self
             .resolve_class("java/lang/String")
             .expect("java/lang/String must exist to intern strings");
-        let units: Vec<u16> = text.encode_utf16().collect();
-        let reference = self.allocate_object(string_class, ObjectData::String(units))?;
-        self.interned.insert(text.into(), reference);
+        let reference = self.allocate_object(string_class, ObjectData::String(units.to_vec()))?;
+        self.interned.insert(units.to_vec(), reference);
         Ok(reference)
     }
 
