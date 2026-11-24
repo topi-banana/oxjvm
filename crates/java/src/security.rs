@@ -9057,3 +9057,317 @@ pub(crate) const KEY_FACTORY: oxjvm_vm::NativeClass = class(
     &KEY_FACTORY_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// javax.security.auth.PrivateCredentialPermission
+// -------------------------------------------------------------------------------------------
+
+/// `StringTokenizer(name, " ", true)`: runs of non-space characters plus each
+/// individual space as its own token.
+fn pcp_tokenize(name: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for ch in name.chars() {
+        if ch == ' ' {
+            if !current.is_empty() {
+                tokens.push(core::mem::take(&mut current));
+            }
+            tokens.push(String::from(" "));
+        } else {
+            current.push(ch);
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+/// Parse the permission name into the credential class and principal pairs,
+/// mirroring the JDK's `init` (including its tokenizer-driven error cases).
+fn pcp_init(vm: &mut Vm<'_>, this: ObjectRef, name: Option<&str>) -> Result<(), VmError> {
+    let name = match name {
+        Some(text) if !text.trim().is_empty() => text,
+        _ => {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("invalid empty name"),
+            ));
+        }
+    };
+    let syntax_error = |vm: &mut Vm<'_>, detail: &str| {
+        vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some(&alloc::format!(
+                "permission name \"{name}\" syntax invalid: {detail}"
+            )),
+        )
+    };
+    let tokens = pcp_tokenize(name);
+    let credential_class = tokens.first().cloned().unwrap_or_default();
+    let mut index = 1usize;
+    if index >= tokens.len() {
+        return Err(syntax_error(
+            vm,
+            "Credential Class not followed by a Principal Class and Name",
+        ));
+    }
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    while index < tokens.len() {
+        index += 1; // skip the delimiter token
+        let Some(principal_class) = tokens.get(index).cloned() else {
+            return Err(vm.throw_new("java/util/NoSuchElementException", None));
+        };
+        index += 1;
+        if index >= tokens.len() {
+            return Err(syntax_error(
+                vm,
+                "Principal Class not followed by a Principal Name",
+            ));
+        }
+        index += 1; // skip the delimiter token
+        let Some(mut principal_name) = tokens.get(index).cloned() else {
+            return Err(vm.throw_new("java/util/NoSuchElementException", None));
+        };
+        index += 1;
+        if !principal_name.starts_with('"') {
+            return Err(syntax_error(
+                vm,
+                "Principal Name must be surrounded by quotes",
+            ));
+        }
+        if !principal_name.ends_with('"') {
+            while index < tokens.len() {
+                principal_name.push_str(&tokens[index]);
+                index += 1;
+                if principal_name.ends_with('"') {
+                    break;
+                }
+            }
+            if !principal_name.ends_with('"') {
+                return Err(syntax_error(vm, "Principal Name missing end quote"));
+            }
+        }
+        if principal_name.len() < 2 {
+            return Err(vm.throw_new("java/lang/StringIndexOutOfBoundsException", None));
+        }
+        let inner = String::from(&principal_name[1..principal_name.len() - 1]);
+        if principal_class == "*" && inner != "*" {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some(
+                    "Principal Class can not be a wildcard value if Principal Name is not a wildcard value",
+                ),
+            ));
+        }
+        pairs.push((principal_class, inner));
+    }
+    set_string_field(vm, this, "credentialClass", &credential_class)?;
+    let string_class = vm.resolve_class("java/lang/String")?;
+    let string_array_class = vm.resolve_class("[Ljava/lang/String;")?;
+    let owners = vm.allocate_object_array(string_array_class, pairs.len())?;
+    for (slot, (principal_class, principal_name)) in pairs.iter().enumerate() {
+        let pair = vm.allocate_object_array(string_class, 2)?;
+        let class_ref = vm.make_string(principal_class)?;
+        let name_ref = vm.make_string(principal_name)?;
+        vm.array_set_ref(pair, 0, class_ref)?;
+        vm.array_set_ref(pair, 1, name_ref)?;
+        vm.array_set_ref(owners, slot, pair)?;
+    }
+    set_ref_field(vm, this, "owners", "[[Ljava/lang/String;", owners)?;
+    Ok(())
+}
+
+/// Read the stored principal pairs back out of the `String[][]` field.
+fn pcp_owner_pairs(vm: &mut Vm<'_>, obj: ObjectRef) -> Result<Vec<(String, String)>, VmError> {
+    let owners = ref_field(vm, obj, "owners", "[[Ljava/lang/String;");
+    let mut pairs = Vec::new();
+    if owners.is_null() {
+        return Ok(pairs);
+    }
+    let length = vm.array_length(owners)?;
+    for index in 0..length {
+        let pair = vm.array_get(owners, index as i32)?.as_ref();
+        let class_ref = vm.array_get(pair, 0)?.as_ref();
+        let name_ref = vm.array_get(pair, 1)?.as_ref();
+        let principal_class = vm.string_value(class_ref).unwrap_or_default();
+        let principal_name = vm.string_value(name_ref).unwrap_or_default();
+        pairs.push((principal_class, principal_name));
+    }
+    Ok(pairs)
+}
+
+fn pcp_implies_credential_class(this_c: &str, that_c: &str) -> bool {
+    if this_c == "*" {
+        return true;
+    }
+    // The JDK strips the trailing "*." (two characters) before prefix matching.
+    if this_c.ends_with('*') && this_c.len() >= 2 {
+        return that_c.starts_with(&this_c[..this_c.len() - 2]);
+    }
+    this_c == that_c
+}
+
+fn pcp_implies_principal_set(this_p: &[(String, String)], that_p: &[(String, String)]) -> bool {
+    if that_p.is_empty() {
+        return true;
+    }
+    if this_p.is_empty() {
+        return false;
+    }
+    this_p.iter().all(|(this_class, this_name)| {
+        that_p.iter().any(|(that_class, that_name)| {
+            (this_class == "*" || this_class == that_class)
+                && (this_name == "*" || this_name == that_name)
+        })
+    })
+}
+
+/// Full implies check between two PrivateCredentialPermission instances.
+fn pcp_implies(vm: &mut Vm<'_>, this: ObjectRef, other: ObjectRef) -> Result<bool, VmError> {
+    let this_class = string_field(vm, this, "credentialClass");
+    let that_class = string_field(vm, other, "credentialClass");
+    if !pcp_implies_credential_class(&this_class, &that_class) {
+        return Ok(false);
+    }
+    let this_principals = pcp_owner_pairs(vm, this)?;
+    let that_principals = pcp_owner_pairs(vm, other)?;
+    Ok(pcp_implies_principal_set(
+        &this_principals,
+        &that_principals,
+    ))
+}
+
+const PRIVATE_CREDENTIAL_PERMISSION_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let name_ref = ref_arg(args, 1);
+            let actions = vm.string_or_empty(ref_arg(args, 2));
+            let parent = vm.resolve_class("java/security/Permission")?;
+            let (declaring, ctor) = vm
+                .find_method(parent, "<init>", "(Ljava/lang/String;)V")
+                .ok_or_else(|| VmError::internal("Permission lacks <init>"))?;
+            vm.invoke_method(
+                declaring,
+                ctor,
+                vec![Value::Ref(this), Value::Ref(name_ref)],
+            )?;
+            if !actions.eq_ignore_ascii_case("read") {
+                return Err(vm.throw_new(
+                    "java/lang/IllegalArgumentException",
+                    Some("actions can only be read."),
+                ));
+            }
+            let name = if name_ref.is_null() {
+                None
+            } else {
+                vm.string_value(name_ref)
+            };
+            pcp_init(vm, this, name.as_deref())?;
+            void()
+        },
+    ),
+    method(
+        "getCredentialClass",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "credentialClass",
+                "Ljava/lang/String;",
+            ))
+        },
+    ),
+    method(
+        "getPrincipals",
+        "()[[Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let pairs = pcp_owner_pairs(vm, receiver(args))?;
+            let string_class = vm.resolve_class("java/lang/String")?;
+            let string_array_class = vm.resolve_class("[Ljava/lang/String;")?;
+            let result = vm.allocate_object_array(string_array_class, pairs.len())?;
+            for (slot, (principal_class, principal_name)) in pairs.iter().enumerate() {
+                let pair = vm.allocate_object_array(string_class, 2)?;
+                let class_ref = vm.make_string(principal_class)?;
+                let name_ref = vm.make_string(principal_name)?;
+                vm.array_set_ref(pair, 0, class_ref)?;
+                vm.array_set_ref(pair, 1, name_ref)?;
+                vm.array_set_ref(result, slot, pair)?;
+            }
+            object(result)
+        },
+    ),
+    method(
+        "implies",
+        "(Ljava/security/Permission;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            let pcp = vm.resolve_class("javax/security/auth/PrivateCredentialPermission")?;
+            if other.is_null() || !vm.is_instance(other, pcp) {
+                return boolean(false);
+            }
+            boolean(pcp_implies(vm, this, other)?)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let other = ref_arg(args, 1);
+            if this == other {
+                return boolean(true);
+            }
+            let pcp = vm.resolve_class("javax/security/auth/PrivateCredentialPermission")?;
+            if other.is_null() || !vm.is_instance(other, pcp) {
+                return boolean(false);
+            }
+            let forward = pcp_implies(vm, this, other)?;
+            let backward = pcp_implies(vm, other, this)?;
+            boolean(forward && backward)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let credential = ref_field(vm, receiver(args), "credentialClass", "Ljava/lang/String;");
+        let hash = vm
+            .string_utf16(credential)
+            .map(crate::lang::java_string_hash)
+            .unwrap_or(0);
+        int(hash)
+    }),
+    method(
+        "getActions",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, _| object(vm.make_string("read")?),
+    ),
+    method(
+        "newPermissionCollection",
+        "()Ljava/security/PermissionCollection;",
+        ACC_PUBLIC,
+        |_, _, _| object(ObjectRef::NULL),
+    ),
+];
+
+pub(crate) const PRIVATE_CREDENTIAL_PERMISSION: oxjvm_vm::NativeClass = class(
+    "javax/security/auth/PrivateCredentialPermission",
+    Some("java/security/Permission"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("credentialClass", "Ljava/lang/String;", ACC_PRIVATE, None),
+        field("owners", "[[Ljava/lang/String;", ACC_PRIVATE, None),
+    ],
+    &PRIVATE_CREDENTIAL_PERMISSION_METHODS,
+    None,
+);
