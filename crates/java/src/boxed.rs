@@ -117,8 +117,26 @@ fn is_space_char_code(code_point: u32) -> bool {
     )
 }
 
-const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 52] = [
+const INTEGER_METHODS: [oxjvm_vm::NativeMethodDef; 53] = [
     method("<init>", "(I)V", ACC_PUBLIC, boxed_int_init),
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let text = parse_string_arg(vm, args[1])?;
+            match format::parse_int(&text) {
+                Some(value) => {
+                    write_value_int(vm, receiver(args), value);
+                    void()
+                }
+                None => Err(vm.throw_new(
+                    "java/lang/NumberFormatException",
+                    Some(&alloc::format!("For input string: \"{text}\"")),
+                )),
+            }
+        },
+    ),
     method("intValue", "()I", ACC_PUBLIC, |vm, _, args| {
         int(read_value_int(vm, receiver(args)))
     }),

@@ -12367,3 +12367,181 @@ pub(crate) const TEXT_OUTPUT_CALLBACK: oxjvm_vm::NativeClass = class(
     &TEXT_OUTPUT_CALLBACK_METHODS,
     None,
 );
+
+// -------------------------------------------------------------------------------------------
+// javax.security.auth.Subject
+// -------------------------------------------------------------------------------------------
+
+/// Copy a collection into a fresh HashSet, rejecting null collections and null
+/// elements with NullPointerException (the JDK's collectionNullClean).
+fn subject_null_clean_set(vm: &mut Vm<'_>, collection: ObjectRef) -> Result<ObjectRef, VmError> {
+    let elements = crate::util::collection_elements(vm, collection)?;
+    let set = new_hash_set(vm)?;
+    let (declaring, add) = vm.resolve_virtual_method(set, "add", "(Ljava/lang/Object;)Z")?;
+    for element in elements {
+        if element.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        vm.invoke_method(declaring, add, vec![Value::Ref(set), Value::Ref(element)])?;
+    }
+    Ok(set)
+}
+
+const SUBJECT_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
+    method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let principals = new_hash_set(vm)?;
+        let pub_creds = new_hash_set(vm)?;
+        let priv_creds = new_hash_set(vm)?;
+        set_ref_field(vm, this, "principals", "Ljava/util/Set;", principals)?;
+        set_ref_field(vm, this, "pubCredentials", "Ljava/util/Set;", pub_creds)?;
+        set_ref_field(vm, this, "privCredentials", "Ljava/util/Set;", priv_creds)?;
+        void()
+    }),
+    method(
+        "<init>",
+        "(ZLjava/util/Set;Ljava/util/Set;Ljava/util/Set;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let principals = subject_null_clean_set(vm, ref_arg(args, 2))?;
+            let pub_creds = subject_null_clean_set(vm, ref_arg(args, 3))?;
+            let priv_creds = subject_null_clean_set(vm, ref_arg(args, 4))?;
+            set_ref_field(vm, this, "principals", "Ljava/util/Set;", principals)?;
+            set_ref_field(vm, this, "pubCredentials", "Ljava/util/Set;", pub_creds)?;
+            set_ref_field(vm, this, "privCredentials", "Ljava/util/Set;", priv_creds)?;
+            crate::lang::write_int_field(vm, this, "readOnly", args[1].as_int());
+            void()
+        },
+    ),
+    method(
+        "getPrincipals",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "principals",
+                "Ljava/util/Set;",
+            ))
+        },
+    ),
+    method(
+        "getPrincipals",
+        "(Ljava/lang/Class;)Ljava/util/Set;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let principals = ref_field(vm, this, "principals", "Ljava/util/Set;");
+            let requested = ref_arg(args, 1);
+            if requested.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let principal_class = vm.resolve_class("java/security/Principal")?;
+            let object_class = vm.resolve_class("java/lang/Object")?;
+            let principal_mirror = vm.class_object(principal_class)?;
+            let object_mirror = vm.class_object(object_class)?;
+            // For the broad Principal/Object views hand back the live set so adds
+            // are reflected; narrower class views are filtered snapshots.
+            if requested == principal_mirror || requested == object_mirror {
+                return object(principals);
+            }
+            let filtered = new_hash_set(vm)?;
+            let (declaring, add) =
+                vm.resolve_virtual_method(filtered, "add", "(Ljava/lang/Object;)Z")?;
+            let (ic, is_instance) =
+                vm.resolve_virtual_method(requested, "isInstance", "(Ljava/lang/Object;)Z")?;
+            for element in crate::util::collection_elements(vm, principals)? {
+                let matches = vm
+                    .invoke_method(
+                        ic,
+                        is_instance,
+                        vec![Value::Ref(requested), Value::Ref(element)],
+                    )?
+                    .as_int()
+                    != 0;
+                if matches {
+                    vm.invoke_method(
+                        declaring,
+                        add,
+                        vec![Value::Ref(filtered), Value::Ref(element)],
+                    )?;
+                }
+            }
+            object(filtered)
+        },
+    ),
+    method(
+        "getPublicCredentials",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "pubCredentials",
+                "Ljava/util/Set;",
+            ))
+        },
+    ),
+    method(
+        "getPrivateCredentials",
+        "()Ljava/util/Set;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            object(ref_field(
+                vm,
+                receiver(args),
+                "privCredentials",
+                "Ljava/util/Set;",
+            ))
+        },
+    ),
+    method("setReadOnly", "()V", ACC_PUBLIC, |vm, _, args| {
+        crate::lang::write_int_field(vm, receiver(args), "readOnly", 1);
+        void()
+    }),
+    method("isReadOnly", "()Z", ACC_PUBLIC, |vm, _, args| {
+        boolean(crate::lang::read_int_field(vm, receiver(args), "readOnly") != 0)
+    }),
+    method(
+        "doAs",
+        "(Ljavax/security/auth/Subject;Ljava/security/PrivilegedAction;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| run_privileged_action(vm, ref_arg(args, 1), false),
+    ),
+    method(
+        "doAs",
+        "(Ljavax/security/auth/Subject;Ljava/security/PrivilegedExceptionAction;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| run_privileged_action(vm, ref_arg(args, 1), true),
+    ),
+    method(
+        "doAsPrivileged",
+        "(Ljavax/security/auth/Subject;Ljava/security/PrivilegedAction;Ljava/security/AccessControlContext;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| run_privileged_action(vm, ref_arg(args, 1), false),
+    ),
+    method(
+        "doAsPrivileged",
+        "(Ljavax/security/auth/Subject;Ljava/security/PrivilegedExceptionAction;Ljava/security/AccessControlContext;)Ljava/lang/Object;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| run_privileged_action(vm, ref_arg(args, 1), true),
+    ),
+];
+
+pub(crate) const SUBJECT: oxjvm_vm::NativeClass = class(
+    "javax/security/auth/Subject",
+    Some("java/lang/Object"),
+    &[],
+    ACC_PUBLIC | ACC_FINAL,
+    &[
+        field("principals", "Ljava/util/Set;", ACC_PRIVATE, None),
+        field("pubCredentials", "Ljava/util/Set;", ACC_PRIVATE, None),
+        field("privCredentials", "Ljava/util/Set;", ACC_PRIVATE, None),
+        field("readOnly", "Z", ACC_PRIVATE, None),
+    ],
+    &SUBJECT_METHODS,
+    None,
+);
