@@ -1347,6 +1347,11 @@ exception!(
     "java/nio/file/FileSystemException"
 );
 exception!(
+    DIRECTORY_ITERATOR_EXCEPTION,
+    "java/nio/file/DirectoryIteratorException",
+    "java/lang/RuntimeException"
+);
+exception!(
     ILLEGAL_ACCESS_EXCEPTION,
     "java/lang/IllegalAccessException",
     "java/lang/ReflectiveOperationException"

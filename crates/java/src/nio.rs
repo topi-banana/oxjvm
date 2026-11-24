@@ -4713,7 +4713,38 @@ fn glob_matches(pattern: &str, name: &str) -> bool {
     pi == pattern.len()
 }
 
+fn check_directory(vm: &mut Vm<'_>, path: &str) -> Result<(), VmError> {
+    match fs_metadata(vm, path) {
+        Some(metadata) if metadata.kind == FileKind::Directory => Ok(()),
+        Some(_) => Err(vm.throw_new("java/nio/file/NotDirectoryException", Some(path))),
+        None => Err(vm.throw_new("java/nio/file/NoSuchFileException", Some(path))),
+    }
+}
+
+fn build_directory_stream(
+    vm: &mut Vm<'_>,
+    elements: Vec<ObjectRef>,
+    filter: ObjectRef,
+) -> Result<Value, VmError> {
+    let class = vm.resolve_class("java/nio/file/OjvmDirectoryStream")?;
+    let stream = vm.new_instance(class)?;
+    let object_class = vm.resolve_class("java/lang/Object")?;
+    let array = vm.allocate_object_array(object_class, elements.len())?;
+    for (index, element) in elements.iter().enumerate() {
+        vm.array_set_ref(array, index, *element)?;
+    }
+    let (declaring, field) = vm.find_field(class, "elements", "[Ljava/lang/Object;")?;
+    vm.set_instance_ref(stream, declaring, field, array);
+    let (declaring, field) =
+        vm.find_field(class, "filter", "Ljava/nio/file/DirectoryStream$Filter;")?;
+    vm.set_instance_ref(stream, declaring, field, filter);
+    crate::lang::write_int_field(vm, stream, "closed", 0);
+    crate::lang::write_int_field(vm, stream, "iterated", 0);
+    object(stream)
+}
+
 fn new_directory_stream(vm: &mut Vm<'_>, path: &str, glob: Option<&str>) -> Result<Value, VmError> {
+    check_directory(vm, path)?;
     let names = fs_list(vm, path).unwrap_or_default();
     let mut elements = Vec::new();
     for name in names {
@@ -4721,17 +4752,7 @@ fn new_directory_stream(vm: &mut Vm<'_>, path: &str, glob: Option<&str>) -> Resu
             elements.push(new_path(vm, &join_path(path, &name))?.as_ref());
         }
     }
-    let class = vm.resolve_class("java/nio/file/OjvmDirectoryStream")?;
-    let stream = vm.new_instance(class)?;
-    let object_class = vm.resolve_class("java/lang/Object")?;
-    let array = vm.allocate_object_array(object_class, elements.len())?;
-    for (index, element) in elements.iter().enumerate() {
-        vm.array_set_ref(array, index, *element)?;
-    }
-    let (declaring, field) = vm.find_field(class, "elements", "[Ljava/lang/Object;")?;
-    vm.set_instance_ref(stream, declaring, field, array);
-    crate::lang::write_int_field(vm, stream, "cursor", 0);
-    object(stream)
+    build_directory_stream(vm, elements, ObjectRef::NULL)
 }
 
 fn new_directory_stream_filtered(
@@ -4739,38 +4760,66 @@ fn new_directory_stream_filtered(
     path: &str,
     filter: ObjectRef,
 ) -> Result<Value, VmError> {
+    check_directory(vm, path)?;
     let names = fs_list(vm, path).unwrap_or_default();
     let mut elements = Vec::new();
     for name in names {
-        let entry = new_path(vm, &join_path(path, &name))?;
+        elements.push(new_path(vm, &join_path(path, &name))?.as_ref());
+    }
+    // The filter runs lazily during iteration so that an IOException it throws
+    // surfaces as a DirectoryIteratorException from hasNext/next, not from
+    // newDirectoryStream or iterator().
+    build_directory_stream(vm, elements, filter)
+}
+
+/// Position the iterator's cursor at the next accepted entry, applying the
+/// filter lazily.  An IOException from the filter is wrapped in a
+/// DirectoryIteratorException; any other throwable propagates unchanged.
+fn path_iterator_advance(vm: &mut Vm<'_>, this: ObjectRef) -> Result<bool, VmError> {
+    let class = vm.class_of(this);
+    let elements = vm
+        .read_ref_field(this, class, "elements", "[Ljava/lang/Object;")
+        .unwrap_or(ObjectRef::NULL);
+    let length = vm.array_length(elements).unwrap_or(0);
+    let filter = vm
+        .read_ref_field(
+            this,
+            class,
+            "filter",
+            "Ljava/nio/file/DirectoryStream$Filter;",
+        )
+        .unwrap_or(ObjectRef::NULL);
+    let mut cursor = crate::lang::read_int_field(vm, this, "cursor");
+    while cursor < length as i32 {
+        let entry = vm.array_get(elements, cursor)?;
         if filter.is_null() {
-            continue;
+            crate::lang::write_int_field(vm, this, "cursor", cursor);
+            return Ok(true);
         }
         let (declaring, method) =
             vm.resolve_virtual_method(filter, "accept", "(Ljava/nio/file/Path;)Z")?;
-        let accepted = vm
-            .invoke_method(
-                declaring,
-                method,
-                vec![Value::Ref(filter), Value::Ref(entry.as_ref())],
-            )?
-            .as_int()
-            != 0;
-        if accepted {
-            elements.push(entry.as_ref());
+        match vm.invoke_method(declaring, method, vec![Value::Ref(filter), entry]) {
+            Ok(value) => {
+                if value.as_int() != 0 {
+                    crate::lang::write_int_field(vm, this, "cursor", cursor);
+                    return Ok(true);
+                }
+                cursor += 1;
+            }
+            Err(VmError::Thrown(cause)) => {
+                let io_class = vm.resolve_class("java/io/IOException")?;
+                if vm.is_instance(cause, io_class) {
+                    return Err(
+                        vm.throw_new_with_cause("java/nio/file/DirectoryIteratorException", cause)
+                    );
+                }
+                return Err(VmError::Thrown(cause));
+            }
+            Err(other) => return Err(other),
         }
     }
-    let class = vm.resolve_class("java/nio/file/OjvmDirectoryStream")?;
-    let stream = vm.new_instance(class)?;
-    let object_class = vm.resolve_class("java/lang/Object")?;
-    let array = vm.allocate_object_array(object_class, elements.len())?;
-    for (index, element) in elements.iter().enumerate() {
-        vm.array_set_ref(array, index, *element)?;
-    }
-    let (declaring, field) = vm.find_field(class, "elements", "[Ljava/lang/Object;")?;
-    vm.set_instance_ref(stream, declaring, field, array);
-    crate::lang::write_int_field(vm, stream, "cursor", 0);
-    object(stream)
+    crate::lang::write_int_field(vm, this, "cursor", length as i32);
+    Ok(false)
 }
 
 const OJVM_DIRECTORY_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
@@ -4780,18 +4829,44 @@ const OJVM_DIRECTORY_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
         ACC_PUBLIC,
         |vm, _, args| {
             let this = receiver(args);
+            if crate::lang::read_int_field(vm, this, "closed") != 0
+                || crate::lang::read_int_field(vm, this, "iterated") != 0
+            {
+                return Err(vm.throw_new("java/lang/IllegalStateException", None));
+            }
+            crate::lang::write_int_field(vm, this, "iterated", 1);
+            let class = vm.class_of(this);
             let elements = vm
-                .read_ref_field(this, vm.class_of(this), "elements", "[Ljava/lang/Object;")
+                .read_ref_field(this, class, "elements", "[Ljava/lang/Object;")
                 .unwrap_or(ObjectRef::NULL);
-            let class = vm.resolve_class("java/nio/file/OjvmPathIterator")?;
-            let iterator = vm.new_instance(class)?;
-            let (declaring, field) = vm.find_field(class, "elements", "[Ljava/lang/Object;")?;
+            let filter = vm
+                .read_ref_field(
+                    this,
+                    class,
+                    "filter",
+                    "Ljava/nio/file/DirectoryStream$Filter;",
+                )
+                .unwrap_or(ObjectRef::NULL);
+            let iterator_class = vm.resolve_class("java/nio/file/OjvmPathIterator")?;
+            let iterator = vm.new_instance(iterator_class)?;
+            let (declaring, field) =
+                vm.find_field(iterator_class, "elements", "[Ljava/lang/Object;")?;
             vm.set_instance_ref(iterator, declaring, field, elements);
+            let (declaring, field) = vm.find_field(
+                iterator_class,
+                "filter",
+                "Ljava/nio/file/DirectoryStream$Filter;",
+            )?;
+            vm.set_instance_ref(iterator, declaring, field, filter);
             crate::lang::write_int_field(vm, iterator, "cursor", 0);
+            crate::lang::write_int_field(vm, iterator, "ready", 0);
             object(iterator)
         },
     ),
-    method("close", "()V", ACC_PUBLIC, |_, _, _| void()),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        crate::lang::write_int_field(vm, receiver(args), "closed", 1);
+        void()
+    }),
 ];
 
 pub(crate) const OJVM_DIRECTORY_STREAM: oxjvm_vm::NativeClass = class(
@@ -4799,7 +4874,17 @@ pub(crate) const OJVM_DIRECTORY_STREAM: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &["java/nio/file/DirectoryStream", "java/io/Closeable"],
     ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
-    &[field("elements", "[Ljava/lang/Object;", ACC_PRIVATE, None)],
+    &[
+        field("elements", "[Ljava/lang/Object;", ACC_PRIVATE, None),
+        field(
+            "filter",
+            "Ljava/nio/file/DirectoryStream$Filter;",
+            ACC_PRIVATE,
+            None,
+        ),
+        field("closed", "I", ACC_PRIVATE, None),
+        field("iterated", "I", ACC_PRIVATE, None),
+    ],
     &OJVM_DIRECTORY_STREAM_METHODS,
     None,
 );
@@ -4807,27 +4892,32 @@ pub(crate) const OJVM_DIRECTORY_STREAM: oxjvm_vm::NativeClass = class(
 const OJVM_PATH_ITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
     method("hasNext", "()Z", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
-        let elements = vm
-            .read_ref_field(this, vm.class_of(this), "elements", "[Ljava/lang/Object;")
-            .unwrap_or(ObjectRef::NULL);
-        let length = vm.array_length(elements).unwrap_or(0);
-        boolean(crate::lang::read_int_field(vm, this, "cursor") < length as i32)
+        if crate::lang::read_int_field(vm, this, "ready") != 0 {
+            return boolean(true);
+        }
+        let found = path_iterator_advance(vm, this)?;
+        if found {
+            crate::lang::write_int_field(vm, this, "ready", 1);
+        }
+        boolean(found)
     }),
     method("next", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
+        if crate::lang::read_int_field(vm, this, "ready") == 0 && !path_iterator_advance(vm, this)?
+        {
+            return Err(vm.throw_new("java/util/NoSuchElementException", None));
+        }
         let elements = vm
             .read_ref_field(this, vm.class_of(this), "elements", "[Ljava/lang/Object;")
             .unwrap_or(ObjectRef::NULL);
         let cursor = crate::lang::read_int_field(vm, this, "cursor");
-        let length = vm.array_length(elements).unwrap_or(0);
-        if cursor < 0 || cursor >= length as i32 {
-            return Err(vm.throw_new("java/util/NoSuchElementException", None));
-        }
+        let entry = vm.array_get(elements, cursor)?;
         crate::lang::write_int_field(vm, this, "cursor", cursor + 1);
-        vm.array_get(elements, cursor)
+        crate::lang::write_int_field(vm, this, "ready", 0);
+        Ok(entry)
     }),
-    method("remove", "()V", ACC_PUBLIC, |_, _, _| {
-        Err(VmError::internal("Iterator.remove is unsupported"))
+    method("remove", "()V", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/UnsupportedOperationException", None))
     }),
 ];
 
@@ -4838,7 +4928,14 @@ pub(crate) const OJVM_PATH_ITERATOR: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC | ACC_FINAL | ACC_SYNTHETIC,
     &[
         field("elements", "[Ljava/lang/Object;", ACC_PRIVATE, None),
+        field(
+            "filter",
+            "Ljava/nio/file/DirectoryStream$Filter;",
+            ACC_PRIVATE,
+            None,
+        ),
         field("cursor", "I", ACC_PRIVATE, None),
+        field("ready", "I", ACC_PRIVATE, None),
     ],
     &OJVM_PATH_ITERATOR_METHODS,
     None,
