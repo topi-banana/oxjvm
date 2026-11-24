@@ -882,9 +882,28 @@ const CHANNEL_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         }
         let (gc, gm) = vm.resolve_virtual_method(buffer, "get", "(I)B")?;
         let byte = vm.invoke_method(gc, gm, vec![Value::Ref(buffer), Value::Int(0)])?;
-        int(byte.as_int())
+        int(byte.as_int() & 0xFF)
     }),
-    method("available", "()I", ACC_PUBLIC, |_, _, _| int(0)),
+    method("available", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let channel = ref_field(vm, this, "ch", "Ljava/nio/channels/ReadableByteChannel;");
+        if channel.is_null() {
+            return int(0);
+        }
+        if let Ok((sc, sm)) = vm.resolve_virtual_method(channel, "size", "()J") {
+            if let Ok((pc, pm)) = vm.resolve_virtual_method(channel, "position", "()J") {
+                let size = vm
+                    .invoke_method(sc, sm, vec![Value::Ref(channel)])?
+                    .as_long();
+                let position = vm
+                    .invoke_method(pc, pm, vec![Value::Ref(channel)])?
+                    .as_long();
+                let remaining = (size - position).max(0).min(i64::from(i32::MAX));
+                return int(remaining as i32);
+            }
+        }
+        int(0)
+    }),
     method("close", "()V", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let channel = ref_field(vm, this, "ch", "Ljava/nio/channels/ReadableByteChannel;");
@@ -989,8 +1008,12 @@ const CHANNELS_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "(Ljava/io/InputStream;)Ljava/nio/channels/ReadableByteChannel;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
+            let input = ref_arg(args, 0);
+            if input.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let channel = new_instance(vm, "java/nio/channels/OjvmInputStreamChannel")?;
-            set_ref(vm, channel, "in", "Ljava/io/InputStream;", ref_arg(args, 0))?;
+            set_ref(vm, channel, "in", "Ljava/io/InputStream;", input)?;
             object(channel)
         },
     ),
@@ -999,14 +1022,12 @@ const CHANNELS_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "(Ljava/io/OutputStream;)Ljava/nio/channels/WritableByteChannel;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
+            let output = ref_arg(args, 0);
+            if output.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let channel = new_instance(vm, "java/nio/channels/OjvmOutputStreamChannel")?;
-            set_ref(
-                vm,
-                channel,
-                "out",
-                "Ljava/io/OutputStream;",
-                ref_arg(args, 0),
-            )?;
+            set_ref(vm, channel, "out", "Ljava/io/OutputStream;", output)?;
             object(channel)
         },
     ),
@@ -1015,13 +1036,17 @@ const CHANNELS_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "(Ljava/nio/channels/ReadableByteChannel;)Ljava/io/InputStream;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
+            let channel = ref_arg(args, 0);
+            if channel.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let stream = new_instance(vm, "java/nio/channels/OjvmChannelInputStream")?;
             set_ref(
                 vm,
                 stream,
                 "ch",
                 "Ljava/nio/channels/ReadableByteChannel;",
-                ref_arg(args, 0),
+                channel,
             )?;
             object(stream)
         },
@@ -1031,13 +1056,17 @@ const CHANNELS_METHODS: [oxjvm_vm::NativeMethodDef; 12] = [
         "(Ljava/nio/channels/WritableByteChannel;)Ljava/io/OutputStream;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
+            let channel = ref_arg(args, 0);
+            if channel.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let stream = new_instance(vm, "java/nio/channels/OjvmChannelOutputStream")?;
             set_ref(
                 vm,
                 stream,
                 "ch",
                 "Ljava/nio/channels/WritableByteChannel;",
-                ref_arg(args, 0),
+                channel,
             )?;
             object(stream)
         },
@@ -1135,6 +1164,9 @@ fn resolve_charset(
     arg: Value,
     kind: &WriterCharset,
 ) -> Result<ObjectRef, VmError> {
+    if arg.as_ref().is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
     match kind {
         WriterCharset::Charset => Ok(arg.as_ref()),
         WriterCharset::Encoder => {
