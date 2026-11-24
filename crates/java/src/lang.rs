@@ -5238,13 +5238,12 @@ fn string_split_limit(
 }
 
 fn string_split_impl(vm: &mut Vm<'_>, args: &[Value], limit: i32) -> Result<Value, VmError> {
-    let text = vm.string_or_empty(receiver(args));
-    let separator = string_arg(vm, args[1])?;
-    let parts: Vec<String> = if separator.is_empty() {
-        text.chars().map(|ch| ch.to_string()).collect()
+    let units = split_source_units(vm, receiver(args));
+    let sep_units = split_separator_units(vm, ref_arg(args, 1))?;
+    let parts: Vec<String> = if sep_units.is_empty() {
+        split_empty_regex(&units)
     } else {
-        let units: Vec<u16> = text.encode_utf16().collect();
-        let regex = crate::regex::compile_from_str(vm, &separator)?;
+        let regex = crate::regex::compile_from_units(vm, &sep_units)?;
         crate::regex::split_spans(&regex, &units, limit)
             .iter()
             .map(|(start, end)| String::from_utf16_lossy(&units[*start..*end]))
@@ -5258,19 +5257,57 @@ fn string_split_with_delimiters(
     args: &[Value],
     limit: i32,
 ) -> Result<Value, VmError> {
-    let text = vm.string_or_empty(receiver(args));
-    let separator = string_arg(vm, args[1])?;
-    let parts: Vec<String> = if separator.is_empty() {
-        text.chars().map(|ch| ch.to_string()).collect()
+    let units = split_source_units(vm, receiver(args));
+    let sep_units = split_separator_units(vm, ref_arg(args, 1))?;
+    let parts: Vec<String> = if sep_units.is_empty() {
+        split_empty_regex(&units)
     } else {
-        let units: Vec<u16> = text.encode_utf16().collect();
-        let regex = crate::regex::compile_from_str(vm, &separator)?;
+        let regex = crate::regex::compile_from_units(vm, &sep_units)?;
         crate::regex::split_with_delimiters_spans(&regex, &units, limit)
             .iter()
             .map(|(start, end)| String::from_utf16_lossy(&units[*start..*end]))
             .collect()
     };
     string_array(vm, &parts)
+}
+
+/// Raw UTF-16 of the split receiver (preserving lone surrogates).
+fn split_source_units(vm: &Vm<'_>, reference: ObjectRef) -> Vec<u16> {
+    vm.string_utf16(reference)
+        .map(|units| units.to_vec())
+        .unwrap_or_default()
+}
+
+/// Raw UTF-16 of the split regex; a null regex raises NullPointerException.
+fn split_separator_units(vm: &mut Vm<'_>, reference: ObjectRef) -> Result<Vec<u16>, VmError> {
+    if reference.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    Ok(vm
+        .string_utf16(reference)
+        .map(|units| units.to_vec())
+        .unwrap_or_default())
+}
+
+/// `split("")` yields one element per code point (a supplementary pair stays
+/// together), matching the JDK's code-point-based empty-regex fast path.
+fn split_empty_regex(units: &[u16]) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut index = 0;
+    while index < units.len() {
+        let hi = units[index];
+        let width = if (0xD800..=0xDBFF).contains(&hi)
+            && index + 1 < units.len()
+            && (0xDC00..=0xDFFF).contains(&units[index + 1])
+        {
+            2
+        } else {
+            1
+        };
+        parts.push(String::from_utf16_lossy(&units[index..index + width]));
+        index += width;
+    }
+    parts
 }
 
 fn string_matches(

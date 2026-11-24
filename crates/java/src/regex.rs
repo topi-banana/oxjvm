@@ -779,6 +779,14 @@ pub(crate) fn compile_from_str(vm: &mut Vm<'_>, pattern: &str) -> Result<Regex, 
         .map_err(|(message, index)| pattern_syntax_error(vm, &message, pattern, index as i32))
 }
 
+/// Compile from raw UTF-16 so lone surrogates survive (a Rust `String` would
+/// replace them with U+FFFD), matching `Pattern.compile`'s stored pattern.
+pub(crate) fn compile_from_units(vm: &mut Vm<'_>, units: &[u16]) -> Result<Regex, VmError> {
+    let text = String::from_utf16_lossy(units);
+    compile(units, 0)
+        .map_err(|(message, index)| pattern_syntax_error(vm, &message, &text, index as i32))
+}
+
 fn run(
     prog: &[Inst],
     mut pc: usize,
@@ -1343,15 +1351,25 @@ fn pattern_field(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
 }
 
 fn pattern_compile(vm: &mut Vm<'_>, args: &[Value], flags: i32) -> Result<Value, VmError> {
-    let pattern = string_arg(vm, args[0])?;
-    let units = utf16_from_str(&pattern);
+    let pattern_ref = ref_arg(args, 0);
+    if pattern_ref.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    // Preserve the raw UTF-16 of the pattern so lone surrogates survive both the
+    // compile and the stored pattern string (a lossy Rust String would replace
+    // them with U+FFFD, diverging from String.split and the JDK).
+    let units = vm
+        .string_utf16(pattern_ref)
+        .map(|units| units.to_vec())
+        .unwrap_or_default();
+    let pattern = String::from_utf16_lossy(&units);
     if let Err((message, index)) = compile(&units, flags) {
         return Err(pattern_syntax_error(vm, &message, &pattern, index as i32));
     }
     let class = vm.resolve_class("java/util/regex/Pattern")?;
     let instance = vm.new_instance(class)?;
     let (declaring, field) = vm.find_field(class, "pattern", "Ljava/lang/String;")?;
-    let text = vm.make_string(&pattern)?;
+    let text = vm.make_string_utf16(units)?;
     vm.set_instance_ref(instance, declaring, field, text);
     crate::lang::write_int_field(vm, instance, "flags", flags);
     object(instance)
