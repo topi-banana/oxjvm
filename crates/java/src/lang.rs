@@ -7602,11 +7602,12 @@ fn system_class(vm: &mut Vm<'_>) -> Result<ClassId, VmError> {
 }
 
 /// The VM's well-known default system properties.
-pub(crate) const SYSTEM_PROPERTY_DEFAULTS: [(&str, &str); 37] = [
+pub(crate) const SYSTEM_PROPERTY_DEFAULTS: [(&str, &str); 43] = [
     ("java.version", "27"),
     ("java.specification.version", "27"),
     ("java.runtime.version", "27+35"),
     ("java.runtime.name", "OpenJDK Runtime Environment"),
+    ("java.version.date", "2026-09-15"),
     ("java.specification.name", "Java Platform API Specification"),
     ("java.specification.vendor", "Oracle Corporation"),
     ("java.vm.specification.version", "27"),
@@ -7631,6 +7632,10 @@ pub(crate) const SYSTEM_PROPERTY_DEFAULTS: [(&str, &str); 37] = [
     ("line.separator", "\n"),
     ("file.encoding", "UTF-8"),
     ("sun.jnu.encoding", "UTF-8"),
+    ("native.encoding", "UTF-8"),
+    ("stdin.encoding", "UTF-8"),
+    ("stdout.encoding", "UTF-8"),
+    ("stderr.encoding", "UTF-8"),
     ("user.name", "oxjvm"),
     ("user.home", "/tmp"),
     ("user.country", "US"),
@@ -7641,6 +7646,10 @@ pub(crate) const SYSTEM_PROPERTY_DEFAULTS: [(&str, &str); 37] = [
     ("sun.cpu.endian", "little"),
     ("java.home", "/oxjvm"),
     ("java.io.tmpdir", "/tmp"),
+    (
+        "java.library.path",
+        "/usr/java/packages/lib:/usr/lib64:/lib64:/lib:/usr/lib",
+    ),
     ("sun.java.command", ""),
     ("java.awt.headless", "true"),
 ];
