@@ -4188,7 +4188,20 @@ pub(crate) fn format_string(
             chars.next();
             spec_text.push_str(&index_digits);
             spec_text.push('$');
-            explicit_index = Some(index_digits.parse::<usize>().unwrap_or(0));
+            let index = index_digits.parse::<usize>().unwrap_or(usize::MAX);
+            if index == 0 {
+                return Err(vm.throw_new(
+                    "java/util/IllegalFormatArgumentIndexException",
+                    Some("Illegal format argument index = 0"),
+                ));
+            }
+            if index > i32::MAX as usize {
+                return Err(vm.throw_new(
+                    "java/util/IllegalFormatArgumentIndexException",
+                    Some("Format argument index: (not representable as int)"),
+                ));
+            }
+            explicit_index = Some(index);
         } else if !index_digits.is_empty() {
             width = index_digits.parse::<usize>().unwrap_or(0);
             spec_text.push_str(&index_digits);
@@ -4245,6 +4258,12 @@ pub(crate) fn format_string(
                 _ => break,
             }
         }
+        if width > i32::MAX as usize {
+            return Err(vm.throw_new(
+                "java/util/IllegalFormatWidthException",
+                Some(&alloc::format!("{}", i32::MIN)),
+            ));
+        }
         let mut precision: Option<usize> = None;
         if chars.peek() == Some(&'.') {
             chars.next();
@@ -4254,6 +4273,12 @@ pub(crate) fn format_string(
                 value = value * 10 + digit as usize;
                 spec_text.push(char::from_digit(digit, 10).unwrap());
                 chars.next();
+            }
+            if value > i32::MAX as usize {
+                return Err(vm.throw_new(
+                    "java/util/IllegalFormatPrecisionException",
+                    Some(&alloc::format!("{}", i32::MIN)),
+                ));
             }
             precision = Some(value);
         }

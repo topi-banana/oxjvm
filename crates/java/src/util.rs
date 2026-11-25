@@ -299,6 +299,60 @@ pub(crate) const MISSING_FORMAT_WIDTH_EXCEPTION: oxjvm_vm::NativeClass = {
     )
 };
 
+pub(crate) const ILLEGAL_FORMAT_ARGUMENT_INDEX_EXCEPTION: oxjvm_vm::NativeClass = {
+    const METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        format_string_ctor,
+    )];
+    class(
+        "java/util/IllegalFormatArgumentIndexException",
+        Some("java/util/IllegalFormatException"),
+        &[],
+        ACC_PUBLIC,
+        &[],
+        &METHODS,
+        None,
+    )
+};
+
+pub(crate) const ILLEGAL_FORMAT_WIDTH_EXCEPTION: oxjvm_vm::NativeClass = {
+    const METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        format_string_ctor,
+    )];
+    class(
+        "java/util/IllegalFormatWidthException",
+        Some("java/util/IllegalFormatException"),
+        &[],
+        ACC_PUBLIC,
+        &[],
+        &METHODS,
+        None,
+    )
+};
+
+pub(crate) const ILLEGAL_FORMAT_PRECISION_EXCEPTION: oxjvm_vm::NativeClass = {
+    const METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        format_string_ctor,
+    )];
+    class(
+        "java/util/IllegalFormatPrecisionException",
+        Some("java/util/IllegalFormatException"),
+        &[],
+        ACC_PUBLIC,
+        &[],
+        &METHODS,
+        None,
+    )
+};
+
 pub(crate) const UNKNOWN_FORMAT_CONVERSION_EXCEPTION: oxjvm_vm::NativeClass = {
     const METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
         "<init>",
