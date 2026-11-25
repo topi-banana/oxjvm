@@ -4185,7 +4185,7 @@ pub(crate) fn format_string(
         let mut explicit_index: Option<usize> = None;
         let mut width = 0usize;
         let mut zero_pad = false;
-        let mut duplicate_zero = false;
+        let mut duplicate_flag: Option<char> = None;
         if !index_digits.is_empty() && chars.peek() == Some(&'$') {
             chars.next();
             spec_text.push_str(&index_digits);
@@ -4213,7 +4213,7 @@ pub(crate) fn format_string(
                 zero_pad = true;
             }
             if zeros > 1 {
-                duplicate_zero = true;
+                duplicate_flag = Some('0');
             }
             width = digits.parse::<usize>().unwrap_or(0);
             spec_text.push_str(&index_digits);
@@ -4224,6 +4224,7 @@ pub(crate) fn format_string(
         let mut space_sign = false;
         let mut grouping = false;
         let mut relative = false;
+        let mut paren_negative = false;
         loop {
             match chars.peek() {
                 Some('-') => {
@@ -4233,10 +4234,18 @@ pub(crate) fn format_string(
                 }
                 Some('0') if width == 0 => {
                     if zero_pad {
-                        duplicate_zero = true;
+                        duplicate_flag.get_or_insert('0');
                     }
                     zero_pad = true;
                     spec_text.push('0');
+                    chars.next();
+                }
+                Some('(') => {
+                    if paren_negative {
+                        duplicate_flag.get_or_insert('(');
+                    }
+                    paren_negative = true;
+                    spec_text.push('(');
                     chars.next();
                 }
                 Some('#') => {
@@ -4313,8 +4322,42 @@ pub(crate) fn format_string(
         // Flag validation in the precedence java.util.Formatter uses: a repeated
         // zero flag, then a zero flag on a non-numeric conversion, then a zero
         // flag with no width, then '-' combined with '0'.
-        if duplicate_zero {
-            return Err(vm.throw_new("java/util/DuplicateFormatFlagsException", Some("0")));
+        if let Some(flag) = duplicate_flag {
+            return Err(vm.throw_new(
+                "java/util/DuplicateFormatFlagsException",
+                Some(&flag.to_string()),
+            ));
+        }
+        // An unrecognized conversion character is rejected before flag checks.
+        if !matches!(
+            spec,
+            'b' | 'B'
+                | 'h'
+                | 'H'
+                | 's'
+                | 'S'
+                | 'c'
+                | 'C'
+                | 'd'
+                | 'o'
+                | 'x'
+                | 'X'
+                | 'f'
+                | 'e'
+                | 'E'
+                | 'g'
+                | 'G'
+                | 'a'
+                | 'A'
+                | 't'
+                | 'T'
+                | '%'
+                | 'n'
+        ) {
+            return Err(vm.throw_new(
+                "java/util/UnknownFormatConversionException",
+                Some(&alloc::format!("{}", spec)),
+            ));
         }
         // `%n` never takes a width; `%n`/`%%` never take the zero-pad flag.
         if spec == 'n' && width > 0 {
@@ -4330,6 +4373,13 @@ pub(crate) fn format_string(
             return Err(vm.throw_new(
                 "java/util/FormatFlagsConversionMismatchException",
                 Some(&alloc::format!("0{}", spec)),
+            ));
+        }
+        // The '(' flag only applies to decimal and floating-point conversions.
+        if paren_negative && !matches!(spec, 'd' | 'f' | 'e' | 'E') {
+            return Err(vm.throw_new(
+                "java/util/FormatFlagsConversionMismatchException",
+                Some(&alloc::format!("({}", spec)),
             ));
         }
         if zero_pad && width == 0 {
@@ -4436,8 +4486,13 @@ pub(crate) fn format_string(
                     text = alloc::format!("{sign}{grouped}");
                 }
                 if number < 0 {
+                    if paren_negative {
+                        // Negative values render inside parentheses instead of
+                        // with a leading '-'; the zeros pad inside them.
+                        text = alloc::format!("({})", &text[1..]);
+                    }
                     prefix_len = 1;
-                } else if plus_sign || space_sign {
+                } else if (plus_sign || space_sign) && !paren_negative {
                     let prefix = if plus_sign { "+" } else { " " };
                     text = alloc::format!("{prefix}{text}");
                     prefix_len = 1;
@@ -4503,12 +4558,33 @@ pub(crate) fn format_string(
                 let value = resolved;
                 let number = object_to_double(vm, value);
                 let digits = precision.unwrap_or(6);
-                format_fixed(number, digits)
+                if paren_negative && number.is_sign_negative() {
+                    prefix_len = 1;
+                    alloc::format!("({})", format_fixed(-number, digits))
+                } else {
+                    format_fixed(number, digits)
+                }
             }
             'e' | 'E' => {
                 let value = resolved;
                 let number = object_to_double(vm, value);
-                crate::format::format_scientific_jdk(number, precision.unwrap_or(6), spec == 'E')
+                if paren_negative && number.is_sign_negative() {
+                    prefix_len = 1;
+                    alloc::format!(
+                        "({})",
+                        crate::format::format_scientific_jdk(
+                            -number,
+                            precision.unwrap_or(6),
+                            spec == 'E'
+                        )
+                    )
+                } else {
+                    crate::format::format_scientific_jdk(
+                        number,
+                        precision.unwrap_or(6),
+                        spec == 'E',
+                    )
+                }
             }
             other => alloc::format!("%{other}"),
         };
