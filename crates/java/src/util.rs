@@ -14455,7 +14455,20 @@ const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 70] = [
         "checkedQueue",
         "(Ljava/util/Queue;Ljava/lang/Class;)Ljava/util/Queue;",
         ACC_PUBLIC | ACC_STATIC,
-        |_, _, args| object(ref_arg(args, 0)),
+        |vm, _, args| {
+            let backing = ref_arg(args, 0);
+            let ty = ref_arg(args, 1);
+            if backing.is_null() || ty.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let class = vm.resolve_class("java/util/OxjvmCheckedQueue")?;
+            let instance = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "backing", "Ljava/util/Collection;")?;
+            vm.set_instance_ref(instance, declaring, field, backing);
+            let (declaring, field) = vm.find_field(class, "type", "Ljava/lang/Class;")?;
+            vm.set_instance_ref(instance, declaring, field, ty);
+            object(instance)
+        },
     ),
     method(
         "unmodifiableSet",
@@ -26114,6 +26127,53 @@ pub(crate) const OXJVM_CHECKED_COLLECTION: oxjvm_vm::NativeClass = class(
         field("type", "Ljava/lang/Class;", ACC_PRIVATE, None),
     ],
     &OXJVM_CHECKED_COLLECTION_METHODS,
+    None,
+);
+
+/// `Collections.checkedQueue`: a checked collection that is also a `Queue`, so
+/// offer/poll/peek/element/remove delegate to the backing queue with type checks.
+const OXJVM_CHECKED_QUEUE_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method(
+        "offer",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            checked_coll_check(vm, this, ref_arg(args, 1))?;
+            checked_coll_delegate(vm, this, "offer", "(Ljava/lang/Object;)Z", &[args[1]])
+        },
+    ),
+    method("poll", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        checked_coll_delegate(vm, receiver(args), "poll", "()Ljava/lang/Object;", &[])
+    }),
+    method("peek", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        checked_coll_delegate(vm, receiver(args), "peek", "()Ljava/lang/Object;", &[])
+    }),
+    method(
+        "element",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            checked_coll_delegate(vm, receiver(args), "element", "()Ljava/lang/Object;", &[])
+        },
+    ),
+    method(
+        "remove",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            checked_coll_delegate(vm, receiver(args), "remove", "()Ljava/lang/Object;", &[])
+        },
+    ),
+];
+
+pub(crate) const OXJVM_CHECKED_QUEUE: oxjvm_vm::NativeClass = class(
+    "java/util/OxjvmCheckedQueue",
+    Some("java/util/OxjvmCheckedCollection"),
+    &["java/util/Queue"],
+    ACC_PUBLIC,
+    &[],
+    &OXJVM_CHECKED_QUEUE_METHODS,
     None,
 );
 // -------------------------------------------------------------------------------------------
