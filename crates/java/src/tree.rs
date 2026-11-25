@@ -1683,7 +1683,14 @@ fn tree_elements(
         _ => {
             let mut out = Vec::new();
             for (key, value) in entries(vm, backing) {
-                out.push(new_entry(vm, key, value)?);
+                let entry = new_entry(vm, key, value)?;
+                // Live view entries write through to the backing map on
+                // setValue, as the JDK's map entry iterators do.
+                let entry_class = vm.class_of(entry);
+                let (declaring, field) =
+                    vm.find_field(entry_class, "backing", "Ljava/util/Map;")?;
+                vm.set_instance_ref(entry, declaring, field, backing);
+                out.push(entry);
             }
             out
         }
