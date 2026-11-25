@@ -2012,10 +2012,11 @@ const FILES_METHODS: [oxjvm_vm::NativeMethodDef; 68] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let path = path_string(vm, ref_arg(args, 0));
+            let resolved = crate::file::fs_resolve(vm, &path);
             let names = vm
                 .host
                 .filesystem()
-                .and_then(|fs| fs.list(&path))
+                .and_then(|fs| fs.list(&resolved))
                 .unwrap_or_default();
             let mut paths = Vec::new();
             for name in names {
@@ -3003,7 +3004,8 @@ fn bytes_array(vm: &mut Vm<'_>, bytes: &[u8]) -> Result<Value, VmError> {
 }
 
 fn fs_metadata(vm: &mut Vm<'_>, path: &str) -> Option<oxjvm_platform::FileMetadata> {
-    vm.host.filesystem()?.metadata(path)
+    let path = crate::file::fs_resolve(vm, path);
+    vm.host.filesystem()?.metadata(&path)
 }
 
 /// Whether `path` is a symbolic link, checked without following it (so a

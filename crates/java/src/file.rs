@@ -215,7 +215,10 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 55] = [
     }),
     method("canRead", "()Z", ACC_PUBLIC, |vm, _, args| {
         let path = file_path(vm, receiver(args));
-        boolean(fs_metadata(vm, &path).is_some())
+        boolean(
+            fs_metadata(vm, &path)
+                .is_some_and(|metadata| metadata.mode == 0 || (metadata.mode & 0o400) != 0),
+        )
     }),
     method("canWrite", "()Z", ACC_PUBLIC, |vm, _, args| {
         let path = file_path(vm, receiver(args));
@@ -229,6 +232,11 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 55] = [
         let path = file_path(vm, receiver(args));
         if path.contains('\0') {
             return Err(vm.throw_new("java/io/IOException", Some("Invalid file path")));
+        }
+        // The JDK creates the raw path exclusively; an empty path cannot be
+        // created and fails with IOException rather than reporting "exists".
+        if path.is_empty() {
+            return Err(vm.throw_new("java/io/IOException", Some("No such file or directory")));
         }
         if fs_metadata(vm, &path).is_some() {
             return boolean(false);
@@ -253,6 +261,9 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 55] = [
     }),
     method("mkdirs", "()Z", ACC_PUBLIC, |vm, _, args| {
         let path = file_path(vm, receiver(args));
+        if fs_metadata(vm, &path).is_some() {
+            return boolean(false);
+        }
         boolean(fs_create_dir_all(vm, &path))
     }),
     method("delete", "()Z", ACC_PUBLIC, |vm, _, args| {
@@ -516,6 +527,7 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 55] = [
     method("setReadOnly", "()Z", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
         let path = file_path(vm, this);
+        let path = fs_resolve(vm, &path);
         let Some(fs) = vm.host.filesystem() else {
             return boolean(false);
         };
@@ -530,7 +542,18 @@ const FILE_METHODS: [oxjvm_vm::NativeMethodDef; 55] = [
             return Err(vm.throw_new("java/net/MalformedURLException", Some("Invalid file path")));
         }
         let absolute = absolute_of_path(vm, &path);
-        let text = alloc::format!("file:{absolute}");
+        let is_dir = vm
+            .host
+            .filesystem()
+            .and_then(|fs| fs.metadata(&absolute))
+            .map(|m| m.kind == FileKind::Directory)
+            .unwrap_or(false);
+        let suffix = if is_dir && !absolute.ends_with('/') {
+            "/"
+        } else {
+            ""
+        };
+        let text = alloc::format!("file:{absolute}{suffix}");
         object(crate::net::new_url(vm, &text)?)
     }),
     method("toURI", "()Ljava/net/URI;", ACC_PUBLIC, |vm, _, args| {
@@ -735,6 +758,7 @@ fn file_set_access(
     owner_only: bool,
 ) -> Result<Value, VmError> {
     let path = file_path(vm, this);
+    let path = fs_resolve(vm, &path);
     let Some(fs) = vm.host.filesystem() else {
         return boolean(false);
     };
@@ -757,6 +781,7 @@ fn file_set_access(
 /// One of `(total, free, usable)` bytes for the filesystem holding the file.
 fn file_space(vm: &mut Vm<'_>, this: ObjectRef, index: usize) -> Result<Value, VmError> {
     let path = file_path(vm, this);
+    let path = fs_resolve(vm, &path);
     let value = vm
         .host
         .filesystem()
@@ -946,53 +971,73 @@ fn normalize_absolute(path: &str) -> String {
     alloc::format!("/{}", parts.join("/"))
 }
 
+/// The JDK treats `new File("")` as the current directory for filesystem
+/// operations. Resolve only the empty path so that non-empty relative and
+/// absolute paths keep their existing handling.
+pub(crate) fn fs_resolve(vm: &mut Vm<'_>, path: &str) -> String {
+    if path.is_empty() {
+        absolute_of_path(vm, path)
+    } else {
+        path.to_string()
+    }
+}
+
 fn fs_metadata(vm: &mut Vm<'_>, path: &str) -> Option<FileMetadata> {
-    vm.host.filesystem()?.metadata(path)
+    let path = fs_resolve(vm, path);
+    vm.host.filesystem()?.metadata(&path)
 }
 
 fn fs_list(vm: &mut Vm<'_>, path: &str) -> Option<Vec<String>> {
-    vm.host.filesystem()?.list(path)
+    let path = fs_resolve(vm, path);
+    vm.host.filesystem()?.list(&path)
 }
 
 fn fs_write(vm: &mut Vm<'_>, path: &str, bytes: &[u8], append: bool) -> bool {
+    let path = fs_resolve(vm, path);
     vm.host
         .filesystem()
-        .map(|fs| fs.write(path, bytes, append))
+        .map(|fs| fs.write(&path, bytes, append))
         .unwrap_or(false)
 }
 
 fn fs_create_dir_all(vm: &mut Vm<'_>, path: &str) -> bool {
+    let path = fs_resolve(vm, path);
     vm.host
         .filesystem()
-        .map(|fs| fs.create_dir_all(path))
+        .map(|fs| fs.create_dir_all(&path))
         .unwrap_or(false)
 }
 
 fn fs_remove_file(vm: &mut Vm<'_>, path: &str) -> bool {
+    let path = fs_resolve(vm, path);
     vm.host
         .filesystem()
-        .map(|fs| fs.remove_file(path))
+        .map(|fs| fs.remove_file(&path))
         .unwrap_or(false)
 }
 
 fn fs_remove_dir(vm: &mut Vm<'_>, path: &str) -> bool {
+    let path = fs_resolve(vm, path);
     vm.host
         .filesystem()
-        .map(|fs| fs.remove_dir(path))
+        .map(|fs| fs.remove_dir(&path))
         .unwrap_or(false)
 }
 
 fn fs_rename(vm: &mut Vm<'_>, from: &str, to: &str) -> bool {
+    let from = fs_resolve(vm, from);
+    let to = fs_resolve(vm, to);
     vm.host
         .filesystem()
-        .map(|fs| fs.rename(from, to))
+        .map(|fs| fs.rename(&from, &to))
         .unwrap_or(false)
 }
 
 fn fs_set_modified(vm: &mut Vm<'_>, path: &str, millis: i64) -> bool {
+    let path = fs_resolve(vm, path);
     vm.host
         .filesystem()
-        .map(|fs| fs.set_modified(path, millis))
+        .map(|fs| fs.set_modified(&path, millis))
         .unwrap_or(false)
 }
 
