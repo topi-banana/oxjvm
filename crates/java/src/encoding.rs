@@ -131,27 +131,110 @@ fn base64_mime_parts(vm: &Vm<'_>, encoder: ObjectRef) -> (i32, String) {
     (read_int_field(vm, encoder, "lineLength"), separator)
 }
 
-fn base64_decode_text(text: &str) -> Vec<u8> {
-    let mut out = Vec::new();
-    let mut buffer = 0u32;
-    let mut bits = 0u32;
-    for byte in text.bytes() {
-        let value = match byte {
-            b'A'..=b'Z' => byte - b'A',
-            b'a'..=b'z' => byte - b'a' + 26,
-            b'0'..=b'9' => byte - b'0' + 52,
-            b'+' | b'-' => 62,
-            b'/' | b'_' => 63,
-            _ => continue,
-        } as u32;
-        buffer = (buffer << 6) | value;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((buffer >> bits) as u8);
+/// Emit the `n - 1` bytes represented by the first `n` sextets of a unit.
+fn base64_emit(unit: &[u32; 4], n: usize, out: &mut Vec<u8>) {
+    out.push(((unit[0] << 2) | (unit[1] >> 4)) as u8);
+    if n >= 3 {
+        out.push((((unit[1] & 0xf) << 4) | (unit[2] >> 2)) as u8);
+    }
+    if n >= 4 {
+        out.push((((unit[2] & 3) << 6) | unit[3]) as u8);
+    }
+}
+
+/// Strict RFC 4648 decoding matching `java.util.Base64.Decoder`.
+///
+/// The basic alphabet accepts `+/` and the URL alphabet accepts `-_`. MIME
+/// uses the basic alphabet and ignores every other character (including `-_`
+/// and any non-alphabet byte). Padding is validated for all three: a dangling
+/// single sextet, an incomplete or misplaced `=`, or any data after a
+/// completed padded unit is illegal.
+fn base64_decode_strict(bytes: &[u8], is_url: bool, is_mime: bool) -> Result<Vec<u8>, ()> {
+    fn sextet(b: u8, is_url: bool) -> Option<u32> {
+        match b {
+            b'A'..=b'Z' => Some(u32::from(b - b'A')),
+            b'a'..=b'z' => Some(u32::from(b - b'a') + 26),
+            b'0'..=b'9' => Some(u32::from(b - b'0') + 52),
+            b'+' | b'/' if !is_url => Some(if b == b'+' { 62 } else { 63 }),
+            b'-' | b'_' if is_url => Some(if b == b'-' { 62 } else { 63 }),
+            _ => None,
         }
     }
-    out
+    let mut out = Vec::new();
+    let mut unit = [0u32; 4];
+    let mut n = 0usize;
+    let mut pad = 0usize;
+    let mut done = false;
+    for &b in bytes {
+        if let Some(v) = sextet(b, is_url) {
+            if done || pad > 0 {
+                return Err(());
+            }
+            unit[n] = v;
+            n += 1;
+            if n == 4 {
+                base64_emit(&unit, 4, &mut out);
+                n = 0;
+            }
+        } else if b == b'=' {
+            if done {
+                return Err(());
+            }
+            match (n, pad) {
+                (2, 0) => pad = 1,
+                (3, 0) => {
+                    base64_emit(&unit, 3, &mut out);
+                    done = true;
+                    n = 0;
+                }
+                (2, 1) => {
+                    base64_emit(&unit, 2, &mut out);
+                    done = true;
+                    n = 0;
+                    pad = 0;
+                }
+                _ => return Err(()),
+            }
+        } else if !is_mime {
+            return Err(());
+        }
+    }
+    if pad > 0 {
+        return Err(());
+    }
+    if done {
+        return Ok(out);
+    }
+    match n {
+        0 => Ok(out),
+        1 => Err(()),
+        2 => {
+            base64_emit(&unit, 2, &mut out);
+            Ok(out)
+        }
+        3 => {
+            base64_emit(&unit, 3, &mut out);
+            Ok(out)
+        }
+        _ => unreachable!(),
+    }
+}
+
+/// Decode `bytes` according to the flavor of the receiver `Decoder`, throwing
+/// `IllegalArgumentException` on malformed input.
+fn base64_decode_checked(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    bytes: &[u8],
+) -> Result<Vec<u8>, VmError> {
+    let is_url = read_int_field(vm, this, "isUrl") != 0;
+    let is_mime = read_int_field(vm, this, "isMime") != 0;
+    base64_decode_strict(bytes, is_url, is_mime).map_err(|_| {
+        vm.throw_new(
+            "java/lang/IllegalArgumentException",
+            Some("Illegal base64 character"),
+        )
+    })
 }
 
 fn bytes_array(vm: &mut Vm<'_>, bytes: &[u8]) -> Result<ObjectRef, VmError> {
@@ -226,7 +309,9 @@ const BASE64_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _| {
             let class = vm.resolve_class("java/util/Base64$Decoder")?;
-            object(vm.new_instance(class)?)
+            let instance = vm.new_instance(class)?;
+            write_int_field(vm, instance, "isUrl", 1);
+            object(instance)
         },
     ),
     method(
@@ -264,7 +349,9 @@ const BASE64_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, _| {
             let class = vm.resolve_class("java/util/Base64$Decoder")?;
-            object(vm.new_instance(class)?)
+            let instance = vm.new_instance(class)?;
+            write_int_field(vm, instance, "isMime", 1);
+            object(instance)
         },
     ),
 ];
@@ -281,14 +368,23 @@ pub(crate) const BASE64: oxjvm_vm::NativeClass = class(
 
 const BASE64_ENCODER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
     method("encode", "([B)[B", ACC_PUBLIC, |vm, _, args| {
-        let bytes = byte_array_of(vm, ref_arg(args, 1))?;
+        let src = ref_arg(args, 1);
+        if src.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let bytes = byte_array_of(vm, src)?;
         let wrapped = base64_encoder_output(vm, receiver(args), &bytes);
         object(bytes_array(vm, &wrapped)?)
     }),
     method("encode", "([B[B)I", ACC_PUBLIC, |vm, _, args| {
-        let bytes = byte_array_of(vm, ref_arg(args, 1))?;
+        let src = ref_arg(args, 1);
+        let dst = ref_arg(args, 2);
+        if src.is_null() || dst.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let bytes = byte_array_of(vm, src)?;
         let wrapped = base64_encoder_output(vm, receiver(args), &bytes);
-        let written = fill_byte_array(vm, ref_arg(args, 2), &wrapped)?;
+        let written = fill_byte_array(vm, dst, &wrapped)?;
         Ok(Value::Int(written))
     }),
     method(
@@ -296,7 +392,11 @@ const BASE64_ENCODER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         "(Ljava/nio/ByteBuffer;)Ljava/nio/ByteBuffer;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let bytes = crate::buffer::byte_buffer_consume_remaining(vm, ref_arg(args, 1))?;
+            let src = ref_arg(args, 1);
+            if src.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let bytes = crate::buffer::byte_buffer_consume_remaining(vm, src)?;
             let wrapped = base64_encoder_output(vm, receiver(args), &bytes);
             object(crate::buffer::byte_buffer_from_bytes(vm, &wrapped)?)
         },
@@ -306,7 +406,11 @@ const BASE64_ENCODER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         "([B)Ljava/lang/String;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let bytes = byte_array_of(vm, ref_arg(args, 1))?;
+            let src = ref_arg(args, 1);
+            if src.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let bytes = byte_array_of(vm, src)?;
             let wrapped = base64_encoder_output(vm, receiver(args), &bytes);
             let text = String::from_utf8_lossy(&wrapped).into_owned();
             object(vm.make_string(&text)?)
@@ -323,10 +427,14 @@ const BASE64_ENCODER_METHODS: [oxjvm_vm::NativeMethodDef; 6] = [
         "(Ljava/io/OutputStream;)Ljava/io/OutputStream;",
         ACC_PUBLIC,
         |vm, _, args| {
+            let src = ref_arg(args, 1);
+            if src.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let class = vm.resolve_class("java/util/Base64$EncOutputStream")?;
             let instance = vm.new_instance(class)?;
             let (declaring, field) = vm.find_field(class, "out", "Ljava/io/OutputStream;")?;
-            vm.set_instance_ref(instance, declaring, field, ref_arg(args, 1));
+            vm.set_instance_ref(instance, declaring, field, src);
             let (declaring, field) = vm.find_field(class, "enc", "Ljava/util/Base64$Encoder;")?;
             vm.set_instance_ref(instance, declaring, field, receiver(args));
             object(instance)
@@ -351,20 +459,49 @@ pub(crate) const BASE64_ENCODER: oxjvm_vm::NativeClass = class(
 );
 
 /// Accumulate bytes written to a wrapping Base64 output stream.
+///
+/// The buffer grows geometrically and `count` tracks the valid prefix, so
+/// writing one byte at a time stays amortized O(1) instead of copying the
+/// whole accumulated array on every write.
 fn enc_os_append(vm: &mut Vm<'_>, this: ObjectRef, bytes: &[u8]) -> Result<(), VmError> {
+    if read_int_field(vm, this, "closed") != 0 {
+        return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+    }
     let class = vm.class_of(this);
+    let count = read_int_field(vm, this, "count") as usize;
+    let needed = count + bytes.len();
     let existing = vm
         .read_ref_field(this, class, "buf", "[B")
         .unwrap_or(ObjectRef::NULL);
-    let mut combined = if existing.is_null() {
-        Vec::new()
+    let capacity = if existing.is_null() {
+        0
     } else {
-        byte_array_of(vm, existing)?
+        vm.array_length(existing)?
     };
-    combined.extend_from_slice(bytes);
-    let array = bytes_array(vm, &combined)?;
-    let (declaring, field) = vm.find_field(class, "buf", "[B")?;
-    vm.set_instance_ref(this, declaring, field, array);
+    let buf = if needed > capacity {
+        let new_cap = needed.saturating_mul(2).max(16);
+        let grown = bytes_array(vm, &alloc::vec![0u8; new_cap])?;
+        if count > 0 {
+            let old = byte_array_of(vm, existing)?;
+            for (index, &byte) in old.iter().enumerate().take(count) {
+                vm.array_set(grown, index as i32, Value::Int(i32::from(byte)), false)?;
+            }
+        }
+        let (declaring, field) = vm.find_field(class, "buf", "[B")?;
+        vm.set_instance_ref(this, declaring, field, grown);
+        grown
+    } else {
+        existing
+    };
+    for (index, byte) in bytes.iter().enumerate() {
+        vm.array_set(
+            buf,
+            (count + index) as i32,
+            Value::Int(i32::from(*byte)),
+            false,
+        )?;
+    }
+    write_int_field(vm, this, "count", needed as i32);
     Ok(())
 }
 
@@ -378,10 +515,12 @@ fn enc_os_close(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Value, VmError> {
     let buf = vm
         .read_ref_field(this, class, "buf", "[B")
         .unwrap_or(ObjectRef::NULL);
-    let input = if buf.is_null() {
+    let count = read_int_field(vm, this, "count") as usize;
+    let input = if buf.is_null() || count == 0 {
         Vec::new()
     } else {
-        byte_array_of(vm, buf)?
+        let all = byte_array_of(vm, buf)?;
+        all[..count].to_vec()
     };
     let enc = vm
         .read_ref_field(this, class, "enc", "Ljava/util/Base64$Encoder;")
@@ -409,22 +548,34 @@ const BASE64_ENC_OUTPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
         void()
     }),
     method("write", "([B)V", ACC_PUBLIC, |vm, _, args| {
-        let bytes = byte_array_of(vm, ref_arg(args, 1))?;
-        enc_os_append(vm, receiver(args), &bytes)?;
+        let this = receiver(args);
+        if read_int_field(vm, this, "closed") != 0 {
+            return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+        }
+        let src = ref_arg(args, 1);
+        if src.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let bytes = byte_array_of(vm, src)?;
+        enc_os_append(vm, this, &bytes)?;
         void()
     }),
     method("write", "([BII)V", ACC_PUBLIC, |vm, _, args| {
-        let bytes = byte_array_of(vm, ref_arg(args, 1))?;
+        let this = receiver(args);
+        if read_int_field(vm, this, "closed") != 0 {
+            return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+        }
+        let src = ref_arg(args, 1);
+        if src.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let bytes = byte_array_of(vm, src)?;
         let off = crate::int_arg(args, 2);
         let len = crate::int_arg(args, 3);
         if off < 0 || len < 0 || off as usize + len as usize > bytes.len() {
             return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
         }
-        enc_os_append(
-            vm,
-            receiver(args),
-            &bytes[off as usize..(off + len) as usize],
-        )?;
+        enc_os_append(vm, this, &bytes[off as usize..(off + len) as usize])?;
         void()
     }),
     method("flush", "()V", ACC_PUBLIC, |_, _, _| void()),
@@ -442,22 +593,32 @@ pub(crate) const BASE64_ENC_OUTPUT_STREAM: oxjvm_vm::NativeClass = class(
         field("out", "Ljava/io/OutputStream;", ACC_PRIVATE, None),
         field("enc", "Ljava/util/Base64$Encoder;", ACC_PRIVATE, None),
         field("buf", "[B", ACC_PRIVATE, None),
+        field("count", "I", ACC_PRIVATE, None),
         field("closed", "I", ACC_PRIVATE, None),
     ],
     &BASE64_ENC_OUTPUT_STREAM_METHODS,
     None,
 );
 
-const BASE64_DECODER_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+const BASE64_DECODER_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
     method("decode", "([B)[B", ACC_PUBLIC, |vm, _, args| {
-        let text = String::from_utf8_lossy(&byte_array_of(vm, ref_arg(args, 1))?).into_owned();
-        let decoded = base64_decode_text(&text);
+        let src = ref_arg(args, 1);
+        if src.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let bytes = byte_array_of(vm, src)?;
+        let decoded = base64_decode_checked(vm, receiver(args), &bytes)?;
         object(bytes_array(vm, &decoded)?)
     }),
     method("decode", "([B[B)I", ACC_PUBLIC, |vm, _, args| {
-        let text = String::from_utf8_lossy(&byte_array_of(vm, ref_arg(args, 1))?).into_owned();
-        let decoded = base64_decode_text(&text);
-        let written = fill_byte_array(vm, ref_arg(args, 2), &decoded)?;
+        let src = ref_arg(args, 1);
+        let dst = ref_arg(args, 2);
+        if src.is_null() || dst.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let bytes = byte_array_of(vm, src)?;
+        let decoded = base64_decode_checked(vm, receiver(args), &bytes)?;
+        let written = fill_byte_array(vm, dst, &decoded)?;
         Ok(Value::Int(written))
     }),
     method(
@@ -465,9 +626,15 @@ const BASE64_DECODER_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         "(Ljava/nio/ByteBuffer;)Ljava/nio/ByteBuffer;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let bytes = crate::buffer::byte_buffer_consume_remaining(vm, ref_arg(args, 1))?;
-            let text = String::from_utf8_lossy(&bytes).into_owned();
-            let decoded = base64_decode_text(&text);
+            let src = ref_arg(args, 1);
+            if src.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            // Peek without consuming so a malformed input leaves the position
+            // untouched, then advance only once decoding has succeeded.
+            let bytes = crate::buffer::byte_buffer_remaining_bytes(vm, src)?;
+            let decoded = base64_decode_checked(vm, receiver(args), &bytes)?;
+            crate::buffer::byte_buffer_consume_remaining(vm, src)?;
             object(crate::buffer::byte_buffer_from_bytes(vm, &decoded)?)
         },
     ),
@@ -476,9 +643,31 @@ const BASE64_DECODER_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
         "(Ljava/lang/String;)[B",
         ACC_PUBLIC,
         |vm, _, args| {
-            let text = vm.string_or_empty(ref_arg(args, 1));
-            let decoded = base64_decode_text(&text);
+            let src = ref_arg(args, 1);
+            if src.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let text = vm.string_or_empty(src);
+            let decoded = base64_decode_checked(vm, receiver(args), text.as_bytes())?;
             object(bytes_array(vm, &decoded)?)
+        },
+    ),
+    method(
+        "wrap",
+        "(Ljava/io/InputStream;)Ljava/io/InputStream;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let src = ref_arg(args, 1);
+            if src.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let class = vm.resolve_class("java/util/Base64$DecInputStream")?;
+            let instance = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "in", "Ljava/io/InputStream;")?;
+            vm.set_instance_ref(instance, declaring, field, src);
+            let (declaring, field) = vm.find_field(class, "dec", "Ljava/util/Base64$Decoder;")?;
+            vm.set_instance_ref(instance, declaring, field, receiver(args));
+            object(instance)
         },
     ),
 ];
@@ -488,8 +677,200 @@ pub(crate) const BASE64_DECODER: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &[],
     ACC_PUBLIC | ACC_FINAL,
-    &[],
+    &[
+        field("isUrl", "I", ACC_PRIVATE, None),
+        field("isMime", "I", ACC_PRIVATE, None),
+    ],
     &BASE64_DECODER_METHODS,
+    None,
+);
+
+/// Lazily decode the whole wrapped stream on first use, caching the result.
+///
+/// Malformed input surfaces as `IOException` (the stream flavor of the
+/// decoder's `IllegalArgumentException`). Reading happens only after callers
+/// have validated their arguments, so an invalid `read` never consumes input.
+fn dec_is_fill(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    if read_int_field(vm, this, "started") != 0 {
+        return Ok(());
+    }
+    write_int_field(vm, this, "started", 1);
+    let class = vm.class_of(this);
+    let in_ref = vm
+        .read_ref_field(this, class, "in", "Ljava/io/InputStream;")
+        .unwrap_or(ObjectRef::NULL);
+    let dec = vm
+        .read_ref_field(this, class, "dec", "Ljava/util/Base64$Decoder;")
+        .unwrap_or(ObjectRef::NULL);
+    let mut encoded = Vec::new();
+    if !in_ref.is_null() {
+        let chunk = bytes_array(vm, &[0u8; 8192])?;
+        loop {
+            let (read_class, read_method) = vm.resolve_virtual_method(in_ref, "read", "([BII)I")?;
+            let n = vm
+                .invoke_method(
+                    read_class,
+                    read_method,
+                    alloc::vec![
+                        Value::Ref(in_ref),
+                        Value::Ref(chunk),
+                        Value::Int(0),
+                        Value::Int(8192),
+                    ],
+                )?
+                .as_int();
+            if n <= 0 {
+                break;
+            }
+            let chunk_bytes = byte_array_of(vm, chunk)?;
+            encoded.extend_from_slice(&chunk_bytes[..n as usize]);
+        }
+    }
+    let is_url = read_int_field(vm, dec, "isUrl") != 0;
+    let is_mime = read_int_field(vm, dec, "isMime") != 0;
+    let decoded = match base64_decode_strict(&encoded, is_url, is_mime) {
+        Ok(decoded) => decoded,
+        Err(_) => {
+            return Err(vm.throw_new("java/io/IOException", Some("Illegal base64 character")));
+        }
+    };
+    let array = bytes_array(vm, &decoded)?;
+    let (declaring, field) = vm.find_field(class, "buf", "[B")?;
+    vm.set_instance_ref(this, declaring, field, array);
+    Ok(())
+}
+
+/// The cached decoded byte array of a `DecInputStream` (NULL before first use).
+///
+/// Returned by reference so single-byte reads stay O(1); copying the whole
+/// array on every read would make byte-at-a-time decoding quadratic.
+fn dec_is_buf_ref(vm: &mut Vm<'_>, this: ObjectRef) -> ObjectRef {
+    let class = vm.class_of(this);
+    vm.read_ref_field(this, class, "buf", "[B")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+/// Length of the cached decoded array (0 before first use).
+fn dec_is_len(vm: &mut Vm<'_>, buf: ObjectRef) -> Result<usize, VmError> {
+    if buf.is_null() {
+        Ok(0)
+    } else {
+        vm.array_length(buf)
+    }
+}
+
+fn dec_is_closed(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
+    if read_int_field(vm, this, "closed") != 0 {
+        return Err(vm.throw_new("java/io/IOException", Some("Stream closed")));
+    }
+    Ok(())
+}
+
+const BASE64_DEC_INPUT_STREAM_METHODS: [oxjvm_vm::NativeMethodDef; 5] = [
+    method("read", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        dec_is_closed(vm, this)?;
+        dec_is_fill(vm, this)?;
+        let buf = dec_is_buf_ref(vm, this);
+        let pos = read_int_field(vm, this, "pos") as usize;
+        let buf_len = dec_is_len(vm, buf)?;
+        if pos >= buf_len {
+            return Ok(Value::Int(-1));
+        }
+        write_int_field(vm, this, "pos", (pos + 1) as i32);
+        Ok(Value::Int(vm.array_get(buf, pos as i32)?.as_int() & 0xff))
+    }),
+    method("read", "([BII)I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        dec_is_closed(vm, this)?;
+        let dest = ref_arg(args, 1);
+        if dest.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+        let off = crate::int_arg(args, 2);
+        let len = crate::int_arg(args, 3);
+        let dest_len = vm.array_length(dest)?;
+        if off < 0 || len < 0 || off as usize + len as usize > dest_len {
+            return Err(vm.throw_new("java/lang/IndexOutOfBoundsException", None));
+        }
+        if len == 0 {
+            return Ok(Value::Int(0));
+        }
+        dec_is_fill(vm, this)?;
+        let buf = dec_is_buf_ref(vm, this);
+        let pos = read_int_field(vm, this, "pos") as usize;
+        let buf_len = dec_is_len(vm, buf)?;
+        if pos >= buf_len {
+            return Ok(Value::Int(-1));
+        }
+        let off = off as usize;
+        let len = len as usize;
+        let n = len.min(buf_len - pos);
+        for index in 0..n {
+            let byte = vm.array_get(buf, (pos + index) as i32)?;
+            vm.array_set(dest, (off + index) as i32, byte, false)?;
+        }
+        write_int_field(vm, this, "pos", (pos + n) as i32);
+        Ok(Value::Int(n as i32))
+    }),
+    method("available", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        dec_is_closed(vm, this)?;
+        dec_is_fill(vm, this)?;
+        let buf = dec_is_buf_ref(vm, this);
+        let pos = read_int_field(vm, this, "pos") as usize;
+        let buf_len = dec_is_len(vm, buf)?;
+        Ok(Value::Int((buf_len - pos) as i32))
+    }),
+    method("skip", "(J)J", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        dec_is_closed(vm, this)?;
+        let requested = crate::long_arg(args, 1);
+        dec_is_fill(vm, this)?;
+        let buf = dec_is_buf_ref(vm, this);
+        let pos = read_int_field(vm, this, "pos") as usize;
+        let buf_len = dec_is_len(vm, buf)?;
+        let remaining = buf_len - pos;
+        let skipped = if requested <= 0 {
+            0
+        } else {
+            (requested as usize).min(remaining)
+        };
+        write_int_field(vm, this, "pos", (pos + skipped) as i32);
+        Ok(Value::Long(skipped as i64))
+    }),
+    method("close", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        if read_int_field(vm, this, "closed") != 0 {
+            return void();
+        }
+        write_int_field(vm, this, "closed", 1);
+        let class = vm.class_of(this);
+        let in_ref = vm
+            .read_ref_field(this, class, "in", "Ljava/io/InputStream;")
+            .unwrap_or(ObjectRef::NULL);
+        if !in_ref.is_null() {
+            let (close_class, close_method) = vm.resolve_virtual_method(in_ref, "close", "()V")?;
+            vm.invoke_method(close_class, close_method, alloc::vec![Value::Ref(in_ref)])?;
+        }
+        void()
+    }),
+];
+
+pub(crate) const BASE64_DEC_INPUT_STREAM: oxjvm_vm::NativeClass = class(
+    "java/util/Base64$DecInputStream",
+    Some("java/io/InputStream"),
+    &[],
+    ACC_PUBLIC,
+    &[
+        field("in", "Ljava/io/InputStream;", ACC_PRIVATE, None),
+        field("dec", "Ljava/util/Base64$Decoder;", ACC_PRIVATE, None),
+        field("buf", "[B", ACC_PRIVATE, None),
+        field("pos", "I", ACC_PRIVATE, None),
+        field("closed", "I", ACC_PRIVATE, None),
+        field("started", "I", ACC_PRIVATE, None),
+    ],
+    &BASE64_DEC_INPUT_STREAM_METHODS,
     None,
 );
 
