@@ -19299,6 +19299,22 @@ pub(crate) const SIMPLE_IMMUTABLE_ENTRY: oxjvm_vm::NativeClass = class(
     None,
 );
 
+/// `jdk.internal.util.NullableKeyValueHolder`: an immutable key/value holder
+/// implementing `Map.Entry` that permits null keys and values. It behaves like
+/// `AbstractMap.SimpleImmutableEntry` (setValue is unsupported).
+pub(crate) const NULLABLE_KEY_VALUE_HOLDER: oxjvm_vm::NativeClass = class(
+    "jdk/internal/util/NullableKeyValueHolder",
+    Some("java/lang/Object"),
+    &["java/util/Map$Entry"],
+    ACC_PUBLIC,
+    &[
+        field("key", "Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("value", "Ljava/lang/Object;", ACC_PRIVATE, None),
+    ],
+    &SIMPLE_IMMUTABLE_ENTRY_METHODS,
+    None,
+);
+
 const SIMPLE_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method(
         "<init>",
