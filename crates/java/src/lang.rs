@@ -2224,7 +2224,14 @@ const STRING_METHODS_EXTRA: [oxjvm_vm::NativeMethodDef; 27] = [
                 arguments = elements.clone();
             }
             let language = crate::locale::locale_language(vm, ref_arg(args, 0));
-            let text = format_string(vm, &format, &arguments, &language, ObjectRef::NULL)?;
+            let text = format_string(
+                vm,
+                &format,
+                &arguments,
+                ref_arg(args, 2).is_null(),
+                &language,
+                ObjectRef::NULL,
+            )?;
             object(vm.make_string(&text)?)
         },
     ),
@@ -4151,7 +4158,14 @@ fn string_format(
     {
         arguments = elements.clone();
     }
-    let text = format_string(vm, &format, &arguments, "", ObjectRef::NULL)?;
+    let text = format_string(
+        vm,
+        &format,
+        &arguments,
+        ref_arg(args, 1).is_null(),
+        "",
+        ObjectRef::NULL,
+    )?;
     object(vm.make_string(&text)?)
 }
 
@@ -4161,6 +4175,7 @@ pub(crate) fn format_string(
     vm: &mut Vm<'_>,
     format: &str,
     arguments: &[ObjectRef],
+    null_arguments: bool,
     language: &str,
     formatter: ObjectRef,
 ) -> Result<String, VmError> {
@@ -4416,12 +4431,14 @@ pub(crate) fn format_string(
             } else {
                 argument
             };
-            if index >= arguments.len() {
+            // A null varargs array resolves every index to null; an empty
+            // (non-null) array still reports a missing argument.
+            if index >= arguments.len() && !null_arguments {
                 return Err(
                     vm.throw_new("java/util/MissingFormatArgumentException", Some(&spec_text))
                 );
             }
-            resolved = arguments[index];
+            resolved = arguments.get(index).copied().unwrap_or(ObjectRef::NULL);
             if explicit_index.is_none() && !relative {
                 argument += 1;
             }
@@ -5311,7 +5328,7 @@ fn formatter_format(
         .read_ref_field(this, class, "locale", "Ljava/util/Locale;")
         .unwrap_or(ObjectRef::NULL);
     let language = crate::locale::locale_language(vm, locale);
-    let text = format_string(vm, &format, &arguments, &language, this);
+    let text = format_string(vm, &format, &arguments, args.is_null(), &language, this);
     if !locale_override.is_null() {
         let (declaring, field) = vm.find_field(class, "locale", "Ljava/util/Locale;")?;
         vm.set_instance_ref(this, declaring, field, saved_locale);
