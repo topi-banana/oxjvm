@@ -918,10 +918,32 @@ pub(crate) fn absolute_of_path(vm: &mut Vm<'_>, path: &str) -> String {
 
 fn canonical_of(vm: &mut Vm<'_>, path: &str) -> String {
     let absolute = absolute_of_path(vm, path);
-    vm.host
+    match vm
+        .host
         .filesystem()
         .and_then(|fs| fs.canonicalize(&absolute))
-        .unwrap_or(absolute)
+    {
+        Some(canonical) => canonical,
+        // The path does not exist on the host file system; the JDK still
+        // normalizes `.` and `..` lexically, clamping `..` at the root.
+        None => normalize_absolute(&absolute),
+    }
+}
+
+/// Lexically normalize an absolute path: drop empty and `.` components and
+/// resolve `..`, clamping at the root (Unix semantics).
+fn normalize_absolute(path: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for comp in path.split('/') {
+        match comp {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            c => parts.push(c),
+        }
+    }
+    alloc::format!("/{}", parts.join("/"))
 }
 
 fn fs_metadata(vm: &mut Vm<'_>, path: &str) -> Option<FileMetadata> {
