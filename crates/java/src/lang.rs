@@ -4871,7 +4871,7 @@ pub(crate) const FORMATTER: oxjvm_vm::NativeClass = class(
     None,
 );
 
-const FORMATTER_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
+const FORMATTER_METHODS: [oxjvm_vm::NativeMethodDef; 29] = [
     method("<init>", "()V", ACC_PUBLIC, |vm, _, args| {
         formatter_init(vm, receiver(args), ObjectRef::NULL, ObjectRef::NULL)
     }),
@@ -5008,6 +5008,79 @@ const FORMATTER_METHODS: [oxjvm_vm::NativeMethodDef; 24] = [
             }
             let out = formatter_wrap_output_charset(vm, os, charset)?;
             formatter_store(vm, receiver(args), out, ref_arg(args, 3))
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/nio/charset/Charset;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let path = string_arg(vm, args[1])?;
+            let charset = ref_arg(args, 2);
+            if charset.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let out = formatter_file_output_charset(vm, &path, charset)?;
+            formatter_init(vm, receiver(args), out, ObjectRef::NULL)
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/nio/charset/Charset;Ljava/util/Locale;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let path = string_arg(vm, args[1])?;
+            let charset = ref_arg(args, 2);
+            if charset.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let out = formatter_file_output_charset(vm, &path, charset)?;
+            formatter_store(vm, receiver(args), out, ref_arg(args, 3))
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/File;Ljava/nio/charset/Charset;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let path = formatter_file_path(vm, ref_arg(args, 1))?;
+            let charset = ref_arg(args, 2);
+            if charset.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let out = formatter_file_output_charset(vm, &path, charset)?;
+            formatter_init(vm, receiver(args), out, ObjectRef::NULL)
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/File;Ljava/nio/charset/Charset;Ljava/util/Locale;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let path = formatter_file_path(vm, ref_arg(args, 1))?;
+            let charset = ref_arg(args, 2);
+            if charset.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let out = formatter_file_output_charset(vm, &path, charset)?;
+            formatter_store(vm, receiver(args), out, ref_arg(args, 3))
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/io/OutputStream;Ljava/nio/charset/Charset;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let os = ref_arg(args, 1);
+            if os.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let charset = ref_arg(args, 2);
+            if charset.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let out = formatter_wrap_output_charset(vm, os, charset)?;
+            formatter_init(vm, receiver(args), out, ObjectRef::NULL)
         },
     ),
     method(
@@ -5272,6 +5345,22 @@ fn formatter_file_output(
     let text = vm.make_string(path)?;
     vm.invoke_method(declaring, ctor, vec![Value::Ref(fos), Value::Ref(text)])?;
     formatter_wrap_output(vm, fos, charset)
+}
+
+/// Open `path` for writing with a Charset object as the Formatter's destination.
+fn formatter_file_output_charset(
+    vm: &mut Vm<'_>,
+    path: &str,
+    charset: ObjectRef,
+) -> Result<ObjectRef, VmError> {
+    let fos_class = vm.resolve_class("java/io/FileOutputStream")?;
+    let fos = vm.new_instance(fos_class)?;
+    let (declaring, ctor) = vm
+        .find_method(fos_class, "<init>", "(Ljava/lang/String;)V")
+        .ok_or_else(|| VmError::internal("FileOutputStream(String) missing"))?;
+    let text = vm.make_string(path)?;
+    vm.invoke_method(declaring, ctor, vec![Value::Ref(fos), Value::Ref(text)])?;
+    formatter_wrap_output_charset(vm, fos, charset)
 }
 
 /// Read a File's path, throwing NullPointerException when the File is null.
