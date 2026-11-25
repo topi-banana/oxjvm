@@ -7259,7 +7259,7 @@ const ARRAY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
                     )),
                 ));
             }
-            let class = vm.resolve_class("java/util/AbstractList$SubList")?;
+            let class = sub_list_class(vm, this)?;
             let view = vm.new_instance(class)?;
             let (declaring, field) = vm.find_field(class, "parent", "Ljava/util/List;")?;
             vm.set_instance_ref(view, declaring, field, this);
@@ -8189,7 +8189,7 @@ const LINKED_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 56] = [
                     )),
                 ));
             }
-            let class = vm.resolve_class("java/util/AbstractList$SubList")?;
+            let class = sub_list_class(vm, this)?;
             let view = vm.new_instance(class)?;
             let (declaring, field) = vm.find_field(class, "parent", "Ljava/util/List;")?;
             vm.set_instance_ref(view, declaring, field, this);
@@ -11057,7 +11057,7 @@ const ABSTRACT_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
                     )),
                 ));
             }
-            let class = vm.resolve_class("java/util/AbstractList$SubList")?;
+            let class = sub_list_class(vm, list)?;
             let view = vm.new_instance(class)?;
             let (declaring, field) = vm.find_field(class, "parent", "Ljava/util/List;")?;
             vm.set_instance_ref(view, declaring, field, list);
@@ -11528,6 +11528,29 @@ pub(crate) const ABSTRACT_LIST_SUB_LIST: oxjvm_vm::NativeClass = class(
     &ABSTRACT_LIST_SUB_LIST_METHODS,
     None,
 );
+
+/// The `RandomAccess` variant of `AbstractList$SubList`, used when the parent
+/// list implements `RandomAccess`, as in the JDK.
+pub(crate) const ABSTRACT_LIST_SUB_LIST_RAND: oxjvm_vm::NativeClass = class(
+    "java/util/AbstractList$SubList$Rand",
+    Some("java/util/AbstractList$SubList"),
+    &["java/util/RandomAccess"],
+    ACC_PUBLIC | ACC_SYNTHETIC,
+    &[],
+    &[],
+    None,
+);
+
+/// Resolve the SubList view class, preserving `RandomAccess` when the parent has it.
+fn sub_list_class(vm: &mut Vm<'_>, parent: ObjectRef) -> Result<oxjvm_vm::ClassId, VmError> {
+    let random_access = vm.resolve_class("java/util/RandomAccess")?;
+    let name = if vm.is_instance(parent, random_access) {
+        "java/util/AbstractList$SubList$Rand"
+    } else {
+        "java/util/AbstractList$SubList"
+    };
+    vm.resolve_class(name)
+}
 
 /// `java.util.AbstractSequentialList`: a list backed by a `listIterator(int)`.
 fn seq_list_iterator(vm: &mut Vm<'_>, this: ObjectRef, index: i32) -> Result<ObjectRef, VmError> {
@@ -18853,7 +18876,7 @@ const VECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 45] = [
                     )),
                 ));
             }
-            let class = vm.resolve_class("java/util/AbstractList$SubList")?;
+            let class = sub_list_class(vm, this)?;
             let view = vm.new_instance(class)?;
             let (declaring, field) = vm.find_field(class, "parent", "Ljava/util/List;")?;
             vm.set_instance_ref(view, declaring, field, this);
@@ -18899,6 +18922,7 @@ pub(crate) const VECTOR: oxjvm_vm::NativeClass = class(
     Some("java/lang/Object"),
     &[
         "java/util/List",
+        "java/util/RandomAccess",
         "java/lang/Cloneable",
         "java/io/Serializable",
     ],
@@ -26746,10 +26770,17 @@ fn unmod_list_new(vm: &mut Vm<'_>, backing: ObjectRef) -> Result<ObjectRef, VmEr
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
     // Wrapping an already-unmodifiable list returns it unchanged, as the JDK does.
-    if vm.class_name(vm.class_of(backing)) == "java/util/OxjvmUnmodList" {
+    let unmod_class = vm.resolve_class("java/util/OxjvmUnmodList")?;
+    if vm.is_instance(backing, unmod_class) {
         return Ok(backing);
     }
-    let class = vm.resolve_class("java/util/OxjvmUnmodList")?;
+    // Preserve RandomAccess via a marker subclass, as the JDK does.
+    let random_access = vm.resolve_class("java/util/RandomAccess")?;
+    let class = if vm.is_instance(backing, random_access) {
+        vm.resolve_class("java/util/OxjvmUnmodList$Rand")?
+    } else {
+        unmod_class
+    };
     let instance = vm.new_instance(class)?;
     let (declaring, field) = vm.find_field(class, "backing", "Ljava/util/List;")?;
     vm.set_instance_ref(instance, declaring, field, backing);
@@ -27107,6 +27138,18 @@ pub(crate) const OXJVM_UNMOD_LIST: oxjvm_vm::NativeClass = class(
     ACC_PUBLIC,
     &[field("backing", "Ljava/util/List;", ACC_PRIVATE, None)],
     &OXJVM_UNMOD_LIST_METHODS,
+    None,
+);
+
+/// The `RandomAccess` variant of the unmodifiable list wrapper, used when the
+/// backing list implements `RandomAccess`, as in the JDK.
+pub(crate) const OXJVM_UNMOD_LIST_RAND: oxjvm_vm::NativeClass = class(
+    "java/util/OxjvmUnmodList$Rand",
+    Some("java/util/OxjvmUnmodList"),
+    &["java/util/RandomAccess"],
+    ACC_PUBLIC,
+    &[],
+    &[],
     None,
 );
 
