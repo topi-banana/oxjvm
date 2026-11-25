@@ -19985,6 +19985,9 @@ const CONCURRENT_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
             let this = receiver(args);
             let map = concurrent_map(vm, this);
             let key = ref_arg(args, 1);
+            if ref_arg(args, 2).is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let index = hash_map_index_of(vm, map, key)?;
             if index >= 0 {
                 return hash_map_value_at(vm, map, index as usize);
