@@ -9986,6 +9986,62 @@ pub(crate) fn abstract_map_entries(
     }
 }
 
+/// Generic `computeIfPresent` for any map via virtual get/put/remove, used by
+/// AbstractMap so that subclasses with non-HashMap storage work correctly.
+fn abstract_map_compute_if_present(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let this = receiver(args);
+    let key = ref_arg(args, 1);
+    let function = ref_arg(args, 2);
+    if function.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let old = map_invoke(
+        vm,
+        this,
+        "get",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        &[Value::Ref(key)],
+    )?
+    .as_ref();
+    if old.is_null() {
+        return object(ObjectRef::NULL);
+    }
+    let (class, method) = vm.resolve_virtual_method(
+        function,
+        "apply",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+    )?;
+    let new = vm
+        .invoke_method(
+            class,
+            method,
+            vec![Value::Ref(function), Value::Ref(key), Value::Ref(old)],
+        )?
+        .as_ref();
+    if new.is_null() {
+        map_invoke(
+            vm,
+            this,
+            "remove",
+            "(Ljava/lang/Object;)Ljava/lang/Object;",
+            &[Value::Ref(key)],
+        )?;
+        return object(ObjectRef::NULL);
+    }
+    map_invoke(
+        vm,
+        this,
+        "put",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        &[Value::Ref(key), Value::Ref(new)],
+    )?;
+    object(new)
+}
+
 const ABSTRACT_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
     method("isEmpty", "()Z", ACC_PUBLIC, |vm, _, args| {
         let this = receiver(args);
@@ -10111,7 +10167,7 @@ const ABSTRACT_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 18] = [
         "computeIfPresent",
         "(Ljava/lang/Object;Ljava/util/function/BiFunction;)Ljava/lang/Object;",
         ACC_PUBLIC,
-        hash_map_compute_if_present,
+        abstract_map_compute_if_present,
     ),
     method(
         "getOrDefault",
@@ -20453,7 +20509,16 @@ const ENUM_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 23] = [
         "computeIfPresent",
         "(Ljava/lang/Object;Ljava/util/function/BiFunction;)Ljava/lang/Object;",
         ACC_PUBLIC,
-        hash_map_compute_if_present,
+        |vm, _, args| {
+            let map = enum_map_map(vm, receiver(args));
+            hash_map_call(
+                vm,
+                map,
+                "computeIfPresent",
+                "(Ljava/lang/Object;Ljava/util/function/BiFunction;)Ljava/lang/Object;",
+                &[Value::Ref(ref_arg(args, 1)), Value::Ref(ref_arg(args, 2))],
+            )
+        },
     ),
     method(
         "getOrDefault",
