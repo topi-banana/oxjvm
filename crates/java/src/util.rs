@@ -26841,6 +26841,12 @@ const OXJVM_UNMOD_COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
             let instance = vm.new_instance(class)?;
             let (declaring, field) = vm.find_field(class, "backing", "Ljava/util/Iterator;")?;
             vm.set_instance_ref(instance, declaring, field, iterator);
+            crate::lang::write_int_field(
+                vm,
+                instance,
+                "wrapEntries",
+                crate::lang::read_int_field(vm, this, "wrapEntries"),
+            );
             object(instance)
         },
     ),
@@ -26910,9 +26916,21 @@ const OXJVM_UNMOD_COLLECTION_METHODS: [oxjvm_vm::NativeMethodDef; 44] = [
         "(Ljava/util/function/Consumer;)V",
         ACC_PUBLIC,
         |vm, _, args| {
+            let this = receiver(args);
+            if crate::lang::read_int_field(vm, this, "wrapEntries") != 0 {
+                let action = ref_arg(args, 1);
+                let elements = collection_elements(vm, this)?;
+                for element in elements {
+                    let wrapped = unmod_wrap_entry(vm, element)?;
+                    let (class, method) =
+                        vm.resolve_virtual_method(action, "accept", "(Ljava/lang/Object;)V")?;
+                    vm.invoke_method(class, method, vec![Value::Ref(action), wrapped])?;
+                }
+                return void();
+            }
             unmod_collection_delegate(
                 vm,
-                receiver(args),
+                this,
                 "forEach",
                 "(Ljava/util/function/Consumer;)V",
                 &[args[1]],
@@ -27271,12 +27289,10 @@ pub(crate) const OXJVM_UNMOD_COLLECTION: oxjvm_vm::NativeClass = class(
         "java/util/NavigableSet",
     ],
     ACC_PUBLIC,
-    &[field(
-        "backing",
-        "Ljava/util/Collection;",
-        ACC_PRIVATE,
-        None,
-    )],
+    &[
+        field("backing", "Ljava/util/Collection;", ACC_PRIVATE, None),
+        field("wrapEntries", "I", ACC_PRIVATE, None),
+    ],
     &OXJVM_UNMOD_COLLECTION_METHODS,
     None,
 );
@@ -27296,19 +27312,42 @@ const OXJVM_UNMOD_ITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
             .read_ref_field(this, vm.class_of(this), "backing", "Ljava/util/Iterator;")
             .unwrap_or(ObjectRef::NULL);
         let (class, method) = vm.resolve_virtual_method(backing, "next", "()Ljava/lang/Object;")?;
-        vm.invoke_method(class, method, vec![Value::Ref(backing)])
+        let element = vm.invoke_method(class, method, vec![Value::Ref(backing)])?;
+        if crate::lang::read_int_field(vm, this, "wrapEntries") != 0 {
+            return unmod_wrap_entry(vm, element.as_ref());
+        }
+        Ok(element)
     }),
     method("remove", "()V", ACC_PUBLIC, |vm, _, _| {
         Err(vm.throw_new("java/lang/UnsupportedOperationException", None))
     }),
 ];
 
+/// An immutable snapshot of a map entry, for unmodifiable entrySet views.
+fn unmod_wrap_entry(vm: &mut Vm<'_>, entry: ObjectRef) -> Result<Value, VmError> {
+    if entry.is_null() {
+        return object(ObjectRef::NULL);
+    }
+    let (class, method) = vm.resolve_virtual_method(entry, "getKey", "()Ljava/lang/Object;")?;
+    let key = vm
+        .invoke_method(class, method, vec![Value::Ref(entry)])?
+        .as_ref();
+    let (class, method) = vm.resolve_virtual_method(entry, "getValue", "()Ljava/lang/Object;")?;
+    let value = vm
+        .invoke_method(class, method, vec![Value::Ref(entry)])?
+        .as_ref();
+    object(new_entry_immutable(vm, key, value)?)
+}
+
 pub(crate) const OXJVM_UNMOD_ITERATOR: oxjvm_vm::NativeClass = class(
     "java/util/OxjvmUnmodIterator",
     Some("java/lang/Object"),
     &["java/util/Iterator"],
     ACC_PUBLIC,
-    &[field("backing", "Ljava/util/Iterator;", ACC_PRIVATE, None)],
+    &[
+        field("backing", "Ljava/util/Iterator;", ACC_PRIVATE, None),
+        field("wrapEntries", "I", ACC_PRIVATE, None),
+    ],
     &OXJVM_UNMOD_ITERATOR_METHODS,
     None,
 );
@@ -27375,7 +27414,11 @@ fn unmod_map_view(vm: &mut Vm<'_>, this: ObjectRef, kind: i32) -> Result<Value, 
         _ => ("entrySet", "()Ljava/util/Set;"),
     };
     let view = unmod_map_delegate(vm, this, name, descriptor, &[])?.as_ref();
-    object(unmodifiable_collection_new(vm, view)?)
+    let wrapped = unmodifiable_collection_new(vm, view)?;
+    if kind == 2 {
+        crate::lang::write_int_field(vm, wrapped, "wrapEntries", 1);
+    }
+    object(wrapped)
 }
 
 const OXJVM_UNMOD_SEQ_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 39] = [
