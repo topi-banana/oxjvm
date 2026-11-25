@@ -26419,6 +26419,10 @@ fn unmod_list_new(vm: &mut Vm<'_>, backing: ObjectRef) -> Result<ObjectRef, VmEr
     if backing.is_null() {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
+    // Wrapping an already-unmodifiable list returns it unchanged, as the JDK does.
+    if vm.class_name(vm.class_of(backing)) == "java/util/OxjvmUnmodList" {
+        return Ok(backing);
+    }
     let class = vm.resolve_class("java/util/OxjvmUnmodList")?;
     let instance = vm.new_instance(class)?;
     let (declaring, field) = vm.find_field(class, "backing", "Ljava/util/List;")?;
@@ -26853,6 +26857,10 @@ pub(crate) const OXJVM_UNMOD_LIST_ITERATOR: oxjvm_vm::NativeClass = class(
 fn unmodifiable_collection_new(vm: &mut Vm<'_>, backing: ObjectRef) -> Result<ObjectRef, VmError> {
     if backing.is_null() {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    // Wrapping an already-unmodifiable collection returns it unchanged, as the JDK does.
+    if vm.class_name(vm.class_of(backing)) == "java/util/OxjvmUnmodCollection" {
+        return Ok(backing);
     }
     let class = vm.resolve_class("java/util/OxjvmUnmodCollection")?;
     let instance = vm.new_instance(class)?;
@@ -27434,6 +27442,10 @@ fn unmod_map_delegate(
 fn unmodifiable_seq_map_new(vm: &mut Vm<'_>, backing: ObjectRef) -> Result<ObjectRef, VmError> {
     if backing.is_null() {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    // Wrapping an already-unmodifiable map returns it unchanged, as the JDK does.
+    if vm.class_name(vm.class_of(backing)) == "java/util/OxjvmUnmodSeqMap" {
+        return Ok(backing);
     }
     let class = vm.resolve_class("java/util/OxjvmUnmodSeqMap")?;
     let instance = vm.new_instance(class)?;
