@@ -1193,7 +1193,11 @@ const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 48] = [
         "([Ljava/lang/Object;)Ljava/util/List;",
         ACC_PUBLIC | ACC_STATIC | ACC_VARARGS,
         |vm, _, args| {
-            let elements = object_array_values(vm, ref_arg(args, 0));
+            let array = ref_arg(args, 0);
+            if array.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let elements = object_array_values(vm, array);
             object(list_of_values(vm, &elements)?)
         },
     ),
@@ -1259,6 +1263,9 @@ const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 48] = [
         |vm, _, args| {
             let list = receiver(args);
             let target = ref_arg(args, 1);
+            if target.is_null() && crate::lang::read_int_field(vm, list, "immutable") != 0 {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let (size_class, size_method) = vm.resolve_virtual_method(list, "size", "()I")?;
             let size = vm
                 .invoke_method(size_class, size_method, vec![Value::Ref(list)])?
@@ -1351,7 +1358,18 @@ const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 48] = [
         "(Ljava/util/Collection;)Ljava/util/List;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            let elements = collection_elements(vm, ref_arg(args, 0))?;
+            let coll = ref_arg(args, 0);
+            if coll.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            // An immutable list produced by `List.of`/`copyOf` is returned as-is,
+            // matching the JDK identity guarantee.
+            if vm.class_name(vm.class_of(coll)) == "java/util/ArrayList"
+                && crate::lang::read_int_field(vm, coll, "immutable") == 1
+            {
+                return object(coll);
+            }
+            let elements = collection_elements(vm, coll)?;
             object(list_of_values(vm, &elements)?)
         },
     ),
@@ -1535,7 +1553,11 @@ const SET_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         "([Ljava/lang/Object;)Ljava/util/Set;",
         ACC_PUBLIC | ACC_STATIC | ACC_VARARGS,
         |vm, _, args| {
-            let elements = object_array_values(vm, ref_arg(args, 0));
+            let array = ref_arg(args, 0);
+            if array.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let elements = object_array_values(vm, array);
             object(set_of_values(vm, &elements)?)
         },
     ),
@@ -1628,8 +1650,19 @@ const SET_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         "(Ljava/util/Collection;)Ljava/util/Set;",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
-            let elements = collection_elements(vm, ref_arg(args, 0))?;
-            object(set_of_values(vm, &elements)?)
+            let coll = ref_arg(args, 0);
+            if coll.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            // An immutable set produced by `Set.of`/`copyOf` is returned as-is,
+            // matching the JDK identity guarantee.
+            if vm.class_name(vm.class_of(coll)) == "java/util/HashSet"
+                && crate::lang::read_int_field(vm, coll, "immutable") == 1
+            {
+                return object(coll);
+            }
+            let elements = collection_elements(vm, coll)?;
+            object(set_of_values_inner(vm, &elements, false)?)
         },
     ),
 ];
@@ -6801,6 +6834,12 @@ const ARRAY_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 40] = [
             vm.set_instance_ref(view, declaring, field, this);
             crate::lang::write_int_field(vm, view, "offset", from);
             crate::lang::write_int_field(vm, view, "length", to - from);
+            crate::lang::write_int_field(
+                vm,
+                view,
+                "immutable",
+                crate::lang::read_int_field(vm, this, "immutable"),
+            );
             object(view)
         },
     ),
@@ -7282,6 +7321,10 @@ fn array_list_index_of(
     this: ObjectRef,
     target: ObjectRef,
 ) -> Result<i32, VmError> {
+    // Immutable `List.of`/`copyOf` lists are null-hostile: querying for null throws.
+    if target.is_null() && crate::lang::read_int_field(vm, this, "immutable") != 0 {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
     let elements = array_list_elements(vm, this);
     for (index, element) in elements.iter().enumerate() {
         if keys_equal(vm, *element, target)? {
@@ -7714,6 +7757,12 @@ const LINKED_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 56] = [
             vm.set_instance_ref(view, declaring, field, this);
             crate::lang::write_int_field(vm, view, "offset", from);
             crate::lang::write_int_field(vm, view, "length", to - from);
+            crate::lang::write_int_field(
+                vm,
+                view,
+                "immutable",
+                crate::lang::read_int_field(vm, this, "immutable"),
+            );
             object(view)
         },
     ),
@@ -10333,6 +10382,10 @@ fn abstract_list_index_of(
     target: ObjectRef,
     last: bool,
 ) -> Result<i32, VmError> {
+    // An immutable list (or a sub-list view of one) is null-hostile.
+    if target.is_null() && crate::lang::read_int_field(vm, list, "immutable") != 0 {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
     let size = invoke_int(vm, list, "size")?;
     let indices: Vec<i32> = if last {
         (0..size).rev().collect()
@@ -10534,6 +10587,12 @@ const ABSTRACT_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
             vm.set_instance_ref(view, declaring, field, list);
             crate::lang::write_int_field(vm, view, "offset", from);
             crate::lang::write_int_field(vm, view, "length", to - from);
+            crate::lang::write_int_field(
+                vm,
+                view,
+                "immutable",
+                crate::lang::read_int_field(vm, list, "immutable"),
+            );
             object(view)
         },
     ),
@@ -10859,6 +10918,7 @@ pub(crate) const ABSTRACT_LIST_SUB_LIST: oxjvm_vm::NativeClass = class(
         field("parent", "Ljava/util/List;", ACC_PRIVATE, None),
         field("offset", "I", ACC_PRIVATE, None),
         field("length", "I", ACC_PRIVATE, None),
+        field("immutable", "I", ACC_PRIVATE, None),
     ],
     &ABSTRACT_LIST_SUB_LIST_METHODS,
     None,
@@ -15681,17 +15741,36 @@ fn new_hash_set(vm: &mut Vm<'_>) -> Result<ObjectRef, VmError> {
 
 /// `Set.of(...)`: a `HashSet` with the given elements.
 fn set_of_values(vm: &mut Vm<'_>, elements: &[ObjectRef]) -> Result<ObjectRef, VmError> {
+    set_of_values_inner(vm, elements, true)
+}
+
+fn set_of_values_inner(
+    vm: &mut Vm<'_>,
+    elements: &[ObjectRef],
+    reject_duplicates: bool,
+) -> Result<ObjectRef, VmError> {
+    for element in elements {
+        if element.is_null() {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
+    }
     let set = new_hash_set(vm)?;
     let present = hash_set_present(vm)?;
     let map = hash_set_map(vm, set);
     for element in elements {
-        hash_map_call(
+        let previous = hash_map_call(
             vm,
             map,
             "put",
             "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
             &[Value::Ref(*element), Value::Ref(present)],
         )?;
+        if reject_duplicates && !previous.as_ref().is_null() {
+            return Err(vm.throw_new(
+                "java/lang/IllegalArgumentException",
+                Some("duplicate element"),
+            ));
+        }
     }
     crate::lang::write_int_field(vm, set, "immutable", 1);
     Ok(set)
@@ -16427,13 +16506,19 @@ const HASH_SET_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
         "(Ljava/lang/Object;)Z",
         ACC_PUBLIC,
         |vm, _, args| {
-            let map = hash_set_map(vm, receiver(args));
+            let this = receiver(args);
+            let target = ref_arg(args, 1);
+            // Immutable `Set.of`/`copyOf` sets are null-hostile.
+            if target.is_null() && crate::lang::read_int_field(vm, this, "immutable") != 0 {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let map = hash_set_map(vm, this);
             hash_map_call(
                 vm,
                 map,
                 "containsKey",
                 "(Ljava/lang/Object;)Z",
-                &[Value::Ref(ref_arg(args, 1))],
+                &[Value::Ref(target)],
             )
         },
     ),
@@ -18130,6 +18215,12 @@ const VECTOR_METHODS: [oxjvm_vm::NativeMethodDef; 45] = [
             vm.set_instance_ref(view, declaring, field, this);
             crate::lang::write_int_field(vm, view, "offset", from);
             crate::lang::write_int_field(vm, view, "length", to - from);
+            crate::lang::write_int_field(
+                vm,
+                view,
+                "immutable",
+                crate::lang::read_int_field(vm, this, "immutable"),
+            );
             object(view)
         },
     ),
