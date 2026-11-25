@@ -5606,6 +5606,8 @@ fn arrays_as_list(
     let list_class = vm.resolve_class("java/util/ArrayList")?;
     let list = vm.new_instance(list_class)?;
     array_list_store(vm, list, &elements)?;
+    // `Arrays.asList` is a fixed-size view: structural modification throws.
+    crate::lang::write_int_field(vm, list, "fixedSize", 1);
     object(list)
 }
 
@@ -7145,7 +7147,9 @@ fn array_list_init_capacity(
 /// factory (`List.of`, `Set.of`, `Map.of`, or `copyOf`). Mutable collections leave the
 /// `immutable` flag unset, which reads as 0.
 fn check_mutable(vm: &mut Vm<'_>, this: ObjectRef) -> Result<(), VmError> {
-    if crate::lang::read_int_field(vm, this, "immutable") != 0 {
+    if crate::lang::read_int_field(vm, this, "immutable") != 0
+        || crate::lang::read_int_field(vm, this, "fixedSize") != 0
+    {
         return Err(vm.throw_new("java/lang/UnsupportedOperationException", None));
     }
     Ok(())
@@ -7259,7 +7263,11 @@ fn array_list_set(
     args: &[Value],
 ) -> Result<Value, VmError> {
     let this = receiver(args);
-    check_mutable(vm, this)?;
+    // `set` is allowed on a fixed-size `Arrays.asList` view; only immutable
+    // lists reject it.
+    if crate::lang::read_int_field(vm, this, "immutable") != 0 {
+        return Err(vm.throw_new("java/lang/UnsupportedOperationException", None));
+    }
     let mut elements = array_list_elements(vm, this);
     let index = int_arg(args, 1);
     if index < 0 || index as usize >= elements.len() {
@@ -7587,6 +7595,7 @@ pub(crate) const ARRAY_LIST: oxjvm_vm::NativeClass = class(
         field("elementData", "[Ljava/lang/Object;", ACC_PRIVATE, None),
         field("size", "I", ACC_PRIVATE, None),
         field("immutable", "I", ACC_PRIVATE, None),
+        field("fixedSize", "I", ACC_PRIVATE, None),
     ],
     &ARRAY_LIST_METHODS,
     None,
