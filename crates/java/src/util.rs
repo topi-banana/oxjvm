@@ -1937,7 +1937,14 @@ const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
         "entry",
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map$Entry;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| object(new_entry(vm, ref_arg(args, 0), ref_arg(args, 1))?),
+        |vm, _, args| {
+            let key = ref_arg(args, 0);
+            let value = ref_arg(args, 1);
+            if key.is_null() || value.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(new_entry_immutable(vm, key, value)?)
+        },
     ),
     method(
         "ofEntries",
@@ -11374,7 +11381,14 @@ const HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         "containsKey",
         "(Ljava/lang/Object;)Z",
         ACC_PUBLIC,
-        |vm, _, args| boolean(hash_map_index_of(vm, receiver(args), ref_arg(args, 1))? >= 0),
+        |vm, _, args| {
+            let this = receiver(args);
+            let key = ref_arg(args, 1);
+            if key.is_null() && crate::lang::read_int_field(vm, this, "immutable") != 0 {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            boolean(hash_map_index_of(vm, this, key)? >= 0)
+        },
     ),
     method(
         "remove",
@@ -11401,8 +11415,18 @@ const HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         "(Ljava/lang/Object;)Z",
         ACC_PUBLIC,
         |vm, _, args| {
-            let values = hash_map_values_of(vm, receiver(args))?;
-            boolean(values.iter().any(|value| *value == ref_arg(args, 1)))
+            let this = receiver(args);
+            let target = ref_arg(args, 1);
+            if target.is_null() && crate::lang::read_int_field(vm, this, "immutable") != 0 {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let values = hash_map_values_of(vm, this)?;
+            for value in &values {
+                if keys_equal(vm, *value, target)? {
+                    return boolean(true);
+                }
+            }
+            boolean(false)
         },
     ),
     method("putAll", "(Ljava/util/Map;)V", ACC_PUBLIC, |vm, _, args| {
@@ -11912,11 +11936,17 @@ fn hash_map_get(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let index = hash_map_index_of(vm, receiver(args), ref_arg(args, 1))?;
+    let this = receiver(args);
+    let key = ref_arg(args, 1);
+    // Immutable `Map.of`/`copyOf` maps are null-hostile.
+    if key.is_null() && crate::lang::read_int_field(vm, this, "immutable") != 0 {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let index = hash_map_index_of(vm, this, key)?;
     if index < 0 {
         object(ObjectRef::NULL)
     } else {
-        hash_map_value_at(vm, receiver(args), index as usize)
+        hash_map_value_at(vm, this, index as usize)
     }
 }
 
@@ -18341,7 +18371,7 @@ pub(crate) const STACK: oxjvm_vm::NativeClass = class(
 // concurrent views need no real locking.
 // -------------------------------------------------------------------------------------------
 
-const MAP_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+const MAP_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
     method(
         "getKey",
         "()Ljava/lang/Object;",
@@ -18359,6 +18389,38 @@ const MAP_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
         "(Ljava/lang/Object;)Ljava/lang/Object;",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
+    ),
+    method(
+        "copyOf",
+        "(Ljava/util/Map$Entry;)Ljava/util/Map$Entry;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let entry = ref_arg(args, 0);
+            if entry.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            // An immutable entry produced by `Map.entry`/`copyOf` is returned as-is,
+            // matching the JDK identity guarantee.
+            if vm.class_name(vm.class_of(entry)) == "java/util/OxjvmEntry"
+                && crate::lang::read_int_field(vm, entry, "immutable") == 1
+            {
+                return object(entry);
+            }
+            let (key_class, key_method) =
+                vm.resolve_virtual_method(entry, "getKey", "()Ljava/lang/Object;")?;
+            let key = vm
+                .invoke_method(key_class, key_method, vec![Value::Ref(entry)])?
+                .as_ref();
+            let (value_class, value_method) =
+                vm.resolve_virtual_method(entry, "getValue", "()Ljava/lang/Object;")?;
+            let value = vm
+                .invoke_method(value_class, value_method, vec![Value::Ref(entry)])?
+                .as_ref();
+            if key.is_null() || value.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            object(new_entry_immutable(vm, key, value)?)
+        },
     ),
     method(
         "comparingByKey",
@@ -18528,6 +18590,113 @@ pub(crate) const SIMPLE_IMMUTABLE_ENTRY: oxjvm_vm::NativeClass = class(
         field("value", "Ljava/lang/Object;", ACC_PRIVATE, None),
     ],
     &SIMPLE_IMMUTABLE_ENTRY_METHODS,
+    None,
+);
+
+const SIMPLE_ENTRY_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
+    method(
+        "<init>",
+        "(Ljava/lang/Object;Ljava/lang/Object;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "key", "Ljava/lang/Object;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            let (declaring, field) = vm.find_field(class, "value", "Ljava/lang/Object;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 2));
+            void()
+        },
+    ),
+    method(
+        "<init>",
+        "(Ljava/util/Map$Entry;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let entry = ref_arg(args, 1);
+            let (key_class, key_method) =
+                vm.resolve_virtual_method(entry, "getKey", "()Ljava/lang/Object;")?;
+            let key = vm
+                .invoke_method(key_class, key_method, vec![Value::Ref(entry)])?
+                .as_ref();
+            let (value_class, value_method) =
+                vm.resolve_virtual_method(entry, "getValue", "()Ljava/lang/Object;")?;
+            let value = vm
+                .invoke_method(value_class, value_method, vec![Value::Ref(entry)])?
+                .as_ref();
+            let class = vm.class_of(this);
+            let (declaring, field) = vm.find_field(class, "key", "Ljava/lang/Object;")?;
+            vm.set_instance_ref(this, declaring, field, key);
+            let (declaring, field) = vm.find_field(class, "value", "Ljava/lang/Object;")?;
+            vm.set_instance_ref(this, declaring, field, value);
+            void()
+        },
+    ),
+    method(
+        "getKey",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| object(entry_field(vm, receiver(args), "key")),
+    ),
+    method(
+        "getValue",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| object(entry_field(vm, receiver(args), "value")),
+    ),
+    method(
+        "setValue",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let class = vm.class_of(this);
+            let old = entry_field(vm, this, "value");
+            let (declaring, field) = vm.find_field(class, "value", "Ljava/lang/Object;")?;
+            vm.set_instance_ref(this, declaring, field, ref_arg(args, 1));
+            object(old)
+        },
+    ),
+    method(
+        "equals",
+        "(Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let other = ref_arg(args, 1);
+            boolean(map_entry_equals(vm, receiver(args), other)?)
+        },
+    ),
+    method("hashCode", "()I", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let key = object_hash(vm, entry_field(vm, this, "key"))?;
+        let value = object_hash(vm, entry_field(vm, this, "value"))?;
+        int(key ^ value)
+    }),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let key = value_to_string(vm, entry_field(vm, this, "key"))?;
+            let value = value_to_string(vm, entry_field(vm, this, "value"))?;
+            object(vm.make_string(&alloc::format!("{key}={value}"))?)
+        },
+    ),
+];
+
+/// `AbstractMap.SimpleEntry`: a mutable key/value pair implementing `Map.Entry`.
+pub(crate) const SIMPLE_ENTRY: oxjvm_vm::NativeClass = class(
+    "java/util/AbstractMap$SimpleEntry",
+    Some("java/lang/Object"),
+    &["java/util/Map$Entry"],
+    ACC_PUBLIC,
+    &[
+        field("key", "Ljava/lang/Object;", ACC_PRIVATE, None),
+        field("value", "Ljava/lang/Object;", ACC_PRIVATE, None),
+    ],
+    &SIMPLE_ENTRY_METHODS,
     None,
 );
 
