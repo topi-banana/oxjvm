@@ -1176,6 +1176,177 @@ pub(crate) fn format_scientific_jdk(value: f64, digits: usize, upper: bool) -> S
     )
 }
 
+/// `java.util.Formatter` `%g`/`%G`: the canonical (shortest round-trip) decimal
+/// digits rounded half-up to `precision` significant digits, then rendered in
+/// fixed form when the rounded value lies in [1e-4, 10^precision) and in
+/// scientific form otherwise. A precision of 0 behaves as 1.
+pub(crate) fn format_general_jdk(value: f64, precision: usize, upper: bool) -> String {
+    if value.is_nan() {
+        return String::from(if upper { "NAN" } else { "NaN" });
+    }
+    if value.is_infinite() {
+        let word = if upper { "INFINITY" } else { "Infinity" };
+        return alloc::format!("{}{word}", if value < 0.0 { "-" } else { "" });
+    }
+    let p = precision.max(1);
+    let sign = if value.is_sign_negative() { "-" } else { "" };
+    let magnitude = value.abs();
+    if magnitude == 0.0 {
+        if p > 1 {
+            let frac = alloc::format!("{:0width$}", 0, width = p - 1);
+            return alloc::format!("{sign}0.{frac}");
+        }
+        return alloc::format!("{sign}0");
+    }
+    let (significant, mut decimal_at) = shortest_digits(magnitude);
+    // Round as a mantissa in [1, 10) with p-1 fraction digits = p significant
+    // digits; a carry out of the mantissa bumps the decimal exponent.
+    let (int_part, frac_part) = round_decimal_digits(
+        &significant[..1],
+        &significant[1..],
+        p - 1,
+        Rounding::HalfUp,
+    )
+    .unwrap_or_else(|| (significant[..1].to_string(), String::new()));
+    let digits = if int_part.len() > 1 {
+        decimal_at += 1;
+        let mut text = String::from("1");
+        while text.len() < p {
+            text.push('0');
+        }
+        text
+    } else {
+        alloc::format!("{int_part}{frac_part}")
+    };
+    let text = if decimal_at >= -3 && decimal_at <= p as i32 {
+        let frac_digits = (p as i32 - decimal_at) as usize;
+        let (integer, fraction) = split_fixed(&digits, decimal_at, frac_digits);
+        if frac_digits > 0 {
+            alloc::format!("{integer}.{fraction}")
+        } else {
+            integer
+        }
+    } else {
+        let exponent = decimal_at - 1;
+        let e = if upper { 'E' } else { 'e' };
+        let mantissa = if p > 1 {
+            alloc::format!("{}.{}", &digits[..1], &digits[1..])
+        } else {
+            digits[..1].to_string()
+        };
+        let exp_sign = if exponent < 0 { '-' } else { '+' };
+        alloc::format!("{mantissa}{e}{exp_sign}{:02}", exponent.abs())
+    };
+    alloc::format!("{sign}{text}")
+}
+
+/// `java.util.Formatter` `%a`/`%A`: hexadecimal floating point. Without a
+/// precision the exact mantissa is written with trailing zeros trimmed (at
+/// least one fraction digit); with a precision the mantissa is rounded
+/// half-even to max(1, precision) hex digits, zero-padded when longer than the
+/// exact mantissa. Returns the text and the prefix length ("0x" plus any sign)
+/// that zero padding must follow.
+pub(crate) fn format_hex_jdk(value: f64, precision: Option<usize>, upper: bool) -> (String, usize) {
+    if value.is_nan() {
+        return (String::from(if upper { "NAN" } else { "NaN" }), 0);
+    }
+    if value.is_infinite() {
+        let word = if upper { "INFINITY" } else { "Infinity" };
+        let text = alloc::format!("{}{word}", if value < 0.0 { "-" } else { "" });
+        return (text, usize::from(value < 0.0));
+    }
+    let sign = if value.is_sign_negative() { "-" } else { "" };
+    let magnitude = value.abs();
+    if magnitude == 0.0 {
+        let frac = match precision {
+            None => String::from("0"),
+            Some(p) => alloc::format!("{:0width$}", 0, width = p.max(1)),
+        };
+        let text = alloc::format!("{sign}0x0.{frac}p0");
+        let text = if upper {
+            text.to_ascii_uppercase()
+        } else {
+            text
+        };
+        return (text, sign.len() + 2);
+    }
+    let bits = magnitude.to_bits();
+    let raw_exponent = ((bits >> 52) & 0x7ff) as i32;
+    let fraction_bits = bits & 0x000f_ffff_ffff_ffff;
+    let (mut lead, mut frac_digits, mut exponent) = if raw_exponent == 0 {
+        // Subnormal: no implicit leading one, minimum normal exponent.
+        (0u32, alloc::format!("{fraction_bits:013x}"), -1022)
+    } else {
+        (
+            1u32,
+            alloc::format!("{fraction_bits:012x}"),
+            raw_exponent - 1023,
+        )
+    };
+    match precision {
+        None => {
+            let trimmed = frac_digits.trim_end_matches('0');
+            frac_digits = if trimmed.is_empty() {
+                String::from("0")
+            } else {
+                trimmed.to_string()
+            };
+        }
+        Some(p) => {
+            let effective = p.max(1);
+            if effective >= frac_digits.len() {
+                while frac_digits.len() < effective {
+                    frac_digits.push('0');
+                }
+            } else {
+                let kept = &frac_digits[..effective];
+                let rest = &frac_digits[effective..];
+                let first = rest.as_bytes()[0];
+                let tail_zero = rest[1..].bytes().all(|byte| byte == b'0');
+                let greater = first > b'8' || (first == b'8' && !tail_zero);
+                let tie = first == b'8' && tail_zero;
+                let last_odd = kept
+                    .bytes()
+                    .last()
+                    .and_then(|byte| char::from(byte).to_digit(16))
+                    .is_some_and(|digit| digit % 2 == 1);
+                if rounds_up(Rounding::HalfEven, greater, tie, true, last_odd) {
+                    let mut bytes: Vec<u8> = kept.bytes().collect();
+                    let mut carry = true;
+                    for byte in bytes.iter_mut().rev() {
+                        if *byte == b'f' {
+                            *byte = b'0';
+                        } else {
+                            let digit = char::from(*byte).to_digit(16).unwrap_or(0) + 1;
+                            *byte = char::from_digit(digit, 16).unwrap_or('0') as u8;
+                            carry = false;
+                            break;
+                        }
+                    }
+                    frac_digits = String::from_utf8(bytes).unwrap_or_default();
+                    if carry {
+                        lead += 1;
+                        if lead == 2 {
+                            // 0x2.0pN normalizes to 0x1.0p(N+1).
+                            lead = 1;
+                            exponent += 1;
+                        }
+                    }
+                } else {
+                    frac_digits = kept.to_string();
+                }
+            }
+        }
+    }
+    let text = alloc::format!("{sign}0x{lead:x}.{frac_digits}p{exponent}");
+    let text = if upper {
+        text.to_ascii_uppercase()
+    } else {
+        text
+    };
+    (text, sign.len() + 2)
+}
+
 /// The digits of a whole number held as an exact integer.
 fn format_u128(value: u128) -> String {
     alloc::format!("{value}")

@@ -353,6 +353,42 @@ pub(crate) const ILLEGAL_FORMAT_PRECISION_EXCEPTION: oxjvm_vm::NativeClass = {
     )
 };
 
+/// `IllegalFormatCodePointException(int)` constructor: renders the JDK's
+/// "Code point = 0x..." message from the offending code point.
+fn format_code_point_ctor(
+    vm: &mut Vm<'_>,
+    context: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let code_point = int_arg(args, 1);
+    let text = alloc::format!("Code point = 0x{:x}", code_point as u32);
+    let message = vm.make_string(&text)?;
+    let args = [args[0], Value::Ref(message)];
+    crate::throwable::exception_ctor(vm, context, &args)
+}
+
+pub(crate) const ILLEGAL_FORMAT_CODE_POINT_EXCEPTION: oxjvm_vm::NativeClass = {
+    const METHODS: [oxjvm_vm::NativeMethodDef; 2] = [
+        method("<init>", "(I)V", ACC_PUBLIC, format_code_point_ctor),
+        // A String constructor as well so throw_new can raise it with a message.
+        method(
+            "<init>",
+            "(Ljava/lang/String;)V",
+            ACC_PUBLIC,
+            format_string_ctor,
+        ),
+    ];
+    class(
+        "java/util/IllegalFormatCodePointException",
+        Some("java/util/IllegalFormatException"),
+        &[],
+        ACC_PUBLIC,
+        &[],
+        &METHODS,
+        None,
+    )
+};
+
 pub(crate) const UNKNOWN_FORMAT_CONVERSION_EXCEPTION: oxjvm_vm::NativeClass = {
     const METHODS: [oxjvm_vm::NativeMethodDef; 1] = [method(
         "<init>",

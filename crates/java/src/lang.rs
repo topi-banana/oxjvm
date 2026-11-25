@@ -4375,8 +4375,9 @@ pub(crate) fn format_string(
                 Some(&alloc::format!("0{}", spec)),
             ));
         }
-        // The '(' flag only applies to decimal and floating-point conversions.
-        if paren_negative && !matches!(spec, 'd' | 'f' | 'e' | 'E') {
+        // The '(' flag only applies to decimal and floating-point conversions
+        // (hexadecimal floats excluded).
+        if paren_negative && !matches!(spec, 'd' | 'f' | 'e' | 'E' | 'g' | 'G') {
             return Err(vm.throw_new(
                 "java/util/FormatFlagsConversionMismatchException",
                 Some(&alloc::format!("({}", spec)),
@@ -4521,10 +4522,44 @@ pub(crate) fn format_string(
                 prefix_len = prefix.len();
                 alloc::format!("{prefix}{digits}")
             }
-            'c' => {
+            'c' | 'C' => {
                 let value = resolved;
-                let unit = object_to_long(vm, value) as u32;
-                char::from_u32(unit).map_or_else(String::new, |ch| ch.to_string())
+                let unit = object_to_long(vm, value);
+                let ch = if !(0..=0x10FFFF).contains(&unit) {
+                    None
+                } else {
+                    char::from_u32(unit as u32)
+                };
+                let Some(ch) = ch else {
+                    return Err(vm.throw_new(
+                        "java/util/IllegalFormatCodePointException",
+                        Some(&alloc::format!("{}", unit)),
+                    ));
+                };
+                let text = ch.to_string();
+                if spec == 'C' {
+                    localized_case(&text, language, true)
+                } else {
+                    text
+                }
+            }
+            'h' | 'H' => {
+                // The hash conversion prints arg.hashCode() in hex (identity
+                // hash only for objects that do not override hashCode).
+                let hash = if resolved.is_null() {
+                    0
+                } else {
+                    let (declaring, method) =
+                        vm.resolve_virtual_method(resolved, "hashCode", "()I")?;
+                    vm.invoke_method(declaring, method, vec![Value::Ref(resolved)])?
+                        .as_int()
+                };
+                let text = alloc::format!("{:x}", hash as u32);
+                if spec == 'H' {
+                    text.to_ascii_uppercase()
+                } else {
+                    text
+                }
             }
             's' | 'S' => {
                 let value = resolved;
@@ -4585,6 +4620,37 @@ pub(crate) fn format_string(
                         spec == 'E',
                     )
                 }
+            }
+            'g' | 'G' => {
+                let value = resolved;
+                let number = object_to_double(vm, value);
+                let mut text =
+                    crate::format::format_general_jdk(number, precision.unwrap_or(6), spec == 'G');
+                if number.is_sign_negative() {
+                    if paren_negative {
+                        text = alloc::format!("({})", &text[1..]);
+                    }
+                    prefix_len = 1;
+                } else if (plus_sign || space_sign) && !paren_negative {
+                    let prefix = if plus_sign { "+" } else { " " };
+                    text = alloc::format!("{prefix}{text}");
+                    prefix_len = 1;
+                }
+                text
+            }
+            'a' | 'A' => {
+                let value = resolved;
+                let number = object_to_double(vm, value);
+                let (mut text, prefix) =
+                    crate::format::format_hex_jdk(number, precision, spec == 'A');
+                if !number.is_sign_negative() && (plus_sign || space_sign) {
+                    let sign_char = if plus_sign { "+" } else { " " };
+                    text = alloc::format!("{sign_char}{text}");
+                    prefix_len = prefix + 1;
+                } else {
+                    prefix_len = prefix;
+                }
+                text
             }
             other => alloc::format!("%{other}"),
         };
