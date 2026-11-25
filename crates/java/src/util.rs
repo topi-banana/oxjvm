@@ -1932,7 +1932,7 @@ fn map_invoke(
     vm.invoke_method(class, method, args)
 }
 
-const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
+const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 37] = [
     method(
         "entry",
         "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map$Entry;",
@@ -2005,6 +2005,9 @@ const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
             let this = receiver(args);
             let key = ref_arg(args, 1);
             let function = ref_arg(args, 2);
+            if function.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let old = map_invoke(
                 vm,
                 this,
@@ -2129,6 +2132,9 @@ const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
             let this = receiver(args);
             let key = ref_arg(args, 1);
             let function = ref_arg(args, 2);
+            if function.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
             let value = map_invoke(
                 vm,
                 this,
@@ -2166,6 +2172,89 @@ const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
         "(Ljava/lang/Object;)Ljava/lang/Object;",
         ACC_PUBLIC | ACC_ABSTRACT,
         crate::lang::abstract_method_pub,
+    ),
+    method(
+        "remove",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Z",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = receiver(args);
+            let key = ref_arg(args, 1);
+            let value = ref_arg(args, 2);
+            let current = map_virtual_call(
+                vm,
+                map,
+                "get",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                vec![key],
+            )?;
+            if !objects_equals(vm, current, value)? {
+                return boolean(false);
+            }
+            if current.is_null() {
+                let present = map_invoke(
+                    vm,
+                    map,
+                    "containsKey",
+                    "(Ljava/lang/Object;)Z",
+                    &[Value::Ref(key)],
+                )?
+                .as_int()
+                    != 0;
+                if !present {
+                    return boolean(false);
+                }
+            }
+            map_virtual_call(
+                vm,
+                map,
+                "remove",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                vec![key],
+            )?;
+            boolean(true)
+        },
+    ),
+    method(
+        "replace",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let map = receiver(args);
+            let key = ref_arg(args, 1);
+            let value = ref_arg(args, 2);
+            let current = map_virtual_call(
+                vm,
+                map,
+                "get",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                vec![key],
+            )?;
+            let present = if current.is_null() {
+                map_invoke(
+                    vm,
+                    map,
+                    "containsKey",
+                    "(Ljava/lang/Object;)Z",
+                    &[Value::Ref(key)],
+                )?
+                .as_int()
+                    != 0
+            } else {
+                true
+            };
+            if present {
+                object(map_virtual_call(
+                    vm,
+                    map,
+                    "put",
+                    "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                    vec![key, value],
+                )?)
+            } else {
+                object(ObjectRef::NULL)
+            }
+        },
     ),
     method(
         "replace",
@@ -2320,16 +2409,29 @@ const MAP_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
                     vec![key, new],
                 )?;
                 object(new)
-            } else if !old.is_null() {
-                map_virtual_call(
-                    vm,
-                    map,
-                    "remove",
-                    "(Ljava/lang/Object;)Ljava/lang/Object;",
-                    vec![key],
-                )?;
-                object(ObjectRef::NULL)
             } else {
+                let present = if old.is_null() {
+                    map_invoke(
+                        vm,
+                        map,
+                        "containsKey",
+                        "(Ljava/lang/Object;)Z",
+                        &[Value::Ref(key)],
+                    )?
+                    .as_int()
+                        != 0
+                } else {
+                    true
+                };
+                if present {
+                    map_virtual_call(
+                        vm,
+                        map,
+                        "remove",
+                        "(Ljava/lang/Object;)Ljava/lang/Object;",
+                        vec![key],
+                    )?;
+                }
                 object(ObjectRef::NULL)
             }
         },
@@ -12045,6 +12147,9 @@ fn hash_map_compute_if_present_on(
         return object(ObjectRef::NULL);
     };
     let value = *value;
+    if value.is_null() {
+        return object(ObjectRef::NULL);
+    }
     let (class, method) = vm.resolve_virtual_method(
         function,
         "apply",
