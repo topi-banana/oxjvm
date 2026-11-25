@@ -10417,7 +10417,7 @@ fn abstract_list_index_of(
     Ok(-1)
 }
 
-const ABSTRACT_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
+const ABSTRACT_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 19] = [
     method(
         "size",
         "()I",
@@ -10467,6 +10467,44 @@ const ABSTRACT_LIST_METHODS: [oxjvm_vm::NativeMethodDef; 17] = [
             let (declaring, field) = vm.find_field(class, "list", "Ljava/util/List;")?;
             vm.set_instance_ref(iterator, declaring, field, list);
             crate::lang::write_int_field(vm, iterator, "cursor", 0);
+            object(iterator)
+        },
+    ),
+    method(
+        "listIterator",
+        "()Ljava/util/ListIterator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let list = receiver(args);
+            let class = vm.resolve_class("java/util/AbstractList$ListItr")?;
+            let iterator = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "list", "Ljava/util/List;")?;
+            vm.set_instance_ref(iterator, declaring, field, list);
+            crate::lang::write_int_field(vm, iterator, "cursor", 0);
+            crate::lang::write_int_field(vm, iterator, "lastReturned", -1);
+            object(iterator)
+        },
+    ),
+    method(
+        "listIterator",
+        "(I)Ljava/util/ListIterator;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let list = receiver(args);
+            let index = int_arg(args, 1);
+            let size = invoke_int(vm, list, "size")?;
+            if index < 0 || index > size {
+                return Err(vm.throw_new(
+                    "java/lang/IndexOutOfBoundsException",
+                    Some(&alloc::format!("Index: {index}, Size: {size}")),
+                ));
+            }
+            let class = vm.resolve_class("java/util/AbstractList$ListItr")?;
+            let iterator = vm.new_instance(class)?;
+            let (declaring, field) = vm.find_field(class, "list", "Ljava/util/List;")?;
+            vm.set_instance_ref(iterator, declaring, field, list);
+            crate::lang::write_int_field(vm, iterator, "cursor", index);
+            crate::lang::write_int_field(vm, iterator, "lastReturned", -1);
             object(iterator)
         },
     ),
@@ -10680,11 +10718,7 @@ const ABSTRACT_LIST_ITR_METHODS: [oxjvm_vm::NativeMethodDef; 3] = [
             .read_ref_field(this, vm.class_of(this), "list", "Ljava/util/List;")
             .unwrap_or(ObjectRef::NULL);
         let cursor = crate::lang::read_int_field(vm, this, "cursor");
-        let size = invoke_int(vm, list, "size")?;
-        if cursor < 0 || cursor >= size {
-            return Err(vm.throw_new("java/util/NoSuchElementException", None));
-        }
-        let element = invoke_object(vm, list, "get", &[Value::Int(cursor)])?;
+        let element = abstract_list_get(vm, list, cursor)?;
         crate::lang::write_int_field(vm, this, "cursor", cursor + 1);
         object(element)
     }),
@@ -10704,6 +10738,139 @@ pub(crate) const ABSTRACT_LIST_ITR: oxjvm_vm::NativeClass = class(
         field("cursor", "I", ACC_PRIVATE, None),
     ],
     &ABSTRACT_LIST_ITR_METHODS,
+    None,
+);
+
+/// Reads `list.get(index)`, wrapping an `IndexOutOfBoundsException` in a
+/// `NoSuchElementException` with the original as its cause, as the JDK's
+/// `AbstractList` iterators do.
+fn abstract_list_get(vm: &mut Vm<'_>, list: ObjectRef, index: i32) -> Result<ObjectRef, VmError> {
+    match invoke_object(vm, list, "get", &[Value::Int(index)]) {
+        Ok(element) => Ok(element),
+        Err(VmError::Thrown(exc)) => {
+            let ioob = vm.resolve_class("java/lang/IndexOutOfBoundsException")?;
+            if vm.is_instance(exc, ioob) {
+                return Err(vm.throw_new_with_cause("java/util/NoSuchElementException", exc));
+            }
+            Err(VmError::Thrown(exc))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn abstract_list_itr_list(vm: &Vm<'_>, this: ObjectRef) -> ObjectRef {
+    vm.read_ref_field(this, vm.class_of(this), "list", "Ljava/util/List;")
+        .unwrap_or(ObjectRef::NULL)
+}
+
+const ABSTRACT_LIST_LIST_ITR_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
+    method("hasNext", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let list = abstract_list_itr_list(vm, this);
+        let cursor = crate::lang::read_int_field(vm, this, "cursor");
+        boolean(cursor < invoke_int(vm, list, "size")?)
+    }),
+    method("next", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let list = abstract_list_itr_list(vm, this);
+        let cursor = crate::lang::read_int_field(vm, this, "cursor");
+        let element = abstract_list_get(vm, list, cursor)?;
+        crate::lang::write_int_field(vm, this, "lastReturned", cursor);
+        crate::lang::write_int_field(vm, this, "cursor", cursor + 1);
+        object(element)
+    }),
+    method("hasPrevious", "()Z", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        boolean(crate::lang::read_int_field(vm, this, "cursor") > 0)
+    }),
+    method(
+        "previous",
+        "()Ljava/lang/Object;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let this = receiver(args);
+            let list = abstract_list_itr_list(vm, this);
+            let cursor = crate::lang::read_int_field(vm, this, "cursor");
+            let element = abstract_list_get(vm, list, cursor - 1)?;
+            crate::lang::write_int_field(vm, this, "cursor", cursor - 1);
+            crate::lang::write_int_field(vm, this, "lastReturned", cursor - 1);
+            object(element)
+        },
+    ),
+    method("nextIndex", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "cursor"))
+    }),
+    method("previousIndex", "()I", ACC_PUBLIC, |vm, _, args| {
+        int(crate::lang::read_int_field(vm, receiver(args), "cursor") - 1)
+    }),
+    method("remove", "()V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let last = crate::lang::read_int_field(vm, this, "lastReturned");
+        if last < 0 {
+            return Err(vm.throw_new("java/lang/IllegalStateException", None));
+        }
+        let list = abstract_list_itr_list(vm, this);
+        let (class, method) = vm.resolve_virtual_method(list, "remove", "(I)Ljava/lang/Object;")?;
+        vm.invoke_method(class, method, vec![Value::Ref(list), Value::Int(last)])?;
+        let cursor = crate::lang::read_int_field(vm, this, "cursor");
+        if last < cursor {
+            crate::lang::write_int_field(vm, this, "cursor", cursor - 1);
+        }
+        crate::lang::write_int_field(vm, this, "lastReturned", -1);
+        void()
+    }),
+    method("set", "(Ljava/lang/Object;)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let last = crate::lang::read_int_field(vm, this, "lastReturned");
+        if last < 0 {
+            return Err(vm.throw_new("java/lang/IllegalStateException", None));
+        }
+        let list = abstract_list_itr_list(vm, this);
+        let (class, method) =
+            vm.resolve_virtual_method(list, "set", "(ILjava/lang/Object;)Ljava/lang/Object;")?;
+        vm.invoke_method(
+            class,
+            method,
+            vec![
+                Value::Ref(list),
+                Value::Int(last),
+                Value::Ref(ref_arg(args, 1)),
+            ],
+        )?;
+        void()
+    }),
+    method("add", "(Ljava/lang/Object;)V", ACC_PUBLIC, |vm, _, args| {
+        let this = receiver(args);
+        let cursor = crate::lang::read_int_field(vm, this, "cursor");
+        let list = abstract_list_itr_list(vm, this);
+        crate::lang::write_int_field(vm, this, "lastReturned", -1);
+        let (class, method) = vm.resolve_virtual_method(list, "add", "(ILjava/lang/Object;)V")?;
+        vm.invoke_method(
+            class,
+            method,
+            vec![
+                Value::Ref(list),
+                Value::Int(cursor),
+                Value::Ref(ref_arg(args, 1)),
+            ],
+        )?;
+        crate::lang::write_int_field(vm, this, "cursor", cursor + 1);
+        void()
+    }),
+];
+
+/// `java.util.AbstractList$ListItr`: a list iterator over virtual `get`/`size`.
+pub(crate) const ABSTRACT_LIST_LIST_ITR: oxjvm_vm::NativeClass = class(
+    "java/util/AbstractList$ListItr",
+    Some("java/lang/Object"),
+    &["java/util/ListIterator"],
+    ACC_PUBLIC | ACC_SYNTHETIC,
+    &[
+        field("list", "Ljava/util/List;", ACC_PRIVATE, None),
+        field("cursor", "I", ACC_PRIVATE, None),
+        field("lastReturned", "I", ACC_PRIVATE, None),
+    ],
+    &ABSTRACT_LIST_LIST_ITR_METHODS,
     None,
 );
 

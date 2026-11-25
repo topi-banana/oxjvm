@@ -8,7 +8,7 @@ use oxjvm_classfile::flags::*;
 use oxjvm_vm::{ObjectRef, Value, Vm, VmError};
 
 use crate::lang::read_int_field;
-use crate::{class, field, method, object, receiver, ref_arg, void};
+use crate::{class, field, int_arg, long_arg, method, object, receiver, ref_arg, void};
 
 // -------------------------------------------------------------------------------------------
 // Throwable
@@ -1397,10 +1397,68 @@ exception!(
     "java/util/FormatterClosedException",
     "java/lang/IllegalStateException"
 );
-exception!(
-    INDEX_OUT_OF_BOUNDS_EXCEPTION,
+const INDEX_OUT_OF_BOUNDS_METHODS: [oxjvm_vm::NativeMethodDef; 7] = [
+    method("<init>", "()V", ACC_PUBLIC, exception_ctor),
+    method(
+        "<init>",
+        "(Ljava/lang/String;)V",
+        ACC_PUBLIC,
+        exception_ctor,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/Throwable;)V",
+        ACC_PUBLIC,
+        exception_ctor,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/String;Ljava/lang/Throwable;ZZ)V",
+        ACC_PUBLIC,
+        exception_ctor,
+    ),
+    method(
+        "<init>",
+        "(Ljava/lang/Throwable;)V",
+        ACC_PUBLIC,
+        exception_ctor,
+    ),
+    method("<init>", "(I)V", ACC_PUBLIC, |vm, _, args| {
+        index_out_of_bounds_ctor(vm, receiver(args), i64::from(int_arg(args, 1)))
+    }),
+    method("<init>", "(J)V", ACC_PUBLIC, |vm, _, args| {
+        index_out_of_bounds_ctor(vm, receiver(args), long_arg(args, 1))
+    }),
+];
+
+/// `IndexOutOfBoundsException(int)` / `(long)`: the JDK message is
+/// `Index out of range: <index>`; delegate to the String constructor.
+fn index_out_of_bounds_ctor(
+    vm: &mut Vm<'_>,
+    this: ObjectRef,
+    index: i64,
+) -> Result<Value, VmError> {
+    let message = vm.make_string(&alloc::format!("Index out of range: {index}"))?;
+    let class = vm.class_of(this);
+    let (declaring, method) = vm
+        .find_method(class, "<init>", "(Ljava/lang/String;)V")
+        .ok_or_else(|| vm.throw_new("java/lang/NoSuchMethodError", Some("<init>")))?;
+    vm.invoke_method(
+        declaring,
+        method,
+        vec![Value::Ref(this), Value::Ref(message)],
+    )?;
+    void()
+}
+
+pub(crate) const INDEX_OUT_OF_BOUNDS_EXCEPTION: oxjvm_vm::NativeClass = class(
     "java/lang/IndexOutOfBoundsException",
-    "java/lang/RuntimeException"
+    Some("java/lang/RuntimeException"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &INDEX_OUT_OF_BOUNDS_METHODS,
+    None,
 );
 exception!(
     ARRAY_INDEX_OUT_OF_BOUNDS_EXCEPTION,
