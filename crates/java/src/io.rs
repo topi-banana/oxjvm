@@ -5392,6 +5392,10 @@ const FILE_READER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         let length = int_arg(args, 3);
         let array = ref_arg(args, 1);
         reader_check_range(vm, array, offset, length)?;
+        // A zero-length read returns zero even at end of stream.
+        if length == 0 {
+            return int(0);
+        }
         let mut count = 0;
         while count < length && (pos as usize) < units.len() {
             vm.array_set(
@@ -5413,6 +5417,10 @@ const FILE_READER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         let mut pos = read_int_field(vm, this, "pos");
         let array = ref_arg(args, 1);
         let length = vm.array_length(array)? as i32;
+        // A zero-length read returns zero even at end of stream.
+        if length == 0 {
+            return int(0);
+        }
         let mut count = 0;
         while count < length && (pos as usize) < units.len() {
             vm.array_set(
@@ -6459,6 +6467,10 @@ const INPUT_STREAM_READER_METHODS: [oxjvm_vm::NativeMethodDef; 8] = [
         let length = int_arg(args, 3);
         let array = ref_arg(args, 1);
         reader_check_range(vm, array, offset, length)?;
+        // A zero-length read returns zero even at end of stream.
+        if length == 0 {
+            return int(0);
+        }
         if pos as usize >= units.len() {
             input_stream_reader_refresh(vm, this)?;
             content = input_stream_reader_content(vm, this);
