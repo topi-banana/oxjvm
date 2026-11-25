@@ -5157,10 +5157,18 @@ fn string_join(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let delimiter = vm.string_or_empty(ref_arg(args, 0));
+    let delimiter_ref = ref_arg(args, 0);
+    if delimiter_ref.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", Some("delimiter")));
+    }
+    let elements_ref = ref_arg(args, 1);
+    if elements_ref.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", Some("elements")));
+    }
+    let delimiter = vm.string_or_empty(delimiter_ref);
     let mut out = String::new();
     if let Some(oxjvm_vm::ObjectData::Array(oxjvm_vm::ArrayData::Reference(elements))) =
-        vm.heap.get(ref_arg(args, 1)).map(|object| &object.data)
+        vm.heap.get(elements_ref).map(|object| &object.data)
     {
         for (index, element) in elements.iter().enumerate() {
             if index > 0 {
@@ -5182,8 +5190,15 @@ fn string_join_iterable(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let delimiter = vm.string_or_empty(ref_arg(args, 0));
+    let delimiter_ref = ref_arg(args, 0);
+    if delimiter_ref.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", Some("delimiter")));
+    }
     let iterable = ref_arg(args, 1);
+    if iterable.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", Some("elements")));
+    }
+    let delimiter = vm.string_or_empty(delimiter_ref);
     let mut out = String::new();
     let (class, method) =
         vm.resolve_virtual_method(iterable, "iterator", "()Ljava/util/Iterator;")?;
@@ -6937,9 +6952,17 @@ fn builder_delete(
 ) -> Result<Value, VmError> {
     let (units, count) = builder_state(vm, receiver(args));
     let start = int_arg(args, 1);
-    let end = int_arg(args, 2);
+    let mut end = int_arg(args, 2);
+    if end > count as i32 {
+        end = count as i32;
+    }
     if start < 0 || start > end || end > count as i32 {
-        return Err(vm.throw_new("java/lang/StringIndexOutOfBoundsException", None));
+        return Err(vm.throw_new(
+            "java/lang/StringIndexOutOfBoundsException",
+            Some(&alloc::format!(
+                "Range [{start}, {end}) out of bounds for length {count}"
+            )),
+        ));
     }
     let mut out: Vec<u16> = units[..count].to_vec();
     out.drain(start as usize..end as usize);
@@ -6952,10 +6975,20 @@ fn builder_delete_char_at(
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
+    let (units, count) = builder_state(vm, receiver(args));
     let index = int_arg(args, 1);
-    let mut call = vec![args[0], Value::Int(index), Value::Int(index + 1)];
-    let _ = &mut call;
-    builder_delete(vm, _c, &call)
+    if index < 0 || index >= count as i32 {
+        return Err(vm.throw_new(
+            "java/lang/StringIndexOutOfBoundsException",
+            Some(&alloc::format!(
+                "Index {index} out of bounds for length {count}"
+            )),
+        ));
+    }
+    let mut out: Vec<u16> = units[..count].to_vec();
+    out.remove(index as usize);
+    builder_store(vm, receiver(args), &out, out.len())?;
+    object(receiver(args))
 }
 
 fn builder_index_of(
@@ -11451,19 +11484,23 @@ fn char_sequence_get_chars(
         .as_int();
     if src_begin < 0 || src_end > length || src_begin > src_end {
         return Err(vm.throw_new(
-            "java/lang/StringIndexOutOfBoundsException",
+            "java/lang/IndexOutOfBoundsException",
             Some(&alloc::format!(
                 "Range [{src_begin}, {src_end}) out of bounds for length {length}"
             )),
         ));
     }
+    if dst.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
     let dst_length = vm.array_length(dst)? as i32;
     let count = src_end - src_begin;
     if dst_begin < 0 || dst_begin > dst_length - count {
         return Err(vm.throw_new(
-            "java/lang/StringIndexOutOfBoundsException",
+            "java/lang/IndexOutOfBoundsException",
             Some(&alloc::format!(
-                "Range [{dst_begin}, {dst_begin} + {count}) out of bounds for length {dst_length}"
+                "Index {dst_begin} out of bounds for length {}",
+                dst_length - count + 1
             )),
         ));
     }

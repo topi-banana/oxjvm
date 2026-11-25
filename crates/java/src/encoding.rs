@@ -749,7 +749,7 @@ fn hex_to_digits(
         *slot = hex_digit_char((rest & 0xf) as u32, uppercase);
         rest >>= 4;
     }
-    Ok(vm.make_string_utf16(units)?)
+    vm.make_string_utf16(units)
 }
 
 /// Wrap an `IOException` thrown by an `Appendable` as `UncheckedIOException`.
@@ -1233,7 +1233,7 @@ const HEX_FORMAT_METHODS: [oxjvm_vm::NativeMethodDef; 36] = [
         |vm, _, args| {
             let value = crate::long_arg(args, 1) as u64;
             let digits = crate::int_arg(args, 2);
-            if digits < 0 || digits > 16 {
+            if !(0..=16).contains(&digits) {
                 return Err(vm.throw_new(
                     "java/lang/IllegalArgumentException",
                     Some(&alloc::format!("number of digits: {digits}")),
