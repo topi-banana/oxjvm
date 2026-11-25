@@ -12590,12 +12590,15 @@ fn hash_map_compute_if_absent(
     if function.is_null() {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
-    let pairs = hash_map_pairs(vm, this);
-    if let Some((_, value)) = pairs
+    let mut pairs = hash_map_pairs(vm, this);
+    let index = pairs
         .iter()
-        .find(|(candidate, _)| keys_equal(vm, *candidate, key).unwrap_or(false))
-    {
-        return object(*value);
+        .position(|(candidate, _)| keys_equal(vm, *candidate, key).unwrap_or(false));
+    // A key mapped to null is treated as absent, as in the JDK.
+    if let Some(i) = index {
+        if !pairs[i].1.is_null() {
+            return object(pairs[i].1);
+        }
     }
     let (class, method) =
         vm.resolve_virtual_method(function, "apply", "(Ljava/lang/Object;)Ljava/lang/Object;")?;
@@ -12603,10 +12606,19 @@ fn hash_map_compute_if_absent(
         .invoke_method(class, method, vec![Value::Ref(function), Value::Ref(key)])?
         .as_ref();
     if !value.is_null() {
-        let mut pairs = pairs;
-        pairs.push((key, value));
-        hash_map_rehash_if_needed(vm, this, &mut pairs)?;
-        hash_map_store(vm, this, &pairs)?;
+        if let Some(i) = index {
+            pairs[i].1 = value;
+            hash_map_store(vm, this, &pairs)?;
+        } else {
+            pairs.push((key, value));
+            hash_map_rehash_if_needed(vm, this, &mut pairs)?;
+            hash_map_store(vm, this, &pairs)?;
+            if let Some(linked) = vm.resolve_class_lenient("java/util/LinkedHashMap") {
+                if vm.is_instance(this, linked) {
+                    lhm_after_insertion(vm, this)?;
+                }
+            }
+        }
     }
     object(value)
 }
