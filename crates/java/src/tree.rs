@@ -17,9 +17,9 @@ use oxjvm_classfile::flags::*;
 use oxjvm_vm::{ClassId, ObjectRef, Value, Vm, VmError};
 
 use crate::util::{
-    array_list_from, collection_elements, collection_remove_all, collection_retain_all,
-    collection_to_array_into, hash_set_present, keys_equal, new_entry, new_entry_immutable,
-    object_hash, seq_map_view_new, value_to_string,
+    collection_elements, collection_remove_all, collection_retain_all, collection_to_array_into,
+    hash_set_present, keys_equal, new_entry, new_entry_immutable, object_hash, seq_map_view_new,
+    value_to_string,
 };
 use crate::{boolean, class, field, int, int_arg, method, object, receiver, ref_arg, void};
 
@@ -2255,14 +2255,30 @@ fn tree_set_add_all(vm: &mut Vm<'_>, this: ObjectRef, source: ObjectRef) -> Resu
     boolean(changed)
 }
 
-/// `TreeSet.iterator()`: the elements, in the set's order.
+/// `TreeSet.iterator()`: the elements, in the set's order. The iterator is backed
+/// by the set itself so that `remove()` deletes from the set, not from a snapshot.
 fn tree_set_iterator(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
     args: &[Value],
 ) -> Result<Value, VmError> {
-    let list = array_list_from(vm, &keys(vm, receiver(args)))?;
-    call(vm, list, "iterator", "()Ljava/util/Iterator;", &[])
+    let this = receiver(args);
+    let elements = keys(vm, this);
+    let class = vm.resolve_class("java/util/OxjvmTreeMapIterator")?;
+    let iterator = vm.new_instance(class)?;
+    let (declaring, field) = vm.find_field(class, "backing", "Ljava/util/TreeMap;")?;
+    vm.set_instance_ref(iterator, declaring, field, this);
+    crate::lang::write_int_field(vm, iterator, "kind", 0);
+    let object_class = vm.resolve_class("java/lang/Object")?;
+    let array = vm.allocate_object_array(object_class, elements.len())?;
+    for (index, element) in elements.iter().enumerate() {
+        vm.array_set_ref(array, index, *element)?;
+    }
+    let (declaring, field) = vm.find_field(class, "elements", "[Ljava/lang/Object;")?;
+    vm.set_instance_ref(iterator, declaring, field, array);
+    crate::lang::write_int_field(vm, iterator, "cursor", 0);
+    crate::lang::write_int_field(vm, iterator, "last", -1);
+    object(iterator)
 }
 
 /// `TreeSet.toString()`: `[element, ...]` in the set's order.
