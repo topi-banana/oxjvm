@@ -440,6 +440,272 @@ pub(crate) const ITERATOR: oxjvm_vm::NativeClass = class(
     None,
 );
 
+/// Shared `forEachRemaining` loop for the primitive iterator interfaces.
+/// `wrapper` is `Some("I"/"J"/"D")` when each element must be boxed for a
+/// `Consumer<Object>`; `None` passes the primitive straight to the typed consumer.
+fn primitive_iterator_for_each(
+    vm: &mut Vm<'_>,
+    iterator: ObjectRef,
+    action: ObjectRef,
+    next_name: &str,
+    next_desc: &str,
+    accept_desc: &str,
+    wrapper: Option<&str>,
+) -> Result<Value, VmError> {
+    if action.is_null() {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
+    let (has_class, has_next) = vm.resolve_virtual_method(iterator, "hasNext", "()Z")?;
+    let (next_class, next) = vm.resolve_virtual_method(iterator, next_name, next_desc)?;
+    let (accept_class, accept) = vm.resolve_virtual_method(action, "accept", accept_desc)?;
+    loop {
+        let more = vm.invoke_method(has_class, has_next, vec![Value::Ref(iterator)])?;
+        if more.as_int() == 0 {
+            return void();
+        }
+        let value = vm.invoke_method(next_class, next, vec![Value::Ref(iterator)])?;
+        let argument = match wrapper {
+            Some(descriptor) => crate::boxed::box_value(vm, value, descriptor)?,
+            None => value,
+        };
+        vm.invoke_method(accept_class, accept, vec![Value::Ref(action), argument])?;
+    }
+}
+
+const PRIMITIVE_ITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 0] = [];
+
+pub(crate) const PRIMITIVE_ITERATOR: oxjvm_vm::NativeClass = class(
+    "java/util/PrimitiveIterator",
+    Some("java/lang/Object"),
+    &["java/util/Iterator"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &PRIMITIVE_ITERATOR_METHODS,
+    None,
+);
+
+const PRIMITIVE_ITERATOR_OF_INT_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "nextInt",
+        "()I",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method("next", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let iterator = receiver(args);
+        let (class, method) = vm.resolve_virtual_method(iterator, "nextInt", "()I")?;
+        let value = vm.invoke_method(class, method, vec![Value::Ref(iterator)])?;
+        crate::boxed::box_value(vm, value, "I")
+    }),
+    method(
+        "forEachRemaining",
+        "(Ljava/util/function/IntConsumer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            primitive_iterator_for_each(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                "nextInt",
+                "()I",
+                "(I)V",
+                None,
+            )
+        },
+    ),
+    method(
+        "forEachRemaining",
+        "(Ljava/util/function/Consumer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let iterator = receiver(args);
+            let action = ref_arg(args, 1);
+            if !action.is_null() {
+                let consumer = vm.resolve_class("java/util/function/IntConsumer")?;
+                if vm.is_instance(action, consumer) {
+                    let (class, method) = vm.resolve_virtual_method(
+                        iterator,
+                        "forEachRemaining",
+                        "(Ljava/util/function/IntConsumer;)V",
+                    )?;
+                    return vm.invoke_method(
+                        class,
+                        method,
+                        vec![Value::Ref(iterator), Value::Ref(action)],
+                    );
+                }
+            }
+            primitive_iterator_for_each(
+                vm,
+                iterator,
+                action,
+                "nextInt",
+                "()I",
+                "(Ljava/lang/Object;)V",
+                Some("I"),
+            )
+        },
+    ),
+];
+
+pub(crate) const PRIMITIVE_ITERATOR_OF_INT: oxjvm_vm::NativeClass = class(
+    "java/util/PrimitiveIterator$OfInt",
+    Some("java/lang/Object"),
+    &["java/util/PrimitiveIterator"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &PRIMITIVE_ITERATOR_OF_INT_METHODS,
+    None,
+);
+
+const PRIMITIVE_ITERATOR_OF_LONG_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "nextLong",
+        "()J",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method("next", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let iterator = receiver(args);
+        let (class, method) = vm.resolve_virtual_method(iterator, "nextLong", "()J")?;
+        let value = vm.invoke_method(class, method, vec![Value::Ref(iterator)])?;
+        crate::boxed::box_value(vm, value, "J")
+    }),
+    method(
+        "forEachRemaining",
+        "(Ljava/util/function/LongConsumer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            primitive_iterator_for_each(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                "nextLong",
+                "()J",
+                "(J)V",
+                None,
+            )
+        },
+    ),
+    method(
+        "forEachRemaining",
+        "(Ljava/util/function/Consumer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let iterator = receiver(args);
+            let action = ref_arg(args, 1);
+            if !action.is_null() {
+                let consumer = vm.resolve_class("java/util/function/LongConsumer")?;
+                if vm.is_instance(action, consumer) {
+                    let (class, method) = vm.resolve_virtual_method(
+                        iterator,
+                        "forEachRemaining",
+                        "(Ljava/util/function/LongConsumer;)V",
+                    )?;
+                    return vm.invoke_method(
+                        class,
+                        method,
+                        vec![Value::Ref(iterator), Value::Ref(action)],
+                    );
+                }
+            }
+            primitive_iterator_for_each(
+                vm,
+                iterator,
+                action,
+                "nextLong",
+                "()J",
+                "(Ljava/lang/Object;)V",
+                Some("J"),
+            )
+        },
+    ),
+];
+
+pub(crate) const PRIMITIVE_ITERATOR_OF_LONG: oxjvm_vm::NativeClass = class(
+    "java/util/PrimitiveIterator$OfLong",
+    Some("java/lang/Object"),
+    &["java/util/PrimitiveIterator"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &PRIMITIVE_ITERATOR_OF_LONG_METHODS,
+    None,
+);
+
+const PRIMITIVE_ITERATOR_OF_DOUBLE_METHODS: [oxjvm_vm::NativeMethodDef; 4] = [
+    method(
+        "nextDouble",
+        "()D",
+        ACC_PUBLIC | ACC_ABSTRACT,
+        crate::lang::abstract_method_pub,
+    ),
+    method("next", "()Ljava/lang/Object;", ACC_PUBLIC, |vm, _, args| {
+        let iterator = receiver(args);
+        let (class, method) = vm.resolve_virtual_method(iterator, "nextDouble", "()D")?;
+        let value = vm.invoke_method(class, method, vec![Value::Ref(iterator)])?;
+        crate::boxed::box_value(vm, value, "D")
+    }),
+    method(
+        "forEachRemaining",
+        "(Ljava/util/function/DoubleConsumer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            primitive_iterator_for_each(
+                vm,
+                receiver(args),
+                ref_arg(args, 1),
+                "nextDouble",
+                "()D",
+                "(D)V",
+                None,
+            )
+        },
+    ),
+    method(
+        "forEachRemaining",
+        "(Ljava/util/function/Consumer;)V",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let iterator = receiver(args);
+            let action = ref_arg(args, 1);
+            if !action.is_null() {
+                let consumer = vm.resolve_class("java/util/function/DoubleConsumer")?;
+                if vm.is_instance(action, consumer) {
+                    let (class, method) = vm.resolve_virtual_method(
+                        iterator,
+                        "forEachRemaining",
+                        "(Ljava/util/function/DoubleConsumer;)V",
+                    )?;
+                    return vm.invoke_method(
+                        class,
+                        method,
+                        vec![Value::Ref(iterator), Value::Ref(action)],
+                    );
+                }
+            }
+            primitive_iterator_for_each(
+                vm,
+                iterator,
+                action,
+                "nextDouble",
+                "()D",
+                "(Ljava/lang/Object;)V",
+                Some("D"),
+            )
+        },
+    ),
+];
+
+pub(crate) const PRIMITIVE_ITERATOR_OF_DOUBLE: oxjvm_vm::NativeClass = class(
+    "java/util/PrimitiveIterator$OfDouble",
+    Some("java/lang/Object"),
+    &["java/util/PrimitiveIterator"],
+    ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT,
+    &[],
+    &PRIMITIVE_ITERATOR_OF_DOUBLE_METHODS,
+    None,
+);
+
 const LIST_ITERATOR_METHODS: [oxjvm_vm::NativeMethodDef; 9] = [
     method(
         "hasNext",
