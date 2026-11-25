@@ -4032,7 +4032,7 @@ const ARRAYS_METHODS: [oxjvm_vm::NativeMethodDef; 211] = [
     ),
     method(
         "mismatch",
-        "([BBI[BBI)I",
+        "([BII[BII)I",
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             int(arrays_mismatch_range(
