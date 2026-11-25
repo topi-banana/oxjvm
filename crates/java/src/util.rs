@@ -1619,7 +1619,7 @@ const LIST_METHODS: [oxjvm_vm::NativeMethodDef; 48] = [
         |vm, _, args| {
             let list = receiver(args);
             let target = ref_arg(args, 1);
-            if target.is_null() && crate::lang::read_int_field(vm, list, "immutable") != 0 {
+            if target.is_null() && crate::lang::read_int_field(vm, list, "immutable") == 1 {
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
             let (size_class, size_method) = vm.resolve_virtual_method(list, "size", "()I")?;
@@ -7795,7 +7795,7 @@ fn array_list_index_of(
     target: ObjectRef,
 ) -> Result<i32, VmError> {
     // Immutable `List.of`/`copyOf` lists are null-hostile: querying for null throws.
-    if target.is_null() && crate::lang::read_int_field(vm, this, "immutable") != 0 {
+    if target.is_null() && crate::lang::read_int_field(vm, this, "immutable") == 1 {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
     let elements = array_list_elements(vm, this);
@@ -10913,7 +10913,7 @@ fn abstract_list_index_of(
     last: bool,
 ) -> Result<i32, VmError> {
     // An immutable list (or a sub-list view of one) is null-hostile.
-    if target.is_null() && crate::lang::read_int_field(vm, list, "immutable") != 0 {
+    if target.is_null() && crate::lang::read_int_field(vm, list, "immutable") == 1 {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
     let size = invoke_int(vm, list, "size")?;
@@ -12097,7 +12097,7 @@ const HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         |vm, _, args| {
             let this = receiver(args);
             let key = ref_arg(args, 1);
-            if key.is_null() && crate::lang::read_int_field(vm, this, "immutable") != 0 {
+            if key.is_null() && crate::lang::read_int_field(vm, this, "immutable") == 1 {
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
             boolean(hash_map_index_of(vm, this, key)? >= 0)
@@ -12130,7 +12130,7 @@ const HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 27] = [
         |vm, _, args| {
             let this = receiver(args);
             let target = ref_arg(args, 1);
-            if target.is_null() && crate::lang::read_int_field(vm, this, "immutable") != 0 {
+            if target.is_null() && crate::lang::read_int_field(vm, this, "immutable") == 1 {
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
             let values = hash_map_values_of(vm, this)?;
@@ -12667,7 +12667,7 @@ fn hash_map_get(
     let this = receiver(args);
     let key = ref_arg(args, 1);
     // Immutable `Map.of`/`copyOf` maps are null-hostile.
-    if key.is_null() && crate::lang::read_int_field(vm, this, "immutable") != 0 {
+    if key.is_null() && crate::lang::read_int_field(vm, this, "immutable") == 1 {
         return Err(vm.throw_new("java/lang/NullPointerException", None));
     }
     let index = hash_map_index_of(vm, this, key)?;
@@ -14437,7 +14437,9 @@ const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 70] = [
         ACC_PUBLIC | ACC_STATIC,
         |vm, _, args| {
             let list = array_list_from(vm, &[ref_arg(args, 0)])?;
-            crate::lang::write_int_field(vm, list, "immutable", 1);
+            // immutable=2: mutators throw UnsupportedOperationException but, unlike
+            // the List.of-style immutable=1, null queries are permitted.
+            crate::lang::write_int_field(vm, list, "immutable", 2);
             object(list)
         },
     ),
@@ -14445,7 +14447,14 @@ const COLLECTIONS_METHODS: [oxjvm_vm::NativeMethodDef; 70] = [
         "singleton",
         "(Ljava/lang/Object;)Ljava/util/Set;",
         ACC_PUBLIC | ACC_STATIC,
-        |vm, _, args| object(set_of_values(vm, &[ref_arg(args, 0)])?),
+        |vm, _, args| {
+            // Collections.singleton permits null (unlike Set.of); build a
+            // one-element HashSet and mark it immutable=2 (mutators throw but null
+            // queries are allowed), mirroring singletonList.
+            let set = hash_set_from(vm, &[ref_arg(args, 0)])?;
+            crate::lang::write_int_field(vm, set, "immutable", 2);
+            object(set)
+        },
     ),
     method(
         "singletonMap",
@@ -17280,7 +17289,7 @@ const HASH_SET_METHODS: [oxjvm_vm::NativeMethodDef; 22] = [
             let this = receiver(args);
             let target = ref_arg(args, 1);
             // Immutable `Set.of`/`copyOf` sets are null-hostile.
-            if target.is_null() && crate::lang::read_int_field(vm, this, "immutable") != 0 {
+            if target.is_null() && crate::lang::read_int_field(vm, this, "immutable") == 1 {
                 return Err(vm.throw_new("java/lang/NullPointerException", None));
             }
             let map = hash_set_map(vm, this);
