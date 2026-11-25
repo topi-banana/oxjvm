@@ -11627,6 +11627,28 @@ pub(crate) const ITERABLE: oxjvm_vm::NativeClass = class(
             ACC_PUBLIC | ACC_ABSTRACT,
             abstract_method,
         ),
+        method(
+            "spliterator",
+            "()Ljava/util/Spliterator;",
+            ACC_PUBLIC,
+            |vm, _, args| {
+                let this = receiver(args);
+                let (ic, im) =
+                    vm.resolve_virtual_method(this, "iterator", "()Ljava/util/Iterator;")?;
+                let iterator = vm.invoke_method(ic, im, vec![Value::Ref(this)])?.as_ref();
+                let class = vm.resolve_class("java/util/Spliterators")?;
+                let (declaring, method) = vm
+                    .find_method(
+                        class,
+                        "spliteratorUnknownSize",
+                        "(Ljava/util/Iterator;I)Ljava/util/Spliterator;",
+                    )
+                    .ok_or_else(|| {
+                        VmError::internal("Spliterators.spliteratorUnknownSize missing")
+                    })?;
+                vm.invoke_method(declaring, method, vec![Value::Ref(iterator), Value::Int(0)])
+            },
+        ),
     ],
     None,
 );
