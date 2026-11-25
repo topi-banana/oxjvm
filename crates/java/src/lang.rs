@@ -4185,6 +4185,7 @@ pub(crate) fn format_string(
         let mut explicit_index: Option<usize> = None;
         let mut width = 0usize;
         let mut zero_pad = false;
+        let mut duplicate_zero = false;
         if !index_digits.is_empty() && chars.peek() == Some(&'$') {
             chars.next();
             spec_text.push_str(&index_digits);
@@ -4205,16 +4206,17 @@ pub(crate) fn format_string(
             explicit_index = Some(index);
         } else if !index_digits.is_empty() {
             // A leading `0` is the zero-pad flag, not part of the field width.
-            let digits = match index_digits.strip_prefix('0') {
-                Some(rest) => {
-                    zero_pad = true;
-                    spec_text.push('0');
-                    rest
-                }
-                None => index_digits.as_str(),
-            };
+            // Two or more leading zeros repeat the flag, which the JDK rejects.
+            let digits = index_digits.trim_start_matches('0');
+            let zeros = index_digits.len() - digits.len();
+            if zeros > 0 {
+                zero_pad = true;
+            }
+            if zeros > 1 {
+                duplicate_zero = true;
+            }
             width = digits.parse::<usize>().unwrap_or(0);
-            spec_text.push_str(digits);
+            spec_text.push_str(&index_digits);
         }
         let mut left_align = false;
         let mut alternate = false;
@@ -4230,6 +4232,9 @@ pub(crate) fn format_string(
                     chars.next();
                 }
                 Some('0') if width == 0 => {
+                    if zero_pad {
+                        duplicate_zero = true;
+                    }
                     zero_pad = true;
                     spec_text.push('0');
                     chars.next();
@@ -4301,7 +4306,38 @@ pub(crate) fn format_string(
             }
         }
         let mut prefix_len = 0usize;
-        let numeric = matches!(spec, 'd' | 'x' | 'X' | 'o' | 'f' | 'e' | 'E');
+        let numeric = matches!(
+            spec,
+            'd' | 'x' | 'X' | 'o' | 'f' | 'e' | 'E' | 'g' | 'G' | 'a' | 'A'
+        );
+        // Flag validation in the precedence java.util.Formatter uses: a repeated
+        // zero flag, then a zero flag on a non-numeric conversion, then a zero
+        // flag with no width, then '-' combined with '0'.
+        if duplicate_zero {
+            return Err(vm.throw_new("java/util/DuplicateFormatFlagsException", Some("0")));
+        }
+        // `%n` never takes a width; `%n`/`%%` never take the zero-pad flag.
+        if spec == 'n' && width > 0 {
+            return Err(vm.throw_new(
+                "java/util/IllegalFormatWidthException",
+                Some(&alloc::format!("{}", width)),
+            ));
+        }
+        if zero_pad && matches!(spec, '%' | 'n') {
+            return Err(vm.throw_new("java/util/IllegalFormatFlagsException", Some("0")));
+        }
+        if zero_pad && !numeric {
+            return Err(vm.throw_new(
+                "java/util/FormatFlagsConversionMismatchException",
+                Some(&alloc::format!("0{}", spec)),
+            ));
+        }
+        if zero_pad && width == 0 {
+            return Err(vm.throw_new("java/util/MissingFormatWidthException", Some(&spec_text)));
+        }
+        if left_align && zero_pad {
+            return Err(vm.throw_new("java/util/IllegalFormatFlagsException", Some("-0")));
+        }
         // Resolve which argument this conversion reads. Ordinary conversions use a
         // running counter; `N$` selects an explicit index; `<` reuses the previous
         // one. A conversion that needs an argument the caller did not supply throws
