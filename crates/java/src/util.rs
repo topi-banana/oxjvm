@@ -20189,34 +20189,11 @@ const CONCURRENT_HASH_MAP_METHODS: [oxjvm_vm::NativeMethodDef; 35] = [
         "()Ljava/util/Set;",
         ACC_PUBLIC,
         |vm, _, args| {
-            let this = receiver(args);
-            let pairs = hash_map_pairs(vm, concurrent_map(vm, this));
-            let set_class = vm.resolve_class("java/util/HashSet")?;
-            let set = vm.new_instance(set_class)?;
-            let map_class = vm.resolve_class("java/util/HashMap")?;
-            let (declaring, ctor) = vm
-                .find_method(map_class, "<init>", "()V")
-                .ok_or_else(|| VmError::internal("HashMap() missing"))?;
-            let backing = vm.new_instance(map_class)?;
-            vm.invoke_method(declaring, ctor, vec![Value::Ref(backing)])?;
-            let (declaring, field) = vm.find_field(set_class, "map", "Ljava/util/HashMap;")?;
-            vm.set_instance_ref(set, declaring, field, backing);
-            let present = hash_set_present(vm)?;
-            for (key, value) in pairs {
-                let entry = new_entry(vm, key, value)?;
-                let entry_class = vm.class_of(entry);
-                let (declaring, field) =
-                    vm.find_field(entry_class, "backing", "Ljava/util/Map;")?;
-                vm.set_instance_ref(entry, declaring, field, this);
-                concurrent_map_call(
-                    vm,
-                    backing,
-                    "put",
-                    "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
-                    &[Value::Ref(entry), Value::Ref(present)],
-                )?;
-            }
-            object(set)
+            // A live view over the backing map, so that iterator.remove()
+            // deletes from the ConcurrentHashMap itself (as the JDK does),
+            // not from a detached snapshot.
+            let map = concurrent_map(vm, receiver(args));
+            object(map_view_new(vm, map, 2, false)?)
         },
     ),
     method(
@@ -21731,7 +21708,16 @@ fn map_view_elements(vm: &mut Vm<'_>, this: ObjectRef) -> Result<Vec<ObjectRef>,
         out.push(match kind {
             0 => key,
             1 => value,
-            _ => new_entry(vm, key, value)?,
+            _ => {
+                let entry = new_entry(vm, key, value)?;
+                // Live view entries write through to the backing map on
+                // setValue, as the JDK's map entry iterators do.
+                let entry_class = vm.class_of(entry);
+                let (declaring, field) =
+                    vm.find_field(entry_class, "backing", "Ljava/util/Map;")?;
+                vm.set_instance_ref(entry, declaring, field, backing);
+                entry
+            }
         });
     }
     Ok(out)

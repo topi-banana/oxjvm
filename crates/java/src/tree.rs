@@ -429,6 +429,13 @@ fn tree_map_put_if_absent(
 }
 
 /// `TreeMap.replace(Object, Object)`.
+/// ConcurrentSkipListMap is null-hostile: its replace-family methods reject
+/// null values, unlike TreeMap which permits them.
+fn null_hostile_map(vm: &mut Vm<'_>, this: ObjectRef) -> bool {
+    vm.resolve_class_lenient("java/util/concurrent/ConcurrentSkipListMap")
+        .is_some_and(|class| vm.is_instance(this, class))
+}
+
 fn tree_map_replace(
     vm: &mut Vm<'_>,
     _c: oxjvm_vm::NativeContext,
@@ -437,6 +444,9 @@ fn tree_map_replace(
     let this = receiver(args);
     let key = ref_arg(args, 1);
     let value = ref_arg(args, 2);
+    if value.is_null() && null_hostile_map(vm, this) {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
     let (index, found) = search_key(vm, this, key)?;
     if !found {
         return object(ObjectRef::NULL);
@@ -458,6 +468,9 @@ fn tree_map_replace_if_equal(
     let key = ref_arg(args, 1);
     let expected = ref_arg(args, 2);
     let value = ref_arg(args, 3);
+    if (expected.is_null() || value.is_null()) && null_hostile_map(vm, this) {
+        return Err(vm.throw_new("java/lang/NullPointerException", None));
+    }
     let (index, found) = search_key(vm, this, key)?;
     if !found {
         return boolean(false);
@@ -704,6 +717,9 @@ fn tree_map_replace_all(
             &[Value::Ref(key), Value::Ref(value)],
         )?
         .as_ref();
+        if replacement.is_null() && null_hostile_map(vm, this) {
+            return Err(vm.throw_new("java/lang/NullPointerException", None));
+        }
         if let Some(map) = vm.sorted_map_mut(this) {
             map.set_value_at(index, replacement);
         }
