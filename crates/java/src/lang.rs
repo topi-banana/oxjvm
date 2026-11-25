@@ -4184,6 +4184,7 @@ pub(crate) fn format_string(
         }
         let mut explicit_index: Option<usize> = None;
         let mut width = 0usize;
+        let mut zero_pad = false;
         if !index_digits.is_empty() && chars.peek() == Some(&'$') {
             chars.next();
             spec_text.push_str(&index_digits);
@@ -4203,11 +4204,19 @@ pub(crate) fn format_string(
             }
             explicit_index = Some(index);
         } else if !index_digits.is_empty() {
-            width = index_digits.parse::<usize>().unwrap_or(0);
-            spec_text.push_str(&index_digits);
+            // A leading `0` is the zero-pad flag, not part of the field width.
+            let digits = match index_digits.strip_prefix('0') {
+                Some(rest) => {
+                    zero_pad = true;
+                    spec_text.push('0');
+                    rest
+                }
+                None => index_digits.as_str(),
+            };
+            width = digits.parse::<usize>().unwrap_or(0);
+            spec_text.push_str(digits);
         }
         let mut left_align = false;
-        let mut zero_pad = false;
         let mut alternate = false;
         let mut plus_sign = false;
         let mut space_sign = false;
