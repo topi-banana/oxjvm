@@ -30307,6 +30307,150 @@ pub(crate) const SQL_DATE: oxjvm_vm::NativeClass = class(
     None,
 );
 
+/// Build a `java/sql/Time` holding `millis` (UTC, like `java.util.Date`).
+fn sql_time_from_millis(vm: &mut Vm<'_>, millis: i64) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/sql/Time")?;
+    let instance = vm.new_instance(class)?;
+    crate::lang::write_long_field(vm, instance, "time", millis);
+    Ok(instance)
+}
+
+/// The deprecated `Time(hour, minute, second)` constructor: millis since the
+/// epoch for that time of day on 1970-01-01 (lenient, like the JDK calendar).
+fn sql_time_init_fields(
+    vm: &mut Vm<'_>,
+    _c: oxjvm_vm::NativeContext,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let hour = i64::from(int_arg(args, 1));
+    let minute = i64::from(int_arg(args, 2));
+    let second = i64::from(int_arg(args, 3));
+    let millis = (hour * 3600 + minute * 60 + second).wrapping_mul(1000);
+    crate::lang::write_long_field(vm, receiver(args), "time", millis);
+    void()
+}
+
+const SQL_TIME_METHODS: [oxjvm_vm::NativeMethodDef; 14] = [
+    method("<init>", "(J)V", ACC_PUBLIC, date_init),
+    method("<init>", "(III)V", ACC_PUBLIC, sql_time_init_fields),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let time = crate::lang::read_long_field(vm, receiver(args), "time");
+            let tod = time.rem_euclid(86_400_000);
+            let hour = tod / 3_600_000;
+            let minute = (tod % 3_600_000) / 60_000;
+            let second = (tod % 60_000) / 1000;
+            object(vm.make_string(&alloc::format!("{hour:02}:{minute:02}:{second:02}"))?)
+        },
+    ),
+    method(
+        "valueOf",
+        "(Ljava/lang/String;)Ljava/sql/Time;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = ref_arg(args, 0);
+            if text.is_null() {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            let s = vm.string_or_empty(text);
+            let b = s.as_bytes();
+            // The JDK requires a first colon preceded by at least one character,
+            // a second colon after it and before the final character, then parses
+            // each field as an integer. A structural problem is an
+            // IllegalArgumentException; a non-integer field is a
+            // NumberFormatException (itself an IllegalArgumentException).
+            let first = match b.iter().position(|&c| c == b':') {
+                Some(i) if i > 0 => i,
+                _ => return Err(vm.throw_new("java/lang/IllegalArgumentException", None)),
+            };
+            let second = match b[first + 1..].iter().position(|&c| c == b':') {
+                Some(i) => i + first + 1,
+                None => return Err(vm.throw_new("java/lang/IllegalArgumentException", None)),
+            };
+            if second >= b.len() - 1 {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            let hour = match sql_parse_int(&b[..first]) {
+                Some(v) => v,
+                None => return Err(vm.throw_new("java/lang/NumberFormatException", None)),
+            };
+            let minute = match sql_parse_int(&b[first + 1..second]) {
+                Some(v) => v,
+                None => return Err(vm.throw_new("java/lang/NumberFormatException", None)),
+            };
+            let secs = match sql_parse_int(&b[second + 1..]) {
+                Some(v) => v,
+                None => return Err(vm.throw_new("java/lang/NumberFormatException", None)),
+            };
+            let millis = (hour * 3600 + minute * 60 + secs).wrapping_mul(1000);
+            object(sql_time_from_millis(vm, millis)?)
+        },
+    ),
+    method(
+        "valueOf",
+        "(Ljava/time/LocalTime;)Ljava/sql/Time;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let local_time = ref_arg(args, 0);
+            if local_time.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let nano = crate::lang::read_long_field(vm, local_time, "nanoOfDay");
+            object(sql_time_from_millis(vm, nano / 1_000_000)?)
+        },
+    ),
+    method(
+        "toLocalTime",
+        "()Ljava/time/LocalTime;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let time = crate::lang::read_long_field(vm, receiver(args), "time");
+            let tod = time.rem_euclid(86_400_000);
+            object(crate::time::local_time_new(vm, tod * 1_000_000)?)
+        },
+    ),
+    method(
+        "toInstant",
+        "()Ljava/time/Instant;",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method("getYear", "()I", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/IllegalArgumentException", None))
+    }),
+    method("getMonth", "()I", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/IllegalArgumentException", None))
+    }),
+    method("getDay", "()I", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/IllegalArgumentException", None))
+    }),
+    method("getDate", "()I", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/IllegalArgumentException", None))
+    }),
+    method("setYear", "(I)V", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/IllegalArgumentException", None))
+    }),
+    method("setMonth", "(I)V", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/IllegalArgumentException", None))
+    }),
+    method("setDate", "(I)V", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/IllegalArgumentException", None))
+    }),
+];
+
+pub(crate) const SQL_TIME: oxjvm_vm::NativeClass = class(
+    "java/sql/Time",
+    Some("java/util/Date"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &SQL_TIME_METHODS,
+    None,
+);
+
 fn new_currency(vm: &mut Vm<'_>, code: &str) -> Result<Value, VmError> {
     let class = vm.resolve_class("java/util/Currency")?;
     let instance = vm.new_instance(class)?;
