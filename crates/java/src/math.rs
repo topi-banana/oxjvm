@@ -68,11 +68,20 @@ fn round_u128_to_f64(value: u128) -> f64 {
 
 /// Correctly-rounded `sqrt` via integer arithmetic.
 pub(crate) fn sqrt(x: f64) -> f64 {
-    if x.is_nan() || x < 0.0 {
-        return f64::NAN;
+    let hx = hi_word(x);
+    if (hx & 0x7ff0_0000) == 0x7ff0_0000 {
+        // sqrt(NaN) = NaN (sign/payload preserved), sqrt(+inf) = +inf,
+        // sqrt(-inf) = NaN, matching fdlibm's x*x+x.
+        return x * x + x;
     }
-    if x == 0.0 || x.is_infinite() {
-        return x;
+    if hx <= 0 {
+        if ((hx & 0x7fff_ffff) | (x.to_bits() as u32 as i32)) == 0 {
+            return x; // sqrt(+-0) = +-0
+        }
+        if hx < 0 {
+            return nan_nan(x); // sqrt(-ve) = NaN
+        }
+        // Positive subnormals (hx == 0, low word nonzero) fall through.
     }
     if x < f64::MIN_POSITIVE {
         // Scale subnormals into the normal range: sqrt(x * 2^104) * 2^-52.
@@ -1896,21 +1905,212 @@ pub(crate) fn copy_sign(magnitude: f64, sign: f64) -> f64 {
     f64::from_bits(bits)
 }
 
+/// `IEEEremainder`, ported from fdlibm (the JDK test suite's
+/// FdlibmTranslit.IEEEremainder).
+#[allow(clippy::eq_op)] // d/d is fdlibm's NaN-generation idiom
 pub(crate) fn ieee_remainder(x: f64, y: f64) -> f64 {
-    if x.is_nan() || y.is_nan() || x.is_infinite() || y == 0.0 {
-        return f64::NAN;
+    let mut x = x;
+    let mut p = y;
+    let mut hx = hi_word(x);
+    let lx = x.to_bits() as u32 as i32;
+    let mut hp = hi_word(p);
+    let lp = p.to_bits() as u32 as i32;
+    let sx = hx & i32::MIN;
+    hp &= 0x7fff_ffff;
+    hx &= 0x7fff_ffff;
+    if (hp | lp) == 0 {
+        let d = x * p;
+        return d / d; // p = 0
     }
-    if y.is_infinite() {
-        return x;
+    if hx >= 0x7ff0_0000 || (hp >= 0x7ff0_0000 && ((hp - 0x7ff0_0000) | lp) != 0) {
+        let d = x * p;
+        return d / d; // x not finite, or p is NaN
     }
-    let quotient = rint(x / y);
-    let remainder = x - quotient * y;
-    if remainder == 0.0 {
-        // A zero remainder carries the sign of the dividend.
-        copy_sign(0.0, x)
+    if hp <= 0x7fdf_ffff {
+        x = fmod(x, p + p); // now x < 2p
+    }
+    if ((hx - hp) | lx.wrapping_sub(lp)) == 0 {
+        return 0.0 * x; // |x| = |p|: sign(x)*0
+    }
+    x = x.abs();
+    p = p.abs();
+    if hp < 0x0020_0000 {
+        if x + x > p {
+            x -= p;
+            if x + x >= p {
+                x -= p;
+            }
+        }
     } else {
-        remainder
+        let p_half = 0.5 * p;
+        if x > p_half {
+            x -= p;
+            if x >= p_half {
+                x -= p;
+            }
+        }
     }
+    set_hi_word(x, hi_word(x) ^ sx)
+}
+
+/// fdlibm's bit-level `fmod` (exact remainder by long division on the
+/// significands), used by `ieee_remainder`.
+#[allow(clippy::eq_op)] // d/d is fdlibm's NaN-generation idiom
+fn fmod(x: f64, y: f64) -> f64 {
+    let mut hx = hi_word(x);
+    let mut lx = x.to_bits() as u32 as i32;
+    let mut hy = hi_word(y);
+    let mut ly = y.to_bits() as u32 as i32;
+    let sx = hx & i32::MIN;
+    hx ^= sx; // |x|
+    hy &= 0x7fff_ffff; // |y|
+    if (hy | ly) == 0
+        || hx >= 0x7ff0_0000
+        || (hy | (((ly | ly.wrapping_neg()) as u32) >> 31) as i32) > 0x7ff0_0000
+    {
+        let d = x * y;
+        return d / d; // y = 0, x not finite, or y is NaN
+    }
+    if hx <= hy {
+        if hx < hy || (lx as u32) < (ly as u32) {
+            return x; // |x| < |y|
+        }
+        if lx == ly {
+            return if sx == 0 { 0.0 } else { -0.0 }; // |x| = |y|: sign(x)*0
+        }
+    }
+    // Exponent of x, counting leading zeros for subnormals.
+    let mut ix;
+    if hx < 0x0010_0000 {
+        if hx == 0 {
+            ix = -1043i32;
+            let mut i = lx;
+            while i > 0 {
+                ix -= 1;
+                i <<= 1;
+            }
+        } else {
+            ix = -1022i32;
+            let mut i = hx << 11;
+            while i > 0 {
+                ix -= 1;
+                i <<= 1;
+            }
+        }
+    } else {
+        ix = (hx >> 20) - 1023;
+    }
+    // Exponent of y.
+    let mut iy;
+    if hy < 0x0010_0000 {
+        if hy == 0 {
+            iy = -1043i32;
+            let mut i = ly;
+            while i > 0 {
+                iy -= 1;
+                i <<= 1;
+            }
+        } else {
+            iy = -1022i32;
+            let mut i = hy << 11;
+            while i > 0 {
+                iy -= 1;
+                i <<= 1;
+            }
+        }
+    } else {
+        iy = (hy >> 20) - 1023;
+    }
+    // Shift x and y to the implicit-bit form.
+    if ix >= -1022 {
+        hx = 0x0010_0000 | (0x000f_ffff & hx);
+    } else {
+        let n = -1022 - ix;
+        if n <= 31 {
+            hx = (hx << n) | ((lx as u32 >> (32 - n)) as i32);
+            lx <<= n;
+        } else {
+            hx = lx << (n - 32);
+            lx = 0;
+        }
+    }
+    if iy >= -1022 {
+        hy = 0x0010_0000 | (0x000f_ffff & hy);
+    } else {
+        let n = -1022 - iy;
+        if n <= 31 {
+            hy = (hy << n) | ((ly as u32 >> (32 - n)) as i32);
+            ly <<= n;
+        } else {
+            hy = ly << (n - 32);
+            ly = 0;
+        }
+    }
+    // Long division: subtract shifted y from x, bit by bit.
+    let mut n = ix - iy;
+    while n != 0 {
+        n -= 1;
+        let mut hz = hx - hy;
+        let lz = lx.wrapping_sub(ly);
+        if (lx as u32) < (ly as u32) {
+            hz -= 1;
+        }
+        if hz < 0 {
+            hx = hx.wrapping_add(hx).wrapping_add((lx as u32 >> 31) as i32);
+            lx = lx.wrapping_add(lx);
+        } else {
+            if (hz | lz) == 0 {
+                return if sx == 0 { 0.0 } else { -0.0 }; // exact: sign(x)*0
+            }
+            hx = hz.wrapping_add(hz).wrapping_add((lz as u32 >> 31) as i32);
+            lx = lz.wrapping_add(lz);
+        }
+    }
+    let mut hz = hx - hy;
+    let lz = lx.wrapping_sub(ly);
+    if (lx as u32) < (ly as u32) {
+        hz -= 1;
+    }
+    if hz >= 0 {
+        hx = hz;
+        lx = lz;
+    }
+    if (hx | lx) == 0 {
+        return if sx == 0 { 0.0 } else { -0.0 }; // exact: sign(x)*0
+    }
+    while hx < 0x0010_0000 {
+        // Normalize x.
+        hx = hx.wrapping_add(hx).wrapping_add((lx as u32 >> 31) as i32);
+        lx = lx.wrapping_add(lx);
+        iy -= 1;
+    }
+    let mut x = x;
+    if iy >= -1022 {
+        // Normalize output.
+        hx = (hx - 0x0010_0000) | ((iy + 1023) << 20);
+        x = set_hi_word(x, hx | sx);
+        x = set_lo_word(x, lx);
+    } else {
+        // Subnormal output.
+        let n = -1022 - iy;
+        if n <= 20 {
+            lx = (((lx as u32) >> n) | ((hx as u32) << (32 - n))) as i32;
+            hx >>= n;
+        } else if n <= 31 {
+            lx = (((hx as u32) << (32 - n)) | ((lx as u32) >> n)) as i32;
+            hx = sx;
+        } else {
+            lx = hx >> (n - 32);
+            hx = sx;
+        }
+        x = set_hi_word(x, hx | sx);
+        x = set_lo_word(x, lx);
+        #[allow(clippy::identity_op)]
+        {
+            x *= 1.0; // create necessary signal
+        }
+    }
+    x
 }
 
 pub(crate) fn pow2(exponent: i32) -> f64 {
@@ -7414,7 +7614,7 @@ mod tests {
             (0x0123_4567_89ab_cdef, 0x2088_d53c_68b0_12b2),
             (0x0fed_cba9_8765_4321, 0x27ee_e0cb_ec79_2028),
             (0x7ff0_0000_0000_0000, 0x7ff0_0000_0000_0000), // +infinity
-            (0xbff0_0000_0000_0000, 0x7ff8_0000_0000_0000), // -1.0 -> NaN
+            (0xbff0_0000_0000_0000, 0xfff8_0000_0000_0000), // -1.0 -> NaN (x86-64 default sign)
         ];
         for (input, expected) in cases {
             let actual = sqrt(f64::from_bits(input));
