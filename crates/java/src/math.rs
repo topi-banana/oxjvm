@@ -1661,18 +1661,49 @@ pub(crate) fn acos(x: f64) -> f64 {
     2.0 * (df + w)
 }
 
-/// `cbrt` via Newton refinement.
+/// `cbrt`, ported from fdlibm (the JDK test suite's FdlibmTranslit.Cbrt).
+#[allow(clippy::approx_constant, clippy::excessive_precision)]
 pub(crate) fn cbrt(x: f64) -> f64 {
-    if x.is_nan() || x == 0.0 || x.is_infinite() {
-        return x;
+    const B1: i32 = 715_094_163; // (682-0.03306235651)*2**20
+    const B2: i32 = 696_219_795; // (664-0.03306235651)*2**20
+    const C: f64 = 5.428_571_428_571_428_159_06e-01; // 19/35     = 0x3FE15F15, 0xF15F15F1
+    const D: f64 = -7.053_061_224_489_796_110_50e-01; // -864/1225 = 0xBFE691DE, 0x2532C834
+    const E: f64 = 1.414_285_714_285_714_368_19e+00; // 99/70     = 0x3FF6A0EA, 0x0EA0EA0F
+    const F: f64 = 1.607_142_857_142_857_206_30e+00; // 45/28     = 0x3FF9B6DB, 0x6DB6DB6E
+    const G: f64 = 3.571_428_571_428_571_507_87e-01; // 5/14      = 0x3FD6DB6D, 0xB6DB6DB7
+    let mut hx = hi_word(x);
+    let sign = hx & i32::MIN;
+    hx ^= sign;
+    if hx >= 0x7ff0_0000 {
+        return inf_add(x); // cbrt(NaN, INF) is itself
     }
-    let negative = x < 0.0;
-    let x = x.abs();
-    let mut guess = exp(ln(x) / 3.0);
-    for _ in 0..3 {
-        guess = (2.0 * guess + x / (guess * guess)) / 3.0;
+    if (hx | (x.to_bits() as u32 as i32)) == 0 {
+        return x; // cbrt(0) is itself
     }
-    if negative { -guess } else { guess }
+    let x = set_hi_word(x, hx); // x <- |x|
+    // Rough cbrt to 5 bits.
+    let mut t = if hx < 0x0010_0000 {
+        // Subnormal number: scale by 2^54 first.
+        let t = set_hi_word(0.0, 0x4350_0000) * x;
+        set_hi_word(t, hi_word(t) / 3 + B2)
+    } else {
+        set_hi_word(0.0, hx / 3 + B1)
+    };
+    // New cbrt to 23 bits, may be implemented in single precision.
+    let r = t * t / x;
+    let s = C + r * t;
+    t *= G + F / (s + E + D / s);
+    // Chopped to 20 bits and make it larger than cbrt(x).
+    t = set_lo_word(t, 0);
+    t = set_hi_word(t, hi_word(t) + 1);
+    // One step newton iteration to 53 bits with error less than 0.667 ulps.
+    let s = t * t; // t*t is exact
+    let r = x / s;
+    let w = t + t;
+    let r = (r - t) / (w + r); // r-s is exact
+    let t = t + t * r;
+    // Restore the sign bit.
+    set_hi_word(t, hi_word(t) | sign)
 }
 
 /// `floor`, including signed zero and infinities.
