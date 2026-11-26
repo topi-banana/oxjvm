@@ -203,6 +203,11 @@ fn set_hi_word(x: f64, hi: i32) -> f64 {
     f64::from_bits(((hi as u32 as u64) << 32) | (x.to_bits() & 0xffff_ffff))
 }
 
+/// The value with its low 32 bits replaced (fdlibm's `__LO(x, v)`).
+fn set_lo_word(x: f64, lo: i32) -> f64 {
+    f64::from_bits((x.to_bits() & 0xffff_ffff_0000_0000) | (lo as u32 as u64))
+}
+
 // fdlibm's documented decimal constants; the hex comments are the authoritative
 // bit patterns, verified against the JDK's FdlibmTranslit.
 #[allow(clippy::approx_constant)]
@@ -1372,122 +1377,288 @@ pub(crate) fn pow(x: f64, y: f64) -> f64 {
     if negative { -result } else { result }
 }
 
-/// `atan`.
+/// `atan`, ported from fdlibm (the JDK test suite's FdlibmTranslit.Atan).
+#[allow(clippy::approx_constant, clippy::excessive_precision)]
 pub(crate) fn atan(x: f64) -> f64 {
-    if x.is_nan() {
-        return f64::NAN;
-    }
-    if x == 0.0 {
-        return x;
-    }
-    let negative = x < 0.0;
-    let x = x.abs();
-    let result = if x > 1.0 {
-        core::f64::consts::FRAC_PI_2 - atan_small(1.0 / x)
-    } else {
-        atan_small(x)
-    };
-    if negative { -result } else { result }
-}
-
-fn atan_small(x: f64) -> f64 {
-    if x <= 0.4375 {
-        let z = x * x;
-        let mut term = x;
-        let mut sum = x;
-        for index in 1..=26 {
-            term *= -z;
-            sum += term / f64::from(2 * index + 1);
+    const ATANHI: [f64; 4] = [
+        4.636_476_090_008_060_935_15e-01, // atan(0.5)hi  0x3FDDAC67, 0x0561BB4F
+        7.853_981_633_974_482_789_99e-01, // atan(1.0)hi  0x3FE921FB, 0x54442D18
+        9.827_937_232_473_290_540_82e-01, // atan(1.5)hi  0x3FEF730B, 0xD281F69B
+        1.570_796_326_794_896_558_00e+00, // atan(inf)hi  0x3FF921FB, 0x54442D18
+    ];
+    const ATANLO: [f64; 4] = [
+        2.269_877_745_296_168_709_24e-17, // atan(0.5)lo  0x3C7A2B7F, 0x222F65E2
+        3.061_616_997_868_383_017_93e-17, // atan(1.0)lo  0x3C81A626, 0x33145C07
+        1.390_331_103_123_099_845_16e-17, // atan(1.5)lo  0x3C700788, 0x7AF0CBBD
+        6.123_233_995_736_766_035_87e-17, // atan(inf)lo  0x3C91A626, 0x33145C07
+    ];
+    const AT: [f64; 11] = [
+        3.333_333_333_333_293_180_27e-01,  // 0x3FD55555, 0x5555550D
+        -1.999_999_999_987_648_324_76e-01, // 0xBFC99999, 0x9998EBC4
+        1.428_571_427_250_346_637_11e-01,  // 0x3FC24924, 0x920083FF
+        -1.111_111_040_546_235_578_80e-01, // 0xBFBC71C6, 0xFE231671
+        9.090_887_133_436_506_561_96e-02,  // 0x3FB745CD, 0xC54C206E
+        -7.691_876_205_044_829_994_95e-02, // 0xBFB3B0F2, 0xAF749A6D
+        6.661_073_137_387_531_206_69e-02,  // 0x3FB10D66, 0xA0D03D51
+        -5.833_570_133_790_573_486_45e-02, // 0xBFADDE2D, 0x52DEFD9A
+        4.976_877_994_615_932_360_17e-02,  // 0x3FA97B4B, 0x24760DEB
+        -3.653_157_274_421_691_552_70e-02, // 0xBFA2B444, 0x2C6A6C2F
+        1.628_582_011_536_578_236_23e-02,  // 0x3F90AD3A, 0xE322DA11
+    ];
+    const HUGE: f64 = 1.0e300;
+    let hx = hi_word(x);
+    let ix = hx & 0x7fff_ffff;
+    let mut x = x;
+    let id;
+    if ix >= 0x4410_0000 {
+        // |x| >= 2^66
+        if ix > 0x7ff0_0000 || (ix == 0x7ff0_0000 && (x.to_bits() as u32) != 0) {
+            return inf_add(x); // NaN
         }
-        sum
-    } else {
-        let y = (x - 1.0) / (x + 1.0);
-        core::f64::consts::FRAC_PI_4 + atan_small(y)
+        return if hx > 0 {
+            ATANHI[3] + ATANLO[3]
+        } else {
+            -ATANHI[3] - ATANLO[3]
+        };
     }
+    if ix < 0x3fdc_0000 {
+        // |x| < 0.4375
+        if ix < 0x3e20_0000 && HUGE + x > 1.0 {
+            return x; // |x| < 2^-29, raise inexact
+        }
+        id = -1i32;
+    } else {
+        x = x.abs();
+        if ix < 0x3ff3_0000 {
+            // |x| < 1.1875
+            if ix < 0x3fe6_0000 {
+                // 7/16 <= |x| < 11/16
+                id = 0;
+                x = (2.0 * x - 1.0) / (2.0 + x);
+            } else {
+                // 11/16 <= |x| < 19/16
+                id = 1;
+                x = (x - 1.0) / (x + 1.0);
+            }
+        } else if ix < 0x4003_8000 {
+            // |x| < 2.4375
+            id = 2;
+            x = (x - 1.5) / (1.0 + 1.5 * x);
+        } else {
+            // 2.4375 <= |x| < 2^66
+            id = 3;
+            x = -1.0 / x;
+        }
+    }
+    let z = x * x;
+    let w = z * z;
+    let s1 = z * (AT[0] + w * (AT[2] + w * (AT[4] + w * (AT[6] + w * (AT[8] + w * AT[10])))));
+    let s2 = w * (AT[1] + w * (AT[3] + w * (AT[5] + w * (AT[7] + w * AT[9]))));
+    if id < 0 {
+        return x - x * (s1 + s2);
+    }
+    let id = id as usize;
+    let z = ATANHI[id] - ((x * (s1 + s2) - ATANLO[id]) - x);
+    if hx < 0 { -z } else { z }
 }
 
-/// `atan2` with full quadrant handling.
+/// `atan2`, ported from fdlibm (the JDK test suite's FdlibmTranslit.Atan2).
+#[allow(clippy::approx_constant, clippy::excessive_precision)]
 pub(crate) fn atan2(y: f64, x: f64) -> f64 {
-    if x.is_nan() || y.is_nan() {
-        return f64::NAN;
+    const TINY: f64 = 1.0e-300;
+    const PI_O_4: f64 = 7.853_981_633_974_482_790_0e-01; // 0x3FE921FB, 0x54442D18
+    const PI_O_2: f64 = 1.570_796_326_794_896_558_0e+00; // 0x3FF921FB, 0x54442D18
+    const PI: f64 = 3.141_592_653_589_793_116_0e+00; // 0x400921FB, 0x54442D18
+    const PI_LO: f64 = 1.224_646_799_147_353_177_2e-16; // 0x3CA1A626, 0x33145C07
+    let hx = hi_word(x);
+    let ix = hx & 0x7fff_ffff;
+    let lx = x.to_bits() as u32 as i32;
+    let hy = hi_word(y);
+    let iy = hy & 0x7fff_ffff;
+    let ly = y.to_bits() as u32 as i32;
+    // x or y is NaN (the low-word trick catches NaN with a zero high mantissa).
+    if (ix | (((lx | lx.wrapping_neg()) as u32) >> 31) as i32) > 0x7ff0_0000
+        || (iy | (((ly | ly.wrapping_neg()) as u32) >> 31) as i32) > 0x7ff0_0000
+    {
+        return x + y;
     }
-    let pi = core::f64::consts::PI;
-    let half_pi = core::f64::consts::FRAC_PI_2;
-    let y_neg = y.is_sign_negative();
-    if x == 0.0 {
-        if y == 0.0 {
-            // atan2(±0, +0) = ±0; atan2(±0, -0) = ±π.
-            return if x.is_sign_negative() {
-                if y_neg { -pi } else { pi }
-            } else {
-                y
-            };
-        }
-        // x == ±0 with y nonzero (including ±∞): ±π/2 by the sign of y.
-        return if y_neg { -half_pi } else { half_pi };
+    if ((hx - 0x3ff0_0000) | lx) == 0 {
+        return atan(y); // x = 1.0
     }
-    if x.is_infinite() {
-        if y.is_infinite() {
-            // atan2(±∞, +∞) = ±π/4; atan2(±∞, -∞) = ±3π/4.
-            let magnitude = if x > 0.0 {
-                core::f64::consts::FRAC_PI_4
-            } else {
-                3.0 * core::f64::consts::FRAC_PI_4
-            };
-            return if y_neg { -magnitude } else { magnitude };
-        }
-        // x == +∞ with y finite: ±0; x == -∞ with y finite: ±π.
-        return if x > 0.0 {
-            if y_neg { -0.0 } else { 0.0 }
-        } else if y_neg {
-            -pi
-        } else {
-            pi
+    let m = ((hy >> 31) & 1) | ((hx >> 30) & 2); // 2*sign(x) + sign(y)
+    if (iy | ly) == 0 {
+        return match m {
+            0 | 1 => y,      // atan(+-0, +anything) = +-0
+            2 => PI + TINY,  // atan(+0, -anything) = pi
+            _ => -PI - TINY, // atan(-0, -anything) = -pi
         };
     }
-    if y.is_infinite() {
-        return if y_neg { -half_pi } else { half_pi };
-    }
-    if y == 0.0 {
-        // y == ±0 with x finite and nonzero: ±0 for x > 0, ±π for x < 0.
-        return if x > 0.0 {
-            y
-        } else if y_neg {
-            -pi
+    if (ix | lx) == 0 {
+        return if hy < 0 {
+            -PI_O_2 - TINY
         } else {
-            pi
+            PI_O_2 + TINY
         };
     }
-    if x > 0.0 {
-        atan(y / x)
-    } else if y_neg {
-        atan(y / x) - pi
+    if ix == 0x7ff0_0000 {
+        return if iy == 0x7ff0_0000 {
+            match m {
+                0 => PI_O_4 + TINY,        // atan(+inf, +inf)
+                1 => -PI_O_4 - TINY,       // atan(-inf, +inf)
+                2 => 3.0 * PI_O_4 + TINY,  // atan(+inf, -inf)
+                _ => -3.0 * PI_O_4 - TINY, // atan(-inf, -inf)
+            }
+        } else {
+            match m {
+                0 => 0.0,        // atan(+..., +inf)
+                1 => -0.0,       // atan(-..., +inf)
+                2 => PI + TINY,  // atan(+..., -inf)
+                _ => -PI - TINY, // atan(-..., -inf)
+            }
+        };
+    }
+    if iy == 0x7ff0_0000 {
+        return if hy < 0 {
+            -PI_O_2 - TINY
+        } else {
+            PI_O_2 + TINY
+        };
+    }
+    let k = (iy - ix) >> 20;
+    let z = if k > 60 {
+        PI_O_2 + 0.5 * PI_LO // |y/x| > 2^60
+    } else if hx < 0 && k < -60 {
+        0.0 // |y|/x < 2^-60
     } else {
-        atan(y / x) + pi
+        atan((y / x).abs()) // safe to do y/x
+    };
+    match m {
+        0 => z,                                     // atan(+,+)
+        1 => set_hi_word(z, hi_word(z) ^ i32::MIN), // atan(-,+)
+        2 => PI - (z - PI_LO),                      // atan(+,-)
+        _ => (z - PI_LO) - PI,                      // atan(-,-)
     }
 }
 
+/// `asin`, ported from fdlibm (the JDK test suite's FdlibmTranslit.Asin).
+#[allow(clippy::approx_constant, clippy::excessive_precision)]
 pub(crate) fn asin(x: f64) -> f64 {
-    if x.is_nan() || x.abs() > 1.0 {
-        return f64::NAN;
+    const HUGE: f64 = 1.0e300;
+    const PIO2_HI: f64 = 1.570_796_326_794_896_558_00e+00; // 0x3FF921FB, 0x54442D18
+    const PIO2_LO: f64 = 6.123_233_995_736_766_035_87e-17; // 0x3C91A626, 0x33145C07
+    const PIO4_HI: f64 = 7.853_981_633_974_482_789_99e-01; // 0x3FE921FB, 0x54442D18
+    const PS0: f64 = 1.666_666_666_666_666_574_15e-01; // 0x3FC55555, 0x55555555
+    const PS1: f64 = -3.255_658_186_224_009_154_05e-01; // 0xBFD4D612, 0x03EB6F7D
+    const PS2: f64 = 2.012_125_321_348_629_258_81e-01; // 0x3FC9C155, 0x0E884455
+    const PS3: f64 = -4.005_553_450_067_941_140_27e-02; // 0xBFA48228, 0xB5688F3B
+    const PS4: f64 = 7.915_349_942_898_145_321_76e-04; // 0x3F49EFE0, 0x7501B288
+    const PS5: f64 = 3.479_331_075_960_211_675_70e-05; // 0x3F023DE1, 0x0DFDF709
+    const QS1: f64 = -2.403_394_911_734_414_218_78e+00; // 0xC0033A27, 0x1C8A2D4B
+    const QS2: f64 = 2.020_945_760_233_505_694_71e+00; // 0x40002AE5, 0x9C598AC8
+    const QS3: f64 = -6.882_839_716_054_532_930_30e-01; // 0xBFE6066C, 0x1B8D0159
+    const QS4: f64 = 7.703_815_055_590_193_527_91e-02; // 0x3FB3B8C5, 0xB12E9282
+    let hx = hi_word(x);
+    let ix = hx & 0x7fff_ffff;
+    if ix >= 0x3ff0_0000 {
+        // |x| >= 1
+        if ((ix - 0x3ff0_0000) | (x.to_bits() as u32 as i32)) == 0 {
+            return x * PIO2_HI + x * PIO2_LO; // asin(+-1) = +-pi/2
+        }
+        return nan_nan(x); // asin(|x| > 1) = NaN
     }
-    if x == 0.0 {
-        return x;
+    if ix < 0x3fe0_0000 {
+        // |x| < 0.5
+        let mut t = 0.0;
+        if ix < 0x3e40_0000 {
+            // |x| < 2^-27
+            if HUGE + x > 1.0 {
+                return x; // return x with inexact if x != 0
+            }
+        } else {
+            t = x * x;
+        }
+        let p = t * (PS0 + t * (PS1 + t * (PS2 + t * (PS3 + t * (PS4 + t * PS5)))));
+        let q = 1.0 + t * (QS1 + t * (QS2 + t * (QS3 + t * QS4)));
+        let w = p / q;
+        return x + x * w;
     }
-    if x == 1.0 {
-        return core::f64::consts::FRAC_PI_2;
-    }
-    if x == -1.0 {
-        return -core::f64::consts::FRAC_PI_2;
-    }
-    atan2(x, sqrt(1.0 - x * x))
+    // 0.5 <= |x| < 1
+    let w = 1.0 - x.abs();
+    let t = w * 0.5;
+    let p = t * (PS0 + t * (PS1 + t * (PS2 + t * (PS3 + t * (PS4 + t * PS5)))));
+    let q = 1.0 + t * (QS1 + t * (QS2 + t * (QS3 + t * QS4)));
+    let s = sqrt(t);
+    let t = if ix >= 0x3fef_3333 {
+        // |x| > 0.975
+        let w = p / q;
+        PIO2_HI - (2.0 * (s + s * w) - PIO2_LO)
+    } else {
+        let w = set_lo_word(s, 0);
+        let c = (t - w * w) / (s + w);
+        let r = p / q;
+        let p = 2.0 * s * r - (PIO2_LO - 2.0 * c);
+        let q = PIO4_HI - 2.0 * w;
+        PIO4_HI - (p - q)
+    };
+    if hx > 0 { t } else { -t }
 }
 
+/// `acos`, ported from fdlibm (the JDK test suite's FdlibmTranslit.Acos).
+#[allow(clippy::approx_constant, clippy::excessive_precision)]
 pub(crate) fn acos(x: f64) -> f64 {
-    if x.is_nan() || x.abs() > 1.0 {
-        return f64::NAN;
+    const PI: f64 = 3.141_592_653_589_793_116_00e+00; // 0x400921FB, 0x54442D18
+    const PIO2_HI: f64 = 1.570_796_326_794_896_558_00e+00; // 0x3FF921FB, 0x54442D18
+    const PIO2_LO: f64 = 6.123_233_995_736_766_035_87e-17; // 0x3C91A626, 0x33145C07
+    const PS0: f64 = 1.666_666_666_666_666_574_15e-01; // 0x3FC55555, 0x55555555
+    const PS1: f64 = -3.255_658_186_224_009_154_05e-01; // 0xBFD4D612, 0x03EB6F7D
+    const PS2: f64 = 2.012_125_321_348_629_258_81e-01; // 0x3FC9C155, 0x0E884455
+    const PS3: f64 = -4.005_553_450_067_941_140_27e-02; // 0xBFA48228, 0xB5688F3B
+    const PS4: f64 = 7.915_349_942_898_145_321_76e-04; // 0x3F49EFE0, 0x7501B288
+    const PS5: f64 = 3.479_331_075_960_211_675_70e-05; // 0x3F023DE1, 0x0DFDF709
+    const QS1: f64 = -2.403_394_911_734_414_218_78e+00; // 0xC0033A27, 0x1C8A2D4B
+    const QS2: f64 = 2.020_945_760_233_505_694_71e+00; // 0x40002AE5, 0x9C598AC8
+    const QS3: f64 = -6.882_839_716_054_532_930_30e-01; // 0xBFE6066C, 0x1B8D0159
+    const QS4: f64 = 7.703_815_055_590_193_527_91e-02; // 0x3FB3B8C5, 0xB12E9282
+    let hx = hi_word(x);
+    let ix = hx & 0x7fff_ffff;
+    if ix >= 0x3ff0_0000 {
+        // |x| >= 1
+        if ((ix - 0x3ff0_0000) | (x.to_bits() as u32 as i32)) == 0 {
+            return if hx > 0 { 0.0 } else { PI + 2.0 * PIO2_LO }; // acos(+-1)
+        }
+        return nan_nan(x); // acos(|x| > 1) = NaN
     }
-    core::f64::consts::FRAC_PI_2 - asin(x)
+    if ix < 0x3fe0_0000 {
+        // |x| < 0.5
+        if ix <= 0x3c60_0000 {
+            return PIO2_HI + PIO2_LO; // |x| < 2^-57
+        }
+        let z = x * x;
+        let p = z * (PS0 + z * (PS1 + z * (PS2 + z * (PS3 + z * (PS4 + z * PS5)))));
+        let q = 1.0 + z * (QS1 + z * (QS2 + z * (QS3 + z * QS4)));
+        let r = p / q;
+        return PIO2_HI - (x - (PIO2_LO - x * r));
+    }
+    if hx < 0 {
+        // x < -0.5
+        let z = (1.0 + x) * 0.5;
+        let p = z * (PS0 + z * (PS1 + z * (PS2 + z * (PS3 + z * (PS4 + z * PS5)))));
+        let q = 1.0 + z * (QS1 + z * (QS2 + z * (QS3 + z * QS4)));
+        let s = sqrt(z);
+        let r = p / q;
+        let w = r * s - PIO2_LO;
+        return PI - 2.0 * (s + w);
+    }
+    // x > 0.5
+    let z = (1.0 - x) * 0.5;
+    let s = sqrt(z);
+    let df = set_lo_word(s, 0);
+    let c = (z - df * df) / (s + df);
+    let p = z * (PS0 + z * (PS1 + z * (PS2 + z * (PS3 + z * (PS4 + z * PS5)))));
+    let q = 1.0 + z * (QS1 + z * (QS2 + z * (QS3 + z * QS4)));
+    let r = p / q;
+    let w = r * s + c;
+    2.0 * (df + w)
 }
 
 /// `cbrt` via Newton refinement.
