@@ -894,59 +894,210 @@ pub(crate) fn log10(x: f64) -> f64 {
 }
 
 /// `expm1`: `exp(x) - 1`, accurate for small `x`.
+/// `expm1`, ported from fdlibm (the JDK test suite's FdlibmTranslit.Expm1).
+// The decimal literals are fdlibm's documented constants; the hex comments are
+// the authoritative bit patterns.
+#[allow(clippy::approx_constant, clippy::excessive_precision)]
 pub(crate) fn expm1(x: f64) -> f64 {
-    if x.is_nan() {
-        return f64::NAN;
-    }
-    if x == 0.0 {
-        return x;
-    }
-    if x.is_infinite() {
-        return if x > 0.0 { f64::INFINITY } else { -1.0 };
-    }
-    if x.abs() < 0.5 {
-        let mut term = x;
-        let mut sum = x;
-        for index in 2..=18 {
-            term *= x / f64::from(index);
-            sum += term;
+    const HUGE: f64 = 1.0e+300;
+    const TINY: f64 = 1.0e-300;
+    const O_THRESHOLD: f64 = 7.097_827_128_933_839_730_96e+02; // 0x40862E42, 0xFEFA39EF
+    const LN2HI: f64 = 6.931_471_803_691_238_164_90e-01; // 0x3FE62E42, 0xFEE00000
+    const LN2LO: f64 = 1.908_214_929_270_587_700_02e-10; // 0x3DEA39EF, 0x35793C76
+    const INVLN2: f64 = 1.442_695_040_888_963_387_00e+00; // 0x3FF71547, 0x652B82FE
+    const Q1: f64 = -3.333_333_333_333_313_164_28e-02; // 0xBFA11111, 0x111110F4
+    const Q2: f64 = 1.587_301_587_254_814_601_65e-03; // 0x3F5A01A0, 0x19FE5585
+    const Q3: f64 = -7.936_507_578_674_879_424_73e-05; // 0xBF14CE19, 0x9EAADBB7
+    const Q4: f64 = 4.008_217_827_329_362_395_52e-06; // 0x3ED0CFCA, 0x86E65239
+    const Q5: f64 = -2.010_992_181_836_243_713_26e-07; // 0xBE8AFDB7, 0x6E09C32D
+    let mut hx = hi_word(x);
+    let xsb = hx & i32::MIN; // sign bit of x
+    hx &= 0x7fff_ffff; // high word of |x|
+    // Filter out huge and non-finite arguments.
+    if hx >= 0x4043_687a {
+        // |x| >= 56 ln2
+        if hx >= 0x4086_2e42 {
+            // |x| >= 709.78...
+            if hx >= 0x7ff0_0000 {
+                return if (hx & 0x000f_ffff) | (x.to_bits() as u32 as i32) != 0 {
+                    inf_add(x) // NaN
+                } else if xsb == 0 {
+                    x // expm1(+inf) = +inf
+                } else {
+                    -1.0 // expm1(-inf) = -1
+                };
+            }
+            if x > O_THRESHOLD {
+                return HUGE * HUGE; // overflow
+            }
         }
-        sum
-    } else {
-        exp(x) - 1.0
+        if xsb != 0 && x + TINY < 0.0 {
+            return TINY - 1.0; // x < -56 ln2: -1 with inexact
+        }
     }
-}
-
-/// `log1p`: `ln(1 + x)`, accurate for small `x`.
-pub(crate) fn log1p(x: f64) -> f64 {
-    if x.is_nan() {
-        return f64::NAN;
-    }
-    if x == 0.0 {
-        return x;
-    }
-    if x <= -1.0 {
-        return if x == -1.0 {
-            f64::NEG_INFINITY
+    // Argument reduction.
+    let mut x = x;
+    let mut c = 0.0;
+    let mut k = 0i32;
+    if hx > 0x3fd6_2e42 {
+        // |x| > 0.5 ln2
+        let (hi, lo) = if hx < 0x3ff0_a2b2 {
+            // |x| < 1.5 ln2
+            if xsb == 0 {
+                k = 1;
+                (x - LN2HI, LN2LO)
+            } else {
+                k = -1;
+                (x + LN2HI, -LN2LO)
+            }
         } else {
-            f64::NAN
+            k = (INVLN2 * x + if xsb == 0 { 0.5 } else { -0.5 }) as i32;
+            let t = f64::from(k);
+            (x - t * LN2HI, t * LN2LO) // t*LN2HI is exact here
+        };
+        x = hi - lo;
+        c = (hi - x) - lo;
+    } else if hx < 0x3c90_0000 {
+        // |x| < 2^-54: return x (with inexact when x != 0).
+        let t = HUGE + x;
+        return x - (t - (HUGE + x));
+    }
+    // x is now in the primary range.
+    let hfx = 0.5 * x;
+    let hxs = x * hfx;
+    let r1 = 1.0 + hxs * (Q1 + hxs * (Q2 + hxs * (Q3 + hxs * (Q4 + hxs * Q5))));
+    let t = 3.0 - r1 * hfx;
+    let mut e = hxs * ((r1 - t) / (6.0 - x * t));
+    if k == 0 {
+        return x - (x * e - hxs); // c is 0
+    }
+    e = x * (e - c) - c;
+    e -= hxs;
+    if k == -1 {
+        return 0.5 * (x - e) - 0.5;
+    }
+    if k == 1 {
+        return if x < -0.25 {
+            -2.0 * (e - (x + 0.5))
+        } else {
+            1.0 + 2.0 * (x - e)
         };
     }
-    if x.is_infinite() {
-        return f64::INFINITY;
+    let mut y;
+    if k <= -2 || k > 56 {
+        // Suffices to return exp(x)-1.
+        y = 1.0 - (e - x);
+        y = set_hi_word(y, hi_word(y) + (k << 20)); // add k to y's exponent
+        return y - 1.0;
     }
-    if x.abs() < 0.5 {
-        let s = x / (2.0 + x);
-        let z = s * s;
-        let mut term = s;
-        let mut sum = s;
-        for index in 1..=20 {
-            term *= z;
-            sum += term / f64::from(2 * index + 1);
-        }
-        2.0 * sum
+    let mut t = 1.0;
+    if k < 20 {
+        t = set_hi_word(t, 0x3ff0_0000 - (0x20_0000 >> k)); // t = 1-2^-k
+        y = t - (e - x);
     } else {
-        ln(1.0 + x)
+        t = set_hi_word(t, (0x3ff - k) << 20); // t = 2^-k
+        y = x - (e + t);
+        y += 1.0;
+    }
+    set_hi_word(y, hi_word(y) + (k << 20)) // add k to y's exponent
+}
+
+/// `log1p`: `ln(1 + x)`, ported from fdlibm (FdlibmTranslit.Log1p).
+#[allow(clippy::approx_constant, clippy::excessive_precision)]
+pub(crate) fn log1p(x: f64) -> f64 {
+    const LN2_HI: f64 = 6.931_471_803_691_238_164_90e-01; // 0x3FE62E42, 0xFEE00000
+    const LN2_LO: f64 = 1.908_214_929_270_587_700_02e-10; // 0x3DEA39EF, 0x35793C76
+    const TWO54: f64 = 1.801_439_850_948_198_400_00e+16; // 0x43500000, 0x00000000
+    const LP1: f64 = 6.666_666_666_666_735_130e-01; // 0x3FE55555, 0x55555593
+    const LP2: f64 = 3.999_999_999_940_941_908e-01; // 0x3FD99999, 0x9997FA04
+    const LP3: f64 = 2.857_142_874_366_239_149e-01; // 0x3FD24924, 0x94229359
+    const LP4: f64 = 2.222_219_843_214_978_396e-01; // 0x3FCC71C5, 0x1D8E78AF
+    const LP5: f64 = 1.818_357_216_161_805_012e-01; // 0x3FC74664, 0x96CB03DE
+    const LP6: f64 = 1.531_383_769_920_937_332e-01; // 0x3FC39A09, 0xD078C69F
+    const LP7: f64 = 1.479_819_860_511_658_591e-01; // 0x3FC2F112, 0xDF3E5244
+    let hx = hi_word(x);
+    let ax = hx & 0x7fff_ffff;
+    let mut k = 1i32;
+    let mut f = 0.0;
+    let mut c = 0.0;
+    let mut hu = 0i32;
+    if hx < 0x3fda_827a {
+        // x < 0.41422
+        if ax >= 0x3ff0_0000 {
+            // x <= -1.0
+            if x == -1.0 {
+                return f64::NEG_INFINITY; // log1p(-1) = -inf
+            }
+            // fdlibm's (x-x)/(x-x) yields a positive NaN on the JDK.
+            return f64::NAN; // log1p(x < -1) = NaN
+        }
+        if ax < 0x3e20_0000 {
+            // |x| < 2^-29
+            if TWO54 + x > 0.0 && ax < 0x3c90_0000 {
+                return x; // |x| < 2^-54
+            }
+            return x - x * x * 0.5;
+        }
+        if hx > 0 || hx <= 0xbfd2_bec3u32 as i32 {
+            // -0.2929 < x < 0.41422
+            k = 0;
+            f = x;
+            hu = 1;
+        }
+    }
+    if hx >= 0x7ff0_0000 {
+        return inf_add(x); // log1p(NaN) = NaN, log1p(+inf) = +inf
+    }
+    let mut u;
+    if k != 0 {
+        if hx < 0x4340_0000 {
+            u = 1.0 + x;
+            hu = hi_word(u);
+            k = (hu >> 20) - 1023;
+            c = if k > 0 { 1.0 - (u - x) } else { x - (u - 1.0) }; // correction term
+            c /= u;
+        } else {
+            u = x;
+            hu = hi_word(u);
+            k = (hu >> 20) - 1023;
+            c = 0.0;
+        }
+        hu &= 0x000f_ffff;
+        if hu < 0x6_a09e {
+            u = set_hi_word(u, hu | 0x3ff0_0000); // normalize u
+        } else {
+            k += 1;
+            u = set_hi_word(u, hu | 0x3fe0_0000); // normalize u/2
+            hu = (0x0010_0000 - hu) >> 2;
+        }
+        f = u - 1.0;
+    }
+    let hfsq = 0.5 * f * f;
+    let dk = f64::from(k);
+    if hu == 0 {
+        // |f| < 2^-20
+        if f == 0.0 {
+            return if k == 0 {
+                0.0
+            } else {
+                c += dk * LN2_LO;
+                dk * LN2_HI + c
+            };
+        }
+        let r = hfsq * (1.0 - 0.666_666_666_666_666_66 * f);
+        return if k == 0 {
+            f - r
+        } else {
+            dk * LN2_HI - ((r - (dk * LN2_LO + c)) - f)
+        };
+    }
+    let s = f / (2.0 + f);
+    let z = s * s;
+    let r = z * (LP1 + z * (LP2 + z * (LP3 + z * (LP4 + z * (LP5 + z * (LP6 + z * LP7))))));
+    if k == 0 {
+        f - (hfsq - s * (hfsq + r))
+    } else {
+        dk * LN2_HI - ((hfsq - (s * (hfsq + r) + (dk * LN2_LO + c))) - f)
     }
 }
 
