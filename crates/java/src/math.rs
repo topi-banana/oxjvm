@@ -20,9 +20,6 @@ use crate::{
 // Floating-point kernels
 // -------------------------------------------------------------------------------------------
 
-const LN2_HI: f64 = core::f64::consts::LN_2;
-const LN2_LO: f64 = 2.319_046_107_240_218_6e-17;
-
 /// `2^k` by direct bit construction.
 pub(crate) fn exp2(k: i32) -> f64 {
     if k > 1023 {
@@ -190,6 +187,15 @@ fn inf_nan(x: f64) -> f64 {
 #[allow(clippy::eq_op)]
 fn inf_add(x: f64) -> f64 {
     x + x
+}
+
+/// fdlibm idiom: `(x-x)/(x-x)` yields NaN. On the JDK, finite operands
+/// give 0/0 = the negative indefinite NaN, while NaN operands propagate
+/// their sign and payload.
+#[allow(clippy::eq_op)]
+fn nan_nan(x: f64) -> f64 {
+    let d = x - x;
+    d / d
 }
 
 /// The value with its high 32 bits replaced (fdlibm's `__HI(x, v)`).
@@ -1101,144 +1107,183 @@ pub(crate) fn log1p(x: f64) -> f64 {
     }
 }
 
-/// `sinh`.
+/// `sinh`, ported from fdlibm (the JDK test suite's FdlibmTranslit.Sinh).
 pub(crate) fn sinh(x: f64) -> f64 {
-    if x.is_nan() {
-        return f64::NAN;
+    const SHUGE: f64 = 1.0e307;
+    let jx = hi_word(x);
+    let ix = jx & 0x7fff_ffff;
+    if ix >= 0x7ff0_0000 {
+        return inf_add(x); // x is inf or NaN
     }
-    if x == 0.0 {
-        return x;
-    }
-    if x.is_infinite() {
-        return x;
-    }
-    let magnitude = x.abs();
-    let result = if magnitude < 1.0 {
-        let z = magnitude * magnitude;
-        let mut term = magnitude;
-        let mut sum = magnitude;
-        for index in 1..=12 {
-            term *= z / f64::from((2 * index) * (2 * index + 1));
-            sum += term;
+    let h = if jx < 0 { -0.5 } else { 0.5 };
+    if ix < 0x4036_0000 {
+        // |x| < 22
+        if ix < 0x3e30_0000 && SHUGE + x > 1.0 {
+            return x; // sinh(tiny) = tiny with inexact
         }
-        sum
-    } else if magnitude > 709.0 {
-        exp(magnitude - core::f64::consts::LN_2)
-    } else {
-        (exp(magnitude) - exp(-magnitude)) * 0.5
-    };
-    if x < 0.0 { -result } else { result }
+        let t = expm1(x.abs());
+        if ix < 0x3ff0_0000 {
+            return h * (2.0 * t - t * t / (t + 1.0));
+        }
+        return h * (t + t / (t + 1.0));
+    }
+    if ix < 0x4086_2e42 {
+        return h * exp(x.abs());
+    }
+    // Up to ln(2*MAX), sinh(x) = exp(x/2)/2 * exp(x/2); overflow beyond.
+    if ix < 0x4086_33ce || (ix == 0x4086_33ce && (x.to_bits() as u32) <= 0x8fb9_f87d) {
+        let w = exp(0.5 * x.abs());
+        let t = h * w;
+        return t * w;
+    }
+    x * SHUGE
 }
 
-/// `cosh`.
+/// `cosh`, ported from fdlibm (the JDK test suite's FdlibmTranslit.Cosh).
 pub(crate) fn cosh(x: f64) -> f64 {
-    if x.is_nan() {
-        return f64::NAN;
+    const HUGE: f64 = 1.0e300;
+    let ix = hi_word(x) & 0x7fff_ffff;
+    if ix >= 0x7ff0_0000 {
+        return x * x; // x is inf or NaN
     }
-    let magnitude = x.abs();
-    if magnitude.is_infinite() {
-        return f64::INFINITY;
-    }
-    if magnitude > 709.0 {
-        exp(magnitude - core::f64::consts::LN_2)
-    } else {
-        (exp(magnitude) + exp(-magnitude)) * 0.5
-    }
-}
-
-/// `tanh`.
-pub(crate) fn tanh(x: f64) -> f64 {
-    if x.is_nan() {
-        return f64::NAN;
-    }
-    if x == 0.0 {
-        return x;
-    }
-    if x.is_infinite() {
-        return if x > 0.0 { 1.0 } else { -1.0 };
-    }
-    let magnitude = x.abs();
-    let result = if magnitude > 20.0 {
-        1.0
-    } else {
-        let e = expm1(2.0 * magnitude);
-        e / (e + 2.0)
-    };
-    if x < 0.0 { -result } else { result }
-}
-
-/// `asinh` (fdlibm).
-pub(crate) fn asinh(x: f64) -> f64 {
-    if x.is_nan() || x.is_infinite() {
-        return x + x;
-    }
-    let magnitude = x.abs();
-    let ln2 = LN2_HI + LN2_LO;
-    let result = if magnitude > 268_435_456.0 {
-        // |x| > 2**28
-        ln(magnitude) + ln2
-    } else if magnitude > 2.0 {
-        // 2**28 > |x| > 2
-        ln(2.0 * magnitude + 1.0 / (sqrt(x * x + 1.0) + magnitude))
-    } else {
-        // 2 > |x| >= 0
-        let t = x * x;
-        log1p(magnitude + t / (1.0 + sqrt(1.0 + t)))
-    };
-    if x < 0.0 { -result } else { result }
-}
-
-/// `acosh` (fdlibm).
-pub(crate) fn acosh(x: f64) -> f64 {
-    if x.is_nan() {
-        return x + x;
-    }
-    if x < 1.0 {
-        return f64::NAN;
-    }
-    if x == 1.0 {
-        return 0.0;
-    }
-    if x.is_infinite() {
-        return x;
-    }
-    let ln2 = LN2_HI + LN2_LO;
-    if x > 268_435_456.0 {
-        // x > 2**28
-        ln(x) + ln2
-    } else if x > 2.0 {
-        // 2**28 > x > 2
-        ln(2.0 * x - 1.0 / (x + sqrt(x * x - 1.0)))
-    } else {
-        // 1 < x <= 2
-        let t = x - 1.0;
-        log1p(t + sqrt(2.0 * t + t * t))
-    }
-}
-
-/// `atanh` (fdlibm).
-pub(crate) fn atanh(x: f64) -> f64 {
-    if x.is_nan() {
-        return x + x;
-    }
-    let magnitude = x.abs();
-    if magnitude >= 1.0 {
-        if magnitude == 1.0 {
-            return if x > 0.0 {
-                f64::INFINITY
-            } else {
-                f64::NEG_INFINITY
-            };
+    if ix < 0x3fd6_2e43 {
+        let t = expm1(x.abs());
+        let w = 1.0 + t;
+        if ix < 0x3c80_0000 {
+            return w; // cosh(tiny) = 1
         }
-        return f64::NAN;
+        return 1.0 + (t * t) / (w + w);
     }
-    let result = if magnitude < 0.5 {
-        let t = magnitude + magnitude;
-        0.5 * log1p(t + t * magnitude / (1.0 - magnitude))
+    if ix < 0x4036_0000 {
+        let t = exp(x.abs());
+        return 0.5 * t + 0.5 / t;
+    }
+    if ix < 0x4086_2e42 {
+        return 0.5 * exp(x.abs());
+    }
+    if ix < 0x4086_33ce || (ix == 0x4086_33ce && (x.to_bits() as u32) <= 0x8fb9_f87d) {
+        let w = exp(0.5 * x.abs());
+        let t = 0.5 * w;
+        return t * w;
+    }
+    HUGE * HUGE
+}
+
+/// `tanh`, ported from fdlibm (the JDK test suite's FdlibmTranslit.Tanh).
+pub(crate) fn tanh(x: f64) -> f64 {
+    const TINY: f64 = 1.0e-300;
+    let jx = hi_word(x);
+    let ix = jx & 0x7fff_ffff;
+    if ix >= 0x7ff0_0000 {
+        // tanh(+-inf) = +-1; tanh(NaN) = NaN (sign preserved via 1/x).
+        return if jx >= 0 {
+            1.0 / x + 1.0
+        } else {
+            1.0 / x - 1.0
+        };
+    }
+    let z = if ix < 0x4036_0000 {
+        // |x| < 22
+        if ix < 0x3c80_0000 {
+            return x * (1.0 + x); // tanh(small) = small
+        }
+        if ix >= 0x3ff0_0000 {
+            // |x| >= 1
+            let t = expm1(2.0 * x.abs());
+            1.0 - 2.0 / (t + 2.0)
+        } else {
+            let t = expm1(-2.0 * x.abs());
+            -t / (t + 2.0)
+        }
     } else {
-        0.5 * log1p((magnitude + magnitude) / (1.0 - magnitude))
+        1.0 - TINY // raised inexact flag
     };
-    if x < 0.0 { -result } else { result }
+    if jx >= 0 { z } else { -z }
+}
+
+/// `asinh`, ported from fdlibm (the JDK test suite's FdlibmTranslit.Asinh).
+#[allow(clippy::approx_constant, clippy::excessive_precision)]
+pub(crate) fn asinh(x: f64) -> f64 {
+    const LN2: f64 = 6.931_471_805_599_452_862_27e-01; // 0x3FE62E42, 0xFEFA39EF
+    const HUGE: f64 = 1.0e300;
+    let hx = hi_word(x);
+    let ix = hx & 0x7fff_ffff;
+    if ix >= 0x7ff0_0000 {
+        return inf_add(x); // x is inf or NaN
+    }
+    if ix < 0x3e30_0000 && HUGE + x > 1.0 {
+        return x; // |x| < 2^-28, inexact except 0
+    }
+    let w = if ix > 0x41b0_0000 {
+        // |x| > 2^28
+        ln(x.abs()) + LN2
+    } else if ix > 0x4000_0000 {
+        // 2^28 > |x| > 2
+        let t = x.abs();
+        ln(2.0 * t + 1.0 / (sqrt(x * x + 1.0) + t))
+    } else {
+        // 2 >= |x| >= 2^-28
+        let t = x * x;
+        log1p(x.abs() + t / (1.0 + sqrt(1.0 + t)))
+    };
+    if hx > 0 { w } else { -w }
+}
+
+/// `acosh`, ported from fdlibm (the JDK test suite's FdlibmTranslit.Acosh).
+#[allow(clippy::approx_constant, clippy::excessive_precision)]
+pub(crate) fn acosh(x: f64) -> f64 {
+    const LN2: f64 = 6.931_471_805_599_452_862_27e-01; // 0x3FE62E42, 0xFEFA39EF
+    let hx = hi_word(x);
+    if hx < 0x3ff0_0000 {
+        return nan_nan(x); // x < 1
+    }
+    if hx >= 0x41b0_0000 {
+        // x > 2^28
+        return if hx >= 0x7ff0_0000 {
+            inf_add(x) // x is inf or NaN
+        } else {
+            ln(x) + LN2 // acosh(huge) = log(2x)
+        };
+    }
+    if ((hx - 0x3ff0_0000) | (x.to_bits() as u32 as i32)) == 0 {
+        return 0.0; // acosh(1) = 0
+    }
+    if hx > 0x4000_0000 {
+        // 2^28 > x > 2
+        let t = x * x;
+        return ln(2.0 * x - 1.0 / (x + sqrt(t - 1.0)));
+    }
+    // 1 < x <= 2
+    let t = x - 1.0;
+    log1p(t + sqrt(2.0 * t + t * t))
+}
+
+/// `atanh`, ported from fdlibm (the JDK test suite's FdlibmTranslit.Atanh).
+pub(crate) fn atanh(x: f64) -> f64 {
+    const HUGE: f64 = 1.0e300;
+    let hx = hi_word(x);
+    let lx = x.to_bits() as u32 as i32;
+    let ix = hx & 0x7fff_ffff;
+    // |x| > 1 (the low-word trick also catches NaN).
+    let nz = ((lx | lx.wrapping_neg()) as u32 >> 31) as i32;
+    if (ix | nz) > 0x3ff0_0000 {
+        return nan_nan(x);
+    }
+    if ix == 0x3ff0_0000 {
+        return x / 0.0; // atanh(+-1) = +-inf
+    }
+    if ix < 0x3e30_0000 && HUGE + x > 0.0 {
+        return x; // |x| < 2^-28
+    }
+    let ax = set_hi_word(x, ix); // x <- |x|
+    let t = if ix < 0x3fe0_0000 {
+        // x < 0.5
+        let t = ax + ax;
+        0.5 * log1p(t + t * ax / (1.0 - ax))
+    } else {
+        0.5 * log1p((ax + ax) / (1.0 - ax))
+    };
+    if hx >= 0 { t } else { -t }
 }
 
 /// `x^y`.
