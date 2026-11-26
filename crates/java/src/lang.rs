@@ -5467,6 +5467,18 @@ fn object_to_double(vm: &mut Vm<'_>, value: ObjectRef) -> f64 {
     if crate::format::is_long(vm, value) {
         return crate::boxed::read_value_long(vm, value) as f64;
     }
+    // Other Number subclasses (BigDecimal, BigInteger, the atomic numbers, ...)
+    // expose their value through doubleValue(), not through a raw field.
+    if let Some(number) = vm.resolve_class_lenient("java/lang/Number") {
+        if vm.is_instance(value, number) {
+            if let Ok((declaring, method)) = vm.resolve_virtual_method(value, "doubleValue", "()D")
+            {
+                if let Ok(result) = vm.invoke_method(declaring, method, vec![Value::Ref(value)]) {
+                    return result.as_double();
+                }
+            }
+        }
+    }
     crate::boxed::read_value_int(vm, value) as f64
 }
 
