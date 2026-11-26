@@ -3104,7 +3104,7 @@ pub(crate) fn length_of_month(year: i32, month: i32) -> i32 {
     }
 }
 
-fn local_date_new(vm: &mut Vm<'_>, epoch_day: i64) -> Result<ObjectRef, VmError> {
+pub(crate) fn local_date_new(vm: &mut Vm<'_>, epoch_day: i64) -> Result<ObjectRef, VmError> {
     let class = vm.resolve_class("java/time/LocalDate")?;
     let instance = vm.new_instance(class)?;
     write_long_field(vm, instance, "epochDay", epoch_day);

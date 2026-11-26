@@ -30169,6 +30169,144 @@ pub(crate) const DATE: oxjvm_vm::NativeClass = class(
     None,
 );
 
+/// Parse an ASCII byte slice as an `i64` for `java.sql.Date.valueOf`.
+fn sql_parse_int(bytes: &[u8]) -> Option<i64> {
+    core::str::from_utf8(bytes).ok()?.parse().ok()
+}
+
+/// Build a `java/sql/Date` holding `millis` (UTC, like `java.util.Date`).
+fn sql_date_from_millis(vm: &mut Vm<'_>, millis: i64) -> Result<ObjectRef, VmError> {
+    let class = vm.resolve_class("java/sql/Date")?;
+    let instance = vm.new_instance(class)?;
+    crate::lang::write_long_field(vm, instance, "time", millis);
+    Ok(instance)
+}
+
+const SQL_DATE_METHODS: [oxjvm_vm::NativeMethodDef; 13] = [
+    method("<init>", "(J)V", ACC_PUBLIC, date_init),
+    method("<init>", "(III)V", ACC_PUBLIC, date_init_fields),
+    method(
+        "toString",
+        "()Ljava/lang/String;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let time = crate::lang::read_long_field(vm, receiver(args), "time");
+            let (year, month, day) = civil_from_days(time.div_euclid(86_400_000));
+            object(vm.make_string(&alloc::format!("{year:04}-{month:02}-{day:02}"))?)
+        },
+    ),
+    method(
+        "valueOf",
+        "(Ljava/lang/String;)Ljava/sql/Date;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let text = ref_arg(args, 0);
+            if text.is_null() {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            let s = vm.string_or_empty(text);
+            let b = s.as_bytes();
+            // The JDK requires a four-character year, then '-' separated month and
+            // day fields of one or two digits, with month in 1..=12 and day in
+            // 1..=31; the calendar itself is lenient (2009-02-30 -> 2009-03-02).
+            let first = match b.iter().position(|&c| c == b'-') {
+                Some(4) => 4,
+                _ => return Err(vm.throw_new("java/lang/IllegalArgumentException", None)),
+            };
+            let second = match b[5..].iter().position(|&c| c == b'-') {
+                Some(i) => i + 5,
+                None => return Err(vm.throw_new("java/lang/IllegalArgumentException", None)),
+            };
+            if second <= first + 1
+                || second >= b.len() - 1
+                || second - first > 3
+                || b.len() - second > 3
+            {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            let year = match sql_parse_int(&b[..first]) {
+                Some(v) => v,
+                None => return Err(vm.throw_new("java/lang/IllegalArgumentException", None)),
+            };
+            let month = match sql_parse_int(&b[first + 1..second]) {
+                Some(v) => v,
+                None => return Err(vm.throw_new("java/lang/IllegalArgumentException", None)),
+            };
+            let day = match sql_parse_int(&b[second + 1..]) {
+                Some(v) => v,
+                None => return Err(vm.throw_new("java/lang/IllegalArgumentException", None)),
+            };
+            if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+                return Err(vm.throw_new("java/lang/IllegalArgumentException", None));
+            }
+            let millis = days_from_civil(year, month, day).wrapping_mul(86_400_000);
+            object(sql_date_from_millis(vm, millis)?)
+        },
+    ),
+    method(
+        "valueOf",
+        "(Ljava/time/LocalDate;)Ljava/sql/Date;",
+        ACC_PUBLIC | ACC_STATIC,
+        |vm, _, args| {
+            let local_date = ref_arg(args, 0);
+            if local_date.is_null() {
+                return Err(vm.throw_new("java/lang/NullPointerException", None));
+            }
+            let epoch_day = crate::lang::read_long_field(vm, local_date, "epochDay");
+            object(sql_date_from_millis(
+                vm,
+                epoch_day.wrapping_mul(86_400_000),
+            )?)
+        },
+    ),
+    method(
+        "toLocalDate",
+        "()Ljava/time/LocalDate;",
+        ACC_PUBLIC,
+        |vm, _, args| {
+            let time = crate::lang::read_long_field(vm, receiver(args), "time");
+            object(crate::time::local_date_new(
+                vm,
+                time.div_euclid(86_400_000),
+            )?)
+        },
+    ),
+    method(
+        "toInstant",
+        "()Ljava/time/Instant;",
+        ACC_PUBLIC,
+        |vm, _, _| Err(vm.throw_new("java/lang/UnsupportedOperationException", None)),
+    ),
+    method("getHours", "()I", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/IllegalArgumentException", None))
+    }),
+    method("getMinutes", "()I", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/IllegalArgumentException", None))
+    }),
+    method("getSeconds", "()I", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/IllegalArgumentException", None))
+    }),
+    method("setHours", "(I)V", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/IllegalArgumentException", None))
+    }),
+    method("setMinutes", "(I)V", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/IllegalArgumentException", None))
+    }),
+    method("setSeconds", "(I)V", ACC_PUBLIC, |vm, _, _| {
+        Err(vm.throw_new("java/lang/IllegalArgumentException", None))
+    }),
+];
+
+pub(crate) const SQL_DATE: oxjvm_vm::NativeClass = class(
+    "java/sql/Date",
+    Some("java/util/Date"),
+    &[],
+    ACC_PUBLIC,
+    &[],
+    &SQL_DATE_METHODS,
+    None,
+);
+
 fn new_currency(vm: &mut Vm<'_>, code: &str) -> Result<Value, VmError> {
     let class = vm.resolve_class("java/util/Currency")?;
     let instance = vm.new_instance(class)?;
