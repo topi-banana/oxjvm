@@ -40,6 +40,11 @@ IST = "IST"
 # `EDE` is the triple-DES "encrypt-decrypt-encrypt" mode in the JDK security algorithm names
 # (`3DES_EDE_CBC`, `TLS_RSA_WITH_3DES_EDE_CBC_SHA`); not a misspelling of "edge".
 EDE = "EDE"
+# `iy` ("integer y", the tail flag) and `TWON24` (2^-24, tokenized as `TWON` + `24`)
+# are fdlibm identifiers ported verbatim into the Math/StrictMath trigonometric
+# kernels; not misspellings of "it"/"town".
+iy = "iy"
+TWON = "TWON"
 # ISO 639 language codes used by `Locale.getISO3Language`/`getISOLanguages`; these are
 # standard codes, not misspellings of the English words typos suggests.
 tha = "tha"
