@@ -1794,24 +1794,82 @@ pub(crate) fn round_f32(x: f32) -> i32 {
     }
 }
 
+/// `hypot`, ported from fdlibm (the JDK test suite's FdlibmTranslit.Hypot).
 pub(crate) fn hypot(x: f64, y: f64) -> f64 {
-    let x = x.abs();
-    let y = y.abs();
-    // An infinite argument dominates everything, including NaN; check this
-    // before the max/min comparison, which NaN would otherwise poison.
-    if x.is_infinite() || y.is_infinite() {
-        return f64::INFINITY;
+    let (mut a, mut b) = (x, y);
+    let mut ha = hi_word(x) & 0x7fff_ffff;
+    let mut hb = hi_word(y) & 0x7fff_ffff;
+    if hb > ha {
+        a = y;
+        b = x;
+        core::mem::swap(&mut ha, &mut hb);
     }
-    if x.is_nan() || y.is_nan() {
-        return f64::NAN;
+    a = set_hi_word(a, ha); // a <- |a|
+    b = set_hi_word(b, hb); // b <- |b|
+    if ha - hb > 0x3c0_0000 {
+        return a + b; // x/y > 2**60
     }
-    let max = if x > y { x } else { y };
-    let min = if x > y { y } else { x };
-    if max == 0.0 {
-        return 0.0;
+    let mut k = 0i32;
+    if ha > 0x5f30_0000 {
+        // a > 2**500
+        if ha >= 0x7ff0_0000 {
+            // Inf or NaN
+            let mut w = a + b; // for sNaN
+            if ((ha & 0xf_ffff) | (a.to_bits() as u32 as i32)) == 0 {
+                w = a;
+            }
+            if ((hb ^ 0x7ff0_0000) | (b.to_bits() as u32 as i32)) == 0 {
+                w = b;
+            }
+            return w;
+        }
+        // Scale a and b by 2**-600.
+        ha -= 0x2580_0000;
+        hb -= 0x2580_0000;
+        k += 600;
+        a = set_hi_word(a, ha);
+        b = set_hi_word(b, hb);
     }
-    let ratio = min / max;
-    max * sqrt(1.0 + ratio * ratio)
+    if hb < 0x20b0_0000 {
+        // b < 2**-500
+        if hb <= 0x000f_ffff {
+            // Subnormal b or 0.
+            if (hb | (b.to_bits() as u32 as i32)) == 0 {
+                return a;
+            }
+            let t1 = set_hi_word(0.0, 0x7fd0_0000); // t1 = 2^1022
+            b *= t1;
+            a *= t1;
+            k -= 1022;
+        } else {
+            // Scale a and b by 2^600.
+            ha += 0x2580_0000;
+            hb += 0x2580_0000;
+            k -= 600;
+            a = set_hi_word(a, ha);
+            b = set_hi_word(b, hb);
+        }
+    }
+    // Medium size a and b.
+    let mut w = a - b;
+    if w > b {
+        let t1 = set_hi_word(0.0, ha);
+        let t2 = a - t1;
+        w = sqrt(t1 * t1 - (b * (-b) - t2 * (a + t1)));
+    } else {
+        a = a + a;
+        let y1 = set_hi_word(0.0, hb);
+        let y2 = b - y1;
+        let t1 = set_hi_word(0.0, ha + 0x0010_0000);
+        let t2 = a - t1;
+        w = sqrt(t1 * y1 - (w * (-w) - (t1 * y2 + t2 * b)));
+    }
+    if k != 0 {
+        let t1 = set_hi_word(1.0, hi_word(1.0) + (k << 20));
+        t1 * w
+    } else {
+        w
+    }
 }
 
 pub(crate) fn signum_f64(x: f64) -> f64 {
