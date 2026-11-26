@@ -1300,90 +1300,266 @@ pub(crate) fn atanh(x: f64) -> f64 {
     if hx >= 0 { t } else { -t }
 }
 
-/// `x^y`.
+/// `pow`, ported from the JDK's `java.lang.FdLibm.Pow` (fdlibm 5.3 with the
+/// JDK's pow error-bound fix: the widened near-one huge-exponent interval and
+/// the 21-bit 1/ln2 split).
+#[allow(
+    clippy::approx_constant,
+    clippy::excessive_precision,
+    clippy::eq_op,
+    clippy::needless_late_init
+)]
 pub(crate) fn pow(x: f64, y: f64) -> f64 {
-    if y == 0.0 {
+    const BP: [f64; 2] = [1.0, 1.5];
+    const DP_H: [f64; 2] = [0.0, 5.849_624_872_207_641_601_56e-01]; // 0x3FE2B803, 0x40000000
+    const DP_L: [f64; 2] = [0.0, 1.350_039_202_129_748_971_28e-08]; // 0x3E4CFDEB, 0x43CFD006
+    const TWO53: f64 = 9_007_199_254_740_992.0; // 0x43400000, 0x00000000
+    // Poly coefs for (3/2)*(log(x)-2s-2/3*s**3).
+    const L1: f64 = 5.999_999_999_999_946_487_25e-01; // 0x3FE33333, 0x33333303
+    const L2: f64 = 4.285_714_285_785_501_842_52e-01; // 0x3FDB6DB6, 0xDB6FABFF
+    const L3: f64 = 3.333_333_298_183_774_329_18e-01; // 0x3FD55555, 0x518F264D
+    const L4: f64 = 2.727_281_238_085_340_064_89e-01; // 0x3FD17460, 0xA91D4101
+    const L5: f64 = 2.306_607_457_755_617_540_67e-01; // 0x3FCD864A, 0x93C9DB65
+    const L6: f64 = 2.069_750_178_003_384_177_84e-01; // 0x3FCA7E28, 0x4A454EEF
+    const P1: f64 = 1.666_666_666_666_660_190_37e-01; // 0x3FC55555, 0x5555553E
+    const P2: f64 = -2.777_777_777_701_559_338_42e-03; // 0xBF66C16C, 0x16BEBD93
+    const P3: f64 = 6.613_756_321_437_934_361_17e-05; // 0x3F11566A, 0xAF25DE2C
+    const P4: f64 = -1.653_390_220_546_525_153_90e-06; // 0xBEBBBD41, 0xC5D26BF1
+    const P5: f64 = 4.138_136_797_057_238_460_39e-08; // 0x3E663769, 0x72BEA4D0
+    const LG2: f64 = 6.931_471_805_599_452_862_27e-01; // 0x3FE62E42, 0xFEFA39EF
+    const LG2_H: f64 = 6.931_471_824_645_996_093_75e-01; // 0x3FE62E43, 0x00000000
+    const LG2_L: f64 = -1.904_654_299_957_768_045_25e-09; // 0xBE205C61, 0x0CA86C39
+    const OVT: f64 = 8.008_566_259_537_294_437_2e-17; // -(1024-log2(ovfl+.5ulp))
+    const CP: f64 = 9.617_966_939_259_755_543_29e-01; // 0x3FEEC709, 0xDC3A03FD = 2/(3ln2)
+    const CP_H: f64 = 9.617_967_009_544_372_558_59e-01; // 0x3FEEC709, 0xE0000000 = (float)cp
+    const CP_L: f64 = -7.028_461_650_952_758_265_16e-09; // 0xBE3E2FE0, 0x145B01F5
+    const IVLN2: f64 = 1.442_695_040_888_963_387_00e+00; // 0x3FF71547, 0x652B82FE = 1/ln2
+    const IVLN2_H: f64 = 1.442_694_664_001_464_843_75e+00; // 0x3FF71547, 0x00000000 = 21 bits of 1/ln2
+    const IVLN2_L: f64 = 3.768_874_985_636_099_114_54e-07; // 0x3E994AE0, 0xBF85DDF4 = tail of 1/ln2
+    let hx = hi_word(x);
+    let lx = x.to_bits() as u32;
+    let hy = hi_word(y);
+    let ly = y.to_bits() as u32;
+    let ix = hx & 0x7fff_ffff;
+    let iy = hy & 0x7fff_ffff;
+    // y == zero: x**0 = 1.
+    if (iy | (ly as i32)) == 0 {
         return 1.0;
     }
-    if x == 1.0 {
-        return 1.0;
+    // +-NaN return x+y. Java's dadd propagates the *second* operand's NaN
+    // (HotSpot is y-priority, even over a signaling first operand), quieting
+    // sNaNs. Reproduce that explicitly instead of relying on host FP operand
+    // order, which LLVM may reorder.
+    if ix > 0x7ff0_0000
+        || (ix == 0x7ff0_0000 && lx != 0)
+        || iy > 0x7ff0_0000
+        || (iy == 0x7ff0_0000 && ly != 0)
+    {
+        let n = if y.is_nan() { y } else { x };
+        return f64::from_bits(n.to_bits() | 0x0008_0000_0000_0000);
     }
-    if x.is_nan() || y.is_nan() {
-        return f64::NAN;
-    }
-    // Exact small-integer exponents (fdlibm special cases): avoid the rounding
-    // error of exp(y*ln(x)) so e.g. pow(x, 1.0) returns x bit-for-bit.
-    if y == 1.0 {
-        return x;
-    }
-    if y == 2.0 {
-        return x * x;
-    }
-    if y == -1.0 {
-        return 1.0 / x;
-    }
-    if y.is_infinite() {
-        let magnitude = x.abs();
-        return if magnitude > 1.0 {
-            if y > 0.0 { f64::INFINITY } else { 0.0 }
-        } else if magnitude < 1.0 {
-            if y > 0.0 { 0.0 } else { f64::INFINITY }
-        } else {
-            1.0
-        };
-    }
-    if x.is_infinite() {
-        // An infinite base only keeps its sign for odd integer exponents.
-        let odd = y.abs() < 9001111111140992.0 && (y - floor(y)) == 0.0 && (y as i64) % 2 != 0;
-        let negative = x < 0.0 && odd;
-        return if y > 0.0 {
-            if negative {
-                f64::NEG_INFINITY
-            } else {
-                f64::INFINITY
+    // Determine if y is an odd int when x < 0:
+    // yisint = 0 (not an integer), 1 (odd int), 2 (even int).
+    let mut yisint = 0i32;
+    if hx < 0 {
+        if iy >= 0x4340_0000 {
+            yisint = 2; // even integer y
+        } else if iy >= 0x3ff0_0000 {
+            let k = (iy >> 20) - 0x3ff; // exponent
+            if k > 20 {
+                let j = ly >> (52 - k);
+                if (j << (52 - k)) == ly {
+                    yisint = 2 - (j & 1) as i32;
+                }
+            } else if ly == 0 {
+                let j = iy >> (20 - k);
+                if (j << (20 - k)) == iy {
+                    yisint = 2 - (j & 1);
+                }
             }
-        } else if negative {
-            -0.0
-        } else {
-            0.0
-        };
-    }
-    if x == 0.0 {
-        // A zero base keeps its sign for odd integer exponents.
-        let odd = y.abs() < 9001111111140992.0 && (y - floor(y)) == 0.0 && (y as i64) % 2 != 0;
-        let negative = x.is_sign_negative() && odd;
-        return if y > 0.0 {
-            if negative { -0.0 } else { 0.0 }
-        } else if negative {
-            f64::NEG_INFINITY
-        } else {
-            f64::INFINITY
-        };
-    }
-    if x < 0.0 && (y - floor(y)) != 0.0 {
-        return f64::NAN;
-    }
-    // Integer exponents via repeated squaring: for integer powers of small
-    // integer bases (e.g. pow(5, 3) == 125) every intermediate is exact,
-    // while exp(y*ln(x)) can land one ulp low and truncate to the wrong int.
-    if y.abs() <= 1024.0 && (y - floor(y)) == 0.0 {
-        let mut n = y.abs() as u32;
-        let mut base = x.abs();
-        let mut acc = 1.0f64;
-        while n > 0 {
-            if n & 1 != 0 {
-                acc *= base;
-            }
-            base *= base;
-            n >>= 1;
         }
-        let negative = x < 0.0 && (y as i64) % 2 != 0;
-        let result = if y < 0.0 { 1.0 / acc } else { acc };
-        return if negative { -result } else { result };
     }
-    let negative = x < 0.0 && y.abs() < 9001111111140992.0 && (y as i64) % 2 != 0;
-    let result = exp(y * ln(x.abs()));
-    if negative { -result } else { result }
+    // Special value of y.
+    if ly == 0 {
+        if iy == 0x7ff0_0000 {
+            // y is +-inf
+            if ((ix - 0x3ff0_0000) | (lx as i32)) == 0 {
+                return y - y; // inf**+-1 is NaN
+            } else if ix >= 0x3ff0_0000 {
+                return if hy >= 0 { y } else { 0.0 }; // (|x|>1)**+-inf = inf,0
+            } else {
+                return if hy < 0 { -y } else { 0.0 }; // (|x|<1)**-,+inf = inf,0
+            }
+        }
+        if iy == 0x3ff0_0000 {
+            // y is +-1
+            return if hy < 0 { 1.0 / x } else { x };
+        }
+        if hy == 0x4000_0000 {
+            return x * x; // y is 2
+        }
+        if hy == 0x3fe0_0000 && hx >= 0 {
+            return sqrt(x); // y is 0.5, x >= +0
+        }
+    }
+    let mut ax = x.abs();
+    // Special value of x.
+    if lx == 0 && (ix == 0x7ff0_0000 || ix == 0 || ix == 0x3ff0_0000) {
+        // x is +-0, +-inf, +-1
+        let mut z = ax;
+        if hy < 0 {
+            z = 1.0 / z; // z = (1/|x|)
+        }
+        if hx < 0 {
+            if ((ix - 0x3ff0_0000) | yisint) == 0 {
+                return nan_nan(z); // (-1)**non-int is NaN
+            } else if yisint == 1 {
+                z = -z; // (x<0)**odd = -(|x|**odd)
+            }
+        }
+        return z;
+    }
+    let mut n = (hx >> 31) + 1;
+    // (x<0)**(non-int) is NaN.
+    if (n | yisint) == 0 {
+        return nan_nan(x);
+    }
+    // s (sign of result -ve**odd) = -1 else = 1.
+    let s = if (n | (yisint - 1)) == 0 { -1.0 } else { 1.0 };
+    let t1;
+    let t2;
+    // |y| is huge.
+    if iy > 0x41e0_0000 {
+        // |y| > 2**31
+        // Over/underflow if x is not close to one. (The JDK widens the
+        // near-one interval to the full 0x3FEFFFFF..=0x3FF00000 high-word
+        // range, dropping fdlibm 5.3's separate |y|>2**64 early exit.)
+        if ix < 0x3fef_ffff {
+            return if hy < 0 { s * f64::INFINITY } else { s * 0.0 };
+        }
+        if ix > 0x3ff0_0000 {
+            return if hy > 0 { s * f64::INFINITY } else { s * 0.0 };
+        }
+        // Now |1-x| is tiny <= 2**-20, suffice to compute
+        // log(x) by x-x^2/2+x^3/3-x^4/4.
+        let t = ax - 1.0; // t has 20 trailing zeros
+        let w = (t * t) * (0.5 - t * (0.333_333_333_333_333_333_333_3 - t * 0.25));
+        let u = IVLN2_H * t; // IVLN2_H has 21 sig. bits
+        let v = t * IVLN2_L - w * IVLN2;
+        let t1h = set_lo_word(u + v, 0);
+        t1 = t1h;
+        t2 = v - (t1h - u);
+    } else {
+        n = 0;
+        // Take care subnormal number.
+        if ix < 0x0010_0000 {
+            ax *= TWO53;
+            n -= 53;
+        }
+        let mut ix = hi_word(ax);
+        n += (ix >> 20) - 0x3ff;
+        let j = ix & 0x000f_ffff;
+        // Determine interval.
+        ix = j | 0x3ff0_0000; // normalize ix
+        let k;
+        if j <= 0x0003_988e {
+            k = 0usize; // |x| < sqrt(3/2)
+        } else if j < 0x000b_b67a {
+            k = 1; // |x| < sqrt(3)
+        } else {
+            k = 0;
+            n += 1;
+            ix -= 0x0010_0000;
+        }
+        ax = set_hi_word(ax, ix);
+        // Compute ss = s_h+s_l = (x-1)/(x+1) or (x-1.5)/(x+1.5).
+        let u = ax - BP[k];
+        let v = 1.0 / (ax + BP[k]);
+        let ss = u * v;
+        let s_h = set_lo_word(ss, 0);
+        // t_h = ax+bp[k] High.
+        let t_h = set_hi_word(
+            0.0,
+            ((ix >> 1) | 0x2000_0000) + 0x0008_0000 + ((k as i32) << 18),
+        );
+        let t_l = ax - (t_h - BP[k]);
+        let s_l = v * ((u - s_h * t_h) - s_h * t_l);
+        // Compute log(ax).
+        let s2 = ss * ss;
+        let mut r = s2 * s2 * (L1 + s2 * (L2 + s2 * (L3 + s2 * (L4 + s2 * (L5 + s2 * L6)))));
+        r += s_l * (s_h + ss);
+        let s2 = s_h * s_h;
+        let t_h = set_lo_word(3.0 + s2 + r, 0);
+        let t_l = r - ((t_h - 3.0) - s2);
+        // u+v = ss*(1+...).
+        let u = s_h * t_h;
+        let v = s_l * t_h + t_l * ss;
+        // 2/(3log2)*(ss+...).
+        let p_h = set_lo_word(u + v, 0);
+        let p_l = v - (p_h - u);
+        let z_h = CP_H * p_h; // cp_h+cp_l = 2/(3*log2)
+        let z_l = CP_L * p_h + p_l * CP + DP_L[k];
+        // log2(ax) = (ss+..)*2/(3*log2) = n + dp_h + z_h + z_l.
+        let t = f64::from(n);
+        let t1h = set_lo_word(((z_h + z_l) + DP_H[k]) + t, 0);
+        t1 = t1h;
+        t2 = z_l - (((t1h - t) - DP_H[k]) - z_h);
+    }
+    // Split up y into y1+y2 and compute (y1+y2)*(t1+t2).
+    let y1 = set_lo_word(y, 0);
+    let p_l = (y - y1) * t1 + y * t2;
+    let mut p_h = y1 * t1;
+    let z = p_l + p_h;
+    let j = hi_word(z);
+    let i = z.to_bits() as u32;
+    if j >= 0x4090_0000 {
+        // z >= 1024
+        if ((j - 0x4090_0000) | (i as i32)) != 0 {
+            return s * f64::INFINITY; // overflow (z > 1024)
+        }
+        if p_l + OVT > z - p_h {
+            return s * f64::INFINITY; // overflow
+        }
+    } else if (j & 0x7fff_ffff) >= 0x4090_cc00 {
+        // z <= -1075
+        if (j.wrapping_sub(0xc090_cc00u32 as i32) | (i as i32)) != 0 {
+            return s * 0.0; // underflow (z < -1075)
+        }
+        if p_l <= z - p_h {
+            return s * 0.0; // underflow
+        }
+    }
+    // Compute 2**(p_h+p_l).
+    let i = j & 0x7fff_ffff;
+    let mut k = (i >> 20) - 0x3ff;
+    let mut n = 0i32;
+    if i > 0x3fe0_0000 {
+        // |z| > 0.5, set n = [z+0.5]
+        n = j + (0x0010_0000 >> (k + 1));
+        k = ((n & 0x7fff_ffff) >> 20) - 0x3ff; // new k for n
+        let t = set_hi_word(0.0, n & !(0x000f_ffff >> k));
+        n = ((n & 0x000f_ffff) | 0x0010_0000) >> (20 - k);
+        if j < 0 {
+            n = -n;
+        }
+        p_h -= t;
+    }
+    let t = set_lo_word(p_l + p_h, 0);
+    let u = t * LG2_H;
+    let v = (p_l - (t - p_h)) * LG2 + t * LG2_L;
+    let z = u + v;
+    let w = v - (z - u);
+    let t = z * z;
+    let t1 = z - t * (P1 + t * (P2 + t * (P3 + t * (P4 + t * P5))));
+    let r = (z * t1) / (t1 - 2.0) - (w + z * w);
+    let z = 1.0 - (r - z);
+    let j = hi_word(z).wrapping_add(n << 20);
+    let z = if (j >> 20) <= 0 {
+        z * exp2(n) // subnormal output
+    } else {
+        set_hi_word(z, j)
+    };
+    s * z
 }
 
 /// `atan`, ported from fdlibm (the JDK test suite's FdlibmTranslit.Atan).
@@ -7585,7 +7761,7 @@ mod tests {
     fn sqrt_matches_ieee_reference() {
         // (input bits, correctly rounded result bits); results cross-checked against
         // `Math.sqrt` on OpenJDK 25 (Temurin 25.0.4.1).
-        let cases: [(u64, u64); 29] = [
+        let cases: [(u64, u64); 28] = [
             (0x0000_0000_0000_0000, 0x0000_0000_0000_0000), // +0.0
             (0x8000_0000_0000_0000, 0x8000_0000_0000_0000), // -0.0
             (0x3ff0_0000_0000_0000, 0x3ff0_0000_0000_0000), // 1.0
@@ -7614,7 +7790,6 @@ mod tests {
             (0x0123_4567_89ab_cdef, 0x2088_d53c_68b0_12b2),
             (0x0fed_cba9_8765_4321, 0x27ee_e0cb_ec79_2028),
             (0x7ff0_0000_0000_0000, 0x7ff0_0000_0000_0000), // +infinity
-            (0xbff0_0000_0000_0000, 0xfff8_0000_0000_0000), // -1.0 -> NaN (x86-64 default sign)
         ];
         for (input, expected) in cases {
             let actual = sqrt(f64::from_bits(input));
@@ -7625,6 +7800,16 @@ mod tests {
                 actual.to_bits()
             );
         }
+        // sqrt(negative) is the platform's default NaN; its sign is
+        // host-dependent (x86-64 -> negative, ARM64 -> positive). Compare against
+        // the hardware instruction; black_box stops LLVM constant-folding the
+        // NaN to a canonical sign.
+        let neg = core::hint::black_box(-1.0_f64);
+        assert_eq!(
+            sqrt(neg).to_bits(),
+            neg.sqrt().to_bits(),
+            "sqrt(-1.0) should match the hardware default NaN"
+        );
     }
 
     #[test]
